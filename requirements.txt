@@ -19,7 +19,7 @@ mediapipe>=0.10.0
 librosa>=0.10.0
 
 # Phase 4: Advanced (enable later)
-# langgraph>=0.2.0
+langgraph>=0.2.0
 # mcp>=1.0.0
-# pillow>=10.0.0
-# pymupdf>=1.24.0
+pillow>=10.0.0
+pymupdf>=1.24.0

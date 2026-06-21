@@ -8,6 +8,7 @@ from core.user_profile import get_user_profile
 from core.rag import get_rag_manager
 from core.scheduler import get_scheduler_manager
 from core.hardware import get_hardware_manager
+from core.multimodal import get_multimodal_manager
 
 try:
     from duckduckgo_search import DDGS
@@ -36,6 +37,7 @@ class ToolExecutor:
         self.rag_manager = get_rag_manager()
         self.scheduler_manager = get_scheduler_manager()
         self.hardware_manager = get_hardware_manager()
+        self.multimodal_manager = get_multimodal_manager()
 
     def read_file(self, path: str) -> str:
         is_valid, error_msg = self.safety.validate_path(path)
@@ -227,6 +229,12 @@ class ToolExecutor:
     def stop_clap_detection(self) -> str:
         return self.hardware_manager.stop_clap_detection()
 
+    def analyze_image(self, image_path: str, prompt: str = "이 이미지에 무엇이 있나요?") -> str:
+        return self.multimodal_manager.analyze_image(image_path, prompt)
+
+    def extract_text_from_pdf(self, pdf_path: str, page_num: Optional[int] = None) -> str:
+        return self.multimodal_manager.extract_text_from_pdf(pdf_path, page_num)
+
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         tool_functions = {
             "read_file": self.read_file,
@@ -251,6 +259,8 @@ class ToolExecutor:
             "stop_wakeword_detection": self.stop_wakeword_detection,
             "start_clap_detection": self.start_clap_detection,
             "stop_clap_detection": self.stop_clap_detection,
+            "analyze_image": self.analyze_image,
+            "extract_text_from_pdf": self.extract_text_from_pdf,
         }
 
         if tool_name not in tool_functions:
@@ -565,6 +575,43 @@ def get_tools_schema() -> list[dict]:
                 "type": "object",
                 "properties": {},
                 "required": [],
+            },
+        },
+        {
+            "name": "analyze_image",
+            "description": "이미지를 분석합니다 (메타데이터 확인)",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "image_path": {
+                        "type": "string",
+                        "description": "이미지 파일 경로",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "분석 프롬프트 (선택사항)",
+                        "default": "이 이미지에 무엇이 있나요?",
+                    },
+                },
+                "required": ["image_path"],
+            },
+        },
+        {
+            "name": "extract_text_from_pdf",
+            "description": "PDF에서 텍스트를 추출합니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pdf_path": {
+                        "type": "string",
+                        "description": "PDF 파일 경로",
+                    },
+                    "page_num": {
+                        "type": "integer",
+                        "description": "특정 페이지 번호 (선택사항, 지정하지 않으면 전체)",
+                    },
+                },
+                "required": ["pdf_path"],
             },
         },
     ]

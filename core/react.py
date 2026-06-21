@@ -1,0 +1,107 @@
+import json
+from typing import List, Dict, Any
+from core.llm import get_llm
+from core.tools import get_tool_executor
+
+
+class ReActAgent:
+    def __init__(self):
+        self.llm = get_llm()
+        self.tool_executor = get_tool_executor()
+        self.max_steps = 10
+
+    def run(self, query: str) -> str:
+        """
+        ReAct 패턴으로 쿼리를 처리합니다:
+        1. Think: 다음 행동을 생각합니다
+        2. Act: 툴을 실행합니다
+        3. Observe: 결과를 관찰합니다
+        4. Repeat: 필요한 만큼 반복합니다
+        """
+        print(f"🤖 ReAct 에이전트 시작: {query}")
+        print("-" * 50)
+
+        messages = [
+            {
+                "role": "system",
+                "content": """당신은 유용한 AI 비서입니다. 사용자의 요청을 처리하기 위해 ReAct 패턴을 사용하세요.
+
+응답 형식:
+- 질문을 이해했다면: "Final Answer: [답변]"
+- 툴을 사용해야 한다면: "Tool: [툴이름]\nInput: [툴입력 (JSON 형식)]"
+
+사용 가능한 툴:
+- read_file, write_file, list_directory, run_command, web_search
+- set_profile, get_profile, set_preference
+- speak_text, listen
+- add_document, search_docs, list_documents
+- add_schedule_job, list_schedule_jobs, delete_schedule_job, start_scheduler, stop_scheduler
+- start_wakeword_detection, stop_wakeword_detection, start_clap_detection, stop_clap_detection
+
+예시:
+사용자: 오늘 날씨 어때?
+당신: Tool: web_search\nInput: {"query": "오늘 서울 날씨"}
+
+사용자: 내 프로필 보여줘
+당신: Tool: get_profile\nInput: {}
+
+사용자: 간단한 인사해줘
+당신: Final Answer: 안녕하세요! 어떤 도움이 필요하신가요?"""
+            },
+            {"role": "user", "content": query}
+        ]
+
+        for step in range(self.max_steps):
+            print(f"\n📝 Step {step + 1}/{self.max_steps}")
+
+            # Think + Act
+            response = self.llm.chat(messages)
+            print(f"💭 AI 응답:\n{response}")
+
+            if "Final Answer:" in response:
+                final_answer = response.split("Final Answer:")[-1].strip()
+                print(f"\n✅ 최종 답변: {final_answer}")
+                return final_answer
+
+            if "Tool:" in response and "Input:" in response:
+                # 툴 호출 파싱
+                try:
+                    tool_part = response.split("Tool:")[-1].split("Input:")[0].strip()
+                    input_part = response.split("Input:")[-1].strip()
+                    
+                    tool_name = tool_part
+                    tool_input = json.loads(input_part)
+                    
+                    print(f"🔧 툴 실행: {tool_name}")
+                    print(f"📥 입력: {tool_input}")
+
+                    # Observe
+                    tool_result = self.tool_executor.execute_tool(tool_name, tool_input)
+                    print(f"📤 결과:\n{tool_result}")
+
+                    # 다음 단계를 위해 메시지에 추가
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({"role": "user", "content": f"Observation: {tool_result}"})
+
+                except Exception as e:
+                    print(f"❌ 툴 실행 오류: {e}")
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({"role": "user", "content": f"Error: {str(e)}"})
+            else:
+                # 툴을 사용하지 않고 바로 답변
+                print(f"\n✅ 답변: {response}")
+                return response
+
+        print("\n⚠️ 최대 스텝을 초과했습니다")
+        return "죄송합니다, 문제를 해결하는 데 시간이 너무 오래 걸렸어요. 조금 더 구체적으로 질문해주세요!"
+
+
+# Singleton instance
+_react_agent = None
+
+
+def get_react_agent() -> ReActAgent:
+    global _react_agent
+    if _react_agent is None:
+        _react_agent = ReActAgent()
+    return _react_agent
