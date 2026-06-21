@@ -21,7 +21,11 @@ def get_system_prompt():
 
 
 def main():
+    voice_mode = "--voice" in sys.argv
+    
     print("🤖 자비스 AI 비서 시작! (종료하려면 'exit' 또는 'quit' 입력)")
+    if voice_mode:
+        print("🎤 음성 모드가 활성화되었습니다!")
     print("=" * 60)
 
     try:
@@ -40,7 +44,19 @@ def main():
 
     while True:
         try:
-            user_input = input("\n나: ").strip()
+            if voice_mode:
+                # 음성 모드: listen 툴 사용
+                print("\n🎤 음성 입력을 기다리는 중...")
+                listen_result = tool_executor.listen()
+                print(f"나: {listen_result}")
+                if "음성 인식 결과: " in listen_result:
+                    user_input = listen_result.replace("음성 인식 결과: ", "")
+                else:
+                    user_input = ""
+            else:
+                # 텍스트 모드: 입력 받기
+                user_input = input("\n나: ").strip()
+            
             user_input = safety.sanitize_input(user_input)
         except (KeyboardInterrupt, EOFError):
             print("\n\n👋 안녕히 가세요!")

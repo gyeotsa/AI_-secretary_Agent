@@ -98,7 +98,8 @@ Jarvis/
 ### Phase 3: 확장 기능 🚧 (진행 중)
 - RAG (지식 기반 검색)
 - ✅ TTS (Text-to-Speech) 음성 인터페이스 구현
-- STT (Speech-to-Text) (다음 단계)
+- ✅ STT (Speech-to-Text) 음성 인식 구현
+- ✅ --voice 옵션으로 음성 모드 지원
 - 스케줄러
 - **하드웨어 확장 (마이크/카메라, 제스처 인식, 박수 감지)**
 
@@ -180,6 +181,7 @@ Jarvis/
 | 2026-06-21 | AI Assistant | Phase 2 Tool Use 기능 구현 (core/tools.py, llm.py, main.py 업데이트) |
 | 2026-06-21 | AI Assistant | Phase 2 개인화 메모리 기능 구현 (core/user_profile.py, 사용자 프로필 툴 추가) |
 | 2026-06-21 | AI Assistant | Phase 3 TTS 기능 구현 (pyttsx3, speak_text 툴, 자동 응답 음성 출력) |
+| 2026-06-21 | AI Assistant | Phase 3 STT 기능 구현 (openai-whisper, listen 툴, --voice 음성 모드) |
 
 ---
 

@@ -1,5 +1,6 @@
 import os
 import subprocess
+import tempfile
 from typing import Optional
 from config import Config
 from core.harness import SafetyLayer
@@ -14,6 +15,15 @@ try:
     import pyttsx3
 except ImportError:
     pyttsx3 = None
+
+try:
+    import whisper
+    import sounddevice as sd
+    import numpy as np
+    import scipy.io.wavfile as wav
+    WHISPER_AVAILABLE = True
+except ImportError:
+    WHISPER_AVAILABLE = False
 
 
 class ToolExecutor:
@@ -144,6 +154,34 @@ class ToolExecutor:
         except Exception as e:
             return f"TTS 오류: {str(e)}"
 
+    def listen(self, duration: int = 3) -> str:
+        if not WHISPER_AVAILABLE:
+            return "오류: openai-whisper, sounddevice, scipy, numpy가 설치되지 않았습니다. requirements.txt를 확인하세요."
+        
+        try:
+            print(f"🎤 {duration}초 동안 말씀하세요...")
+            sample_rate = 16000
+            recording = sd.rec(
+                int(duration * sample_rate), 
+                samplerate=sample_rate,
+                channels=1, 
+                dtype='int16'
+            )
+            sd.wait()
+            
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                wav.write(f.name, sample_rate, recording)
+                model = whisper.load_model("base")
+                result = model.transcribe(f.name, language="ko")
+                os.unlink(f.name)
+                text = result["text"].strip()
+                if text:
+                    return f"음성 인식 결과: {text}"
+                else:
+                    return "음성이 인식되지 않았습니다."
+        except Exception as e:
+            return f"STT 오류: {str(e)}"
+
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         tool_functions = {
             "read_file": self.read_file,
@@ -155,6 +193,7 @@ class ToolExecutor:
             "get_profile": self.get_profile,
             "set_preference": self.set_preference,
             "speak_text": self.speak_text,
+            "listen": self.listen,
         }
 
         if tool_name not in tool_functions:
@@ -309,6 +348,21 @@ def get_tools_schema() -> list[dict]:
                     },
                 },
                 "required": ["text"],
+            },
+        },
+        {
+            "name": "listen",
+            "description": "마이크에서 음성을 녹음하고 텍스트로 변환합니다 (STT)",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "duration": {
+                        "type": "integer",
+                        "description": "녹음 시간 (초, 기본 3초)",
+                        "default": 3,
+                    },
+                },
+                "required": [],
             },
         },
     ]
