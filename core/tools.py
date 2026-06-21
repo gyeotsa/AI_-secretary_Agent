@@ -3,6 +3,7 @@ import subprocess
 from typing import Optional
 from config import Config
 from core.harness import SafetyLayer
+from core.user_profile import get_user_profile
 
 try:
     from duckduckgo_search import DDGS
@@ -13,6 +14,7 @@ except ImportError:
 class ToolExecutor:
     def __init__(self):
         self.safety = SafetyLayer()
+        self.user_profile = get_user_profile()
 
     def read_file(self, path: str) -> str:
         is_valid, error_msg = self.safety.validate_path(path)
@@ -94,6 +96,30 @@ class ToolExecutor:
         except Exception as e:
             return f"웹 검색 오류: {str(e)}"
 
+    def set_profile(self, key: str, value: str) -> str:
+        try:
+            self.user_profile.set(key, value)
+            return f"프로필이 저장되었습니다: {key} = {value}"
+        except Exception as e:
+            return f"프로필 저장 오류: {str(e)}"
+
+    def get_profile(self, key: str = "") -> str:
+        try:
+            if key:
+                value = self.user_profile.get(key)
+                return f"{key}: {value}" if value else f"{key}가 프로필에 없습니다."
+            else:
+                return self.user_profile.get_profile_summary()
+        except Exception as e:
+            return f"프로필 조회 오류: {str(e)}"
+
+    def set_preference(self, pref_key: str, pref_value: str) -> str:
+        try:
+            self.user_profile.set_preference(pref_key, pref_value)
+            return f"환경설정이 저장되었습니다: {pref_key} = {pref_value}"
+        except Exception as e:
+            return f"환경설정 저장 오류: {str(e)}"
+
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         tool_functions = {
             "read_file": self.read_file,
@@ -101,6 +127,9 @@ class ToolExecutor:
             "list_directory": self.list_directory,
             "run_command": self.run_command,
             "web_search": self.web_search,
+            "set_profile": self.set_profile,
+            "get_profile": self.get_profile,
+            "set_preference": self.set_preference,
         }
 
         if tool_name not in tool_functions:
@@ -191,6 +220,56 @@ def get_tools_schema() -> list[dict]:
                     },
                 },
                 "required": ["query"],
+            },
+        },
+        {
+            "name": "set_profile",
+            "description": "사용자 프로필에 정보를 저장합니다 (예: 이름, 취미, 선호도 등)",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "프로필 키 (예: '이름', '취미', '선호_언어')",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "프로필 값",
+                    },
+                },
+                "required": ["key", "value"],
+            },
+        },
+        {
+            "name": "get_profile",
+            "description": "사용자 프로필 정보를 조회합니다. 키를 지정하지 않으면 전체 프로필을 보여줍니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "조회할 프로필 키 (선택사항)",
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "set_preference",
+            "description": "사용자 환경설정을 저장합니다 (예: 응답_스타일, 언어 등)",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pref_key": {
+                        "type": "string",
+                        "description": "환경설정 키",
+                    },
+                    "pref_value": {
+                        "type": "string",
+                        "description": "환경설정 값",
+                    },
+                },
+                "required": ["pref_key", "pref_value"],
             },
         },
     ]

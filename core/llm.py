@@ -9,13 +9,17 @@ class LLMClient:
             raise ValueError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
         self.client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
         self.tools = get_tools_schema()
+        self.system_prompt = Config.SYSTEM_PROMPT_TEMPLATE.format(user_profile_section="")
+
+    def set_system_prompt(self, prompt: str):
+        self.system_prompt = prompt
 
     def chat_with_tools(self, messages: list[dict]) -> tuple[str, list[dict]]:
         try:
             response = self.client.messages.create(
                 model=Config.MODEL_NAME,
                 max_tokens=Config.MAX_TOKENS,
-                system=Config.SYSTEM_PROMPT,
+                system=self.system_prompt,
                 messages=messages,
                 temperature=Config.TEMPERATURE,
                 tools=self.tools,
@@ -39,7 +43,7 @@ class LLMClient:
             response = self.client.messages.create(
                 model=Config.MODEL_NAME,
                 max_tokens=Config.MAX_TOKENS,
-                system=Config.SYSTEM_PROMPT,
+                system=self.system_prompt,
                 messages=messages,
                 temperature=Config.TEMPERATURE,
             )

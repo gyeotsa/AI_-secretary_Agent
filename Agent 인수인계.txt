@@ -86,12 +86,14 @@ Jarvis/
 - 대화 기록 저장 (SQLite)
 - 기본 Harness 안전장치
 
-### Phase 2: 핵심 기능 🚧 (진행 중)
+### Phase 2: 핵심 기능 ✅ (완료)
 - ✅ Tool Use 기반 기능 추가 (core/tools.py)
 - ✅ Tool Use와 LLM 연동 (core/llm.py 업데이트)
 - ✅ requirements.txt Phase 2 의존성 활성화
 - ✅ main.py Tool Use 루프 추가
-- 개인화 메모리 (사용자 프로필) (다음 단계)
+- ✅ 개인화 메모리 (사용자 프로필) 구현 (core/user_profile.py)
+- ✅ 사용자 프로필 툴 추가 (set_profile, get_profile, set_preference)
+- ✅ 시스템 프롬프트에 사용자 프로필 동적 반영
 
 ### Phase 3: 확장 기능
 - RAG (지식 기반 검색)
@@ -175,6 +177,7 @@ Jarvis/
 |------|--------|------|
 | 2026-06-21 | AI Assistant | 프로젝트 초기화, Phase 1 구현 완료 |
 | 2026-06-21 | AI Assistant | Phase 2 Tool Use 기능 구현 (core/tools.py, llm.py, main.py 업데이트) |
+| 2026-06-21 | AI Assistant | Phase 2 개인화 메모리 기능 구현 (core/user_profile.py, 사용자 프로필 툴 추가) |
 
 ---
 

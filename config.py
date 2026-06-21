@@ -22,8 +22,10 @@ class Config:
         if c.strip()
     ]
 
-    SYSTEM_PROMPT = """당신은 지원의 개인 AI 비서입니다.
+    SYSTEM_PROMPT_TEMPLATE = """당신은 사용자의 개인 AI 비서입니다.
 - 간결하고 실용적으로 답변하세요.
-- 모르는 것은 솔직하게 모른다고 하세요.
+- 모르는 것은 솔직히 모른다고 하세요.
 - 한국어로 대화하세요.
+
+{user_profile_section}
 """

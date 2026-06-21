@@ -4,6 +4,20 @@ from core.llm import get_llm_client
 from core.memory import get_memory
 from core.harness import SafetyLayer
 from core.tools import get_tool_executor
+from core.user_profile import get_user_profile
+from config import Config
+
+
+def get_system_prompt():
+    user_profile = get_user_profile()
+    profile_summary = user_profile.get_profile_summary()
+
+    if profile_summary != "저장된 사용자 프로필이 없습니다.":
+        user_profile_section = f"사용자에 대해 알고 있는 정보:\n{profile_summary}\n\n이 정보를 바탕으로 개인화된 답변을 제공하세요."
+    else:
+        user_profile_section = "아직 사용자에 대한 정보가 없습니다. 대화를 통해 사용자에 대해 알아가세요."
+
+    return Config.SYSTEM_PROMPT_TEMPLATE.format(user_profile_section=user_profile_section)
 
 
 def main():
@@ -15,6 +29,7 @@ def main():
         memory = get_memory()
         safety = SafetyLayer()
         tool_executor = get_tool_executor()
+        user_profile = get_user_profile()
     except Exception as e:
         print(f"❌ 초기화 오류: {e}")
         print("💡 .env 파일에 API 키를 설정했는지 확인하세요.")
@@ -40,6 +55,9 @@ def main():
 
         messages.append({"role": "user", "content": user_input})
         memory.save_message(session_id, "user", user_input)
+
+        # 시스템 프롬프트 업데이트
+        llm.set_system_prompt(get_system_prompt())
 
         # Tool Use 루프
         while True:
