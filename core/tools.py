@@ -6,6 +6,7 @@ from config import Config
 from core.harness import SafetyLayer
 from core.user_profile import get_user_profile
 from core.rag import get_rag_manager
+from core.scheduler import get_scheduler_manager
 
 try:
     from duckduckgo_search import DDGS
@@ -32,6 +33,7 @@ class ToolExecutor:
         self.safety = SafetyLayer()
         self.user_profile = get_user_profile()
         self.rag_manager = get_rag_manager()
+        self.scheduler_manager = get_scheduler_manager()
 
     def read_file(self, path: str) -> str:
         is_valid, error_msg = self.safety.validate_path(path)
@@ -196,6 +198,21 @@ class ToolExecutor:
     def list_documents(self) -> str:
         return self.rag_manager.list_documents()
 
+    def add_schedule_job(self, description: str, schedule_type: str, schedule_value: str, prompt: str) -> str:
+        return self.scheduler_manager.add_job(description, schedule_type, schedule_value, prompt)
+
+    def list_schedule_jobs(self) -> str:
+        return self.scheduler_manager.list_jobs()
+
+    def delete_schedule_job(self, job_id: int) -> str:
+        return self.scheduler_manager.delete_job(job_id)
+
+    def start_scheduler(self) -> str:
+        return self.scheduler_manager.start_scheduler()
+
+    def stop_scheduler(self) -> str:
+        return self.scheduler_manager.stop_scheduler()
+
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         tool_functions = {
             "read_file": self.read_file,
@@ -211,6 +228,11 @@ class ToolExecutor:
             "add_document": self.add_document,
             "search_docs": self.search_docs,
             "list_documents": self.list_documents,
+            "add_schedule_job": self.add_schedule_job,
+            "list_schedule_jobs": self.list_schedule_jobs,
+            "delete_schedule_job": self.delete_schedule_job,
+            "start_scheduler": self.start_scheduler,
+            "stop_scheduler": self.stop_scheduler,
         }
 
         if tool_name not in tool_functions:
@@ -418,6 +440,73 @@ def get_tools_schema() -> list[dict]:
         {
             "name": "list_documents",
             "description": "RAG 지식 베이스에 저장된 문서 목록을 보여줍니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "add_schedule_job",
+            "description": "스케줄 작업을 추가합니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "작업 설명",
+                    },
+                    "schedule_type": {
+                        "type": "string",
+                        "description": "스케줄 타입: every_minutes, every_hours, every_days, daily_at, every_weeks",
+                    },
+                    "schedule_value": {
+                        "type": "string",
+                        "description": "스케줄 값: 숫자 또는 시간(HH:MM)",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "실행할 프롬프트",
+                    },
+                },
+                "required": ["description", "schedule_type", "schedule_value", "prompt"],
+            },
+        },
+        {
+            "name": "list_schedule_jobs",
+            "description": "등록된 스케줄 작업 목록을 보여줍니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "delete_schedule_job",
+            "description": "스케줄 작업을 삭제합니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "integer",
+                        "description": "삭제할 작업 ID",
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+        {
+            "name": "start_scheduler",
+            "description": "스케줄러를 시작합니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "stop_scheduler",
+            "description": "스케줄러를 중지합니다",
             "input_schema": {
                 "type": "object",
                 "properties": {},
