@@ -5,6 +5,7 @@ from typing import Optional
 from config import Config
 from core.harness import SafetyLayer
 from core.user_profile import get_user_profile
+from core.rag import get_rag_manager
 
 try:
     from duckduckgo_search import DDGS
@@ -30,6 +31,7 @@ class ToolExecutor:
     def __init__(self):
         self.safety = SafetyLayer()
         self.user_profile = get_user_profile()
+        self.rag_manager = get_rag_manager()
 
     def read_file(self, path: str) -> str:
         is_valid, error_msg = self.safety.validate_path(path)
@@ -182,6 +184,18 @@ class ToolExecutor:
         except Exception as e:
             return f"STT 오류: {str(e)}"
 
+    def add_document(self, file_path: str) -> str:
+        is_valid, error_msg = self.safety.validate_path(file_path)
+        if not is_valid:
+            return f"오류: {error_msg}"
+        return self.rag_manager.add_document(file_path)
+
+    def search_docs(self, query: str, top_k: int = 3) -> str:
+        return self.rag_manager.search_docs(query, top_k)
+
+    def list_documents(self) -> str:
+        return self.rag_manager.list_documents()
+
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         tool_functions = {
             "read_file": self.read_file,
@@ -194,6 +208,9 @@ class ToolExecutor:
             "set_preference": self.set_preference,
             "speak_text": self.speak_text,
             "listen": self.listen,
+            "add_document": self.add_document,
+            "search_docs": self.search_docs,
+            "list_documents": self.list_documents,
         }
 
         if tool_name not in tool_functions:
@@ -362,6 +379,48 @@ def get_tools_schema() -> list[dict]:
                         "default": 3,
                     },
                 },
+                "required": [],
+            },
+        },
+        {
+            "name": "add_document",
+            "description": "문서를 RAG 지식 베이스에 추가합니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "추가할 문서의 파일 경로",
+                    },
+                },
+                "required": ["file_path"],
+            },
+        },
+        {
+            "name": "search_docs",
+            "description": "RAG 지식 베이스에서 관련 문서를 검색합니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "검색 쿼리",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "반환할 결과 개수 (기본 3개)",
+                        "default": 3,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "list_documents",
+            "description": "RAG 지식 베이스에 저장된 문서 목록을 보여줍니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
                 "required": [],
             },
         },
