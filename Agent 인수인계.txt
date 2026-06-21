@@ -101,7 +101,7 @@ Jarvis/
 - ✅ STT (Speech-to-Text) 음성 인식 구현
 - ✅ --voice 옵션으로 음성 모드 지원
 - ✅ 스케줄러 구현
-- **하드웨어 확장 (마이크/카메라, 제스처 인식, 박수 감지)** (다음 단계)
+- ✅ 하드웨어 확장 (웨이크워드 감지, 박수 감지) 구현
 
 ### Phase 4: 고도화
 - 자율 에이전트 (ReAct 패턴)
@@ -184,6 +184,7 @@ Jarvis/
 | 2026-06-21 | AI Assistant | Phase 3 STT 기능 구현 (openai-whisper, listen 툴, --voice 음성 모드) |
 | 2026-06-21 | AI Assistant | Phase 3 RAG 기능 구현 (chromadb, sentence-transformers, 문서 추가/검색) |
 | 2026-06-21 | AI Assistant | Phase 3 스케줄러 기능 구현 (schedule, 작업 추가/삭제/목록, 시작/중지) |
+| 2026-06-21 | AI Assistant | Phase 3 하드웨어 확장 구현 (core/hardware.py, 웨이크워드/박수 감지, 툴 추가) |
 
 ---
 

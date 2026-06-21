@@ -7,6 +7,7 @@ from core.harness import SafetyLayer
 from core.user_profile import get_user_profile
 from core.rag import get_rag_manager
 from core.scheduler import get_scheduler_manager
+from core.hardware import get_hardware_manager
 
 try:
     from duckduckgo_search import DDGS
@@ -34,6 +35,7 @@ class ToolExecutor:
         self.user_profile = get_user_profile()
         self.rag_manager = get_rag_manager()
         self.scheduler_manager = get_scheduler_manager()
+        self.hardware_manager = get_hardware_manager()
 
     def read_file(self, path: str) -> str:
         is_valid, error_msg = self.safety.validate_path(path)
@@ -213,6 +215,18 @@ class ToolExecutor:
     def stop_scheduler(self) -> str:
         return self.scheduler_manager.stop_scheduler()
 
+    def start_wakeword_detection(self) -> str:
+        return self.hardware_manager.start_wakeword_detection()
+
+    def stop_wakeword_detection(self) -> str:
+        return self.hardware_manager.stop_wakeword_detection()
+
+    def start_clap_detection(self) -> str:
+        return self.hardware_manager.start_clap_detection()
+
+    def stop_clap_detection(self) -> str:
+        return self.hardware_manager.stop_clap_detection()
+
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         tool_functions = {
             "read_file": self.read_file,
@@ -233,6 +247,10 @@ class ToolExecutor:
             "delete_schedule_job": self.delete_schedule_job,
             "start_scheduler": self.start_scheduler,
             "stop_scheduler": self.stop_scheduler,
+            "start_wakeword_detection": self.start_wakeword_detection,
+            "stop_wakeword_detection": self.stop_wakeword_detection,
+            "start_clap_detection": self.start_clap_detection,
+            "stop_clap_detection": self.stop_clap_detection,
         }
 
         if tool_name not in tool_functions:
@@ -507,6 +525,42 @@ def get_tools_schema() -> list[dict]:
         {
             "name": "stop_scheduler",
             "description": "스케줄러를 중지합니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "start_wakeword_detection",
+            "description": "웨이크워드('자비스') 감지를 시작합니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "stop_wakeword_detection",
+            "description": "웨이크워드 감지를 중지합니다",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "start_clap_detection",
+            "description": "박수 감지를 시작합니다 (두 번 박수 치면 트리거)",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "stop_clap_detection",
+            "description": "박수 감지를 중지합니다",
             "input_schema": {
                 "type": "object",
                 "properties": {},
