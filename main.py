@@ -97,6 +97,13 @@ def main():
                 print(response_text)
                 messages.append({"role": "assistant", "content": response_text})
                 memory.save_message(session_id, "assistant", response_text)
+                
+                # 자동으로 음성으로 읽어주기
+                try:
+                    tool_executor.speak_text(response_text)
+                except Exception:
+                    pass  # TTS 오류는 무시하고 계속
+                
                 break
 
 

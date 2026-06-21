@@ -95,11 +95,12 @@ Jarvis/
 - ✅ 사용자 프로필 툴 추가 (set_profile, get_profile, set_preference)
 - ✅ 시스템 프롬프트에 사용자 프로필 동적 반영
 
-### Phase 3: 확장 기능
+### Phase 3: 확장 기능 🚧 (진행 중)
 - RAG (지식 기반 검색)
-- 음성 인터페이스 (STT/TTS)
+- ✅ TTS (Text-to-Speech) 음성 인터페이스 구현
+- STT (Speech-to-Text) (다음 단계)
 - 스케줄러
-- **하드웨어 확장 (마이크/카메라, 제스처 인식, 박수 감지)
+- **하드웨어 확장 (마이크/카메라, 제스처 인식, 박수 감지)**
 
 ### Phase 4: 고도화
 - 자율 에이전트 (ReAct 패턴)
@@ -178,6 +179,7 @@ Jarvis/
 | 2026-06-21 | AI Assistant | 프로젝트 초기화, Phase 1 구현 완료 |
 | 2026-06-21 | AI Assistant | Phase 2 Tool Use 기능 구현 (core/tools.py, llm.py, main.py 업데이트) |
 | 2026-06-21 | AI Assistant | Phase 2 개인화 메모리 기능 구현 (core/user_profile.py, 사용자 프로필 툴 추가) |
+| 2026-06-21 | AI Assistant | Phase 3 TTS 기능 구현 (pyttsx3, speak_text 툴, 자동 응답 음성 출력) |
 
 ---
 

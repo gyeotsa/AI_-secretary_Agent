@@ -10,6 +10,11 @@ try:
 except ImportError:
     DDGS = None
 
+try:
+    import pyttsx3
+except ImportError:
+    pyttsx3 = None
+
 
 class ToolExecutor:
     def __init__(self):
@@ -120,6 +125,25 @@ class ToolExecutor:
         except Exception as e:
             return f"환경설정 저장 오류: {str(e)}"
 
+    def speak_text(self, text: str) -> str:
+        if pyttsx3 is None:
+            return "오류: pyttsx3가 설치되지 않았습니다. requirements.txt를 확인하세요."
+        
+        try:
+            engine = pyttsx3.init()
+            # 한국어 음성 설정 (가능한 경우)
+            voices = engine.getProperty('voices')
+            for voice in voices:
+                if 'ko' in voice.languages or 'Korean' in voice.name:
+                    engine.setProperty('voice', voice.id)
+                    break
+            
+            engine.say(text)
+            engine.runAndWait()
+            return f"음성으로 읽어주었습니다: {text}"
+        except Exception as e:
+            return f"TTS 오류: {str(e)}"
+
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         tool_functions = {
             "read_file": self.read_file,
@@ -130,6 +154,7 @@ class ToolExecutor:
             "set_profile": self.set_profile,
             "get_profile": self.get_profile,
             "set_preference": self.set_preference,
+            "speak_text": self.speak_text,
         }
 
         if tool_name not in tool_functions:
@@ -270,6 +295,20 @@ def get_tools_schema() -> list[dict]:
                     },
                 },
                 "required": ["pref_key", "pref_value"],
+            },
+        },
+        {
+            "name": "speak_text",
+            "description": "텍스트를 음성으로 읽어줍니다 (TTS)",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "음성으로 읽을 텍스트",
+                    },
+                },
+                "required": ["text"],
             },
         },
     ]
