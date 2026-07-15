@@ -1,12 +1,12 @@
 import json
 from typing import List, Dict, Any
-from core.llm import get_llm
+from core.llm import get_llm_client
 from core.tools import get_tool_executor
 
 
 class ReActAgent:
     def __init__(self):
-        self.llm = get_llm()
+        self.llm = get_llm_client()
         self.tool_executor = get_tool_executor()
         self.max_steps = 10
 

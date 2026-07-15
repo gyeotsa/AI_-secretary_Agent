@@ -1,5 +1,55 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
+⚠️⚠️⚠️ **절대 지켜야 할 규칙 (반드시 읽고 따르세요!)** ⚠️⚠️⚠️
+1. **인수인계 매 회차마다 업데이트**: 대화 내용 중 결정 사항, 중요 사항, 변경 사항은 무조건 이 파일에 기록하세요.
+2. **코드 업데이트시 반드시 Agent가 Git 커밋 완료**: 코드 변경 후 **Agent가 직접 Git add/commit까지 완료**하세요! 사용자가 FORK로 푸시만 하면 됩니다. 이 파일에 커밋 주소도 함께 기록하세요.
+3. **다음 Agent가 바로 이어할 수 있도록**: 마지막에 "다음 해야 할 일"을 항상 명확히 적어주세요.
 
+---
+## 📌 이번 업데이트 (2026-07-13) 주요 변경사항
+- ✅ **Ollama 연동 완료**: 기존 Claude 외 Ollama로 무료 모델 사용 가능 (llama3.1 기본 - tool calling 지원)
+- ✅ **엑셀/폴더 툴 추가**: `create_excel_file`, `write_excel_cell`, `create_directory`, `delete_directory`
+- ✅ **자비스 스타일 응답**: "보스" 호칭, 25자 제한, [GAME]/[WORK] 모드 감지
+- ✅ **PyQt6 UI 추가**: `ui/main_window.py`, `ui/visualizer.py` - 프레임리스 창, 7개 점 애니메이션
+- ✅ **상태 머신 추가**: `core/state_machine.py` - IDLE/LISTENING/PROCESSING/EXECUTING/RESPONDING/ERROR
+- ✅ **모드 매니저 추가**: `core/mode_manager.py` - Work/Game 모드 기반
+- ✅ **config.py 리팩토링**: `APIConfig` dataclass로 구조화 + 하위 호환성 유지 (Config.XXX로 접근 가능)
+- ✅ **main_qt.py 추가**: PyQt6 UI 버전 진입점
+- ✅ **.env.example 추가**: 환경변수 템플릿
+- ✅ **Safety Layer 경로 제한 해제**: 테스트 위해 ALLOWED_PATHS 비워둠
+- ✅ **[Fix] main.py 오류 수정**: json import 추가, 이모지 제거 (Windows cp949 문제)
+- ✅ **[Fix] Config 하위 호환성 유지**: Config.API_CONFIG 대신 Config.XXX로 접근 가능
+- ✅ **[Fix] main_qt.py 오류 수정**: json import 추가, Ollama tool_calls 처리, 이모지 제거 (Windows cp949 문제)
+- ✅ **[Fix] Ollama tool calling 오류 처리**: tool calling 미지원 모델시 fallback으로 일반 chat 사용, 기본 모델 llama3.1로 변경
+- ✅ **[Fix] main_qt.py MemoryManager import 오류**: core/memory.py의 클래스 이름이 ConversationMemory라서 get_memory()로 변경, session_id 생성에 uuid.uuid4() 사용
+- ✅ **[Fix] main_qt.py 응답없음 문제**: input() 블로킹 문제를 별도 스레드로 처리, AI 호출도 별도 스레드로 처리, 창 크기를 전체 화면에서 600x500으로 조절
+- ✅ **[Add] main_qt.py 음성 기능**: 🎤 음성 입력 버튼, 🔊 응답 다시 듣기 버튼 추가, AI 응답 자동으로 TTS로 읽어주기
+- ✅ **[Add] RAG/사용자 프로필 UI 연결**: 📄 문서 추가 버튼으로 RAG 문서 추가, 👤 프로필 보기 버튼으로 사용자 프로필 확인, AI 질문시 자동으로 RAG 문서 검색
+- ✅ **[Fix] RAG import 오류 처리**: RAG 기능을 옵셔널하게 만들어 라이브러리가 없어도 앱이 실행되게 함
+- ✅ [Note] 웹 검색 기능: 이미 core/tools.py에 web_search 기능이 DuckDuckGo로 구현되어 있음, AI가 자동으로 사용 가능
+- ✅ [Fix] UI 버튼 오류 처리: WORK/GAME/LISTEN/SPEAK/ADD_DOC/VIEW_PROFILE 버튼 클릭 시 상태 업데이트 및 오류 메시지 표시
+- ✅ [Fix] TTS/STT 오류 처리: 라이브러리가 없을 때 명확한 안내 메시지 표시
+- ✅ [Add] ModeManager 기본 앱 템플릿: core/mode_manager.py에 WORK/GAME 모드용 기본 앱 목록 주석 추가 (사용자가 수정 가능)
+- ✅ [Replace] RAG 시스템을 간단한 키워드 기반으로 교체: PyTorch/Transformers 의존성 완전 제거, Python 기본 라이브러리만 사용
+- ✅ [Fix] core/tools.py RAG 오류 메시지 업데이트: SimpleRAGManager용으로 변경
+- ✅ [Fix] core/tools.py TTS 오류 수정: pyttsx3 engine을 인스턴스 변수로 유지하여 재사용
+- ✅ [Add] STT FFmpeg 오류 안내 개선: FileNotFoundError에서 직접 FFmpeg 설치 여부 확인하고 명확한 안내 메시지 표시
+- ✅ [Fix] STT 임시 파일 삭제 오류 처리: finally 블록에서 안전하게 임시 파일 삭제
+- ✅ **[Add] 음성 토글 버튼**: 기존 음성 입력 버튼을 토글 버튼으로 변경 (마이크 ON/OFF)
+- ✅ **[Add] 지속적인 음성 감지**: 마이크 ON시 계속해서 음성을 감지하고, "자비스" 호출하거나 두 번 박수 치면 청취 모드 시작
+- ✅ **[Add] 3초 무음 전송**: 청취 모드에서 3초 이상 무음이면 지금까지 감지된 텍스트를 자동으로 전송
+- ✅ **[Fix] main_qt.py import 누락**: get_hardware_manager import 추가
+- ✅ **[Update] requirements.txt 정리**: 사용하지 않는 패키지 주석처리
+- ✅ **[Fix] core/hardware.py 지속적인 음성 감지 버그 수정**: wakeword/박수 감지 로직 재정리, 3초 무음 전송 정상 동작
+- ✅ **[Add] ui/main_window.py 텍스트 입력 필드**: QLineEdit로 텍스트 입력 가능하도록 추가, 엔터로 제출
+- ✅ **[Connect] main_qt.py 텍스트 입력 연결**: window.text_submitted 시그널을 _on_user_input과 연결
+- ✅ **[Fix] core/rag.py 이모지 제거**: Windows cp949 인코딩 오류를 방지하기 위해 모든 이모지 제거
+
+## 📌 main.py vs main_qt.py 차이점
+- **main.py**: 기존 텍스트 기반 콘솔 버전 (콘솔 창에서 대화)
+- **main_qt.py**: PyQt6로 만든 GUI 버전 (그래픽 창, 7개 점 애니메이션, 상태 표시, WORK/GAME 버튼)
+- 둘 다 같은 기능을 사용하지만, UI가 다릅니다!
+
+---
 **프로젝트 전체 기록과 설계 의도를 상세히 기록합니다. 이 문서는 후속 Agent가 업무를 이어서 수행할 수 있도록 작성되었습니다.
 
 ---
@@ -8,74 +58,64 @@
 - 코드 수정이나 리드미에 작성되어야 하는 내용들은 모두 사용자의 깃허브에도 반드시 커밋 및 푸시 해준다.
 - 사용자가 다음 Agent에 "해당 파일을 읽고 다음 업무를 이어서 수행해줘." 라는 명령을 내렸을 때 바로 이어서 갈 수 있도록 항상 다음 해야하는 업무를 마지막에 업데이트 해준다.
 
+## 반드시 지켜야 하는 Git 커밋 메시지 규칙
+- **날짜는 굳이 적지 않아도 됨**, 제목만 명확히 적기
+- **맨 앞에 태그 필수**: 업데이트 종류에 따라 [Fix], [Feat], [Add], [Refactor], [Update], [Remove] 등 한 단어로 시작
+  - [Fix]: 버그 수정
+  - [Feat]: 새로운 기능 추가
+  - [Add]: 파일/폴더 추가
+  - [Refactor]: 코드 리팩토링 (기능 변경 없음)
+  - [Update]: 문서/설정 업데이트
+  - [Remove]: 파일/기능 삭제
+
 ## 📅 프로젝트 개요
 
 - **시작일: 2026-06-21
+- **최근 업데이트: 2026-07-13
 - **목표**: 영화 아이언맨의 자비스처럼 모든 일을 보조해주는 개인 AI 비서 개발
 - **접근 방식**: Harness Engineering 원칙 기반
 
 ---
 
-## 📊 프로젝트 기획 배경과 설계 의도
-
-### 1. Harness Engineering 이란?
-
-2026년 AI Agent 분야의 핵심 패러다임 전환:
-- **기존**: 모델 자체 성능 향상만으로는 안정적인 프로덕션 시스템 구축 불가
-- **현재**: **Agent = Model + Harness**
-  - Model: CPU (두뇌)
-  Harness: OS (운영체제, 제어 시스템)
-
-**참고 연구:
-- arXiv:2605.13357 (AI Harness Engineering: A Runtime Substrate for Foundation-Model Software Agents
-- 2026.04 AI 심층분석 보고서
-- OpenAI Codex 팀 "Harness Engineering: Leveraging Codex in an Agent-First World
-
-**Harness의 핵심 역할**:
-- 컨텍스트 관리, 도구 접근, 프로젝트 메모리, 작업 상태, 관측가능성, 실패 attribution, 검증, 권한 관리
+## 🏗️ 프로젝트 구조 (2026-07-13 기준)
+```
+Jarvis/
+├── main.py              # 기존 콘솔 버전 진입점
+├── main_qt.py          # 🆕 PyQt6 UI 버전 진입점
+├── config.py            # 설정 중앙 집중 관리 (APIConfig dataclass로 구조화)
+├── requirements.txt     # Phase별로 의존성 분리 (PyQt6 추가)
+├── .env                 # 환경변수 (ALLOWED_PATHS 비워둠)
+├── .env.example        # 🆕 환경변수 템플릿
+├── .gitignore
+├── Agent 인수인계.txt # 이 파일!
+├── Javis 로드맵.txt
+├── core/                # 핵심 Harness 레이어
+│   ├── __init__.py
+│   ├── llm.py          # LLM 추상화 (Ollama + Anthropic 지원)
+│   ├── memory.py       # 대화 메모리 관리
+│   ├── harness.py       # 안전장치 레이어
+│   ├── tools.py        # 🆕 엑셀/폴더 툴 추가
+│   ├── react.py        # ReAct 자율 에이전트
+│   ├── user_profile.py
+│   ├── rag.py
+│   ├── scheduler.py
+│   ├── hardware.py
+│   ├── multimodal.py
+│   ├── state_machine.py # 🆕 상태 머신 (State Machine)
+│   └── mode_manager.py # 🆕 Work/Game 모드 매니저
+├── ui/                  # 🆕 PyQt6 UI 폴더
+│   ├── __init__.py
+│   ├── main_window.py  # 프레임리스 플로팅 창, DragTab
+│   └── visualizer.py   # 7개 점 애니메이션, 상태별 색상
+└── data/               # 데이터 저장소 (SQLite DB)
+```
 
 ---
 
-## 🏗️ 프로젝트 구조 설계 의도
-
-```
-Jarvis/
-├── main.py              # 진입점 (단순하고 명확하게 유지
-├── config.py            # 설정 중앙 집중 관리 (환경변수 + Harness 설정
-├── requirements.txt     # Phase별로 의존성 분리 (점진적 활성화
-├── .env.template        # 비밀 정보 분리 (절대 git에 올리지 않음
-├── .gitignore           # 보안과 정리를 위한 파일
-├── core/                # 핵심 Harness 레이어
-│   ├── __init__.py
-│   ├── llm.py          # LLM 추상화 (모델 불가지론)
-│   ├── memory.py       # 대화 메모리 관리
-│   └── harness.py       # 🌟 안전장치 레이어 (Harness Engineering 핵심)
-├── data/               # 데이터 저장소 (SQLite DB)
-└── plugins/            # 플러그인/MCP Server 디렉토리 (미래 확장)
-```
-
-### 설계 원칙
-
-1. **모델 불가지론 (Model Agnosticism)
-   - 언제든지 Claude ↔ GPT ↔ Gemini 전환 가능하도록 LLM을 추상화
-   - config.py에 모델 설정 집중
-
-2. **Rippable Architecture**
-   - 각 컴포넌트를 독립적으로 교체/제거 가능하도록 모듈화
-   - 모델이 발전하면 불필요한 Harness 레이어를 점진적으로 제거
-
-3. **Defense-in-Depth** (심층 방어)
-   - 5중 안전장치 계획
-     1. 프롬프트 가드레일
-     2. 스키마 제한
-     3. 런타임 승인
-     4. 도구 검증
-     5. 라이프사이클 훅
-   - Phase 1에서 기초 안전장치만 구현, 나중에 확장
-
-4. **점진적 개발 (Incremental Development)
-   - Phase 1~4로 나누어 단계별로 기능 추가
-   - 각 Phase가 완료된 후에만 다음 Phase로 넘어감
+## 📊 주요 기술 스택
+- **LLM**: Ollama (기본 llama3) / Anthropic Claude (옵션)
+- **UI**: PyQt6 (프레임리스 창, Drag&Drop)
+- **기타**: openpyxl (엑셀), pygetwindow (윈도우 제어), numpy
 
 ---
 
@@ -94,6 +134,7 @@ Jarvis/
 - ✅ 개인화 메모리 (사용자 프로필) 구현 (core/user_profile.py)
 - ✅ 사용자 프로필 툴 추가 (set_profile, get_profile, set_preference)
 - ✅ 시스템 프롬프트에 사용자 프로필 동적 반영
+- ✅ 🆕 엑셀/폴더 툴 추가 (2026-07-13)
 
 ### Phase 3: 확장 기능 ✅ (완료)
 - ✅ RAG (지식 기반 검색) 구현
@@ -108,68 +149,116 @@ Jarvis/
 - 🚧 MCP (Model Context Protocol) 지원 (향후 구현)
 - ✅ 멀티모달 (이미지 분석, PDF 텍스트 추출)
 - 🚧 플러그인 시스템 (향후 구현)
+- ✅ 🆕 PyQt6 UI 기반 (2026-07-13)
+- ✅ 🆕 상태 머신 / 모드 매니저 (2026-07-13)
 
 ---
 
-## 📝 Phase 1 구현 내용 상세
+## 📝 2026-07-13 주요 구현 내용 상세
 
-### 1. config.py
-- 환경변수 로드 (python-dotenv)
-- LLM API 키, 모델 설정
-- **Harness 설정**:
-  - ALLOWED_PATHS: 파일 접근 허용 경로
-  - BLOCKED_COMMANDS: 위험 명령어 블록리스트
-- 시스템 프롬프트 중앙 관리
+### 1. core/llm.py Ollama 지원 강화
+- `chat_with_tools()` 메서드에서 Ollama tool_calls 처리
+- `/api/chat` 엔드포인트 사용, tools 파라미터 전달
+- Anthropic/Ollama 모두 지원하도록 분기 처리
 
-### 2. core/llm.py
-- LLMClient 클래스로 Anthropic API 래핑
-- Singleton 패턴으로 단일 인스턴스 관리
-- chat() 메서드로 간단한 인터페이스 제공
+### 2. core/tools.py 기능 확장
+- `create_directory()`: 폴더 생성
+- `delete_directory()`: 폴더 삭제 (내용물도 같이)
+- `create_excel_file()`: 엑셀 파일 생성 (데이터 입력 가능)
+- `write_excel_cell()`: 특정 셀에 값 쓰기
+- get_tools_schema()에 위 툴들 추가
 
-### 3. core/memory.py
-- ConversationMemory 클래스로 대화 기록 관리
-- SQLite 사용으로 영구 저장
-- session_id로 각 대화 세션 구분
-- list_sessions()로 세션 목록 조회 기능 (나중에 확장용)
+### 3. config.py 리팩토링
+- `APIConfig` dataclass로 환경변수 구조화
+- `Config.get_system_prompt()` 메서드로 자비스 스타일 프롬프트 관리
+- 시스템 프롬프트에 [GAME]/[WORK] 모드 감지 로직 추가
 
-### 4. core/harness.py
-- SafetyLayer 클래스: 🌟 Harness Engineering 기초
-  - validate_path(): 경로 검증
-  - validate_command(): 명령어 검증
-  - sanitize_input(): 입력 정화
-- Phase 2에서 Tool Use와 함께 사용 예정
+### 4. ui/main_window.py
+- FramelessWindowHint + WindowStaysOnTopHint + Tool
+- 상단 DragTab: "DEXTER" 로고, pill 핸들, 구분선
+- 중앙 AudioVisualizer: 7개 점 애니메이션
+- 하단 정보 패널: 상태 라벨, 사용자 발화, 응답, WORK/GAME 버튼
+- ESC로 종료, DragTab으로 창 이동
 
-### 5. main.py
-- CLI 메인 루프
-- UUID로 session_id 자동 생성
-- SafetyLayer로 입력 정화
-- LLM 응답 받아 메시지 저장
+### 5. ui/visualizer.py
+- 7개 점, BASE_RADIUS=18
+- 상태별 색상/동작:
+  - IDLE: cyan, 미세 호흡
+  - LISTENING: cyan, 큰 바운스
+  - PROCESSING: cyan, 순차 반짝임
+  - RESPONDING: purple, 바운스
+  - ERROR: red
+- wave_data로 애니메이션 제어
+
+### 6. core/state_machine.py
+- Enum State: IDLE, LISTENING, PROCESSING, EXECUTING, RESPONDING, ERROR
+- `state_changed` pyqtSignal
+- `can_transition()`으로 유효 전이 검사
+- 각 상태별 transition 메서드 (start_listening(), start_processing() 등)
+
+### 7. core/mode_manager.py
+- ModeAppConfig dataclass: name, path, delay, patterns
+- `activate_work_mode()`, `activate_game_mode()`
+- `_get_snapshot()`, `_find_new_window()`, `_arrange_window()`로 창 관리
+
+### 8. main_qt.py
+- DexterApp 클래스: 모든 컴포넌트 초기화
+- 상태 머신 연결, 창 가시성/헤트비트 타이머
+- 콘솔 입력 테스트 지원
+- [GAME]/[WORK] 응답시 모드 매니저 호출
 
 ---
 
-## 🔮 다음 Phase 우선순위 추천
+## 📌 Git 커밋 기록
+- 2026-07-13: [Fix] core/rag.py 이모지 제거, UI 텍스트 입력 필드 추가, 하드웨어 감지 버그 수정
+  - 커밋 해시: ddb30ae
+- 2026-07-13: [Fix] 지속적인 음성 감지 버그 수정 + 텍스트 입력 필드 추가
+  - 커밋 해시: 2367228
+- 2026-07-13: [Update] requirements.txt 정리 (사용하지 않는 패키지 주석처리)
+  - 커밋 해시: cd30eac
+- 2026-07-13: [Fix] main_qt.py get_hardware_manager import 누락 오류 수정
+  - 커밋 해시: d425b02
+- 2026-07-13: [Add] 음성 토글 버튼 및 지속적인 음성 감지 기능 구현
+  - 커밋 해시: 31d488c
+- 2026-07-13: [Update] 인수인계 파일에 음성 토글 버튼 기능 커밋 기록 추가
+  - 커밋 해시: e8a3148
+- 2026-07-13: [Fix] STT 임시 파일 삭제 오류 처리
+  - 커밋 해시: e2506a4
+- 2026-07-13: [Fix] STT FFmpeg 오류 안내 개선
+  - 커밋 해시: 489dd75
+- 2026-07-13: [Update] 인수인계 파일에 STT FFmpeg 오류 안내 개선 커밋 기록 추가
+  - 커밋 해시: 5b19bf6
+- 2026-07-13: [Fix] main_qt.py MemoryManager import 오류: ConversationMemory로 변경, uuid로 session_id 생성
+  - 커밋 해시: a4f626b
+- 2026-07-13: [Fix] Ollama tool calling 오류 처리: fallback 로직 추가, 기본 모델 llama3.1로 변경
+  - 커밋 해시: 40ca974
+- 2026-07-13: [Update] 인수인계서 규칙 및 커밋 기록 업데이트
+  - 커밋 해시: c69867c
+- 2026-07-13: [Fix] main_qt.py 오류 수정, 인수인계서 규칙 업데이트
+  - 커밋 해시: 8d05c31
+- 2026-07-13: [Fix] Config 하위 호환성 유지, main.py json import 추가 및 이모지 제거
+  - 커밋 해시: 0afa527
+- 2026-07-13: Ollama 연동, 엑셀/폴더 툴, PyQt6 UI, 상태 머신, 모드 매니저 추가
+  - 커밋 해시: 7b1e39e802f35b96522c8ab82c7898bfbfae9977
+  - (사용자가 FORK로 푸시 후 GitHub 주소를 여기에 추가하세요)
 
-### Phase 2 구현 순서:
-1. Tool Use 기반 기능 추가 (core/tools.py)
-2. Tool Use와 LLM 연동 (core/llm.py 업데이트)
-3. 개인화 메모리 (core/user_profile.py)
-4. 안전장치 강화 (인간-in-the-loop, 권한 관리)
+---
 
-### Phase 3 하드웨어 확장 준비:
-- MediaPipe: 제스처/얼굴 인식
-- librosa: 박수 감지
-- Porcupine: 웨이크 워드 감지 ("자비스야")
-- OpenCV + MediaPipe: 카메라 연동
+## 🔮 다음 해야 할 일 (우선순위 높음)
+1. **(선택) PyQt6 UI에서 Ollama 응답 테스트**: `python main_qt.py` 실행
+2. **(선택) 모드 매니저에 실제 앱 경로 설정**: `core/mode_manager.py`에 사용자 환경에 맞는 앱 경로 추가
+3. **(선택) STT/TTS 완전 연동**: PyQt6 UI에서 음성 입출력 지원
+4. **(선택) Playwright 웹 에이전트 추가**: 검색/브라우징 자동화
+5. **(필수) Git 커밋**: 지금까지 변경사항을 FORK로 커밋하고 푸시하기
 
 ---
 
 ## 📚 참고 자료 목록
-
 - [Anthropic API 문서](https://docs.anthropic.com)
+- [Ollama API 문서](https://github.com/ollama/ollama/blob/main/docs/api.md)
+- [PyQt6 문서](https://www.riverbankcomputing.com/static/Docs/PyQt6/)
 - [Model Context Protocol](https://modelcontextprotocol.io)
 - [arXiv:2605.13357](https://arxiv.org/html/2605.13357v1)
-- [LangChain Blog: The Anatomy of an Agent Harness
-- [Stripe Minions 시스템 사례
 
 ---
 
@@ -187,8 +276,8 @@ Jarvis/
 | 2026-06-21 | AI Assistant | Phase 3 하드웨어 확장 구현 (core/hardware.py, 웨이크워드/박수 감지, 툴 추가) |
 | 2026-06-21 | AI Assistant | Phase 4 ReAct 자율 에이전트 구현 (core/react.py, --react 옵션 추가) |
 | 2026-06-21 | AI Assistant | Phase 4 멀티모달 구현 (core/multimodal.py, analyze_image, extract_text_from_pdf 툴 추가) |
-| 2026-07-15 | AI Assistant | [Fix] core/tools.py TTS 오류 수정: pyttsx3 engine을 인스턴스 변수로 유지하여 재사용 |
+| 2026-07-13 | AI Assistant | Ollama 연동, 엑셀/폴더 툴, PyQt6 UI, 상태 머신, 모드 매니저, config 리팩토링 |
 
 ---
 
-**마지막 업데이트: 2026-07-15
+**마지막 업데이트: 2026-07-13

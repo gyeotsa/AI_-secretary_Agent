@@ -5,10 +5,6 @@ from typing import Optional
 from config import Config
 from core.harness import SafetyLayer
 from core.user_profile import get_user_profile
-from core.rag import get_rag_manager
-from core.scheduler import get_scheduler_manager
-from core.hardware import get_hardware_manager
-from core.multimodal import get_multimodal_manager
 
 try:
     from duckduckgo_search import DDGS
@@ -34,12 +30,55 @@ class ToolExecutor:
     def __init__(self):
         self.safety = SafetyLayer()
         self.user_profile = get_user_profile()
-        self.rag_manager = get_rag_manager()
-        self.scheduler_manager = get_scheduler_manager()
-        self.hardware_manager = get_hardware_manager()
-        self.multimodal_manager = get_multimodal_manager()
+        
+        # Lazy initialization for optional modules
+        self._rag_manager = None
+        self._scheduler_manager = None
+        self._hardware_manager = None
+        self._multimodal_manager = None
+        
         # TTS engine
         self._tts_engine = None
+    
+    @property
+    def rag_manager(self):
+        if self._rag_manager is None:
+            try:
+                from core.rag import get_rag_manager
+                self._rag_manager = get_rag_manager()
+            except Exception as e:
+                self._rag_manager = None
+        return self._rag_manager
+    
+    @property
+    def scheduler_manager(self):
+        if self._scheduler_manager is None:
+            try:
+                from core.scheduler import get_scheduler_manager
+                self._scheduler_manager = get_scheduler_manager()
+            except Exception as e:
+                self._scheduler_manager = None
+        return self._scheduler_manager
+    
+    @property
+    def hardware_manager(self):
+        if self._hardware_manager is None:
+            try:
+                from core.hardware import get_hardware_manager
+                self._hardware_manager = get_hardware_manager()
+            except Exception as e:
+                self._hardware_manager = None
+        return self._hardware_manager
+    
+    @property
+    def multimodal_manager(self):
+        if self._multimodal_manager is None:
+            try:
+                from core.multimodal import get_multimodal_manager
+                self._multimodal_manager = get_multimodal_manager()
+            except Exception as e:
+                self._multimodal_manager = None
+        return self._multimodal_manager
 
     def read_file(self, path: str) -> str:
         is_valid, error_msg = self.safety.validate_path(path)
@@ -146,24 +185,36 @@ class ToolExecutor:
             return f"환경설정 저장 오류: {str(e)}"
 
     def speak_text(self, text: str) -> str:
+        print(f"[DEBUG] ToolExecutor.speak_text 호출됨: {text}")
         if pyttsx3 is None:
+            print("[DEBUG] pyttsx3 is None")
             return "오류: pyttsx3가 설치되지 않았습니다. requirements.txt를 확인하세요."
         
         try:
             # TTS engine이 초기화되지 않았다면 초기화
             if self._tts_engine is None:
+                print("[DEBUG] pyttsx3.init() 호출 전")
                 self._tts_engine = pyttsx3.init()
+                print("[DEBUG] pyttsx3.init() 호출 성공")
                 # 한국어 음성 설정 (가능한 경우)
                 voices = self._tts_engine.getProperty('voices')
+                print(f"[DEBUG] voices 개수: {len(voices)}")
                 for voice in voices:
                     if 'ko' in str(voice.languages).lower() or 'korean' in voice.name.lower():
                         self._tts_engine.setProperty('voice', voice.id)
+                        print(f"[DEBUG] 한국어 음성 설정: {voice.name}")
                         break
             
+            print("[DEBUG] engine.say() 호출 전")
             self._tts_engine.say(text)
+            print("[DEBUG] engine.runAndWait() 호출 전")
             self._tts_engine.runAndWait()
+            print("[DEBUG] engine.runAndWait() 호출 성공")
             return f"음성으로 읽어주었습니다: {text}"
         except Exception as e:
+            print(f"[DEBUG] TTS 오류 발생: {e}")
+            import traceback
+            traceback.print_exc()
             # 오류 발생시 engine 재초기화
             self._tts_engine = None
             return f"TTS 오류: {str(e)}"
@@ -172,6 +223,7 @@ class ToolExecutor:
         if not WHISPER_AVAILABLE:
             return "오류: openai-whisper, sounddevice, scipy, numpy가 설치되지 않았습니다. requirements.txt를 확인하세요."
         
+        temp_file_path = None
         try:
             print(f"🎤 {duration}초 동안 말씀하세요...")
             sample_rate = 16000
@@ -183,63 +235,199 @@ class ToolExecutor:
             )
             sd.wait()
             
+            # 임시 파일 생성
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                wav.write(f.name, sample_rate, recording)
-                model = whisper.load_model("base")
-                result = model.transcribe(f.name, language="ko")
-                os.unlink(f.name)
-                text = result["text"].strip()
-                if text:
-                    return f"음성 인식 결과: {text}"
-                else:
-                    return "음성이 인식되지 않았습니다."
+                temp_file_path = f.name
+                wav.write(temp_file_path, sample_rate, recording)
+            
+            # Whisper로 음성 인식
+            model = whisper.load_model("base")
+            result = model.transcribe(temp_file_path, language="ko")
+            text = result["text"].strip()
+            
+            if text:
+                return f"음성 인식 결과: {text}"
+            else:
+                return "음성이 인식되지 않았습니다."
+        except FileNotFoundError as e:
+            # FFmpeg가 설치되지 않았는지 확인
+            ffmpeg_available = True
+            try:
+                import subprocess
+                subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                ffmpeg_available = False
+            
+            if not ffmpeg_available:
+                return "STT 오류: FFmpeg가 설치되지 않았습니다. Windows에서는 https://ffmpeg.org/download.html에서 다운로드한 뒤 PATH에 추가해주세요. (또는 'winget install ffmpeg'로 설치)"
+            return f"STT 오류: {str(e)}"
         except Exception as e:
             return f"STT 오류: {str(e)}"
+        finally:
+            # 임시 파일 삭제
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except Exception:
+                    # 파일 삭제 오류는 무시
+                    pass
 
     def add_document(self, file_path: str) -> str:
+        if self.rag_manager is None:
+            return "오류: RAG 기능을 초기화할 수 없습니다."
         is_valid, error_msg = self.safety.validate_path(file_path)
         if not is_valid:
             return f"오류: {error_msg}"
         return self.rag_manager.add_document(file_path)
 
     def search_docs(self, query: str, top_k: int = 3) -> str:
+        if self.rag_manager is None:
+            return "오류: RAG 기능을 초기화할 수 없습니다."
         return self.rag_manager.search_docs(query, top_k)
 
     def list_documents(self) -> str:
+        if self.rag_manager is None:
+            return "오류: RAG 기능을 초기화할 수 없습니다."
         return self.rag_manager.list_documents()
 
     def add_schedule_job(self, description: str, schedule_type: str, schedule_value: str, prompt: str) -> str:
+        if self.scheduler_manager is None:
+            return "오류: 스케줄러 기능을 사용하려면 schedule를 설치하세요."
         return self.scheduler_manager.add_job(description, schedule_type, schedule_value, prompt)
 
     def list_schedule_jobs(self) -> str:
+        if self.scheduler_manager is None:
+            return "오류: 스케줄러 기능을 사용하려면 schedule를 설치하세요."
         return self.scheduler_manager.list_jobs()
 
     def delete_schedule_job(self, job_id: int) -> str:
+        if self.scheduler_manager is None:
+            return "오류: 스케줄러 기능을 사용하려면 schedule를 설치하세요."
         return self.scheduler_manager.delete_job(job_id)
 
     def start_scheduler(self) -> str:
+        if self.scheduler_manager is None:
+            return "오류: 스케줄러 기능을 사용하려면 schedule를 설치하세요."
         return self.scheduler_manager.start_scheduler()
 
     def stop_scheduler(self) -> str:
+        if self.scheduler_manager is None:
+            return "오류: 스케줄러 기능을 사용하려면 schedule를 설치하세요."
         return self.scheduler_manager.stop_scheduler()
 
     def start_wakeword_detection(self) -> str:
+        if self.hardware_manager is None:
+            return "오류: 하드웨어 기능을 사용하려면 sounddevice, whisper, librosa를 설치하세요."
         return self.hardware_manager.start_wakeword_detection()
 
     def stop_wakeword_detection(self) -> str:
+        if self.hardware_manager is None:
+            return "오류: 하드웨어 기능을 사용하려면 sounddevice, whisper, librosa를 설치하세요."
         return self.hardware_manager.stop_wakeword_detection()
 
     def start_clap_detection(self) -> str:
+        if self.hardware_manager is None:
+            return "오류: 하드웨어 기능을 사용하려면 sounddevice, whisper, librosa를 설치하세요."
         return self.hardware_manager.start_clap_detection()
 
     def stop_clap_detection(self) -> str:
+        if self.hardware_manager is None:
+            return "오류: 하드웨어 기능을 사용하려면 sounddevice, whisper, librosa를 설치하세요."
         return self.hardware_manager.stop_clap_detection()
 
     def analyze_image(self, image_path: str, prompt: str = "이 이미지에 무엇이 있나요?") -> str:
+        if self.multimodal_manager is None:
+            return "오류: 멀티모달 기능을 사용하려면 Pillow, PyMuPDF를 설치하세요."
         return self.multimodal_manager.analyze_image(image_path, prompt)
 
     def extract_text_from_pdf(self, pdf_path: str, page_num: Optional[int] = None) -> str:
+        if self.multimodal_manager is None:
+            return "오류: 멀티모달 기능을 사용하려면 Pillow, PyMuPDF를 설치하세요."
         return self.multimodal_manager.extract_text_from_pdf(pdf_path, page_num)
+    
+    def create_excel_file(self, file_path: str, data: Optional[list] = None) -> str:
+        """
+        엑셀 파일을 생성합니다.
+        data: 2차원 리스트 (예: [["이름", "나이"], ["철수", 30], ["영희", 25]])
+        """
+        try:
+            # openpyxl이 설치된지 확인
+            try:
+                import openpyxl
+            except ImportError:
+                return "오류: openpyxl 라이브러리가 설치되지 않았습니다. 'pip install openpyxl'로 설치하세요."
+            
+            # 새 워크북 생성
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Sheet1"
+            
+            # 데이터 입력
+            if data:
+                for row in data:
+                    ws.append(row)
+            
+            # 파일 저장
+            wb.save(file_path)
+            return f"사장님, 엑셀 파일이 성공적으로 생성되었습니다: {file_path}"
+            
+        except Exception as e:
+            return f"사장님, 엑셀 파일 생성 중 오류가 발생했습니다: {str(e)}"
+    
+    def write_excel_cell(self, file_path: str, sheet_name: str, cell: str, value: str) -> str:
+        """
+        엑셀 파일의 특정 셀에 값을 씁니다.
+        """
+        try:
+            try:
+                import openpyxl
+            except ImportError:
+                return "오류: openpyxl 라이브러리가 설치되지 않았습니다."
+            
+            if not os.path.exists(file_path):
+                return f"사장님, 파일을 찾을 수 없습니다: {file_path}"
+            
+            wb = openpyxl.load_workbook(file_path)
+            
+            if sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+            else:
+                ws = wb.create_sheet(sheet_name)
+            
+            ws[cell] = value
+            wb.save(file_path)
+            return f"사장님, 셀 {sheet_name}!{cell}에 값이 성공적으로 입력되었습니다."
+            
+        except Exception as e:
+            return f"사장님, 셀 쓰기 중 오류가 발생했습니다: {str(e)}"
+    
+    def create_directory(self, dir_path: str) -> str:
+        """폴더를 생성합니다."""
+        try:
+            is_valid, error_msg = self.safety.validate_path(dir_path)
+            if not is_valid:
+                return f"오류: {error_msg}"
+            
+            os.makedirs(dir_path, exist_ok=True)
+            return f"사장님, 폴더가 성공적으로 생성되었습니다: {dir_path}"
+        except Exception as e:
+            return f"사장님, 폴더 생성 중 오류가 발생했습니다: {str(e)}"
+    
+    def delete_directory(self, dir_path: str) -> str:
+        """폴더를 삭제합니다 (주의: 내용물도 함께 삭제됨)."""
+        try:
+            is_valid, error_msg = self.safety.validate_path(dir_path)
+            if not is_valid:
+                return f"오류: {error_msg}"
+            
+            if not os.path.exists(dir_path):
+                return f"사장님, 폴더를 찾을 수 없습니다: {dir_path}"
+            
+            import shutil
+            shutil.rmtree(dir_path)
+            return f"사장님, 폴더가 성공적으로 삭제되었습니다: {dir_path}"
+        except Exception as e:
+            return f"사장님, 폴더 삭제 중 오류가 발생했습니다: {str(e)}"
 
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         tool_functions = {
@@ -267,6 +455,10 @@ class ToolExecutor:
             "stop_clap_detection": self.stop_clap_detection,
             "analyze_image": self.analyze_image,
             "extract_text_from_pdf": self.extract_text_from_pdf,
+            "create_excel_file": self.create_excel_file,
+            "write_excel_cell": self.write_excel_cell,
+            "create_directory": self.create_directory,
+            "delete_directory": self.delete_directory,
         }
 
         if tool_name not in tool_functions:
@@ -618,6 +810,84 @@ def get_tools_schema() -> list[dict]:
                     },
                 },
                 "required": ["pdf_path"],
+            },
+        },
+        {
+            "name": "create_excel_file",
+            "description": "엑셀 파일을 생성합니다. data 매개변수로 2차원 리스트를 전달하면 데이터를 입력할 수 있습니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "생성할 엑셀 파일 경로 (예: C:/Users/ice31/Desktop/test.xlsx)",
+                    },
+                    "data": {
+                        "type": "array",
+                        "description": "2차원 리스트 데이터 (예: [['이름', '나이'], ['철수', 30]])",
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "required": ["file_path"],
+            },
+        },
+        {
+            "name": "write_excel_cell",
+            "description": "엑셀 파일의 특정 셀에 값을 씁니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "엑셀 파일 경로",
+                    },
+                    "sheet_name": {
+                        "type": "string",
+                        "description": "시트 이름",
+                    },
+                    "cell": {
+                        "type": "string",
+                        "description": "셀 위치 (예: A1, B2)",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "입력할 값",
+                    }
+                },
+                "required": ["file_path", "sheet_name", "cell", "value"],
+            },
+        },
+        {
+            "name": "create_directory",
+            "description": "폴더를 생성합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "dir_path": {
+                        "type": "string",
+                        "description": "생성할 폴더 경로",
+                    }
+                },
+                "required": ["dir_path"],
+            },
+        },
+        {
+            "name": "delete_directory",
+            "description": "폴더를 삭제합니다 (주의: 폴더 내부 파일도 함께 삭제됨).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "dir_path": {
+                        "type": "string",
+                        "description": "삭제할 폴더 경로",
+                    }
+                },
+                "required": ["dir_path"],
             },
         },
     ]
