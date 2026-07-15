@@ -43,7 +43,7 @@ class HardwareManager:
         def continuous_detect():
             print("🎤 지속적인 음성 감지 시작...")
             fs = 16000
-            silence_threshold = 3  # 3초 무음 시 전송
+            silence_threshold = 2  # 2초 무음 시 전송 (보스 요청)
             silence_start = None
             current_text = ""
             is_listening = False  # 웨이크워드/박수 감지 후 청취 모드
@@ -65,8 +65,15 @@ class HardwareManager:
                         if "자비스" in text or "자비" in text:
                             print(f"\n✅ 웨이크워드 감지! '{text}'")
                             is_listening = True
-                            current_text = ""
-                            silence_start = None
+                            # "자비스"나 "자비" 텍스트를 제외한 나머지 텍스트를 current_text에 추가
+                            cleaned_text = text.replace("자비스", "").replace("자비", "").strip()
+                            if cleaned_text:
+                                current_text = cleaned_text
+                                print(f"🎙️ 감지된 명령: {current_text}")
+                                silence_start = None
+                            else:
+                                current_text = ""
+                                silence_start = None
                             continue
                         
                         # 2. 박수 감지 (에너지 기반)
@@ -105,7 +112,7 @@ class HardwareManager:
                             if silence_start is None:
                                 silence_start = time.time()
                             elif time.time() - silence_start > silence_threshold:
-                                # 3초 무음 시 텍스트 전송
+                                # 2초 무음 시 텍스트 전송
                                 if current_text:
                                     print(f"📨 텍스트 전송: {current_text}")
                                     if self.on_text_detected:

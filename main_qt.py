@@ -91,6 +91,10 @@ class DexterApp:
         # 콘솔 입력 처리 시작 (테스트용)
         print("\n자비스가 준비되었습니다! 질문을 입력하세요 (종료하려면 'exit'):")
         self.console_reader.start()
+        
+        # 자동으로 지속적인 음성 감지 시작
+        print("🎤 자동으로 음성 감지를 시작합니다...")
+        self._start_continuous_listen()
     
     def _on_console_input(self, user_input: str):
         if user_input.lower() in ['exit', 'quit', '종료']:
