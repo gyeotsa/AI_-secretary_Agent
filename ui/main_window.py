@@ -723,19 +723,25 @@ class JarvisMainWindow(QWidget):
         self.is_speaking = speaking
         self.sound_bar.set_speaking(speaking)
         self.mini_sound_bar.set_speaking(speaking)
-        self.circular_sound_bar.set_speaking(speaking)
+        # The circular soundbar is painted by this window, not a child widget.
+        self.update()
     
     def reset_soundbar(self):
         self.sound_bar.reset()
         self.mini_sound_bar.reset()
-        self.circular_sound_bar.reset()
+        self.soundbar_is_active = False
+        self.soundbar_bar_heights = [0] * self.soundbar_bar_count
+        self.update()
     
     def set_soundbar_audio_level(self, level):
         # 기존 메서드 유지 (호환성 위해)
         freq_bands = [level, level, level]
         self.sound_bar.set_audio_data(level, freq_bands)
         self.mini_sound_bar.set_audio_data(level, freq_bands)
-        self.circular_sound_bar.set_audio_data(level, freq_bands)
+        self.soundbar_is_active = True
+        self.soundbar_freq_bands = freq_bands
+        self._update_soundbar_bars(level, freq_bands)
+        self.update()
     
     def toggle_window_mode(self):
         if self.window_mode == "normal":
@@ -794,13 +800,16 @@ class JarvisMainWindow(QWidget):
             # 원형 사운드바 상태 유지
             if self.current_state in [State.LISTENING, State.RESPONDING]:
                 if self.current_state == State.RESPONDING:
-                    self.circular_sound_bar.set_speaking(True)
+                    self.is_speaking = True
                 else:
-                    self.circular_sound_bar.set_speaking(False)
+                    self.is_speaking = False
                 freq_bands = [60, 60, 60]
-                self.circular_sound_bar.set_audio_data(60, freq_bands)
+                self.soundbar_is_active = True
+                self.soundbar_freq_bands = freq_bands
+                self._update_soundbar_bars(60, freq_bands)
             else:
-                self.circular_sound_bar.reset()
+                self.soundbar_is_active = False
+                self.soundbar_bar_heights = [0] * self.soundbar_bar_count
                 
         else:
             self.window_mode = "normal"
@@ -818,13 +827,16 @@ class JarvisMainWindow(QWidget):
             # 원형 사운드바 상태 유지
             if self.current_state in [State.LISTENING, State.RESPONDING]:
                 if self.current_state == State.RESPONDING:
-                    self.circular_sound_bar.set_speaking(True)
+                    self.is_speaking = True
                 else:
-                    self.circular_sound_bar.set_speaking(False)
+                    self.is_speaking = False
                 freq_bands = [60, 60, 60]
-                self.circular_sound_bar.set_audio_data(60, freq_bands)
+                self.soundbar_is_active = True
+                self.soundbar_freq_bands = freq_bands
+                self._update_soundbar_bars(60, freq_bands)
             else:
-                self.circular_sound_bar.reset()
+                self.soundbar_is_active = False
+                self.soundbar_bar_heights = [0] * self.soundbar_bar_count
                 
         self.update()
     
@@ -835,22 +847,28 @@ class JarvisMainWindow(QWidget):
         self.assistant_text_label.setText(text)
     
     def set_soundbar_speaking(self, speaking):
-        # 사운드바의 speaking 상태 설정
+        self.is_speaking = speaking
         self.sound_bar.set_speaking(speaking)
         self.mini_sound_bar.set_speaking(speaking)
-        self.circular_sound_bar.set_speaking(speaking)
+        self.update()
         
     def reset_soundbar(self):
         # 사운드바 리셋
         self.sound_bar.reset()
         self.mini_sound_bar.reset()
-        self.circular_sound_bar.reset()
+        self.soundbar_is_active = False
+        self.soundbar_bar_heights = [0] * self.soundbar_bar_count
+        self.update()
         
     def set_soundbar_audio_level(self, level):
         # 사운드바에 오디오 레벨 설정 (0-100)
         self.sound_bar.set_audio_level(level)
         self.mini_sound_bar.set_audio_level(level)
-        self.circular_sound_bar.set_audio_level(level)
+        freq_bands = [level, level, level]
+        self.soundbar_is_active = True
+        self.soundbar_freq_bands = freq_bands
+        self._update_soundbar_bars(level, freq_bands)
+        self.update()
     
     def closeEvent(self, event):
         if not self._allow_close:
