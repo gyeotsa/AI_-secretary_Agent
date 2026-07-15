@@ -45,6 +45,9 @@ class HardwareManager:
         def continuous_detect():
             print("[마이크] 지속적인 음성 감지 시작...")
             fs = 16000
+            chunk_duration = 0.1  # 0.1초마다 오디오 수집
+            chunk_size = int(chunk_duration * fs)
+            
             silence_threshold = 2  # 2초 무음 시 전송 (보스 요청)
             silence_start = None
             current_text = ""
@@ -52,49 +55,56 @@ class HardwareManager:
             last_clap_time_local = 0
             clap_count_local = 0
             
+            # 오디오 버퍼 (최근 2초치 데이터 저장)
+            audio_buffer = np.array([], dtype=np.float32)
+            buffer_max_size = int(2 * fs)  # 2초
+            
             while self.running:
                 try:
-                    # 항상 AudioProcessor로 오디오 분석 (사운드바 업데이트)
-                    duration = 0.1  # 짧은 청크로 분석
-                    recording = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='float32')
+                    # 0.1초 오디오 청크 수집
+                    chunk = sd.rec(chunk_size, samplerate=fs, channels=1, dtype='float32')
                     sd.wait()
+                    chunk = chunk.flatten()
                     
+                    # 버퍼에 추가
+                    audio_buffer = np.concatenate((audio_buffer, chunk))
+                    if len(audio_buffer) > buffer_max_size:
+                        audio_buffer = audio_buffer[-buffer_max_size:]
+                    
+                    # 사운드바 업데이트
                     if self.audio_processor:
-                        # AudioProcessor._analyze_audio 메서드 호출
                         try:
-                            amplitude, freq_bands = self.audio_processor._analyze_audio(recording.flatten(), fs)
+                            amplitude, freq_bands = self.audio_processor._analyze_audio(chunk, fs)
                             self.audio_processor.audio_update.emit(amplitude, freq_bands, False)
                         except Exception as e:
                             print(f"[사운드바 업데이트 오류]: {e}")
                     
-                    # 나머지 로직
-                    # 웨이크워드/박수 감지 모드나 청취 모드
                     if not is_listening:
-                        # 웨이크워드/박수 감지 모드 - 조금 더 긴 시간을 수집 (0.5초)
-                        long_duration = 2
-                        long_recording = sd.rec(int(long_duration * fs), samplerate=fs, channels=1, dtype='float32')
-                        sd.wait()
+                        # 웨이크워드/박수 감지 모드 - 버퍼에 쌓인 2초 데이터 사용
                         
-                        # 1. 웨이크워드 감지
-                        result = self.whisper_model.transcribe(long_recording.flatten(), language="ko")
-                        text = result["text"].strip().lower()
+                        # 1. 웨이크워드 감지 (버퍼의 2초 데이터 사용)
+                        if len(audio_buffer) >= buffer_max_size:
+                            result = self.whisper_model.transcribe(audio_buffer, language="ko")
+                            text = result["text"].strip().lower()
+                            
+                            if "자비스" in text or "자비" in text:
+                                print(f"\n[웨이크워드] 감지! '{text}'")
+                                is_listening = True
+                                # "자비스"나 "자비" 텍스트를 제외한 나머지 텍스트를 current_text에 추가
+                                cleaned_text = text.replace("자비스", "").replace("자비", "").strip()
+                                if cleaned_text:
+                                    current_text = cleaned_text
+                                    print(f"[명령] 감지된 명령: {current_text}")
+                                    silence_start = None
+                                else:
+                                    current_text = ""
+                                    silence_start = None
+                                # 버퍼 초기화
+                                audio_buffer = np.array([], dtype=np.float32)
+                                continue
                         
-                        if "자비스" in text or "자비" in text:
-                            print(f"\n[웨이크워드] 감지! '{text}'")
-                            is_listening = True
-                            # "자비스"나 "자비" 텍스트를 제외한 나머지 텍스트를 current_text에 추가
-                            cleaned_text = text.replace("자비스", "").replace("자비", "").strip()
-                            if cleaned_text:
-                                current_text = cleaned_text
-                                print(f"[명령] 감지된 명령: {current_text}")
-                                silence_start = None
-                            else:
-                                current_text = ""
-                                silence_start = None
-                            continue
-                        
-                        # 2. 박수 감지 (에너지 기반)
-                        energy = np.sum(long_recording ** 2) / len(long_recording)
+                        # 2. 박수 감지 (에너지 기반 - 현재 청크 사용)
+                        energy = np.sum(chunk ** 2) / len(chunk)
                         energy_db = 10 * np.log10(energy + 1e-10)
                         
                         if energy_db > -10:
@@ -110,34 +120,37 @@ class HardwareManager:
                                     current_text = ""
                                     silence_start = None
                                     clap_count_local = 0
+                                    # 버퍼 초기화
+                                    audio_buffer = np.array([], dtype=np.float32)
                     else:
-                        # 청취 모드 - 텍스트 수집
-                        listen_duration = 1
-                        listen_recording = sd.rec(int(listen_duration * fs), samplerate=fs, channels=1, dtype='float32')
-                        sd.wait()
-                        
-                        result = self.whisper_model.transcribe(listen_recording.flatten(), language="ko")
-                        text = result["text"].strip()
-                        
-                        if text:
-                            current_text += " " + text
-                            current_text = current_text.strip()
-                            print(f"[음성] 감지된 텍스트: {current_text}")
-                            silence_start = None  # 무음 타이머 리셋
-                        else:
-                            # 무음 감지
-                            if silence_start is None:
-                                silence_start = time.time()
-                            elif time.time() - silence_start > silence_threshold:
-                                # 2초 무음 시 텍스트 전송
-                                if current_text:
-                                    print(f"[전송] 텍스트 전송: {current_text}")
-                                    if self.on_text_detected:
-                                        self.on_text_detected(current_text)
-                                # 리셋
-                                current_text = ""
-                                silence_start = None
-                                is_listening = False
+                        # 청취 모드 - 계속 버퍼에 쌓으면서 주기적으로 음성 인식
+                        # 0.5초마다 한 번씩 인식 (과도한 CPU 사용 방지)
+                        if len(audio_buffer) >= int(0.5 * fs):
+                            result = self.whisper_model.transcribe(audio_buffer, language="ko")
+                            text = result["text"].strip()
+                            
+                            if text:
+                                current_text += " " + text
+                                current_text = current_text.strip()
+                                print(f"[음성] 감지된 텍스트: {current_text}")
+                                silence_start = None  # 무음 타이머 리셋
+                                # 버퍼 초기화 (새로운 음성 수집 시작)
+                                audio_buffer = np.array([], dtype=np.float32)
+                            else:
+                                # 무음 감지
+                                if silence_start is None:
+                                    silence_start = time.time()
+                                elif time.time() - silence_start > silence_threshold:
+                                    # 2초 무음 시 텍스트 전송
+                                    if current_text:
+                                        print(f"[전송] 텍스트 전송: {current_text}")
+                                        if self.on_text_detected:
+                                            self.on_text_detected(current_text)
+                                    # 리셋
+                                    current_text = ""
+                                    silence_start = None
+                                    is_listening = False
+                                    audio_buffer = np.array([], dtype=np.float32)
                 except Exception as e:
                     print(f"음성 감지 오류: {e}")
                     time.sleep(1)
