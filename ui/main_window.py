@@ -497,8 +497,8 @@ class JarvisMainWindow(QWidget):
             self.size_btn.setText("□")
             self.normal_geometry = self.geometry()
             screen = QApplication.primaryScreen().geometry()
-            mini_width = 140  # 가로를 더 줄임
-            mini_height = 40  # 세로를 더 줄임
+            mini_width = 145  # 가로 5 늘림
+            mini_height = 45  # 세로 5 늘림
             x = screen.width() - mini_width - 20
             y = 20
             self.setGeometry(x, y, mini_width, mini_height)
