@@ -109,13 +109,20 @@ class OllamaClient(BaseLLMClient):
                 "tools": ollama_tools
             }
             
+            print(f"[DEBUG] Ollama chat_with_tools 호출 전")
+            print(f"[DEBUG] Ollama 모델: {self.model}")
+            print(f"[DEBUG] Ollama 요청 URL: {self.base_url}/api/chat")
+            print(f"[DEBUG] Ollama 요청 페이로드: {json.dumps(payload, indent=2, ensure_ascii=False)}")
+            
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
                 timeout=120
             )
+            print(f"[DEBUG] Ollama 응답 상태 코드: {response.status_code}")
             response.raise_for_status()
             result = response.json()
+            print(f"[DEBUG] Ollama 응답 내용: {json.dumps(result, indent=2, ensure_ascii=False)}")
             
             # Ollama 응답 처리
             if "message" in result:

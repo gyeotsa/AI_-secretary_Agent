@@ -87,13 +87,15 @@ class JarvisApp:
         # 초기 상태 설정
         self.window.update_state(self.state_machine.state)
         
-        # 콘솔 입력 처리 시작 (테스트용)
-        print("\n자비스가 준비되었습니다! 질문을 입력하세요 (종료하려면 'exit'):")
-        self.console_reader.start()
+        # 콘솔 입력 처리 시작 (테스트용) - 잠시 주석
+        # print("\n자비스가 준비되었습니다! 질문을 입력하세요 (종료하려면 'exit'):")
+        # self.console_reader.start()
         
-        # 자동으로 지속적인 음성 감지 시작
-        print("[마이크] 자동으로 음성 감지를 시작합니다...")
-        self._start_continuous_listen()
+        # 자동으로 지속적인 음성 감지 시작 - 잠시 주석
+        # print("[마이크] 자동으로 음성 감지를 시작합니다...")
+        # self._start_continuous_listen()
+        
+        print("\n자비스가 준비되었습니다! UI 하단 텍스트 상자에 질문을 입력하세요, 보스.")
     
     def _on_console_input(self, user_input: str):
         if user_input.lower() in ['exit', 'quit', '종료']:
@@ -250,8 +252,13 @@ class JarvisApp:
             self.messages.append({"role": "assistant", "content": response_text})
         
         self._is_processing_ai = False
+        print("[DEBUG] 상태를 RESPONDING으로 변경")
         self.state_machine.start_responding()
-        QTimer.singleShot(1000, lambda: self.state_machine.go_idle())
+        print("[DEBUG] 2초 후 IDLE로 전환 예정")
+        def go_idle_callback():
+            print("[DEBUG] IDLE 상태로 전환")
+            self.state_machine.go_idle()
+        QTimer.singleShot(2000, go_idle_callback)
         
         # 대화 저장
         self.memory.save_message(self.session_id, "user", self.messages[-2]["content"])
