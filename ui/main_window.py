@@ -617,23 +617,25 @@ class JarvisMainWindow(QWidget):
             x = screen.width() - mini_width - 20
             y = 20
             
-            # 먼저 모든 크기 제한을 완전히 풀기
-            self.setMinimumSize(0, 0)
-            self.setMaximumSize(16777215, 16777215)
-            
-            # 위치와 크기 설정
-            self.setGeometry(x, y, mini_width, mini_height)
-            
-            # 크기를 강제로 고정 (항상 160x50 유지)
-            self.setFixedSize(mini_width, mini_height)
-            
-            # 미니 모드일 때 레이아웃 여백 완전히 없애기
+            # 1. 먼저 미니 모드 위젯 표시/숨김 처리
             self.main_layout.setContentsMargins(0, 0, 0, 0)
             self.main_layout.setSpacing(0)
             self.center_widget.hide()
             self.drag_tab.hide()
             self.mini_control_bar.show()
             self.mini_sound_bar.show()
+            
+            # 2. 크기를 먼저 강제로 고정 (가장 먼저!)
+            self.setMinimumSize(mini_width, mini_height)
+            self.setMaximumSize(mini_width, mini_height)
+            self.setFixedSize(mini_width, mini_height)
+            
+            # 3. 레이아웃 강제 재계산
+            self.adjustSize()
+            self.updateGeometry()
+            
+            # 4. 마지막으로 위치만 설정
+            self.setGeometry(x, y, mini_width, mini_height)
             
             # 현재 상태에 따라 미니 사운드바 상태 유지
             if self.current_state in [State.LISTENING, State.RESPONDING]:
