@@ -32,23 +32,23 @@ class DragTab(QFrame):
 class MiniControlBar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(25)
+        self.setFixedHeight(20)  # 높이를 더 줄임
         self.drag_position = None  # 드래그 위치 저장
         self.init_ui()
     
     def init_ui(self):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 2, 5, 2)
-        layout.setSpacing(3)
+        layout.setContentsMargins(5, 0, 5, 0)  # 여백을 더 줄임
+        layout.setSpacing(2)
         
         button_style = """
             QPushButton {
                 background-color: transparent;
                 color: #888888;
                 border: none;
-                font-size: 12px;
+                font-size: 10px;  # 글씨 크기를 줄임
                 font-weight: bold;
-                padding: 2px;
+                padding: 1px;
             }
             QPushButton:hover {
                 background-color: rgba(136, 136, 136, 30);
@@ -61,11 +61,11 @@ class MiniControlBar(QFrame):
         
         self.minimize_btn = QPushButton("─")
         self.minimize_btn.setStyleSheet(button_style)
-        self.minimize_btn.setFixedSize(20, 20)
+        self.minimize_btn.setFixedSize(16, 16)  # 버튼 크기를 줄임
         
         self.size_btn = QPushButton("□")
         self.size_btn.setStyleSheet(button_style)
-        self.size_btn.setFixedSize(20, 20)
+        self.size_btn.setFixedSize(16, 16)
         
         self.close_btn = QPushButton("✕")
         self.close_btn.setStyleSheet("""
@@ -73,9 +73,9 @@ class MiniControlBar(QFrame):
                 background-color: transparent;
                 color: #888888;
                 border: none;
-                font-size: 12px;
+                font-size: 10px;
                 font-weight: bold;
-                padding: 2px;
+                padding: 1px;
             }
             QPushButton:hover {
                 background-color: rgba(255, 68, 68, 30);
@@ -85,7 +85,7 @@ class MiniControlBar(QFrame):
                 background-color: rgba(255, 68, 68, 60);
             }
         """)
-        self.close_btn.setFixedSize(20, 20)
+        self.close_btn.setFixedSize(16, 16)
         
         layout.addStretch()
         layout.addWidget(self.minimize_btn)
@@ -110,23 +110,44 @@ class SoundBarWidget(QWidget):
         self.bar_count = 12
         self.bar_heights = [0] * self.bar_count
         self.is_speaking = False  # 자비스가 말하는 중인지 여부
+        self.is_active = False  # 사운드가 활성화된 상태인지 (입력/출력 있을 때)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_bars)
         self.timer.start(50)
         
     def set_speaking(self, speaking):
         self.is_speaking = speaking
+        self.is_active = speaking  # 자비스가 말할 때는 활성화
+        
+    def set_audio_level(self, level):
+        # 실제 오디오 레벨을 받아서 바 높이를 설정 (0-100 사이 값)
+        self.is_active = True
+        for i in range(self.bar_count):
+            # 레벨에 따라 바 높이를 계산 (가운데 바가 더 높게)
+            base_height = (level / 100) * 25
+            offset = random.randint(-2, 2)
+            self.bar_heights[i] = max(0, min(28, int(base_height + offset)))
+        self.update()
+        
+    def reset(self):
+        # 사운드가 없을 때 초기 상태로
+        self.is_active = False
+        self.bar_heights = [0] * self.bar_count
+        self.update()
         
     def update_bars(self):
-        # 실제 음성 데이터 대신 시뮬레이션 (나중에 실제 오디오 데이터로 교체 가능)
+        # 활성화 상태일 때만 애니메이션
+        if not self.is_active:
+            return
+            
         if self.is_speaking:
             # 자비스가 말할 때는 더 큰 움직임
             for i in range(self.bar_count):
                 self.bar_heights[i] = random.randint(10, 28)
         else:
-            # 사용자 입력 대기시 작은 움직임
+            # 사용자 입력 시뮬레이션 (실제로는 set_audio_level로 대체)
             for i in range(self.bar_count):
-                self.bar_heights[i] = random.randint(3, 15)
+                self.bar_heights[i] = random.randint(5, 20)
         self.update()
         
     def paintEvent(self, event):
@@ -153,7 +174,8 @@ class SoundBarWidget(QWidget):
             
             painter.setBrush(QBrush(gradient))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(x, y, bar_width, height, 2, 2)
+            if height > 0:  # 높이가 0보다 클 때만 그리기
+                painter.drawRoundedRect(x, y, bar_width, height, 2, 2)
 
 class JarvisMainWindow(QWidget):
     command_triggered = pyqtSignal(str)
@@ -475,8 +497,8 @@ class JarvisMainWindow(QWidget):
             self.size_btn.setText("□")
             self.normal_geometry = self.geometry()
             screen = QApplication.primaryScreen().geometry()
-            mini_width = 300  # 가로를 더 길게
-            mini_height = 60  # 세로를 더 짧게
+            mini_width = 180  # 가로를 적당히 줄임
+            mini_height = 50  # 세로를 더 짧게
             x = screen.width() - mini_width - 20
             y = 20
             self.setGeometry(x, y, mini_width, mini_height)
@@ -484,6 +506,8 @@ class JarvisMainWindow(QWidget):
             self.drag_tab.hide()
             self.mini_control_bar.show()
             self.mini_sound_bar.show()
+            # 미니 모드에서 사운드바 초기 상태 (안 움직이게)
+            self.mini_sound_bar.reset()
         elif self.window_mode == "mini":
             self.window_mode = "maximized"
             self.size_btn.setText("□")
@@ -513,6 +537,16 @@ class JarvisMainWindow(QWidget):
         # 사운드바의 speaking 상태 설정
         self.sound_bar.set_speaking(speaking)
         self.mini_sound_bar.set_speaking(speaking)
+        
+    def reset_soundbar(self):
+        # 사운드바 리셋
+        self.sound_bar.reset()
+        self.mini_sound_bar.reset()
+        
+    def set_soundbar_audio_level(self, level):
+        # 사운드바에 오디오 레벨 설정 (0-100)
+        self.sound_bar.set_audio_level(level)
+        self.mini_sound_bar.set_audio_level(level)
     
     def closeEvent(self, event):
         if not self._allow_close:
@@ -523,6 +557,18 @@ class JarvisMainWindow(QWidget):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
             self.close()
+    
+    def mousePressEvent(self, event):
+        # 미니 모드일 때 전체 영역에서 드래그 가능하게
+        if event.button() == Qt.MouseButton.LeftButton and self.window_mode == "mini":
+            self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+    
+    def mouseMoveEvent(self, event):
+        # 미니 모드일 때 전체 영역에서 드래그 가능하게
+        if event.buttons() & Qt.MouseButton.LeftButton and self.window_mode == "mini" and hasattr(self, 'drag_position'):
+            self.move(event.globalPosition().toPoint() - self.drag_position)
+            event.accept()
     
     def _on_text_submitted(self):
         text = self.text_input.text().strip()

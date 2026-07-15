@@ -358,8 +358,8 @@ class JarvisApp:
             traceback.print_exc()
             print("💡 pyttsx3를 설치하세요: pip install pyttsx3")
         finally:
-            # 사운드바를 시안으로 복귀
-            QTimer.singleShot(0, lambda: self.window.set_soundbar_speaking(False))
+            # 사운드바 리셋
+            QTimer.singleShot(0, lambda: self.window.reset_soundbar())
     
     def _listen_from_mic(self):
         # 음성 입력 처리
