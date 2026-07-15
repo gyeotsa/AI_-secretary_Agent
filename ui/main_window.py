@@ -29,19 +29,92 @@ class DragTab(QFrame):
             self.window().move(event.globalPosition().toPoint() - self.drag_position)
             event.accept()
 
+class MiniControlBar(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(25)
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(5, 2, 5, 2)
+        layout.setSpacing(3)
+        
+        button_style = """
+            QPushButton {
+                background-color: transparent;
+                color: #888888;
+                border: none;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 2px;
+            }
+            QPushButton:hover {
+                background-color: rgba(136, 136, 136, 30);
+                color: #ffffff;
+            }
+            QPushButton:pressed {
+                background-color: rgba(136, 136, 136, 60);
+            }
+        """
+        
+        self.minimize_btn = QPushButton("─")
+        self.minimize_btn.setStyleSheet(button_style)
+        self.minimize_btn.setFixedSize(20, 20)
+        
+        self.size_btn = QPushButton("□")
+        self.size_btn.setStyleSheet(button_style)
+        self.size_btn.setFixedSize(20, 20)
+        
+        self.close_btn = QPushButton("✕")
+        self.close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #888888;
+                border: none;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 2px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 68, 68, 30);
+                color: #ff4444;
+            }
+            QPushButton:pressed {
+                background-color: rgba(255, 68, 68, 60);
+            }
+        """)
+        self.close_btn.setFixedSize(20, 20)
+        
+        layout.addStretch()
+        layout.addWidget(self.minimize_btn)
+        layout.addWidget(self.size_btn)
+        layout.addWidget(self.close_btn)
+
 class SoundBarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(150, 30)
         self.bar_count = 12
         self.bar_heights = [0] * self.bar_count
+        self.is_speaking = False  # 자비스가 말하는 중인지 여부
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_bars)
         self.timer.start(50)
         
+    def set_speaking(self, speaking):
+        self.is_speaking = speaking
+        
     def update_bars(self):
-        for i in range(self.bar_count):
-            self.bar_heights[i] = random.randint(5, 25)
+        # 실제 음성 데이터 대신 시뮬레이션 (나중에 실제 오디오 데이터로 교체 가능)
+        if self.is_speaking:
+            # 자비스가 말할 때는 더 큰 움직임
+            for i in range(self.bar_count):
+                self.bar_heights[i] = random.randint(10, 28)
+        else:
+            # 사용자 입력 대기시 작은 움직임
+            for i in range(self.bar_count):
+                self.bar_heights[i] = random.randint(3, 15)
         self.update()
         
     def paintEvent(self, event):
@@ -57,8 +130,14 @@ class SoundBarWidget(QWidget):
             y = self.height() - height - 5
             
             gradient = QLinearGradient(x, y, x, y + height)
-            gradient.setColorAt(0.0, QColor(0, 212, 255))
-            gradient.setColorAt(1.0, QColor(0, 100, 150))
+            if self.is_speaking:
+                # 자비스 음성은 바이올렛
+                gradient.setColorAt(0.0, QColor(153, 69, 255))
+                gradient.setColorAt(1.0, QColor(80, 20, 120))
+            else:
+                # 사용자 입력은 시안
+                gradient.setColorAt(0.0, QColor(0, 212, 255))
+                gradient.setColorAt(1.0, QColor(0, 100, 150))
             
             painter.setBrush(QBrush(gradient))
             painter.setPen(Qt.PenStyle.NoPen)
@@ -76,6 +155,7 @@ class JarvisMainWindow(QWidget):
         self.current_state = State.IDLE
         self.window_mode = "normal"
         self.normal_geometry = None
+        self.is_speaking = False  # 자비스가 말하는 중인지 여부
         self.init_ui()
         self.start_animations()
     
@@ -85,8 +165,8 @@ class JarvisMainWindow(QWidget):
                            Qt.WindowType.Tool)
         
         screen = QApplication.primaryScreen().geometry()
-        window_width = 500
-        window_height = 450
+        window_width = 700
+        window_height = 600
         x = (screen.width() - window_width) // 2
         y = (screen.height() - window_height) // 2
         self.setGeometry(x, y, window_width, window_height)
@@ -96,6 +176,7 @@ class JarvisMainWindow(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
+        # 일반 모드용 드래그 탭
         self.drag_tab = DragTab(self)
         tab_layout = QHBoxLayout(self.drag_tab)
         tab_layout.setContentsMargins(15, 5, 10, 0)
@@ -136,7 +217,7 @@ class JarvisMainWindow(QWidget):
         self.minimize_btn.clicked.connect(self.showMinimized)
         tab_layout.addWidget(self.minimize_btn)
         
-        self.size_btn = QPushButton("◇")
+        self.size_btn = QPushButton("□")
         self.size_btn.setStyleSheet(button_style)
         self.size_btn.setFixedSize(35, 35)
         self.size_btn.clicked.connect(self.toggle_window_mode)
@@ -165,6 +246,19 @@ class JarvisMainWindow(QWidget):
         tab_layout.addWidget(self.close_btn)
         
         main_layout.addWidget(self.drag_tab)
+        
+        # 미니 모드용 컨트롤 바
+        self.mini_control_bar = MiniControlBar(self)
+        self.mini_control_bar.hide()
+        self.mini_control_bar.minimize_btn.clicked.connect(self.showMinimized)
+        self.mini_control_bar.size_btn.clicked.connect(self.toggle_window_mode)
+        self.mini_control_bar.close_btn.clicked.connect(self.close)
+        main_layout.addWidget(self.mini_control_bar)
+        
+        # 미니 모드용 사운드바 (다른 위치에 배치)
+        self.mini_sound_bar = SoundBarWidget(self)
+        self.mini_sound_bar.hide()
+        main_layout.addWidget(self.mini_sound_bar)
         
         self.center_widget = QWidget()
         center_layout = QVBoxLayout(self.center_widget)
@@ -368,26 +462,32 @@ class JarvisMainWindow(QWidget):
             self.size_btn.setText("□")
             self.normal_geometry = self.geometry()
             screen = QApplication.primaryScreen().geometry()
-            mini_width = 220
-            mini_height = 50
+            mini_width = 200  # 직사각형, 가로 길게
+            mini_height = 70  # 세로 짧게
             x = screen.width() - mini_width - 20
             y = 20
             self.setGeometry(x, y, mini_width, mini_height)
             self.center_widget.hide()
-            self.title_label.hide()
-            self.sound_bar.show()
+            self.drag_tab.hide()
+            self.mini_control_bar.show()
+            self.mini_sound_bar.show()
         elif self.window_mode == "mini":
             self.window_mode = "maximized"
-            self.size_btn.setText("◇")
-            self.sound_bar.hide()
+            self.size_btn.setText("□")
+            self.mini_control_bar.hide()
+            self.mini_sound_bar.hide()
             self.showMaximized()
-            self.title_label.show()
+            self.drag_tab.show()
             self.center_widget.show()
         else:
             self.window_mode = "normal"
-            self.size_btn.setText("◇")
+            self.size_btn.setText("□")
             self.showNormal()
             self.setGeometry(self.normal_geometry)
+            self.mini_control_bar.hide()
+            self.mini_sound_bar.hide()
+            self.drag_tab.show()
+            self.center_widget.show()
         self.update()
     
     def show_user_text(self, text: str):
@@ -395,6 +495,11 @@ class JarvisMainWindow(QWidget):
     
     def show_assistant_text(self, text: str):
         self.assistant_text_label.setText(text)
+    
+    def set_soundbar_speaking(self, speaking):
+        # 사운드바의 speaking 상태 설정
+        self.sound_bar.set_speaking(speaking)
+        self.mini_sound_bar.set_speaking(speaking)
     
     def closeEvent(self, event):
         if not self._allow_close:

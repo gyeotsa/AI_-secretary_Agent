@@ -342,6 +342,9 @@ class JarvisApp:
     def _speak_with_check(self, text: str):
         print(f"[DEBUG] _speak_with_check 호출됨: {text}")
         try:
+            # 사운드바를 바이올렛으로 (자비스가 말하는 중)
+            QTimer.singleShot(0, lambda: self.window.set_soundbar_speaking(True))
+            
             print(f"[DEBUG] tool_executor.speak_text 호출 전")
             result = self.tool_executor.speak_text(text)
             print(f"[DEBUG] tool_executor.speak_text 반환값: {result}")
@@ -353,6 +356,9 @@ class JarvisApp:
             import traceback
             traceback.print_exc()
             print("💡 pyttsx3를 설치하세요: pip install pyttsx3")
+        finally:
+            # 사운드바를 시안으로 복귀
+            QTimer.singleShot(0, lambda: self.window.set_soundbar_speaking(False))
     
     def _listen_from_mic(self):
         # 음성 입력 처리
