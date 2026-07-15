@@ -5,7 +5,14 @@
 3. **다음 Agent가 바로 이어할 수 있도록**: 마지막에 "다음 해야 할 일"을 항상 명확히 적어주세요.
 
 ---
-## 📌 이번 업데이트 (2026-07-13) 주요 변경사항
+## 📌 이번 업데이트 (2026-07-15) 주요 변경사항
+- ✅ **프로젝트 구조 통합**: Jarvis 폴더와 AI_-secretary_Agent 폴더를 하나로 통합, 프로젝트 루트에 모든 파일 배치
+- ✅ **[Fix] core/tools.py TTS 오류 수정**: pyttsx3 engine을 인스턴스 변수로 유지하여 재사용, 여러 번 호출해도 안정적으로 작동
+- ✅ **TTS 테스트 완료**: 한국어 음성이 정상적으로 출력되는지 확인 완료
+- ✅ **main_qt.py 정상 실행 확인**: PyQt6 UI가 정상적으로 표시되고 콘솔 입력이 작동하는지 확인
+
+---
+## 📌 기존 주요 변경사항 (2026-07-13)
 - ✅ **Ollama 연동 완료**: 기존 Claude 외 Ollama로 무료 모델 사용 가능 (llama3.1 기본 - tool calling 지원)
 - ✅ **엑셀/폴더 툴 추가**: `create_excel_file`, `write_excel_cell`, `create_directory`, `delete_directory`
 - ✅ **자비스 스타일 응답**: "보스" 호칭, 25자 제한, [GAME]/[WORK] 모드 감지
@@ -31,7 +38,6 @@
 - ✅ [Add] ModeManager 기본 앱 템플릿: core/mode_manager.py에 WORK/GAME 모드용 기본 앱 목록 주석 추가 (사용자가 수정 가능)
 - ✅ [Replace] RAG 시스템을 간단한 키워드 기반으로 교체: PyTorch/Transformers 의존성 완전 제거, Python 기본 라이브러리만 사용
 - ✅ [Fix] core/tools.py RAG 오류 메시지 업데이트: SimpleRAGManager용으로 변경
-- ✅ [Fix] core/tools.py TTS 오류 수정: pyttsx3 engine을 인스턴스 변수로 유지하여 재사용
 - ✅ [Add] STT FFmpeg 오류 안내 개선: FileNotFoundError에서 직접 FFmpeg 설치 여부 확인하고 명확한 안내 메시지 표시
 - ✅ [Fix] STT 임시 파일 삭제 오류 처리: finally 블록에서 안전하게 임시 파일 삭제
 - ✅ **[Add] 음성 토글 버튼**: 기존 음성 입력 버튼을 토글 버튼으로 변경 (마이크 ON/OFF)
@@ -50,7 +56,7 @@
 - 둘 다 같은 기능을 사용하지만, UI가 다릅니다!
 
 ---
-**프로젝트 전체 기록과 설계 의도를 상세히 기록합니다. 이 문서는 후속 Agent가 업무를 이어서 수행할 수 있도록 작성되었습니다.
+**프로젝트 전체 기록과 설계 의도를 상세히 기록합니다. 이 문서는 후속 Agent가 업무를 이어서 수행할 수 있도록 작성되었습니다.**
 
 ---
 ## 반드시 지켜야 하는 문서 작성 원칙
@@ -71,15 +77,15 @@
 ## 📅 프로젝트 개요
 
 - **시작일: 2026-06-21
-- **최근 업데이트: 2026-07-13
+- **최근 업데이트: 2026-07-15
 - **목표**: 영화 아이언맨의 자비스처럼 모든 일을 보조해주는 개인 AI 비서 개발
 - **접근 방식**: Harness Engineering 원칙 기반
 
 ---
 
-## 🏗️ 프로젝트 구조 (2026-07-13 기준)
+## 🏗️ 프로젝트 구조 (2026-07-15 기준)
 ```
-Jarvis/
+AI_-secretary_Agent/
 ├── main.py              # 기존 콘솔 버전 진입점
 ├── main_qt.py          # 🆕 PyQt6 UI 버전 진입점
 ├── config.py            # 설정 중앙 집중 관리 (APIConfig dataclass로 구조화)
@@ -89,6 +95,8 @@ Jarvis/
 ├── .gitignore
 ├── Agent 인수인계.txt # 이 파일!
 ├── Javis 로드맵.txt
+├── README.md
+├── architecture.mmd    # 시스템 아키텍처 다이어그램
 ├── core/                # 핵심 Harness 레이어
 │   ├── __init__.py
 │   ├── llm.py          # LLM 추상화 (Ollama + Anthropic 지원)
@@ -101,12 +109,12 @@ Jarvis/
 │   ├── scheduler.py
 │   ├── hardware.py
 │   ├── multimodal.py
-│   ├── state_machine.py # 🆕 상태 머신 (State Machine)
+│   ├── state_machine.py # 🆕 상태 머신
 │   └── mode_manager.py # 🆕 Work/Game 모드 매니저
 ├── ui/                  # 🆕 PyQt6 UI 폴더
 │   ├── __init__.py
-│   ├── main_window.py  # 프레임리스 플로팅 창, DragTab
-│   └── visualizer.py   # 7개 점 애니메이션, 상태별 색상
+│   ├── main_window.py  # 프레임리스 플로팅 창
+│   └── visualizer.py   # 7개 점 애니메이션
 └── data/               # 데이터 저장소 (SQLite DB)
 ```
 
@@ -154,7 +162,7 @@ Jarvis/
 
 ---
 
-## 📝 2026-07-13 주요 구현 내용 상세
+## 📝 주요 구현 내용 상세
 
 ### 1. core/llm.py Ollama 지원 강화
 - `chat_with_tools()` 메서드에서 Ollama tool_calls 처리
@@ -167,6 +175,7 @@ Jarvis/
 - `create_excel_file()`: 엑셀 파일 생성 (데이터 입력 가능)
 - `write_excel_cell()`: 특정 셀에 값 쓰기
 - get_tools_schema()에 위 툴들 추가
+- **TTS 개선**: pyttsx3 engine을 인스턴스 변수로 유지하여 재사용, 안정성 향상
 
 ### 3. config.py 리팩토링
 - `APIConfig` dataclass로 환경변수 구조화
@@ -179,6 +188,7 @@ Jarvis/
 - 중앙 AudioVisualizer: 7개 점 애니메이션
 - 하단 정보 패널: 상태 라벨, 사용자 발화, 응답, WORK/GAME 버튼
 - ESC로 종료, DragTab으로 창 이동
+- 텍스트 입력 필드 추가: QLineEdit로 텍스트 입력 가능, 엔터로 제출
 
 ### 5. ui/visualizer.py
 - 7개 점, BASE_RADIUS=18
@@ -206,10 +216,14 @@ Jarvis/
 - 상태 머신 연결, 창 가시성/헤트비트 타이머
 - 콘솔 입력 테스트 지원
 - [GAME]/[WORK] 응답시 모드 매니저 호출
+- 음성 토글 버튼 연결: 지속적인 음성 감지 시작/중지
+- 텍스트 입력 필드 연결: window.text_submitted 시그널을 _on_user_input과 연결
 
 ---
 
 ## 📌 Git 커밋 기록
+- 2026-07-15: [Fix] 프로젝트 구조 통합, TTS 오류 수정
+  - 커밋 해시: a29ac71
 - 2026-07-13: [Fix] core/rag.py 이모지 제거, UI 텍스트 입력 필드 추가, 하드웨어 감지 버그 수정
   - 커밋 해시: ddb30ae
 - 2026-07-13: [Fix] 지속적인 음성 감지 버그 수정 + 텍스트 입력 필드 추가
@@ -240,16 +254,15 @@ Jarvis/
   - 커밋 해시: 0afa527
 - 2026-07-13: Ollama 연동, 엑셀/폴더 툴, PyQt6 UI, 상태 머신, 모드 매니저 추가
   - 커밋 해시: 7b1e39e802f35b96522c8ab82c7898bfbfae9977
-  - (사용자가 FORK로 푸시 후 GitHub 주소를 여기에 추가하세요)
 
 ---
 
 ## 🔮 다음 해야 할 일 (우선순위 높음)
-1. **(선택) PyQt6 UI에서 Ollama 응답 테스트**: `python main_qt.py` 실행
+1. **(선택) PyQt6 UI에서 Ollama 응답 테스트**: `python main_qt.py` 실행하여 실제 대화가 잘 되는지 확인
 2. **(선택) 모드 매니저에 실제 앱 경로 설정**: `core/mode_manager.py`에 사용자 환경에 맞는 앱 경로 추가
-3. **(선택) STT/TTS 완전 연동**: PyQt6 UI에서 음성 입출력 지원
+3. **(선택) STT/TTS 완전 연동 테스트**: 마이크 토글 버튼을 켜고 음성으로 질문해보기
 4. **(선택) Playwright 웹 에이전트 추가**: 검색/브라우징 자동화
-5. **(필수) Git 커밋**: 지금까지 변경사항을 FORK로 커밋하고 푸시하기
+5. **(필수) Git 푸시**: 지금까지 변경사항을 FORK로 푸시하기
 
 ---
 
@@ -277,7 +290,8 @@ Jarvis/
 | 2026-06-21 | AI Assistant | Phase 4 ReAct 자율 에이전트 구현 (core/react.py, --react 옵션 추가) |
 | 2026-06-21 | AI Assistant | Phase 4 멀티모달 구현 (core/multimodal.py, analyze_image, extract_text_from_pdf 툴 추가) |
 | 2026-07-13 | AI Assistant | Ollama 연동, 엑셀/폴더 툴, PyQt6 UI, 상태 머신, 모드 매니저, config 리팩토링 |
+| 2026-07-15 | AI Assistant | 프로젝트 구조 통합, TTS 오류 수정, main_qt.py 정상 실행 확인 |
 
 ---
 
-**마지막 업데이트: 2026-07-13
+**마지막 업데이트: 2026-07-15**
