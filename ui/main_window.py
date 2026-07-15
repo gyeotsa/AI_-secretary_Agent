@@ -193,8 +193,8 @@ class SoundBarWidget(QWidget):
 class CircularSoundBarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Arc Reactor 크기와 맞춤 (나중에 부모 크기에 따라 동적으로 조정)
-        self.setFixedSize(500, 500)
+        # 배경 투명으로 설정
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.bar_count = 80
         self.bar_heights = [0] * self.bar_count
         self.is_speaking = False
@@ -259,22 +259,23 @@ class CircularSoundBarWidget(QWidget):
         center_x = self.width() // 2
         center_y = self.height() // 2
         # Arc Reactor의 base_radius (min(width, height) //3) 와 맞춤
-        base_radius = min(self.width(), self.height()) // 3  # Arc Reactor와 같은 기본 반지름
+        base_radius = min(self.width(), self.height()) // 3
+        # 가장 외곽 원의 반지름 (base_radius +40)
+        outermost_radius = base_radius + 40
         
         for i in range(self.bar_count):
             angle = (i / self.bar_count) * 2 * math.pi
             bar_width = 3
             
-            # Arc Reactor의 +25 원에서 시작
-            inner_radius = base_radius + 25
-            inner_x = center_x + inner_radius * math.cos(angle)
-            inner_y = center_y + inner_radius * math.sin(angle)
-            
-            height = self.bar_heights[i]
-            # Arc Reactor의 +40 원까지 또는 그 밖으로
-            outer_radius = inner_radius + height
+            # 가장 외곽 원에서 안쪽으로 사운드바 그리기
+            outer_radius = outermost_radius
             outer_x = center_x + outer_radius * math.cos(angle)
             outer_y = center_y + outer_radius * math.sin(angle)
+            
+            height = self.bar_heights[i]
+            inner_radius = outer_radius - height
+            inner_x = center_x + inner_radius * math.cos(angle)
+            inner_y = center_y + inner_radius * math.sin(angle)
             
             gradient = QLinearGradient(inner_x, inner_y, outer_x, outer_y)
             if self.is_speaking:
@@ -303,6 +304,12 @@ class JarvisMainWindow(QWidget):
         self.normal_geometry = None
         self.is_speaking = False
         self.audio_processor = audio_processor
+        
+        # 원형 사운드바 상태 변수
+        self.soundbar_bar_count = 80
+        self.soundbar_bar_heights = [0] * self.soundbar_bar_count
+        self.soundbar_is_active = False
+        self.soundbar_freq_bands = [0.0, 0.0, 0.0]
         
         self.init_ui()
         self.start_animations()
@@ -415,10 +422,6 @@ class JarvisMainWindow(QWidget):
         center_layout = QVBoxLayout(self.center_widget)
         center_layout.setContentsMargins(30, 20, 30, 20)
         
-        # 원형 사운드바 추가 (항상 보여주기) - Arc Reactor와 크기 맞춤
-        self.circular_sound_bar = CircularSoundBarWidget(self)
-        self.circular_sound_bar.setFixedSize(500, 500)
-        
         self.status_label = QLabel("SYSTEM READY")
         status_font = QFont("Orbitron", 11)
         self.status_label.setFont(status_font)
@@ -458,7 +461,6 @@ class JarvisMainWindow(QWidget):
         self.text_input.returnPressed.connect(self._on_text_submitted)
         
         center_layout.addStretch()
-        center_layout.addWidget(self.circular_sound_bar, 0, Qt.AlignmentFlag.AlignCenter)
         center_layout.addSpacing(20)
         center_layout.addWidget(self.status_label)
         center_layout.addSpacing(20)
@@ -529,6 +531,32 @@ class JarvisMainWindow(QWidget):
             pen = QPen(QColor(153, 69, 255, 50), 1)
             painter.setPen(pen)
             painter.drawLine(0, int(scan_y), self.width(), int(scan_y))
+            
+            # 원형 사운드바 그리기 (가장 외곽 원에서 안쪽으로) - 보라색 버전
+            if self.soundbar_is_active:
+                bar_width = 3
+                for i in range(self.soundbar_bar_count):
+                    angle = (i / self.soundbar_bar_count) * 2 * math.pi
+                    outermost_radius = base_radius + 40
+                    outer_x = center_x + outermost_radius * math.cos(angle)
+                    outer_y = center_y + outermost_radius * math.sin(angle)
+                    
+                    height = self.soundbar_bar_heights[i]
+                    inner_radius = outermost_radius - height
+                    inner_x = center_x + inner_radius * math.cos(angle)
+                    inner_y = center_y + inner_radius * math.sin(angle)
+                    
+                    gradient = QLinearGradient(inner_x, inner_y, outer_x, outer_y)
+                    if self.is_speaking:
+                        gradient.setColorAt(0.0, QColor(153, 69, 255))
+                        gradient.setColorAt(1.0, QColor(80, 20, 120))
+                    else:
+                        gradient.setColorAt(0.0, QColor(0, 212, 255))
+                        gradient.setColorAt(1.0, QColor(0, 100, 150))
+                    
+                    painter.setPen(QPen(QBrush(gradient), bar_width))
+                    if height > 0:
+                        painter.drawLine(int(inner_x), int(inner_y), int(outer_x), int(outer_y))
         else:
             gradient = QRadialGradient(self.width()/2, self.height()/2, self.width()/2)
             gradient.setColorAt(0.0, QColor(0, 30, 60))
@@ -575,6 +603,32 @@ class JarvisMainWindow(QWidget):
             pen = QPen(QColor(0, 212, 255, 50), 1)
             painter.setPen(pen)
             painter.drawLine(0, int(scan_y), self.width(), int(scan_y))
+            
+            # 원형 사운드바 그리기 (가장 외곽 원에서 안쪽으로)
+            if self.soundbar_is_active:
+                bar_width = 3
+                for i in range(self.soundbar_bar_count):
+                    angle = (i / self.soundbar_bar_count) * 2 * math.pi
+                    outermost_radius = base_radius + 40
+                    outer_x = center_x + outermost_radius * math.cos(angle)
+                    outer_y = center_y + outermost_radius * math.sin(angle)
+                    
+                    height = self.soundbar_bar_heights[i]
+                    inner_radius = outermost_radius - height
+                    inner_x = center_x + inner_radius * math.cos(angle)
+                    inner_y = center_y + inner_radius * math.sin(angle)
+                    
+                    gradient = QLinearGradient(inner_x, inner_y, outer_x, outer_y)
+                    if self.is_speaking:
+                        gradient.setColorAt(0.0, QColor(153, 69, 255))
+                        gradient.setColorAt(1.0, QColor(80, 20, 120))
+                    else:
+                        gradient.setColorAt(0.0, QColor(0, 212, 255))
+                        gradient.setColorAt(1.0, QColor(0, 100, 150))
+                    
+                    painter.setPen(QPen(QBrush(gradient), bar_width))
+                    if height > 0:
+                        painter.drawLine(int(inner_x), int(inner_y), int(outer_x), int(outer_y))
     
     def start_animations(self):
         self.arc_timer = QTimer()
@@ -584,6 +638,25 @@ class JarvisMainWindow(QWidget):
         self.pulse_timer = QTimer()
         self.pulse_timer.timeout.connect(self.update_pulse)
         self.pulse_timer.start(100)
+        
+        # 원형 사운드바 애니메이션 타이머
+        self.soundbar_timer = QTimer()
+        self.soundbar_timer.timeout.connect(self._animate_soundbar)
+        self.soundbar_timer.start(50)
+    
+    def _animate_soundbar(self):
+        """원형 사운드바 애니메이션 업데이트"""
+        if not self.soundbar_is_active:
+            return
+        
+        for i in range(self.soundbar_bar_count):
+            band_idx = min(i // 20, len(self.soundbar_freq_bands) - 1)
+            band_energy = self.soundbar_freq_bands[band_idx]
+            height = (band_energy / 100) * 45 if self.is_speaking else (band_energy / 100) * 30
+            offset = random.randint(-2, 2)
+            self.soundbar_bar_heights[i] = max(0, min(45, int(height + offset)))
+        
+        self.update()
     
     def update_arc(self):
         self.arc_angle = (self.arc_angle + 2) % 360
@@ -614,28 +687,37 @@ class JarvisMainWindow(QWidget):
             
             # LISTENING/RESPONDING 상태일 때 사운드바 활성화, IDLE일 때 리셋
             if state in [State.LISTENING, State.RESPONDING]:
-                # 사용자 입력은 speaking=False, 자비스 답변은 speaking=True로 처리
-                if state == State.RESPONDING:
-                    self.circular_sound_bar.set_speaking(True)
-                else:
-                    self.circular_sound_bar.set_speaking(False)
-                freq_bands = [60, 60, 60]
-                self.circular_sound_bar.set_audio_data(60, freq_bands)  # 적절한 오디오 레벨로 활성화
+                self.is_speaking = (state == State.RESPONDING)
+                self.soundbar_is_active = True
+                self.soundbar_freq_bands = [60, 60, 60]
+                self._update_soundbar_bars(60, self.soundbar_freq_bands)
             else:
-                self.circular_sound_bar.reset()
+                self.soundbar_is_active = False
+                self.soundbar_bar_heights = [0] * self.soundbar_bar_count
             
             self.update()
+    
+    def _update_soundbar_bars(self, amplitude: float, freq_bands: list[float]):
+        """사운드바 바 높이 업데이트"""
+        bar_per_band = self.soundbar_bar_count // len(freq_bands)
+        for i in range(self.soundbar_bar_count):
+            band_idx = min(i // bar_per_band, len(freq_bands) - 1)
+            band_energy = freq_bands[band_idx]
+            height = (amplitude / 100) * 45 * (band_energy / 100 * 2)
+            offset = random.randint(-2, 2)
+            self.soundbar_bar_heights[i] = max(0, min(45, int(height + offset)))
     
     def _on_audio_update(self, amplitude: float, freq_bands: list[float], is_speaking: bool):
         """실제 오디오 데이터로 모든 사운드바 업데이트"""
         self.is_speaking = is_speaking
         self.sound_bar.set_speaking(is_speaking)
         self.mini_sound_bar.set_speaking(is_speaking)
-        self.circular_sound_bar.set_speaking(is_speaking)
+        self.soundbar_is_active = True
+        self.soundbar_freq_bands = freq_bands
+        self._update_soundbar_bars(amplitude, freq_bands)
         
         self.sound_bar.set_audio_data(amplitude, freq_bands)
         self.mini_sound_bar.set_audio_data(amplitude, freq_bands)
-        self.circular_sound_bar.set_audio_data(amplitude, freq_bands)
     
     def set_soundbar_speaking(self, speaking):
         self.is_speaking = speaking
