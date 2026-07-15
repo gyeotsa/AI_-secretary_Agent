@@ -106,48 +106,57 @@ class MiniControlBar(QFrame):
 class SoundBarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(145, 25)  # 크기 조금 키움
+        self.setFixedSize(145, 25)
         self.bar_count = 12
         self.bar_heights = [0] * self.bar_count
-        self.is_speaking = False  # 자비스가 말하는 중인지 여부
-        self.is_active = False  # 사운드가 활성화된 상태인지 (입력/출력 있을 때)
+        self.is_speaking = False
+        self.is_active = False
+        self.freq_bands = [0.0, 0.0, 0.0]  # 저음, 중음, 고음
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_bars)
         self.timer.start(50)
         
     def set_speaking(self, speaking):
         self.is_speaking = speaking
-        self.is_active = speaking  # 자비스가 말할 때는 활성화
+        self.is_active = speaking
         
-    def set_audio_level(self, level):
-        # 실제 오디오 레벨을 받아서 바 높이를 설정 (0-100 사이 값)
+    def set_audio_data(self, amplitude: float, freq_bands: list[float]):
+        """실제 오디오 데이터로 사운드바 업데이트"""
         self.is_active = True
+        self.freq_bands = freq_bands
+        
+        bar_per_band = self.bar_count // len(freq_bands)
         for i in range(self.bar_count):
-            # 레벨에 따라 바 높이를 계산 (가운데 바가 더 높게)
-            base_height = (level / 100) * 25
-            offset = random.randint(-2, 2)
-            self.bar_heights[i] = max(0, min(28, int(base_height + offset)))
+            band_idx = min(i // bar_per_band, len(freq_bands) - 1)
+            band_energy = freq_bands[band_idx]
+            height = (amplitude / 100) * 25 * (band_energy / 100 * 2)
+            offset = random.randint(-1, 1)
+            self.bar_heights[i] = max(0, min(28, int(height + offset)))
         self.update()
         
     def reset(self):
-        # 사운드가 없을 때 초기 상태로
         self.is_active = False
         self.bar_heights = [0] * self.bar_count
         self.update()
         
     def update_bars(self):
-        # 활성화 상태일 때만 애니메이션
         if not self.is_active:
             return
             
         if self.is_speaking:
-            # 자비스가 말할 때는 더 큰 움직임
             for i in range(self.bar_count):
-                self.bar_heights[i] = random.randint(10, 28)
+                band_idx = min(i // 4, len(self.freq_bands) - 1)
+                band_energy = self.freq_bands[band_idx]
+                height = (band_energy / 100) * 25
+                offset = random.randint(-2, 2)
+                self.bar_heights[i] = max(0, min(28, int(height + offset)))
         else:
-            # 사용자 입력 시뮬레이션 (실제로는 set_audio_level로 대체)
             for i in range(self.bar_count):
-                self.bar_heights[i] = random.randint(5, 20)
+                band_idx = min(i // 4, len(self.freq_bands) - 1)
+                band_energy = self.freq_bands[band_idx]
+                height = (band_energy / 100) * 20
+                offset = random.randint(-1, 1)
+                self.bar_heights[i] = max(0, min(20, int(height + offset)))
         self.update()
         
     def paintEvent(self, event):
@@ -164,27 +173,27 @@ class SoundBarWidget(QWidget):
             
             gradient = QLinearGradient(x, y, x, y + height)
             if self.is_speaking:
-                # 자비스 음성은 바이올렛
                 gradient.setColorAt(0.0, QColor(153, 69, 255))
                 gradient.setColorAt(1.0, QColor(80, 20, 120))
             else:
-                # 사용자 입력은 시안
                 gradient.setColorAt(0.0, QColor(0, 212, 255))
                 gradient.setColorAt(1.0, QColor(0, 100, 150))
             
             painter.setBrush(QBrush(gradient))
             painter.setPen(Qt.PenStyle.NoPen)
-            if height > 0:  # 높이가 0보다 클 때만 그리기
+            if height > 0:
                 painter.drawRoundedRect(x, y, bar_width, height, 2, 2)
 
 
 class CircularSoundBarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setFixedSize(300, 300)
         self.bar_count = 60
         self.bar_heights = [0] * self.bar_count
         self.is_speaking = False
         self.is_active = False
+        self.freq_bands = [0.0, 0.0, 0.0]
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_bars)
         self.timer.start(50)
@@ -193,12 +202,18 @@ class CircularSoundBarWidget(QWidget):
         self.is_speaking = speaking
         self.is_active = speaking
         
-    def set_audio_level(self, level):
+    def set_audio_data(self, amplitude: float, freq_bands: list[float]):
+        """실제 오디오 데이터로 원형 사운드바 업데이트"""
         self.is_active = True
+        self.freq_bands = freq_bands
+        
+        bar_per_band = self.bar_count // len(freq_bands)
         for i in range(self.bar_count):
-            base_height = (level / 100) * 40
-            offset = random.randint(-3, 3)
-            self.bar_heights[i] = max(0, min(45, int(base_height + offset)))
+            band_idx = min(i // bar_per_band, len(freq_bands) - 1)
+            band_energy = freq_bands[band_idx]
+            height = (amplitude / 100) * 45 * (band_energy / 100 * 2)
+            offset = random.randint(-2, 2)
+            self.bar_heights[i] = max(0, min(45, int(height + offset)))
         self.update()
         
     def reset(self):
@@ -212,10 +227,18 @@ class CircularSoundBarWidget(QWidget):
             
         if self.is_speaking:
             for i in range(self.bar_count):
-                self.bar_heights[i] = random.randint(15, 45)
+                band_idx = min(i // 20, len(self.freq_bands) - 1)
+                band_energy = self.freq_bands[band_idx]
+                height = (band_energy / 100) * 45
+                offset = random.randint(-3, 3)
+                self.bar_heights[i] = max(0, min(45, int(height + offset)))
         else:
             for i in range(self.bar_count):
-                self.bar_heights[i] = random.randint(8, 30)
+                band_idx = min(i // 20, len(self.freq_bands) - 1)
+                band_energy = self.freq_bands[band_idx]
+                height = (band_energy / 100) * 30
+                offset = random.randint(-2, 2)
+                self.bar_heights[i] = max(0, min(30, int(height + offset)))
         self.update()
         
     def paintEvent(self, event):
@@ -229,20 +252,16 @@ class CircularSoundBarWidget(QWidget):
         for i in range(self.bar_count):
             angle = (i / self.bar_count) * 2 * math.pi
             bar_width = 3
-            gap = 2
             
-            # 바의 안쪽 끝점
             inner_radius = base_radius
             inner_x = center_x + inner_radius * math.cos(angle)
             inner_y = center_y + inner_radius * math.sin(angle)
             
-            # 바의 바깥쪽 끝점
             height = self.bar_heights[i]
             outer_radius = inner_radius + height
             outer_x = center_x + outer_radius * math.cos(angle)
             outer_y = center_y + outer_radius * math.sin(angle)
             
-            # 바 그리기
             gradient = QLinearGradient(inner_x, inner_y, outer_x, outer_y)
             if self.is_speaking:
                 gradient.setColorAt(0.0, QColor(153, 69, 255))
@@ -260,7 +279,7 @@ class JarvisMainWindow(QWidget):
     text_submitted = pyqtSignal(str)
     close_requested = pyqtSignal()  # 종료 요청 시그널
     
-    def __init__(self):
+    def __init__(self, audio_processor=None):
         super().__init__()
         self._allow_close = True
         self.arc_angle = 0
@@ -268,9 +287,14 @@ class JarvisMainWindow(QWidget):
         self.current_state = State.IDLE
         self.window_mode = "normal"
         self.normal_geometry = None
-        self.is_speaking = False  # 자비스가 말하는 중인지 여부
+        self.is_speaking = False
+        self.audio_processor = audio_processor
+        
         self.init_ui()
         self.start_animations()
+        
+        if self.audio_processor:
+            self.audio_processor.audio_update.connect(self._on_audio_update)
     
     def init_ui(self):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | 
@@ -587,24 +611,34 @@ class JarvisMainWindow(QWidget):
             
             self.update()
     
+    def _on_audio_update(self, amplitude: float, freq_bands: list[float], is_speaking: bool):
+        """실제 오디오 데이터로 모든 사운드바 업데이트"""
+        self.is_speaking = is_speaking
+        self.sound_bar.set_speaking(is_speaking)
+        self.mini_sound_bar.set_speaking(is_speaking)
+        self.circular_sound_bar.set_speaking(is_speaking)
+        
+        self.sound_bar.set_audio_data(amplitude, freq_bands)
+        self.mini_sound_bar.set_audio_data(amplitude, freq_bands)
+        self.circular_sound_bar.set_audio_data(amplitude, freq_bands)
+    
     def set_soundbar_speaking(self, speaking):
-        # 모든 사운드바의 speaking 상태 설정
         self.is_speaking = speaking
         self.sound_bar.set_speaking(speaking)
         self.mini_sound_bar.set_speaking(speaking)
         self.circular_sound_bar.set_speaking(speaking)
     
     def reset_soundbar(self):
-        # 모든 사운드바 리셋
         self.sound_bar.reset()
         self.mini_sound_bar.reset()
         self.circular_sound_bar.reset()
     
     def set_soundbar_audio_level(self, level):
-        # 모든 사운드바에 오디오 레벨 설정
-        self.sound_bar.set_audio_level(level)
-        self.mini_sound_bar.set_audio_level(level)
-        self.circular_sound_bar.set_audio_level(level)
+        # 기존 메서드 유지 (호환성 위해)
+        freq_bands = [level, level, level]
+        self.sound_bar.set_audio_data(level, freq_bands)
+        self.mini_sound_bar.set_audio_data(level, freq_bands)
+        self.circular_sound_bar.set_audio_data(level, freq_bands)
     
     def toggle_window_mode(self):
         if self.window_mode == "normal":

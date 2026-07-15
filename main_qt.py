@@ -14,6 +14,7 @@ from core.tools import get_tool_executor
 from core.user_profile import get_user_profile
 from core.rag import get_rag_manager
 from core.hardware import get_hardware_manager
+from core.audio_processor import get_audio_processor
 from ui.main_window import JarvisMainWindow
 
 
@@ -45,7 +46,8 @@ class ConsoleReader(QObject):
 class JarvisApp:
     def __init__(self):
         self.app = QApplication(sys.argv)
-        self.window = JarvisMainWindow()
+        self.audio_processor = get_audio_processor()
+        self.window = JarvisMainWindow(self.audio_processor)
         self.state_machine = StateMachine()
         self.mode_manager = ModeManager()
         self.memory = get_memory()
@@ -341,11 +343,8 @@ class JarvisApp:
     def _speak_with_check(self, text: str):
         print(f"[DEBUG] _speak_with_check 호출됨: {text}")
         try:
-            # 사운드바를 바이올렛으로 (자비스가 말하는 중)
-            QTimer.singleShot(0, lambda: self.window.set_soundbar_speaking(True))
-            
             print(f"[DEBUG] tool_executor.speak_text 호출 전")
-            result = self.tool_executor.speak_text(text)
+            result = self.tool_executor.speak_text(text, self.audio_processor)
             print(f"[DEBUG] tool_executor.speak_text 반환값: {result}")
             if "오류:" in result:
                 print(f"⚠️ TTS 오류: {result}")

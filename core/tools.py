@@ -184,12 +184,13 @@ class ToolExecutor:
         except Exception as e:
             return f"환경설정 저장 오류: {str(e)}"
 
-    def speak_text(self, text: str) -> str:
+    def speak_text(self, text: str, audio_processor=None) -> str:
         print(f"[DEBUG] ToolExecutor.speak_text 호출됨: {text}")
         if pyttsx3 is None:
             print("[DEBUG] pyttsx3 is None")
             return "오류: pyttsx3가 설치되지 않았습니다. requirements.txt를 확인하세요."
         
+        temp_wav_path = None
         try:
             # TTS engine이 초기화되지 않았다면 초기화
             if self._tts_engine is None:
@@ -205,11 +206,21 @@ class ToolExecutor:
                         print(f"[DEBUG] 한국어 음성 설정: {voice.name}")
                         break
             
-            print("[DEBUG] engine.say() 호출 전")
-            self._tts_engine.say(text)
-            print("[DEBUG] engine.runAndWait() 호출 전")
+            # 1. TTS를 WAV 파일로 저장
+            temp_wav_path = tempfile.mktemp(suffix=".wav")
+            print(f"[DEBUG] TTS WAV 저장 경로: {temp_wav_path}")
+            self._tts_engine.save_to_file(text, temp_wav_path)
             self._tts_engine.runAndWait()
-            print("[DEBUG] engine.runAndWait() 호출 성공")
+            
+            # 2. AudioProcessor로 WAV 파일 재생 + 분석
+            if audio_processor:
+                audio_processor.play_and_analyze_tts(temp_wav_path)
+            else:
+                # AudioProcessor가 없으면 그냥 재생
+                self._tts_engine.say(text)
+                self._tts_engine.runAndWait()
+            
+            print("[DEBUG] TTS 처리 완료")
             return f"음성으로 읽어주었습니다: {text}"
         except Exception as e:
             print(f"[DEBUG] TTS 오류 발생: {e}")
@@ -218,6 +229,13 @@ class ToolExecutor:
             # 오류 발생시 engine 재초기화
             self._tts_engine = None
             return f"TTS 오류: {str(e)}"
+        finally:
+            # 임시 WAV 파일 삭제
+            if temp_wav_path and os.path.exists(temp_wav_path):
+                try:
+                    os.unlink(temp_wav_path)
+                except Exception:
+                    pass
 
     def listen(self, duration: int = 3) -> str:
         if not WHISPER_AVAILABLE:
