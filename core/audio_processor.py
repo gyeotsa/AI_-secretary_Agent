@@ -1,4 +1,5 @@
 import sys
+import threading
 import numpy as np
 import sounddevice as sd
 import tempfile
@@ -36,29 +37,45 @@ class AudioProcessor(QObject):
                 data = data.mean(axis=1)
             
             # 데이터를 float32로 정규화 (-1 ~ 1)
-            data = data.astype(np.float32) / np.max(np.abs(data))
+            data = data.astype(np.float32)
+            peak = np.max(np.abs(data))
+            if peak == 0:
+                raise ValueError("TTS generated a silent WAV file")
+            data /= peak
+
+            position = 0
+            finished = threading.Event()
             
             # 오디오 재생 + 분석
             def callback(outdata, frames, time, status):
                 if status:
                     print(status, file=sys.stderr)
-                nonlocal data
-                if len(data) < frames:
+                nonlocal position
+                remaining = len(data) - position
+                if remaining <= frames:
                     # 남은 데이터가 부족하면 0으로 채우기
-                    outdata[:len(data), 0] = data
-                    outdata[len(data):, 0] = 0
-                    data = np.array([])
+                    outdata[:remaining, 0] = data[position:]
+                    outdata[remaining:, 0] = 0
+                    position = len(data)
                 else:
-                    outdata[:, 0] = data[:frames]
-                    data = data[frames:]
+                    outdata[:, 0] = data[position:position + frames]
+                    position += frames
                 
                 # 현재 프레임 분석
                 if len(outdata[:, 0]) > 0:
                     amplitude, freq_bands = self._analyze_audio(outdata[:, 0], sr)
                     self.audio_update.emit(amplitude, freq_bands, True)
+                if position >= len(data):
+                    raise sd.CallbackStop()
             
-            with sd.OutputStream(samplerate=sr, channels=1, callback=callback, blocksize=self._chunk_size):
-                sd.wait()
+            with sd.OutputStream(
+                samplerate=sr,
+                channels=1,
+                callback=callback,
+                blocksize=self._chunk_size,
+                finished_callback=finished.set,
+            ):
+                finished.wait()
                 
         except Exception as e:
             print(f"[AudioProcessor] TTS 분석 오류: {e}")

@@ -43,6 +43,12 @@ class ConsoleReader(QObject):
             except (EOFError, KeyboardInterrupt):
                 break
 
+
+class AppSignals(QObject):
+    """Thread-safe bridge for callbacks that must run on the Qt GUI thread."""
+    ai_response_ready = pyqtSignal(str)
+
+
 class JarvisApp:
     def __init__(self):
         self.app = QApplication(sys.argv)
@@ -62,10 +68,12 @@ class JarvisApp:
         self.last_response = ""
         
         self._is_processing_ai = False
+        self.signals = AppSignals()
         
         # 콘솔 리더 초기화
         self.console_reader = ConsoleReader()
         self.console_reader.input_received.connect(self._on_console_input)
+        self.signals.ai_response_ready.connect(self._on_ai_response)
         
         # 시그널 연결
         self.state_machine.state_changed.connect(self._on_state_changed)
@@ -154,6 +162,14 @@ class JarvisApp:
             print("[DEBUG] llm.chat_with_tools returned:", response_text, tool_uses)
             
             if tool_uses:
+                # UI responses are already spoken automatically. Do not loop
+                # when the model returns a speak_text-only tool call.
+                if len(tool_uses) == 1 and tool_uses[0].get("name") == "speak_text":
+                    text = tool_uses[0].get("input", {}).get("text", "").strip()
+                    if text:
+                        self.signals.ai_response_ready.emit(text)
+                        break
+
                 # 툴 실행
                 tool_results = []
                 for tool_use in tool_uses:
@@ -223,7 +239,10 @@ class JarvisApp:
             else:
                 # 최종 응답
                 # 메인 스레드에서 UI 업데이트하도록 QTimer.singleShot 사용
-                QTimer.singleShot(0, lambda: self._on_ai_response(response_text))
+                # _process_ai runs in a worker thread. QTimer.singleShot() in
+                # that thread has no event loop, so the UI/TTS callback is
+                # never invoked. Emit a queued Qt signal to the GUI thread.
+                self.signals.ai_response_ready.emit(response_text)
                 break
     
     def _on_ai_response(self, response_text: str):

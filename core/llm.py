@@ -9,7 +9,10 @@ from core.tools import get_tools_schema
 
 class BaseLLMClient:
     def __init__(self):
-        self.tools = get_tools_schema()
+        # UI responses are spoken automatically. Do not offer this tool to
+        # Ollama, otherwise small instruct models frequently call it instead
+        # of returning the answer text and can enter an endless tool loop.
+        self.tools = [tool for tool in get_tools_schema() if tool.get("name") != "speak_text"]
         self.system_prompt = Config.SYSTEM_PROMPT_TEMPLATE.format(user_profile_section="")
 
     def set_system_prompt(self, prompt: str):
@@ -72,6 +75,25 @@ class OllamaClient(BaseLLMClient):
         super().__init__()
         self.base_url = Config.OLLAMA_BASE_URL
         self.model = Config.OLLAMA_MODEL
+
+    @staticmethod
+    def _extract_legacy_speak_text(content: str) -> str | None:
+        """Extract final text from a tool call emitted in message content."""
+        try:
+            payload = json.loads(content.replace('""', '"'))
+        except json.JSONDecodeError:
+            match = re.search(r'"name"\s*:\s*"speak_text".*?"text"\s*:\s*"(.*)"\s*}\s*}', content, re.DOTALL)
+            if not match:
+                return None
+            text = match.group(1).strip('"').strip()
+            return text or None
+
+        if payload.get("name") != "speak_text":
+            return None
+
+        parameters = payload.get("parameters", payload.get("arguments", {}))
+        text = parameters.get("text") if isinstance(parameters, dict) else None
+        return text.strip() if isinstance(text, str) and text.strip() else None
 
     def _convert_to_ollama_tools(self, tools: List[Dict]) -> List[Dict]:
         """Anthropic 도구 스키마를 Ollama 형식으로 변환"""
@@ -145,6 +167,9 @@ class OllamaClient(BaseLLMClient):
                 if "content" in message:
                     # 이모지 필터링
                     text = re.sub(r'[\U00010000-\U0010ffff]', '', message["content"])
+                    legacy_speak_text = self._extract_legacy_speak_text(text)
+                    if legacy_speak_text:
+                        return legacy_speak_text, []
                     return text, []
             
             return "", []

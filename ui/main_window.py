@@ -646,7 +646,7 @@ class JarvisMainWindow(QWidget):
     
     def _animate_soundbar(self):
         """원형 사운드바 애니메이션 업데이트"""
-        if not self.soundbar_is_active:
+        if not self.soundbar_is_active or not self.soundbar_freq_bands:
             return
         
         for i in range(self.soundbar_bar_count):
@@ -699,6 +699,11 @@ class JarvisMainWindow(QWidget):
     
     def _update_soundbar_bars(self, amplitude: float, freq_bands: list[float]):
         """사운드바 바 높이 업데이트"""
+        if not freq_bands:
+            self.soundbar_is_active = False
+            self.soundbar_bar_heights = [0] * self.soundbar_bar_count
+            self.update()
+            return
         bar_per_band = self.soundbar_bar_count // len(freq_bands)
         for i in range(self.soundbar_bar_count):
             band_idx = min(i // bar_per_band, len(freq_bands) - 1)
@@ -709,6 +714,9 @@ class JarvisMainWindow(QWidget):
     
     def _on_audio_update(self, amplitude: float, freq_bands: list[float], is_speaking: bool):
         """실제 오디오 데이터로 모든 사운드바 업데이트"""
+        if not freq_bands:
+            self.reset_soundbar()
+            return
         self.is_speaking = is_speaking
         self.sound_bar.set_speaking(is_speaking)
         self.mini_sound_bar.set_speaking(is_speaking)
