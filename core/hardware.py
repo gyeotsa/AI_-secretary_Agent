@@ -10,6 +10,7 @@ try:
     import sounddevice as sd
     import whisper
     import librosa
+    import torch
     SOUND_AVAILABLE = True
 except ImportError:
     SOUND_AVAILABLE = False
@@ -26,9 +27,20 @@ class HardwareManager:
         self.audio_queue = queue.Queue()
         self.on_text_detected = None  # 텍스트 감지 시 호출될 콜백
         self.audio_processor = None  # 오디오 프로세서
+        self.device = "cpu"
         
         if SOUND_AVAILABLE:
-            self.whisper_model = whisper.load_model("base")
+            # GPU 사용 가능 여부 확인
+            if torch.cuda.is_available():
+                self.device = "cuda"
+                print(f"[GPU] CUDA를 사용합니다! (GPU: {torch.cuda.get_device_name(0)})")
+            elif torch.backends.mps.is_available():
+                self.device = "mps"
+                print("[GPU] Apple Silicon MPS를 사용합니다!")
+            else:
+                print("[CPU] GPU를 사용할 수 없어 CPU를 사용합니다.")
+            
+            self.whisper_model = whisper.load_model("base", device=self.device)
 
     def start_continuous_listen(self, on_text_callback, audio_processor=None) -> str:
         """지속적인 음성 감지 시작 (웨이크워드/박수 감지 포함)"""
