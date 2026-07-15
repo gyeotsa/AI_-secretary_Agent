@@ -177,6 +177,84 @@ class SoundBarWidget(QWidget):
             if height > 0:  # 높이가 0보다 클 때만 그리기
                 painter.drawRoundedRect(x, y, bar_width, height, 2, 2)
 
+
+class CircularSoundBarWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.bar_count = 60
+        self.bar_heights = [0] * self.bar_count
+        self.is_speaking = False
+        self.is_active = False
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_bars)
+        self.timer.start(50)
+        
+    def set_speaking(self, speaking):
+        self.is_speaking = speaking
+        self.is_active = speaking
+        
+    def set_audio_level(self, level):
+        self.is_active = True
+        for i in range(self.bar_count):
+            base_height = (level / 100) * 40
+            offset = random.randint(-3, 3)
+            self.bar_heights[i] = max(0, min(45, int(base_height + offset)))
+        self.update()
+        
+    def reset(self):
+        self.is_active = False
+        self.bar_heights = [0] * self.bar_count
+        self.update()
+        
+    def update_bars(self):
+        if not self.is_active:
+            return
+            
+        if self.is_speaking:
+            for i in range(self.bar_count):
+                self.bar_heights[i] = random.randint(15, 45)
+        else:
+            for i in range(self.bar_count):
+                self.bar_heights[i] = random.randint(8, 30)
+        self.update()
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        center_x = self.width() // 2
+        center_y = self.height() // 2
+        base_radius = min(self.width(), self.height()) // 4
+        
+        for i in range(self.bar_count):
+            angle = (i / self.bar_count) * 2 * math.pi
+            bar_width = 3
+            gap = 2
+            
+            # 바의 안쪽 끝점
+            inner_radius = base_radius
+            inner_x = center_x + inner_radius * math.cos(angle)
+            inner_y = center_y + inner_radius * math.sin(angle)
+            
+            # 바의 바깥쪽 끝점
+            height = self.bar_heights[i]
+            outer_radius = inner_radius + height
+            outer_x = center_x + outer_radius * math.cos(angle)
+            outer_y = center_y + outer_radius * math.sin(angle)
+            
+            # 바 그리기
+            gradient = QLinearGradient(inner_x, inner_y, outer_x, outer_y)
+            if self.is_speaking:
+                gradient.setColorAt(0.0, QColor(153, 69, 255))
+                gradient.setColorAt(1.0, QColor(80, 20, 120))
+            else:
+                gradient.setColorAt(0.0, QColor(0, 212, 255))
+                gradient.setColorAt(1.0, QColor(0, 100, 150))
+            
+            painter.setPen(QPen(QBrush(gradient), bar_width))
+            if height > 0:
+                painter.drawLine(int(inner_x), int(inner_y), int(outer_x), int(outer_y))
+
 class JarvisMainWindow(QWidget):
     command_triggered = pyqtSignal(str)
     text_submitted = pyqtSignal(str)
@@ -299,6 +377,11 @@ class JarvisMainWindow(QWidget):
         center_layout = QVBoxLayout(self.center_widget)
         center_layout.setContentsMargins(30, 20, 30, 20)
         
+        # 원형 사운드바 추가
+        self.circular_sound_bar = CircularSoundBarWidget(self)
+        self.circular_sound_bar.setFixedSize(300, 300)
+        self.circular_sound_bar.hide()  # 기본은 숨겨놓고 필요할 때 보여줌
+        
         self.status_label = QLabel("SYSTEM READY")
         status_font = QFont("Orbitron", 11)
         self.status_label.setFont(status_font)
@@ -338,6 +421,8 @@ class JarvisMainWindow(QWidget):
         self.text_input.returnPressed.connect(self._on_text_submitted)
         
         center_layout.addStretch()
+        center_layout.addWidget(self.circular_sound_bar, 0, Qt.AlignmentFlag.AlignCenter)
+        center_layout.addSpacing(20)
         center_layout.addWidget(self.status_label)
         center_layout.addSpacing(20)
         center_layout.addWidget(self.user_text_label)
@@ -489,6 +574,14 @@ class JarvisMainWindow(QWidget):
                 self.status_label.setStyleSheet("color: #9945ff; letter-spacing: 3px;")
             else:
                 self.status_label.setStyleSheet("color: #00d4ff; letter-spacing: 3px;")
+            
+            # LISTENING이나 RESPONDING일 때 원형 사운드바 보여주기
+            if state in [State.LISTENING, State.RESPONDING]:
+                self.circular_sound_bar.show()
+            else:
+                self.circular_sound_bar.hide()
+                self.circular_sound_bar.reset()
+            
             self.update()
     
     def toggle_window_mode(self):
@@ -545,16 +638,19 @@ class JarvisMainWindow(QWidget):
         # 사운드바의 speaking 상태 설정
         self.sound_bar.set_speaking(speaking)
         self.mini_sound_bar.set_speaking(speaking)
+        self.circular_sound_bar.set_speaking(speaking)
         
     def reset_soundbar(self):
         # 사운드바 리셋
         self.sound_bar.reset()
         self.mini_sound_bar.reset()
+        self.circular_sound_bar.reset()
         
     def set_soundbar_audio_level(self, level):
         # 사운드바에 오디오 레벨 설정 (0-100)
         self.sound_bar.set_audio_level(level)
         self.mini_sound_bar.set_audio_level(level)
+        self.circular_sound_bar.set_audio_level(level)
     
     def closeEvent(self, event):
         if not self._allow_close:
