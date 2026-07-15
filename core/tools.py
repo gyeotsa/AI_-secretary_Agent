@@ -190,6 +190,10 @@ class ToolExecutor:
             print("[DEBUG] pyttsx3 is None")
             return "오류: pyttsx3가 설치되지 않았습니다. requirements.txt를 확인하세요."
         
+        # 빈 문자열이나 공백만 있을 때 처리
+        if not text or text.strip() == "":
+            text = "네, 보스."
+        
         temp_wav_path = None
         try:
             # TTS engine이 초기화되지 않았다면 초기화
@@ -447,6 +451,14 @@ class ToolExecutor:
         except Exception as e:
             return f"사장님, 폴더 삭제 중 오류가 발생했습니다: {str(e)}"
 
+    def capture_camera(self, save_path: Optional[str] = None) -> str:
+        """카메라에서 프레임을 캡처합니다."""
+        try:
+            result = self.multimodal_manager.capture_camera_frame(save_path)
+            return result
+        except Exception as e:
+            return f"카메라 캡처 오류: {str(e)}"
+
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         tool_functions = {
             "read_file": self.read_file,
@@ -477,6 +489,7 @@ class ToolExecutor:
             "write_excel_cell": self.write_excel_cell,
             "create_directory": self.create_directory,
             "delete_directory": self.delete_directory,
+            "capture_camera": self.capture_camera,
         }
 
         if tool_name not in tool_functions:
@@ -906,6 +919,20 @@ def get_tools_schema() -> list[dict]:
                     }
                 },
                 "required": ["dir_path"],
+            },
+        },
+        {
+            "name": "capture_camera",
+            "description": "카메라에서 프레임을 캡처합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "save_path": {
+                        "type": "string",
+                        "description": "저장할 경로 (선택사항, 지정하지 않으면 임시 파일에 저장)",
+                    },
+                },
+                "required": [],
             },
         },
     ]

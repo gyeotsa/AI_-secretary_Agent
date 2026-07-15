@@ -1,5 +1,6 @@
 import os
 import base64
+import tempfile
 from typing import Optional
 from config import Config
 from core.harness import SafetyLayer
@@ -16,6 +17,12 @@ try:
     PYMUPDF_AVAILABLE = True
 except ImportError:
     PYMUPDF_AVAILABLE = False
+
+try:
+    import cv2
+    OPENCV_AVAILABLE = True
+except ImportError:
+    OPENCV_AVAILABLE = False
 
 
 class MultimodalManager:
@@ -112,6 +119,40 @@ class MultimodalManager:
 
         except Exception as e:
             return f"PDF 분석 오류: {str(e)}"
+
+    def capture_camera_frame(self, save_path: Optional[str] = None) -> str:
+        """
+        카메라에서 프레임을 캡처합니다.
+        save_path가 지정되면 해당 경로에 저장하고, 아니면 임시 파일에 저장합니다.
+        """
+        if not OPENCV_AVAILABLE:
+            return "오류: opencv-python이 설치되지 않았습니다. requirements.txt를 확인하세요."
+
+        try:
+            # 카메라 열기 (0은 기본 카메라)
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                return "오류: 카메라를 열 수 없습니다."
+
+            # 프레임 캡처
+            ret, frame = cap.read()
+            cap.release()
+
+            if not ret:
+                return "오류: 카메라에서 프레임을 캡처할 수 없습니다."
+
+            # 저장 경로 결정
+            if save_path is None:
+                temp_dir = tempfile.gettempdir()
+                save_path = os.path.join(temp_dir, f"camera_capture_{os.urandom(4).hex()}.jpg")
+
+            # 프레임 저장
+            cv2.imwrite(save_path, frame)
+
+            return f"성공: 카메라 프레임을 {save_path}에 저장했습니다."
+
+        except Exception as e:
+            return f"카메라 캡처 오류: {str(e)}"
 
     def image_to_base64(self, image_path: str) -> str:
         """

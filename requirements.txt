@@ -20,7 +20,7 @@ pyttsx3>=2.90
 sounddevice>=0.4.6
 scipy>=1.11.0
 # schedule>=1.2.0
-# opencv-python>=4.10.0
+opencv-python>=4.10.0
 # mediapipe>=0.10.0
 librosa>=0.10.0
 
