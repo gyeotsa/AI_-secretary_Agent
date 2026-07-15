@@ -25,11 +25,12 @@ class HardwareManager:
         self.continuous_listen_thread = None
         self.audio_queue = queue.Queue()
         self.on_text_detected = None  # 텍스트 감지 시 호출될 콜백
+        self.audio_processor = None  # 오디오 프로세서
         
         if SOUND_AVAILABLE:
             self.whisper_model = whisper.load_model("base")
 
-    def start_continuous_listen(self, on_text_callback) -> str:
+    def start_continuous_listen(self, on_text_callback, audio_processor=None) -> str:
         """지속적인 음성 감지 시작 (웨이크워드/박수 감지 포함)"""
         if not SOUND_AVAILABLE:
             return "오류: sounddevice, whisper가 설치되지 않았습니다."
@@ -39,6 +40,7 @@ class HardwareManager:
         
         self.running = True
         self.on_text_detected = on_text_callback
+        self.audio_processor = audio_processor
         
         def continuous_detect():
             print("[마이크] 지속적인 음성 감지 시작...")
@@ -52,14 +54,29 @@ class HardwareManager:
             
             while self.running:
                 try:
+                    # 항상 AudioProcessor로 오디오 분석 (사운드바 업데이트)
+                    duration = 0.1  # 짧은 청크로 분석
+                    recording = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='float32')
+                    sd.wait()
+                    
+                    if self.audio_processor:
+                        # AudioProcessor._analyze_audio 메서드 호출
+                        try:
+                            amplitude, freq_bands = self.audio_processor._analyze_audio(recording.flatten(), fs)
+                            self.audio_processor.audio_update.emit(amplitude, freq_bands, False)
+                        except Exception as e:
+                            print(f"[사운드바 업데이트 오류]: {e}")
+                    
+                    # 나머지 로직
+                    # 웨이크워드/박수 감지 모드나 청취 모드
                     if not is_listening:
-                        # 웨이크워드/박수 감지 모드
-                        duration = 2
-                        recording = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='float32')
+                        # 웨이크워드/박수 감지 모드 - 조금 더 긴 시간을 수집 (0.5초)
+                        long_duration = 2
+                        long_recording = sd.rec(int(long_duration * fs), samplerate=fs, channels=1, dtype='float32')
                         sd.wait()
                         
                         # 1. 웨이크워드 감지
-                        result = self.whisper_model.transcribe(recording.flatten(), language="ko")
+                        result = self.whisper_model.transcribe(long_recording.flatten(), language="ko")
                         text = result["text"].strip().lower()
                         
                         if "자비스" in text or "자비" in text:
@@ -77,7 +94,7 @@ class HardwareManager:
                             continue
                         
                         # 2. 박수 감지 (에너지 기반)
-                        energy = np.sum(recording ** 2) / len(recording)
+                        energy = np.sum(long_recording ** 2) / len(long_recording)
                         energy_db = 10 * np.log10(energy + 1e-10)
                         
                         if energy_db > -10:
@@ -94,12 +111,12 @@ class HardwareManager:
                                     silence_start = None
                                     clap_count_local = 0
                     else:
-                        # 청취 모드
-                        duration = 1
-                        recording = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='float32')
+                        # 청취 모드 - 텍스트 수집
+                        listen_duration = 1
+                        listen_recording = sd.rec(int(listen_duration * fs), samplerate=fs, channels=1, dtype='float32')
                         sd.wait()
                         
-                        result = self.whisper_model.transcribe(recording.flatten(), language="ko")
+                        result = self.whisper_model.transcribe(listen_recording.flatten(), language="ko")
                         text = result["text"].strip()
                         
                         if text:
@@ -121,7 +138,6 @@ class HardwareManager:
                                 current_text = ""
                                 silence_start = None
                                 is_listening = False
-                    time.sleep(0.1)
                 except Exception as e:
                     print(f"음성 감지 오류: {e}")
                     time.sleep(1)

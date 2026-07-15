@@ -94,9 +94,9 @@ class JarvisApp:
         # print("\n자비스가 준비되었습니다! 질문을 입력하세요 (종료하려면 'exit'):")
         # self.console_reader.start()
         
-        # 자동으로 지속적인 음성 감지 시작 - 잠시 주석
-        # print("[마이크] 자동으로 음성 감지를 시작합니다...")
-        # self._start_continuous_listen()
+        # 자동으로 지속적인 음성 감지 시작
+        print("[마이크] 자동으로 음성 감지를 시작합니다...")
+        self._start_continuous_listen()
         
         print("\n자비스가 준비되었습니다! UI 하단 텍스트 상자에 질문을 입력하세요, 보스.")
     
@@ -324,7 +324,7 @@ class JarvisApp:
     
     def _start_continuous_listen(self):
         # 지속적인 음성 감지 시작
-        result = self.hardware_manager.start_continuous_listen(self._on_continuous_text_detected)
+        result = self.hardware_manager.start_continuous_listen(self._on_continuous_text_detected, self.audio_processor)
         print(result)
         self.window.show_assistant_text(result)
         self.last_response = result
