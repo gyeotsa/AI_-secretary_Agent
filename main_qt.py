@@ -114,6 +114,10 @@ class JarvisApp:
         self.window.show_user_text(text)
         self.state_machine.start_listening()
         
+        # LISTENING 상태에서 사운드바 활성화: speaking=False, audio level 설정
+        self.window.set_soundbar_speaking(False)
+        self.window.set_soundbar_audio_level(50)  # 임시로 50% 레벨로 설정
+        
         if self._is_processing_ai:
             print("[DEBUG] Already processing AI, skipping")
             return
@@ -358,8 +362,13 @@ class JarvisApp:
             traceback.print_exc()
             print("💡 pyttsx3를 설치하세요: pip install pyttsx3")
         finally:
-            # 사운드바 리셋
-            QTimer.singleShot(0, lambda: self.window.reset_soundbar())
+            # 사운드바 리셋: speaking을 False로 설정하고 리셋
+            QTimer.singleShot(0, lambda: self._reset_soundbars())
+    
+    def _reset_soundbars(self):
+        # 사운드바를 초기 상태로 돌리기
+        self.window.set_soundbar_speaking(False)
+        self.window.reset_soundbar()
     
     def _listen_from_mic(self):
         # 음성 입력 처리

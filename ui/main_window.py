@@ -594,8 +594,13 @@ class JarvisMainWindow(QWidget):
             mini_height = 50  # 세로 50으로
             x = screen.width() - mini_width - 20
             y = 20
+            # 먼저 크기 제한을 풀고
+            self.setMinimumSize(1, 1)
+            self.setMaximumSize(16777215, 16777215)
+            # 그 다음 위치와 크기 설정
             self.setGeometry(x, y, mini_width, mini_height)
-            self.setFixedSize(mini_width, mini_height)  # 크기 강제 고정
+            # 마지막으로 크기 강제 고정
+            self.setFixedSize(mini_width, mini_height)
             # 미니 모드일 때 레이아웃 여백 완전히 없애기
             self.main_layout.setContentsMargins(0, 0, 0, 0)
             self.main_layout.setSpacing(0)
@@ -608,8 +613,9 @@ class JarvisMainWindow(QWidget):
         elif self.window_mode == "mini":
             self.window_mode = "maximized"
             self.size_btn.setText("□")
-            self.setMinimumSize(100, 100)  # 최소 크기 해제
-            self.setMaximumSize(16777215, 16777215)  # 최대 크기 해제
+            # 크기 제한을 풀고
+            self.setMinimumSize(100, 100)
+            self.setMaximumSize(16777215, 16777215)
             self.mini_control_bar.hide()
             self.mini_sound_bar.hide()
             self.showMaximized()
@@ -618,8 +624,9 @@ class JarvisMainWindow(QWidget):
         else:
             self.window_mode = "normal"
             self.size_btn.setText("□")
-            self.setMinimumSize(100, 100)  # 최소 크기 해제
-            self.setMaximumSize(16777215, 16777215)  # 최대 크기 해제
+            # 크기 제한을 풀고
+            self.setMinimumSize(100, 100)
+            self.setMaximumSize(16777215, 16777215)
             self.showNormal()
             self.setGeometry(self.normal_geometry)
             self.mini_control_bar.hide()
