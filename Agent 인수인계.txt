@@ -187,7 +187,8 @@ Jarvis/
 | 2026-06-21 | AI Assistant | Phase 3 하드웨어 확장 구현 (core/hardware.py, 웨이크워드/박수 감지, 툴 추가) |
 | 2026-06-21 | AI Assistant | Phase 4 ReAct 자율 에이전트 구현 (core/react.py, --react 옵션 추가) |
 | 2026-06-21 | AI Assistant | Phase 4 멀티모달 구현 (core/multimodal.py, analyze_image, extract_text_from_pdf 툴 추가) |
+| 2026-07-15 | AI Assistant | [Fix] core/tools.py TTS 오류 수정: pyttsx3 engine을 인스턴스 변수로 유지하여 재사용 |
 
 ---
 
-**마지막 업데이트: 2026-06-21
+**마지막 업데이트: 2026-07-15

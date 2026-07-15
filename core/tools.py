@@ -38,6 +38,8 @@ class ToolExecutor:
         self.scheduler_manager = get_scheduler_manager()
         self.hardware_manager = get_hardware_manager()
         self.multimodal_manager = get_multimodal_manager()
+        # TTS engine
+        self._tts_engine = None
 
     def read_file(self, path: str) -> str:
         is_valid, error_msg = self.safety.validate_path(path)
@@ -148,18 +150,22 @@ class ToolExecutor:
             return "오류: pyttsx3가 설치되지 않았습니다. requirements.txt를 확인하세요."
         
         try:
-            engine = pyttsx3.init()
-            # 한국어 음성 설정 (가능한 경우)
-            voices = engine.getProperty('voices')
-            for voice in voices:
-                if 'ko' in voice.languages or 'Korean' in voice.name:
-                    engine.setProperty('voice', voice.id)
-                    break
+            # TTS engine이 초기화되지 않았다면 초기화
+            if self._tts_engine is None:
+                self._tts_engine = pyttsx3.init()
+                # 한국어 음성 설정 (가능한 경우)
+                voices = self._tts_engine.getProperty('voices')
+                for voice in voices:
+                    if 'ko' in str(voice.languages).lower() or 'korean' in voice.name.lower():
+                        self._tts_engine.setProperty('voice', voice.id)
+                        break
             
-            engine.say(text)
-            engine.runAndWait()
+            self._tts_engine.say(text)
+            self._tts_engine.runAndWait()
             return f"음성으로 읽어주었습니다: {text}"
         except Exception as e:
+            # 오류 발생시 engine 재초기화
+            self._tts_engine = None
             return f"TTS 오류: {str(e)}"
 
     def listen(self, duration: int = 3) -> str:
