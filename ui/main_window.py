@@ -134,6 +134,11 @@ class SoundBarWidget(QWidget):
             self.bar_heights[i] = max(0, min(28, int(height + offset)))
         self.update()
         
+    def set_audio_level(self, level):
+        """호환성 유지용 메서드: 단일 레벨로 사운드바 업데이트"""
+        freq_bands = [level, level, level]
+        self.set_audio_data(level, freq_bands)
+        
     def reset(self):
         self.is_active = False
         self.bar_heights = [0] * self.bar_count
@@ -215,6 +220,11 @@ class CircularSoundBarWidget(QWidget):
             offset = random.randint(-2, 2)
             self.bar_heights[i] = max(0, min(45, int(height + offset)))
         self.update()
+        
+    def set_audio_level(self, level):
+        """호환성 유지용 메서드: 단일 레벨로 원형 사운드바 업데이트"""
+        freq_bands = [level, level, level]
+        self.set_audio_data(level, freq_bands)
         
     def reset(self):
         self.is_active = False
@@ -605,7 +615,8 @@ class JarvisMainWindow(QWidget):
                     self.circular_sound_bar.set_speaking(True)
                 else:
                     self.circular_sound_bar.set_speaking(False)
-                self.circular_sound_bar.set_audio_level(60)  # 적절한 오디오 레벨로 활성화
+                freq_bands = [60, 60, 60]
+                self.circular_sound_bar.set_audio_data(60, freq_bands)  # 적절한 오디오 레벨로 활성화
             else:
                 self.circular_sound_bar.reset()
             
@@ -677,7 +688,8 @@ class JarvisMainWindow(QWidget):
                     self.mini_sound_bar.set_speaking(True)
                 else:
                     self.mini_sound_bar.set_speaking(False)
-                self.mini_sound_bar.set_audio_level(60)
+                freq_bands = [60, 60, 60]
+                self.mini_sound_bar.set_audio_data(60, freq_bands)
             else:
                 self.mini_sound_bar.reset()
                 
@@ -699,7 +711,8 @@ class JarvisMainWindow(QWidget):
                     self.circular_sound_bar.set_speaking(True)
                 else:
                     self.circular_sound_bar.set_speaking(False)
-                self.circular_sound_bar.set_audio_level(60)
+                freq_bands = [60, 60, 60]
+                self.circular_sound_bar.set_audio_data(60, freq_bands)
             else:
                 self.circular_sound_bar.reset()
                 
@@ -722,7 +735,8 @@ class JarvisMainWindow(QWidget):
                     self.circular_sound_bar.set_speaking(True)
                 else:
                     self.circular_sound_bar.set_speaking(False)
-                self.circular_sound_bar.set_audio_level(60)
+                freq_bands = [60, 60, 60]
+                self.circular_sound_bar.set_audio_data(60, freq_bands)
             else:
                 self.circular_sound_bar.reset()
                 
