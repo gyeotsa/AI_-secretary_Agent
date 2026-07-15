@@ -207,9 +207,9 @@ class JarvisMainWindow(QWidget):
         self.setGeometry(x, y, window_width, window_height)
         self.normal_geometry = self.geometry()
         
-        main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        self.main_layout = QVBoxLayout()
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
         
         # 일반 모드용 드래그 탭
         self.drag_tab = DragTab(self)
@@ -280,7 +280,7 @@ class JarvisMainWindow(QWidget):
         self.close_btn.clicked.connect(self.close_requested.emit)  # 종료 시그널 보내기
         tab_layout.addWidget(self.close_btn)
         
-        main_layout.addWidget(self.drag_tab)
+        self.main_layout.addWidget(self.drag_tab)
         
         # 미니 모드용 컨트롤 바
         self.mini_control_bar = MiniControlBar(self)
@@ -288,12 +288,12 @@ class JarvisMainWindow(QWidget):
         self.mini_control_bar.minimize_btn.clicked.connect(self.showMinimized)
         self.mini_control_bar.size_btn.clicked.connect(self.toggle_window_mode)
         self.mini_control_bar.close_btn.clicked.connect(self.close_requested.emit)  # 종료 시그널 보내기
-        main_layout.addWidget(self.mini_control_bar)
+        self.main_layout.addWidget(self.mini_control_bar)
         
         # 미니 모드용 사운드바 (다른 위치에 배치)
         self.mini_sound_bar = SoundBarWidget(self)
         self.mini_sound_bar.hide()
-        main_layout.addWidget(self.mini_sound_bar)
+        self.main_layout.addWidget(self.mini_sound_bar)
         
         self.center_widget = QWidget()
         center_layout = QVBoxLayout(self.center_widget)
@@ -345,9 +345,9 @@ class JarvisMainWindow(QWidget):
         center_layout.addStretch()
         center_layout.addWidget(self.text_input)
         
-        main_layout.addWidget(self.center_widget, 1)
+        self.main_layout.addWidget(self.center_widget, 1)
         
-        self.setLayout(main_layout)
+        self.setLayout(self.main_layout)
         self.show()
     
     def paintEvent(self, event):
@@ -497,11 +497,14 @@ class JarvisMainWindow(QWidget):
             self.size_btn.setText("□")
             self.normal_geometry = self.geometry()
             screen = QApplication.primaryScreen().geometry()
-            mini_width = 180  # 가로를 적당히 줄임
-            mini_height = 50  # 세로를 더 짧게
+            mini_width = 160  # 가로를 더 줄임
+            mini_height = 45  # 세로를 더 줄임
             x = screen.width() - mini_width - 20
             y = 20
             self.setGeometry(x, y, mini_width, mini_height)
+            # 미니 모드일 때 레이아웃 여백 완전히 없애기
+            self.main_layout.setContentsMargins(0, 0, 0, 0)
+            self.main_layout.setSpacing(0)
             self.center_widget.hide()
             self.drag_tab.hide()
             self.mini_control_bar.show()
