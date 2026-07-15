@@ -92,7 +92,7 @@ class JarvisApp:
         self.console_reader.start()
         
         # 자동으로 지속적인 음성 감지 시작
-        print("🎤 자동으로 음성 감지를 시작합니다...")
+        print("[마이크] 자동으로 음성 감지를 시작합니다...")
         self._start_continuous_listen()
     
     def _on_console_input(self, user_input: str):

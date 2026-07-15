@@ -41,7 +41,7 @@ class HardwareManager:
         self.on_text_detected = on_text_callback
         
         def continuous_detect():
-            print("🎤 지속적인 음성 감지 시작...")
+            print("[마이크] 지속적인 음성 감지 시작...")
             fs = 16000
             silence_threshold = 2  # 2초 무음 시 전송 (보스 요청)
             silence_start = None
@@ -63,13 +63,13 @@ class HardwareManager:
                         text = result["text"].strip().lower()
                         
                         if "자비스" in text or "자비" in text:
-                            print(f"\n✅ 웨이크워드 감지! '{text}'")
+                            print(f"\n[웨이크워드] 감지! '{text}'")
                             is_listening = True
                             # "자비스"나 "자비" 텍스트를 제외한 나머지 텍스트를 current_text에 추가
                             cleaned_text = text.replace("자비스", "").replace("자비", "").strip()
                             if cleaned_text:
                                 current_text = cleaned_text
-                                print(f"🎙️ 감지된 명령: {current_text}")
+                                print(f"[명령] 감지된 명령: {current_text}")
                                 silence_start = None
                             else:
                                 current_text = ""
@@ -85,10 +85,10 @@ class HardwareManager:
                             if current_time - last_clap_time_local > 0.3:
                                 clap_count_local += 1
                                 last_clap_time_local = current_time
-                                print(f"👏 박수 감지! (총 {clap_count_local}번)")
+                                print(f"[박수] 감지! (총 {clap_count_local}번)")
                                 
                                 if clap_count_local >= 2:
-                                    print("🎵 두 번 박수 감지! 음성 청취 시작!")
+                                    print("[박수] 두 번 박수 감지! 음성 청취 시작!")
                                     is_listening = True
                                     current_text = ""
                                     silence_start = None
@@ -105,7 +105,7 @@ class HardwareManager:
                         if text:
                             current_text += " " + text
                             current_text = current_text.strip()
-                            print(f"🗣️ 감지된 텍스트: {current_text}")
+                            print(f"[음성] 감지된 텍스트: {current_text}")
                             silence_start = None  # 무음 타이머 리셋
                         else:
                             # 무음 감지
@@ -114,7 +114,7 @@ class HardwareManager:
                             elif time.time() - silence_start > silence_threshold:
                                 # 2초 무음 시 텍스트 전송
                                 if current_text:
-                                    print(f"📨 텍스트 전송: {current_text}")
+                                    print(f"[전송] 텍스트 전송: {current_text}")
                                     if self.on_text_detected:
                                         self.on_text_detected(current_text)
                                 # 리셋
@@ -129,7 +129,7 @@ class HardwareManager:
         self.continuous_listen_thread = threading.Thread(target=continuous_detect, daemon=True)
         self.continuous_listen_thread.start()
         
-        return "✅ 지속적인 음성 감지가 시작되었습니다! '자비스' 라고 부르거나 두 번 박수를 쳐보세요."
+        return "[성공] 지속적인 음성 감지가 시작되었습니다! '자비스' 라고 부르거나 두 번 박수를 쳐보세요."
 
     def stop_continuous_listen(self) -> str:
         if not self.running:
@@ -139,7 +139,7 @@ class HardwareManager:
         if self.continuous_listen_thread:
             self.continuous_listen_thread.join(timeout=2)
         
-        return "✅ 음성 감지가 중지되었습니다."
+        return "[성공] 음성 감지가 중지되었습니다."
 
     def start_wakeword_detection(self) -> str:
         if not SOUND_AVAILABLE:
@@ -151,7 +151,7 @@ class HardwareManager:
         self.running = True
         
         def detect_wakeword():
-            print("🎤 웨이크워드 감지 시작... '자비스' 라고 말하세요!")
+            print("[마이크] 웨이크워드 감지 시작... '자비스' 라고 말하세요!")
             while self.running:
                 try:
                     duration = 2
@@ -163,7 +163,7 @@ class HardwareManager:
                     text = result["text"].strip().lower()
                     
                     if "자비스" in text or "자비" in text:
-                        print(f"\n✅ 웨이크워드 감지! '{text}'")
+                        print(f"\n[웨이크워드] 감지! '{text}'")
                         self._on_wakeword_detected()
                 
                 except Exception as e:
@@ -173,10 +173,10 @@ class HardwareManager:
         self.wakeword_thread = threading.Thread(target=detect_wakeword, daemon=True)
         self.wakeword_thread.start()
         
-        return "✅ 웨이크워드 감지가 시작되었습니다! '자비스' 라고 말해보세요."
+        return "[성공] 웨이크워드 감지가 시작되었습니다! '자비스' 라고 말해보세요."
 
     def _on_wakeword_detected(self):
-        print("🤖 네? 어떤 도움이 필요하신가요?")
+        print("[자비스] 네? 어떤 도움이 필요하신가요?")
 
     def stop_wakeword_detection(self) -> str:
         if not self.running:
@@ -186,7 +186,7 @@ class HardwareManager:
         if self.wakeword_thread:
             self.wakeword_thread.join(timeout=2)
         
-        return "✅ 웨이크워드 감지가 중지되었습니다."
+        return "[성공] 웨이크워드 감지가 중지되었습니다."
 
     def start_clap_detection(self) -> str:
         if not SOUND_AVAILABLE:
