@@ -137,7 +137,7 @@ class JarvisMainWindow(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
         # 상태에 따라 색상 변경
-        if self.current_state in [State.PROCESSING, State.EXECUTING]:
+        if self.current_state in [State.PROCESSING, State.EXECUTING, State.RESPONDING]:
             # 바이올렛 색상
             gradient = QRadialGradient(self.width()/2, self.height()/2, self.width()/2)
             gradient.setColorAt(0.0, QColor(40, 0, 60))
@@ -279,7 +279,7 @@ class JarvisMainWindow(QWidget):
         }
         self.status_label.setText(state_texts.get(state, "SYSTEM READY"))
         # 상태에 따라 상태 라벨 색상 변경
-        if state in [State.PROCESSING, State.EXECUTING]:
+        if state in [State.PROCESSING, State.EXECUTING, State.RESPONDING]:
             self.status_label.setStyleSheet("color: #9945ff; letter-spacing: 3px;")
         else:
             self.status_label.setStyleSheet("color: #00d4ff; letter-spacing: 3px;")
