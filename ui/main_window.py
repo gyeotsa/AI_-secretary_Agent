@@ -60,7 +60,7 @@ class JarvisMainWindow(QWidget):
         # DragTab
         self.drag_tab = DragTab(self)
         tab_layout = QHBoxLayout(self.drag_tab)
-        tab_layout.setContentsMargins(20, 10, 20, 0)
+        tab_layout.setContentsMargins(20, 10, 10, 0)
         
         title_label = QLabel("JARVIS")
         title_font = QFont("Orbitron", 20, QFont.Weight.Bold)
@@ -69,6 +69,60 @@ class JarvisMainWindow(QWidget):
         tab_layout.addWidget(title_label)
         
         tab_layout.addStretch()
+        
+        # 윈도우 컨트롤 버튼
+        button_style = """
+            QPushButton {
+                background-color: transparent;
+                color: #00d4ff;
+                border: none;
+                font-size: 20px;
+                font-weight: bold;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 212, 255, 30);
+            }
+            QPushButton:pressed {
+                background-color: rgba(0, 212, 255, 60);
+            }
+        """
+        
+        # 최소화 버튼
+        self.minimize_btn = QPushButton("─")
+        self.minimize_btn.setStyleSheet(button_style)
+        self.minimize_btn.setFixedSize(40, 40)
+        self.minimize_btn.clicked.connect(self.showMinimized)
+        tab_layout.addWidget(self.minimize_btn)
+        
+        # 최대화/복원 버튼
+        self.maximize_btn = QPushButton("□")
+        self.maximize_btn.setStyleSheet(button_style)
+        self.maximize_btn.setFixedSize(40, 40)
+        self.maximize_btn.clicked.connect(self.toggle_maximize)
+        tab_layout.addWidget(self.maximize_btn)
+        
+        # 종료 버튼
+        self.close_btn = QPushButton("✕")
+        self.close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #ff4444;
+                border: none;
+                font-size: 20px;
+                font-weight: bold;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 68, 68, 30);
+            }
+            QPushButton:pressed {
+                background-color: rgba(255, 68, 68, 60);
+            }
+        """)
+        self.close_btn.setFixedSize(40, 40)
+        self.close_btn.clicked.connect(self.close)
+        tab_layout.addWidget(self.close_btn)
         
         main_layout.addWidget(self.drag_tab)
         
@@ -284,6 +338,14 @@ class JarvisMainWindow(QWidget):
         else:
             self.status_label.setStyleSheet("color: #00d4ff; letter-spacing: 3px;")
         self.update()  # UI 업데이트
+    
+    def toggle_maximize(self):
+        if self.isMaximized():
+            self.showNormal()
+            self.maximize_btn.setText("□")
+        else:
+            self.showMaximized()
+            self.maximize_btn.setText("◱")
     
     def show_user_text(self, text: str):
         self.user_text_label.setText(f"> {text}")

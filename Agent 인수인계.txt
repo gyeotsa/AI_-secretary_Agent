@@ -8,7 +8,9 @@
 ## 📌 이번 업데이트 (2026-07-15) 주요 변경사항
 - ✅ **프로젝트 구조 통합**: Jarvis 폴더와 AI_-secretary_Agent 폴더를 하나로 통합, 프로젝트 루트에 모든 파일 배치
 - ✅ [Fix] core/tools.py TTS 오류 수정: pyttsx3 engine을 인스턴스 변수로 유지하여 재사용
-- ✅ [Feat] UI 상태 색상 강화: PROCESSING, EXECUTING, RESPONDING 상태에서 바이올렛 색상으로 변경, 여러 번 호출해도 안정적으로 작동
+- ✅ **UI 상태 색상 강화**: PROCESSING, EXECUTING, RESPONDING 상태에서 바이올렛 색상으로 변경
+- ✅ [Feat] Ollama 모델을 llama3.1:8b-instruct-q3_K_S로 변경: 가장 작고 빠른 3비트 양자화 모델
+- ✅ [Feat] UI에 윈도우 컨트롤 버튼 추가: 최소화, 최대화/복원, 종료 버튼
 - ✅ **TTS 테스트 완료**: 한국어 음성이 정상적으로 출력되는지 확인 완료
 - ✅ **main_qt.py 정상 실행 확인**: PyQt6 UI가 정상적으로 표시되고 콘솔 입력이 작동하는지 확인
 - ✅ **자동 음성 감지 시작**: 프로그램 시작시 자동으로 지속적인 음성 감지가 시작되도록 변경
