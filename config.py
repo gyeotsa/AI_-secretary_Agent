@@ -1,8 +1,46 @@
 import os
+import sys
 from dotenv import load_dotenv
 from dataclasses import dataclass, field
 
 load_dotenv()
+
+
+def request_windows_permissions():
+    """Windows에서 마이크와 카메라 권한 요청"""
+    if sys.platform != "win32":
+        return  # Windows가 아니면 건너뜀
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        # Windows API 함수 로드
+        shell32 = ctypes.windll.shell32
+        ole32 = ctypes.windll.ole32
+
+        # COM 초기화
+        ole32.CoInitialize(None)
+
+        # 권한 요청을 위한 ShellExecute 호출
+        # 마이크 권한 요청
+        try:
+            shell32.ShellExecuteW(
+                None, "open", "ms-settings:privacy-microphone", None, None, 1
+            )
+        except Exception as e:
+            print(f"[알림] 마이크 권한 요청 실패: {e}")
+
+        # 카메라 권한 요청
+        try:
+            shell32.ShellExecuteW(
+                None, "open", "ms-settings:privacy-webcam", None, None, 1
+            )
+        except Exception as e:
+            print(f"[알림] 카메라 권한 요청 실패: {e}")
+
+    except Exception as e:
+        print(f"[알림] 권한 요청 중 오류 발생: {e}")
 
 
 @dataclass

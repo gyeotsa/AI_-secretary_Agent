@@ -5,7 +5,7 @@ import uuid
 import threading
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer, QObject, pyqtSignal
-from config import Config
+from config import Config, request_windows_permissions
 from core.state_machine import StateMachine, State
 from core.mode_manager import ModeManager
 from core.memory import get_memory
@@ -417,6 +417,9 @@ class JarvisApp:
         return self.app.exec()
 
 if __name__ == "__main__":
+    # Windows 권한 요청
+    request_windows_permissions()
+    
     # 데이터 폴더 생성
     if not os.path.exists("data"):
         os.makedirs("data")
