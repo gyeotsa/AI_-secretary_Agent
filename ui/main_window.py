@@ -1,20 +1,20 @@
 import sys
-from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, QPushButton,
-                             QFrame, QHBoxLayout, QFileDialog, QLineEdit)
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal
-from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont
+import math
+from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, 
+                             QFrame, QHBoxLayout, QLineEdit)
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer
+from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient
 from .visualizer import AudioVisualizer
 from core.state_machine import State
 
 class DragTab(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(40)
+        self.setFixedHeight(50)
         self.drag_position = None
         self.setStyleSheet("""
             QFrame {
                 background: transparent;
-                border-bottom: 1px solid rgba(0, 220, 255, 22);
             }
         """)
     
@@ -28,14 +28,17 @@ class DragTab(QFrame):
             self.window().move(event.globalPosition().toPoint() - self.drag_position)
             event.accept()
 
-class DexterMainWindow(QWidget):
+class JarvisMainWindow(QWidget):
     command_triggered = pyqtSignal(str)
-    text_submitted = pyqtSignal(str)  # 텍스트 제출 시그널 추가
+    text_submitted = pyqtSignal(str)
     
     def __init__(self):
         super().__init__()
         self._allow_close = True
+        self.arc_angle = 0
+        self.pulse_value = 0
         self.init_ui()
+        self.start_animations()
     
     def init_ui(self):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | 
@@ -43,9 +46,8 @@ class DexterMainWindow(QWidget):
                            Qt.WindowType.Tool)
         
         screen = QApplication.primaryScreen().geometry()
-        # 창 크기를 적절히 조절 (전체 화면이 아니라 중앙에 작게)
-        window_width = 600
-        window_height = 500
+        window_width = 700
+        window_height = 600
         x = (screen.width() - window_width) // 2
         y = (screen.height() - window_height) // 2
         self.setGeometry(x, y, window_width, window_height)
@@ -57,112 +59,172 @@ class DexterMainWindow(QWidget):
         # DragTab
         self.drag_tab = DragTab(self)
         tab_layout = QHBoxLayout(self.drag_tab)
-        tab_layout.setContentsMargins(10, 0, 10, 0)
+        tab_layout.setContentsMargins(20, 10, 20, 0)
         
-        title_label = QLabel("DEXTER")
-        title_font = QFont("Consolas", 14, QFont.Weight.Bold)
+        title_label = QLabel("JARVIS")
+        title_font = QFont("Orbitron", 20, QFont.Weight.Bold)
         title_label.setFont(title_font)
-        title_label.setStyleSheet("color: rgba(0, 220, 255, 100); letter-spacing: 4px;")
+        title_label.setStyleSheet("color: #00d4ff; letter-spacing: 8px;")
         tab_layout.addWidget(title_label)
         
-        pill_handle = QFrame()
-        pill_handle.setFixedSize(64, 4)
-        pill_handle.setStyleSheet("""
-            QFrame {
-                background: rgba(0, 220, 255, 55);
-                border-radius: 2px;
-            }
-        """)
-        tab_layout.addStretch()
-        tab_layout.addWidget(pill_handle)
         tab_layout.addStretch()
         
         main_layout.addWidget(self.drag_tab)
         
-        # Visualizer
-        self.visualizer = AudioVisualizer(self)
-        main_layout.addWidget(self.visualizer, 1)
+        # 중앙 컨텐츠 영역
+        center_widget = QWidget()
+        center_layout = QVBoxLayout(center_widget)
+        center_layout.setContentsMargins(30, 20, 30, 20)
         
-        # Info Panel
-        info_panel = QFrame()
-        info_panel.setFixedHeight(130)  # 높이 조절
-        info_layout = QVBoxLayout(info_panel)
+        # 상태 표시 라벨
+        self.status_label = QLabel("SYSTEM READY")
+        status_font = QFont("Orbitron", 12)
+        self.status_label.setFont(status_font)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_label.setStyleSheet("color: #00d4ff; letter-spacing: 3px;")
         
-        self.state_label = QLabel("상태: IDLE")
-        self.user_text_label = QLabel("사용자 발화: ")
-        self.assistant_text_label = QLabel("응답: ")
+        # 사용자 텍스트 라벨
+        self.user_text_label = QLabel("")
+        user_font = QFont("Consolas", 11)
+        self.user_text_label.setFont(user_font)
+        self.user_text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.user_text_label.setStyleSheet("color: #00a8cc; padding: 10px;")
+        self.user_text_label.setWordWrap(True)
         
-        # 텍스트 입력 필드 추가
+        # 어시스턴트 텍스트 라벨
+        self.assistant_text_label = QLabel("")
+        assistant_font = QFont("Consolas", 11)
+        self.assistant_text_label.setFont(assistant_font)
+        self.assistant_text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.assistant_text_label.setStyleSheet("color: #00ffcc; padding: 10px;")
+        self.assistant_text_label.setWordWrap(True)
+        
+        # 텍스트 입력 필드
         self.text_input = QLineEdit()
-        self.text_input.setPlaceholderText("자비스에게 질문하세요...")
+        self.text_input.setPlaceholderText("SPEAK OR TYPE YOUR COMMAND...")
         self.text_input.setStyleSheet("""
             QLineEdit {
-                background: rgba(0, 0, 0, 150);
-                color: rgba(0, 220, 255, 220);
-                border: 1px solid rgba(0, 220, 255, 100);
-                border-radius: 5px;
-                padding: 8px;
-                font-size: 12px;
+                background: rgba(0, 20, 40, 200);
+                color: #00d4ff;
+                border: 2px solid #00d4ff;
+                border-radius: 20px;
+                padding: 15px 20px;
+                font-size: 14px;
+                font-family: Consolas;
+            }
+            QLineEdit:focus {
+                border: 2px solid #00ffcc;
             }
         """)
         self.text_input.returnPressed.connect(self._on_text_submitted)
         
-        button_layout = QHBoxLayout()
-        self.work_button = QPushButton("WORK")
-        self.game_button = QPushButton("GAME")
-        self.listen_toggle = QPushButton("🔴 마이크 OFF")  # 토글 버튼으로 변경
-        self.listen_toggle.setCheckable(True)  # 체크 가능하게
-        self.speak_button = QPushButton("🔊 응답 다시 듣기")
-        self.add_doc_button = QPushButton("📄 문서 추가")
-        self.view_profile_button = QPushButton("👤 프로필 보기")
+        center_layout.addStretch()
+        center_layout.addWidget(self.status_label)
+        center_layout.addSpacing(20)
+        center_layout.addWidget(self.user_text_label)
+        center_layout.addWidget(self.assistant_text_label)
+        center_layout.addStretch()
+        center_layout.addWidget(self.text_input)
         
-        self.work_button.clicked.connect(lambda: self.command_triggered.emit("WORK"))
-        self.game_button.clicked.connect(lambda: self.command_triggered.emit("GAME"))
-        self.listen_toggle.toggled.connect(self._on_listen_toggled)  # 토글 시그널 연결
-        self.speak_button.clicked.connect(lambda: self.command_triggered.emit("SPEAK"))
-        self.add_doc_button.clicked.connect(lambda: self._open_file_dialog())
-        self.view_profile_button.clicked.connect(lambda: self.command_triggered.emit("VIEW_PROFILE"))
-        
-        button_layout.addWidget(self.work_button)
-        button_layout.addWidget(self.game_button)
-        button_layout.addWidget(self.listen_toggle)
-        button_layout.addWidget(self.speak_button)
-        
-        # 두 번째 버튼 레이아웃
-        button_layout2 = QHBoxLayout()
-        button_layout2.addWidget(self.add_doc_button)
-        button_layout2.addWidget(self.view_profile_button)
-        
-        info_layout.addWidget(self.state_label)
-        info_layout.addWidget(self.user_text_label)
-        info_layout.addWidget(self.assistant_text_label)
-        info_layout.addWidget(self.text_input)
-        info_layout.addLayout(button_layout)
-        info_layout.addLayout(button_layout2)
-        
-        main_layout.addWidget(info_panel)
+        main_layout.addWidget(center_widget, 1)
         
         self.setLayout(main_layout)
         self.show()
     
     def paintEvent(self, event):
         painter = QPainter(self)
-        gradient = QLinearGradient(0, 0, 0, self.height())
-        gradient.setColorAt(0.0, QColor(2, 4, 12))
-        gradient.setColorAt(0.45, QColor(6, 12, 30))
-        gradient.setColorAt(0.85, QColor(4, 8, 20))
-        gradient.setColorAt(1.0, QColor(1, 2, 8))
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # 배경 그라데이션
+        gradient = QRadialGradient(self.width()/2, self.height()/2, self.width()/2)
+        gradient.setColorAt(0.0, QColor(0, 30, 60))
+        gradient.setColorAt(0.5, QColor(0, 15, 30))
+        gradient.setColorAt(1.0, QColor(0, 5, 10))
         painter.fillRect(self.rect(), gradient)
+        
+        # 원형 테두리 그리기
+        center_x = self.width() // 2
+        center_y = self.height() // 2
+        base_radius = min(self.width(), self.height()) // 3
+        
+        # 외부 원
+        pen = QPen(QColor(0, 212, 255, 100), 2)
+        painter.setPen(pen)
+        painter.drawEllipse(QPoint(center_x, center_y), base_radius + 50, base_radius + 50)
+        
+        # 중간 원
+        pen = QPen(QColor(0, 212, 255, 150), 2)
+        painter.setPen(pen)
+        painter.drawEllipse(QPoint(center_x, center_y), base_radius + 30, base_radius + 30)
+        
+        # 내부 원 - 회전하는 아크
+        pen = QPen(QColor(0, 255, 204), 3)
+        painter.setPen(pen)
+        rect = [center_x - base_radius, center_y - base_radius, 
+                base_radius * 2, base_radius * 2]
+        
+        # 회전하는 아크 그리기
+        start_angle = self.arc_angle * 16
+        span_angle = 90 * 16
+        painter.drawArc(int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]), 
+                       int(start_angle), int(span_angle))
+        
+        # 반대 방향 아크
+        start_angle2 = (self.arc_angle + 180) * 16
+        painter.drawArc(int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]), 
+                       int(start_angle2), int(span_angle))
+        
+        # 중앙 코어 - 펄싱 효과
+        core_radius = 30 + self.pulse_value * 10
+        core_gradient = QRadialGradient(center_x, center_y, core_radius)
+        core_gradient.setColorAt(0.0, QColor(0, 255, 204, 200))
+        core_gradient.setColorAt(0.5, QColor(0, 212, 255, 100))
+        core_gradient.setColorAt(1.0, QColor(0, 212, 255, 0))
+        painter.setBrush(core_gradient)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QPoint(center_x, center_y), int(core_radius), int(core_radius))
+        
+        # 스캔 라인 효과
+        scan_y = center_y + math.sin(self.arc_angle * math.pi / 180) * 100
+        pen = QPen(QColor(0, 212, 255, 50), 1)
+        painter.setPen(pen)
+        painter.drawLine(0, int(scan_y), self.width(), int(scan_y))
+    
+    def start_animations(self):
+        # 아크 회전 애니메이션
+        self.arc_timer = QTimer()
+        self.arc_timer.timeout.connect(self.update_arc)
+        self.arc_timer.start(20)
+        
+        # 펄스 애니메이션
+        self.pulse_timer = QTimer()
+        self.pulse_timer.timeout.connect(self.update_pulse)
+        self.pulse_timer.start(100)
+    
+    def update_arc(self):
+        self.arc_angle = (self.arc_angle + 2) % 360
+        self.update()
+    
+    def update_pulse(self):
+        self.pulse_value = (self.pulse_value + 0.1) % (2 * math.pi)
+        self.update()
     
     def update_state(self, state: State):
-        self.state_label.setText(f"상태: {state.value}")
-        self.visualizer.update_state(state)
+        state_texts = {
+            State.IDLE: "SYSTEM READY",
+            State.LISTENING: "LISTENING...",
+            State.PROCESSING: "PROCESSING...",
+            State.EXECUTING: "EXECUTING...",
+            State.RESPONDING: "RESPONDING...",
+            State.ERROR: "SYSTEM ERROR"
+        }
+        self.status_label.setText(state_texts.get(state, "SYSTEM READY"))
     
     def show_user_text(self, text: str):
-        self.user_text_label.setText(f"사용자 발화: {text}")
+        self.user_text_label.setText(f"> {text}")
     
     def show_assistant_text(self, text: str):
-        self.assistant_text_label.setText(f"응답: {text}")
+        self.assistant_text_label.setText(text)
     
     def closeEvent(self, event):
         if not self._allow_close:
@@ -174,29 +236,8 @@ class DexterMainWindow(QWidget):
         if event.key() == Qt.Key.Key_Escape:
             self.close()
     
-    def _open_file_dialog(self):
-        # 파일 다이얼로그 열기
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "문서 선택", "", "텍스트 파일 (*.txt);;모든 파일 (*)"
-        )
-        if file_path:
-            self.command_triggered.emit(f"ADD_DOC:{file_path}")
-    
     def _on_text_submitted(self):
-        # 텍스트 입력 제출 시
-        print("[DEBUG] ui/main_window.py: _on_text_submitted called!")
         text = self.text_input.text().strip()
-        print(f"[DEBUG] ui/main_window.py: Input text: '{text}'")
         if text:
-            print(f"[DEBUG] ui/main_window.py: Emitting text_submitted signal!")
             self.text_submitted.emit(text)
             self.text_input.clear()
-    
-    def _on_listen_toggled(self, checked: bool):
-        # 토글 버튼 상태 변경 시
-        if checked:
-            self.listen_toggle.setText("🟢 마이크 ON")
-            self.command_triggered.emit("LISTEN_START")
-        else:
-            self.listen_toggle.setText("🔴 마이크 OFF")
-            self.command_triggered.emit("LISTEN_STOP")

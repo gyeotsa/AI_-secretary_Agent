@@ -14,7 +14,7 @@ from core.tools import get_tool_executor
 from core.user_profile import get_user_profile
 from core.rag import get_rag_manager
 from core.hardware import get_hardware_manager
-from ui.main_window import DexterMainWindow
+from ui.main_window import JarvisMainWindow
 
 
 class ConsoleReader(QObject):
@@ -42,10 +42,10 @@ class ConsoleReader(QObject):
             except (EOFError, KeyboardInterrupt):
                 break
 
-class DexterApp:
+class JarvisApp:
     def __init__(self):
         self.app = QApplication(sys.argv)
-        self.window = DexterMainWindow()
+        self.window = JarvisMainWindow()
         self.state_machine = StateMachine()
         self.mode_manager = ModeManager()
         self.memory = get_memory()
@@ -53,11 +53,11 @@ class DexterApp:
         self.tool_executor = get_tool_executor()
         self.user_profile = get_user_profile()
         self.rag_manager = get_rag_manager()
-        self.hardware_manager = get_hardware_manager()  # 하드웨어 매니저 초기화
+        self.hardware_manager = get_hardware_manager()
         
         self.messages = []
         self.session_id = str(uuid.uuid4())
-        self.last_response = ""  # 마지막 응답 저장
+        self.last_response = ""
         
         self._is_processing_ai = False
         
@@ -67,7 +67,6 @@ class DexterApp:
         
         # 시그널 연결
         self.state_machine.state_changed.connect(self._on_state_changed)
-        self.window.command_triggered.connect(self._on_command_triggered)
         self.window.text_submitted.connect(self._on_user_input)
         
         # 타이머 설정
@@ -400,5 +399,5 @@ if __name__ == "__main__":
     if not os.path.exists("data"):
         os.makedirs("data")
     
-    dexter = DexterApp()
-    sys.exit(dexter.run())
+    jarvis = JarvisApp()
+    sys.exit(jarvis.run())
