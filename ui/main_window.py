@@ -377,10 +377,9 @@ class JarvisMainWindow(QWidget):
         center_layout = QVBoxLayout(self.center_widget)
         center_layout.setContentsMargins(30, 20, 30, 20)
         
-        # 원형 사운드바 추가
+        # 원형 사운드바 추가 (항상 보여주기)
         self.circular_sound_bar = CircularSoundBarWidget(self)
         self.circular_sound_bar.setFixedSize(300, 300)
-        self.circular_sound_bar.hide()  # 기본은 숨겨놓고 필요할 때 보여줌
         
         self.status_label = QLabel("SYSTEM READY")
         status_font = QFont("Orbitron", 11)
@@ -575,14 +574,37 @@ class JarvisMainWindow(QWidget):
             else:
                 self.status_label.setStyleSheet("color: #00d4ff; letter-spacing: 3px;")
             
-            # LISTENING이나 RESPONDING일 때 원형 사운드바 보여주기
+            # LISTENING/RESPONDING 상태일 때 사운드바 활성화, IDLE일 때 리셋
             if state in [State.LISTENING, State.RESPONDING]:
-                self.circular_sound_bar.show()
+                # 사용자 입력은 speaking=False, 자비스 답변은 speaking=True로 처리
+                if state == State.RESPONDING:
+                    self.circular_sound_bar.set_speaking(True)
+                else:
+                    self.circular_sound_bar.set_speaking(False)
+                self.circular_sound_bar.set_audio_level(60)  # 적절한 오디오 레벨로 활성화
             else:
-                self.circular_sound_bar.hide()
                 self.circular_sound_bar.reset()
             
             self.update()
+    
+    def set_soundbar_speaking(self, speaking):
+        # 모든 사운드바의 speaking 상태 설정
+        self.is_speaking = speaking
+        self.sound_bar.set_speaking(speaking)
+        self.mini_sound_bar.set_speaking(speaking)
+        self.circular_sound_bar.set_speaking(speaking)
+    
+    def reset_soundbar(self):
+        # 모든 사운드바 리셋
+        self.sound_bar.reset()
+        self.mini_sound_bar.reset()
+        self.circular_sound_bar.reset()
+    
+    def set_soundbar_audio_level(self, level):
+        # 모든 사운드바에 오디오 레벨 설정
+        self.sound_bar.set_audio_level(level)
+        self.mini_sound_bar.set_audio_level(level)
+        self.circular_sound_bar.set_audio_level(level)
     
     def toggle_window_mode(self):
         if self.window_mode == "normal":
@@ -590,17 +612,21 @@ class JarvisMainWindow(QWidget):
             self.size_btn.setText("□")
             self.normal_geometry = self.geometry()
             screen = QApplication.primaryScreen().geometry()
-            mini_width = 160  # 가로 160으로
-            mini_height = 50  # 세로 50으로
+            mini_width = 160  # 가로 160으로 고정
+            mini_height = 50  # 세로 50으로 고정
             x = screen.width() - mini_width - 20
             y = 20
-            # 먼저 크기 제한을 풀고
-            self.setMinimumSize(1, 1)
+            
+            # 먼저 모든 크기 제한을 완전히 풀기
+            self.setMinimumSize(0, 0)
             self.setMaximumSize(16777215, 16777215)
-            # 그 다음 위치와 크기 설정
+            
+            # 위치와 크기 설정
             self.setGeometry(x, y, mini_width, mini_height)
-            # 마지막으로 크기 강제 고정
+            
+            # 크기를 강제로 고정 (항상 160x50 유지)
             self.setFixedSize(mini_width, mini_height)
+            
             # 미니 모드일 때 레이아웃 여백 완전히 없애기
             self.main_layout.setContentsMargins(0, 0, 0, 0)
             self.main_layout.setSpacing(0)
@@ -608,8 +634,17 @@ class JarvisMainWindow(QWidget):
             self.drag_tab.hide()
             self.mini_control_bar.show()
             self.mini_sound_bar.show()
-            # 미니 모드에서 사운드바 초기 상태 (안 움직이게)
-            self.mini_sound_bar.reset()
+            
+            # 현재 상태에 따라 미니 사운드바 상태 유지
+            if self.current_state in [State.LISTENING, State.RESPONDING]:
+                if self.current_state == State.RESPONDING:
+                    self.mini_sound_bar.set_speaking(True)
+                else:
+                    self.mini_sound_bar.set_speaking(False)
+                self.mini_sound_bar.set_audio_level(60)
+            else:
+                self.mini_sound_bar.reset()
+                
         elif self.window_mode == "mini":
             self.window_mode = "maximized"
             self.size_btn.setText("□")
@@ -621,6 +656,17 @@ class JarvisMainWindow(QWidget):
             self.showMaximized()
             self.drag_tab.show()
             self.center_widget.show()
+            
+            # 원형 사운드바 상태 유지
+            if self.current_state in [State.LISTENING, State.RESPONDING]:
+                if self.current_state == State.RESPONDING:
+                    self.circular_sound_bar.set_speaking(True)
+                else:
+                    self.circular_sound_bar.set_speaking(False)
+                self.circular_sound_bar.set_audio_level(60)
+            else:
+                self.circular_sound_bar.reset()
+                
         else:
             self.window_mode = "normal"
             self.size_btn.setText("□")
@@ -633,6 +679,17 @@ class JarvisMainWindow(QWidget):
             self.mini_sound_bar.hide()
             self.drag_tab.show()
             self.center_widget.show()
+            
+            # 원형 사운드바 상태 유지
+            if self.current_state in [State.LISTENING, State.RESPONDING]:
+                if self.current_state == State.RESPONDING:
+                    self.circular_sound_bar.set_speaking(True)
+                else:
+                    self.circular_sound_bar.set_speaking(False)
+                self.circular_sound_bar.set_audio_level(60)
+            else:
+                self.circular_sound_bar.reset()
+                
         self.update()
     
     def show_user_text(self, text: str):

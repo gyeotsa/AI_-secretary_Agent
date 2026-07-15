@@ -257,20 +257,14 @@ class JarvisApp:
             self.messages.append({"role": "assistant", "content": response_text})
         
         self._is_processing_ai = False
-        print("[DEBUG] 상태를 RESPONDING으로 변경")
-        self.state_machine.start_responding()
-        print("[DEBUG] 2초 후 IDLE로 전환 예정")
-        def go_idle_callback():
-            print("[DEBUG] IDLE 상태로 전환")
-            self.state_machine.go_idle()
-        QTimer.singleShot(2000, go_idle_callback)
         
         # 대화 저장
         self.memory.save_message(self.session_id, "user", self.messages[-2]["content"])
         self.memory.save_message(self.session_id, "assistant", response_text)
         
-        # 자동으로 음성 응답
+        # 자동으로 음성 응답 (RESPONDING 상태로)
         print(f"[DEBUG] TTS 스레드 시작 전, self.last_response: {self.last_response}")
+        self.state_machine.start_responding()  # RESPONDING 상태로 변경
         thread = threading.Thread(target=lambda: self._speak_with_check(self.last_response), daemon=True)
         thread.start()
         print("[DEBUG] TTS 스레드 시작됨")
@@ -283,14 +277,14 @@ class JarvisApp:
             self.window.show_assistant_text(result)
             self.last_response = result
             # 자동으로 음성 응답
-            thread = threading.Thread(target=lambda: self.tool_executor.speak_text(result), daemon=True)
+            thread = threading.Thread(target=lambda: self._speak_with_check(result), daemon=True)
             thread.start()
         elif command == "GAME":
             result = self.mode_manager.activate_game_mode()
             self.window.show_assistant_text(result)
             self.last_response = result
             # 자동으로 음성 응답
-            thread = threading.Thread(target=lambda: self.tool_executor.speak_text(result), daemon=True)
+            thread = threading.Thread(target=lambda: self._speak_with_check(result), daemon=True)
             thread.start()
         elif command == "LISTEN_START":
             # 지속적인 음성 감지 시작
@@ -362,11 +356,13 @@ class JarvisApp:
             traceback.print_exc()
             print("💡 pyttsx3를 설치하세요: pip install pyttsx3")
         finally:
-            # 사운드바 리셋: speaking을 False로 설정하고 리셋
-            QTimer.singleShot(0, lambda: self._reset_soundbars())
+            # TTS가 끝나면 IDLE 상태로 돌아가고 사운드바 리셋
+            QTimer.singleShot(0, lambda: self._reset_all())
     
-    def _reset_soundbars(self):
-        # 사운드바를 초기 상태로 돌리기
+    def _reset_all(self):
+        # 모든 상태를 초기화하고 IDLE로 돌아가기
+        print("[DEBUG] IDLE 상태로 전환")
+        self.state_machine.go_idle()
         self.window.set_soundbar_speaking(False)
         self.window.reset_soundbar()
     
