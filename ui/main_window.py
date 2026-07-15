@@ -32,23 +32,23 @@ class DragTab(QFrame):
 class MiniControlBar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(18)  # 높이를 더 줄임
+        self.setFixedHeight(22)  # 높이 조금 키움
         self.drag_position = None  # 드래그 위치 저장
         self.init_ui()
     
     def init_ui(self):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(2, 0, 2, 0)  # 여백을 거의 없앰
-        layout.setSpacing(1)
+        layout.setContentsMargins(3, 0, 3, 0)  # 여백 조금 키움
+        layout.setSpacing(2)
         
         button_style = """
             QPushButton {
                 background-color: transparent;
                 color: #888888;
                 border: none;
-                font-size: 9px;  # 글씨 크기를 더 줄임
+                font-size: 11px;  # 글씨 크기 조금 키움
                 font-weight: bold;
-                padding: 0px;
+                padding: 1px;
             }
             QPushButton:hover {
                 background-color: rgba(136, 136, 136, 30);
@@ -61,11 +61,11 @@ class MiniControlBar(QFrame):
         
         self.minimize_btn = QPushButton("─")
         self.minimize_btn.setStyleSheet(button_style)
-        self.minimize_btn.setFixedSize(14, 14)  # 버튼 크기를 더 줄임
+        self.minimize_btn.setFixedSize(17, 17)  # 버튼 크기 조금 키움
         
         self.size_btn = QPushButton("□")
         self.size_btn.setStyleSheet(button_style)
-        self.size_btn.setFixedSize(14, 14)
+        self.size_btn.setFixedSize(17, 17)
         
         self.close_btn = QPushButton("✕")
         self.close_btn.setStyleSheet("""
@@ -73,9 +73,9 @@ class MiniControlBar(QFrame):
                 background-color: transparent;
                 color: #888888;
                 border: none;
-                font-size: 9px;
+                font-size: 11px;
                 font-weight: bold;
-                padding: 0px;
+                padding: 1px;
             }
             QPushButton:hover {
                 background-color: rgba(255, 68, 68, 30);
@@ -85,7 +85,7 @@ class MiniControlBar(QFrame):
                 background-color: rgba(255, 68, 68, 60);
             }
         """)
-        self.close_btn.setFixedSize(14, 14)
+        self.close_btn.setFixedSize(17, 17)
         
         layout.addStretch()
         layout.addWidget(self.minimize_btn)
@@ -106,7 +106,7 @@ class MiniControlBar(QFrame):
 class SoundBarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(130, 22)  # 크기를 더 줄임
+        self.setFixedSize(145, 25)  # 크기 조금 키움
         self.bar_count = 12
         self.bar_heights = [0] * self.bar_count
         self.is_speaking = False  # 자비스가 말하는 중인지 여부
@@ -497,8 +497,8 @@ class JarvisMainWindow(QWidget):
             self.size_btn.setText("□")
             self.normal_geometry = self.geometry()
             screen = QApplication.primaryScreen().geometry()
-            mini_width = 145  # 가로 5 늘림
-            mini_height = 45  # 세로 5 늘림
+            mini_width = 160  # 가로 160으로
+            mini_height = 50  # 세로 50으로
             x = screen.width() - mini_width - 20
             y = 20
             self.setGeometry(x, y, mini_width, mini_height)
