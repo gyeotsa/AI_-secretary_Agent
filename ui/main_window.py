@@ -193,8 +193,9 @@ class SoundBarWidget(QWidget):
 class CircularSoundBarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(300, 300)
-        self.bar_count = 60
+        # Arc Reactor 크기와 맞춤 (나중에 부모 크기에 따라 동적으로 조정)
+        self.setFixedSize(500, 500)
+        self.bar_count = 80
         self.bar_heights = [0] * self.bar_count
         self.is_speaking = False
         self.is_active = False
@@ -216,9 +217,9 @@ class CircularSoundBarWidget(QWidget):
         for i in range(self.bar_count):
             band_idx = min(i // bar_per_band, len(freq_bands) - 1)
             band_energy = freq_bands[band_idx]
-            height = (amplitude / 100) * 45 * (band_energy / 100 * 2)
+            height = (amplitude / 100) * 40 * (band_energy / 100 * 2)
             offset = random.randint(-2, 2)
-            self.bar_heights[i] = max(0, min(45, int(height + offset)))
+            self.bar_heights[i] = max(0, min(40, int(height + offset)))
         self.update()
         
     def set_audio_level(self, level):
@@ -237,18 +238,18 @@ class CircularSoundBarWidget(QWidget):
             
         if self.is_speaking:
             for i in range(self.bar_count):
-                band_idx = min(i // 20, len(self.freq_bands) - 1)
+                band_idx = min(i // (self.bar_count // len(self.freq_bands)), len(self.freq_bands) - 1)
                 band_energy = self.freq_bands[band_idx]
-                height = (band_energy / 100) * 45
+                height = (band_energy / 100) * 40
                 offset = random.randint(-3, 3)
-                self.bar_heights[i] = max(0, min(45, int(height + offset)))
+                self.bar_heights[i] = max(0, min(40, int(height + offset)))
         else:
             for i in range(self.bar_count):
-                band_idx = min(i // 20, len(self.freq_bands) - 1)
+                band_idx = min(i // (self.bar_count // len(self.freq_bands)), len(self.freq_bands) - 1)
                 band_energy = self.freq_bands[band_idx]
-                height = (band_energy / 100) * 30
+                height = (band_energy / 100) * 25
                 offset = random.randint(-2, 2)
-                self.bar_heights[i] = max(0, min(30, int(height + offset)))
+                self.bar_heights[i] = max(0, min(25, int(height + offset)))
         self.update()
         
     def paintEvent(self, event):
@@ -257,17 +258,20 @@ class CircularSoundBarWidget(QWidget):
         
         center_x = self.width() // 2
         center_y = self.height() // 2
-        base_radius = min(self.width(), self.height()) // 4
+        # Arc Reactor의 base_radius (min(width, height) //3) 와 맞춤
+        base_radius = min(self.width(), self.height()) // 3  # Arc Reactor와 같은 기본 반지름
         
         for i in range(self.bar_count):
             angle = (i / self.bar_count) * 2 * math.pi
             bar_width = 3
             
-            inner_radius = base_radius
+            # Arc Reactor의 +25 원에서 시작
+            inner_radius = base_radius + 25
             inner_x = center_x + inner_radius * math.cos(angle)
             inner_y = center_y + inner_radius * math.sin(angle)
             
             height = self.bar_heights[i]
+            # Arc Reactor의 +40 원까지 또는 그 밖으로
             outer_radius = inner_radius + height
             outer_x = center_x + outer_radius * math.cos(angle)
             outer_y = center_y + outer_radius * math.sin(angle)
@@ -411,9 +415,9 @@ class JarvisMainWindow(QWidget):
         center_layout = QVBoxLayout(self.center_widget)
         center_layout.setContentsMargins(30, 20, 30, 20)
         
-        # 원형 사운드바 추가 (항상 보여주기)
+        # 원형 사운드바 추가 (항상 보여주기) - Arc Reactor와 크기 맞춤
         self.circular_sound_bar = CircularSoundBarWidget(self)
-        self.circular_sound_bar.setFixedSize(300, 300)
+        self.circular_sound_bar.setFixedSize(500, 500)
         
         self.status_label = QLabel("SYSTEM READY")
         status_font = QFont("Orbitron", 11)
