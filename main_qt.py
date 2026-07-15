@@ -68,6 +68,7 @@ class JarvisApp:
         # 시그널 연결
         self.state_machine.state_changed.connect(self._on_state_changed)
         self.window.text_submitted.connect(self._on_user_input)
+        self.window.close_requested.connect(self._on_close_requested)  # 종료 요청 연결
         
         # 타이머 설정
         self.visibility_timer = QTimer()
@@ -403,6 +404,10 @@ class JarvisApp:
             self.window.show()
         if not self.window.isActiveWindow():
             self.window.raise_()
+    
+    def _on_close_requested(self):
+        # 종료 버튼 클릭시 프로그램 자체 종료
+        self.app.quit()
     
     def run(self):
         return self.app.exec()
