@@ -417,9 +417,6 @@ class JarvisApp:
         return self.app.exec()
 
 if __name__ == "__main__":
-    # Windows 권한 요청
-    request_windows_permissions()
-    
     # 데이터 폴더 생성
     if not os.path.exists("data"):
         os.makedirs("data")
