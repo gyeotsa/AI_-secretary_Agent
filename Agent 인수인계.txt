@@ -329,6 +329,8 @@ AI_-secretary_Agent/
 
 - [Fix] 음성 끊김 문제 해결: AudioProcessor의 _chunk_size를 1024에서 4096으로 늘려 버퍼링 개선
 - [Update] Ollama 모델 성능 향상: llama3.1:8b-instruct-q3_K_S에서 llama3.1:latest로 변경 (기존에 설치된 성능 좋은 모델 사용)
+- [시도] 음성 끊김 문제 해결 2차 (브랜치: fix/tts-audio-stuttering): pyttsx3로 직접 재생 + AudioProcessor로 별도 분석하는 방식으로 변경 → 음성이 아예 안들리는 문제가 발생하여 롤백
+- [Fix] 두 번째 호출부터 음성이 나오지 않는 문제 해결 (브랜치: fix/tts-second-call-no-sound): pyttsx3 엔진을 매번 새로 생성하도록 변경 (상태 꼬임 방지)
 
 ### 다음 작업
 

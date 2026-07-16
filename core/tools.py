@@ -195,34 +195,39 @@ class ToolExecutor:
             text = "네, 보스."
         
         temp_wav_path = None
+        engine = None
         try:
-            # TTS engine이 초기화되지 않았다면 초기화
-            if self._tts_engine is None:
-                print("[DEBUG] pyttsx3.init() 호출 전")
-                self._tts_engine = pyttsx3.init()
-                print("[DEBUG] pyttsx3.init() 호출 성공")
-                # 한국어 음성 설정 (가능한 경우)
-                voices = self._tts_engine.getProperty('voices')
-                print(f"[DEBUG] voices 개수: {len(voices)}")
-                for voice in voices:
-                    if 'ko' in str(voice.languages).lower() or 'korean' in voice.name.lower():
-                        self._tts_engine.setProperty('voice', voice.id)
-                        print(f"[DEBUG] 한국어 음성 설정: {voice.name}")
-                        break
+            # 매번 새로운 TTS engine 생성 (상태 꼬임 방지)
+            print("[DEBUG] pyttsx3.init() 호출 전")
+            engine = pyttsx3.init()
+            print("[DEBUG] pyttsx3.init() 호출 성공")
+            
+            # 한국어 음성 설정 (가능한 경우)
+            voices = engine.getProperty('voices')
+            print(f"[DEBUG] voices 개수: {len(voices)}")
+            korean_voice_id = None
+            for voice in voices:
+                if 'ko' in str(voice.languages).lower() or 'korean' in voice.name.lower():
+                    korean_voice_id = voice.id
+                    print(f"[DEBUG] 한국어 음성 설정: {voice.name}")
+                    break
+            
+            if korean_voice_id:
+                engine.setProperty('voice', korean_voice_id)
             
             # 1. TTS를 WAV 파일로 저장
             temp_wav_path = tempfile.mktemp(suffix=".wav")
             print(f"[DEBUG] TTS WAV 저장 경로: {temp_wav_path}")
-            self._tts_engine.save_to_file(text, temp_wav_path)
-            self._tts_engine.runAndWait()
+            engine.save_to_file(text, temp_wav_path)
+            engine.runAndWait()
             
             # 2. AudioProcessor로 WAV 파일 재생 + 분석
             if audio_processor:
                 audio_processor.play_and_analyze_tts(temp_wav_path)
             else:
                 # AudioProcessor가 없으면 그냥 재생
-                self._tts_engine.say(text)
-                self._tts_engine.runAndWait()
+                engine.say(text)
+                engine.runAndWait()
             
             print("[DEBUG] TTS 처리 완료")
             return f"음성으로 읽어주었습니다: {text}"
@@ -230,10 +235,15 @@ class ToolExecutor:
             print(f"[DEBUG] TTS 오류 발생: {e}")
             import traceback
             traceback.print_exc()
-            # 오류 발생시 engine 재초기화
-            self._tts_engine = None
             return f"TTS 오류: {str(e)}"
         finally:
+            # engine 정리
+            if engine:
+                try:
+                    engine.stop()
+                except Exception:
+                    pass
+            
             # 임시 WAV 파일 삭제
             if temp_wav_path and os.path.exists(temp_wav_path):
                 try:
