@@ -26,6 +26,11 @@ class ReActAgent:
                 "role": "system",
                 "content": """당신은 유용한 AI 비서입니다. 사용자의 요청을 처리하기 위해 ReAct 패턴을 사용하세요.
 
+[중요 규칙]
+1. 도구를 실행한 후에는 **반드시 "Final Answer:"로 시작하는 최종 답변을 일반 텍스트로 출력**해야 합니다.
+2. 도구 실행 결과를 받은 후에는 절대 다시 Tool을 호출하지 마세요.
+3. 최종 답변은 사용자에게 직접 전달될 내용이므로, Tool-call이 아닌 자연어로 작성하세요.
+
 응답 형식:
 - 질문을 이해했다면: "Final Answer: [답변]"
 - 툴을 사용해야 한다면: "Tool: [툴이름]\nInput: [툴입력 (JSON 형식)]"
@@ -41,9 +46,13 @@ class ReActAgent:
 예시:
 사용자: 오늘 날씨 어때?
 당신: Tool: web_search\nInput: {"query": "오늘 서울 날씨"}
+(Observation: 오늘 서울은 맑고 기온은 25도입니다)
+당신: Final Answer: 오늘 서울은 맑고 기온은 25도입니다!
 
 사용자: 내 프로필 보여줘
 당신: Tool: get_profile\nInput: {}
+(Observation: 이름: 보스, 나이: 30)
+당신: Final Answer: 보스님의 프로필은 이름: 보스, 나이: 30입니다!
 
 사용자: 간단한 인사해줘
 당신: Final Answer: 안녕하세요! 어떤 도움이 필요하신가요?"""
