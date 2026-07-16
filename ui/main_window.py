@@ -2,7 +2,7 @@ import sys
 import math
 import random
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, 
-                             QFrame, QHBoxLayout, QLineEdit, QPushButton)
+                             QFrame, QHBoxLayout, QLineEdit, QPushButton, QFileDialog)
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush
 from .visualizer import AudioVisualizer
@@ -293,6 +293,7 @@ class JarvisMainWindow(QWidget):
     command_triggered = pyqtSignal(str)
     text_submitted = pyqtSignal(str)
     close_requested = pyqtSignal()  # 종료 요청 시그널
+    workspace_selected = pyqtSignal(str)  # Workspace 선택 시그널
     
     def __init__(self, audio_processor=None):
         super().__init__()
@@ -304,6 +305,8 @@ class JarvisMainWindow(QWidget):
         self.normal_geometry = None
         self.is_speaking = False
         self.audio_processor = audio_processor
+        self.current_workspace_path = ""
+        self.current_workspace_name = ""
         
         # 원형 사운드바 상태 변수
         self.soundbar_bar_count = 80
@@ -344,6 +347,14 @@ class JarvisMainWindow(QWidget):
         self.title_label.setFont(title_font)
         self.title_label.setStyleSheet("color: #00d4ff; letter-spacing: 6px;")
         tab_layout.addWidget(self.title_label)
+        
+        # Workspace 선택 버튼
+        self.workspace_btn = QPushButton("📁")
+        self.workspace_btn.setStyleSheet(button_style)
+        self.workspace_btn.setFixedSize(35, 35)
+        self.workspace_btn.setToolTip("작업 폴더 선택")
+        self.workspace_btn.clicked.connect(self._select_workspace)
+        tab_layout.addWidget(self.workspace_btn)
         
         self.sound_bar = SoundBarWidget(self)
         self.sound_bar.hide()
@@ -428,6 +439,13 @@ class JarvisMainWindow(QWidget):
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label.setStyleSheet("color: #00d4ff; letter-spacing: 3px;")
         
+        # Workspace 정보 라벨
+        self.workspace_label = QLabel("Workspace: 없음")
+        workspace_font = QFont("Consolas", 9)
+        self.workspace_label.setFont(workspace_font)
+        self.workspace_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.workspace_label.setStyleSheet("color: #00a8cc; padding: 5px;")
+        
         self.user_text_label = QLabel("")
         user_font = QFont("Consolas", 10)
         self.user_text_label.setFont(user_font)
@@ -463,6 +481,7 @@ class JarvisMainWindow(QWidget):
         center_layout.addStretch()
         center_layout.addSpacing(20)
         center_layout.addWidget(self.status_label)
+        center_layout.addWidget(self.workspace_label)
         center_layout.addSpacing(20)
         center_layout.addWidget(self.user_text_label)
         center_layout.addWidget(self.assistant_text_label)
@@ -899,6 +918,28 @@ class JarvisMainWindow(QWidget):
         if event.buttons() & Qt.MouseButton.LeftButton and self.window_mode == "mini" and hasattr(self, 'drag_position'):
             self.move(event.globalPosition().toPoint() - self.drag_position)
             event.accept()
+    
+    def _select_workspace(self):
+        # Workspace 폴더 선택 대화상자 열기
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "작업 폴더 선택",
+            "",
+            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontResolveSymlinks
+        )
+        if folder_path:
+            self.workspace_selected.emit(folder_path)
+    
+    def set_workspace_info(self, name: str, path: str = ""):
+        # Workspace 정보 UI에 표시
+        self.current_workspace_name = name
+        self.current_workspace_path = path
+        if name:
+            self.workspace_label.setText(f"Workspace: {name}")
+            self.workspace_label.setStyleSheet("color: #00ffcc; padding: 5px;")
+        else:
+            self.workspace_label.setText("Workspace: 없음")
+            self.workspace_label.setStyleSheet("color: #00a8cc; padding: 5px;")
     
     def _on_text_submitted(self):
         text = self.text_input.text().strip()

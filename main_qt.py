@@ -15,6 +15,7 @@ from core.user_profile import get_user_profile
 from core.rag import get_rag_manager
 from core.hardware import get_hardware_manager
 from core.audio_processor import get_audio_processor
+from core.workspace import get_workspace_manager
 from ui.main_window import JarvisMainWindow
 
 
@@ -63,6 +64,7 @@ class JarvisApp:
         self.user_profile = get_user_profile()
         self.rag_manager = get_rag_manager()
         self.hardware_manager = get_hardware_manager()
+        self.workspace_manager = get_workspace_manager()
         
         self.messages = []
         self.session_id = str(uuid.uuid4())
@@ -81,6 +83,7 @@ class JarvisApp:
         self.state_machine.state_changed.connect(self._on_state_changed)
         self.window.text_submitted.connect(self._on_user_input)
         self.window.close_requested.connect(self._on_close_requested)  # 종료 요청 연결
+        self.window.workspace_selected.connect(self._on_workspace_selected)  # Workspace 선택 연결
         
         # 타이머 설정
         self.visibility_timer = QTimer()
@@ -453,6 +456,23 @@ class JarvisApp:
             self.window.show()
         if not self.window.isActiveWindow():
             self.window.raise_()
+    
+    def _on_workspace_selected(self, folder_path: str):
+        # Workspace가 선택되면 처리
+        print(f"[Workspace] 선택됨: {folder_path}")
+        success = self.workspace_manager.set_workspace(folder_path)
+        if success:
+            info = self.workspace_manager.get_info()
+            self.window.set_workspace_info(info.name, info.path)
+            print(f"[Workspace] 설정 완료: {info.name} (파일: {info.file_count}개)")
+            # Personal Memory에 즐겨찾기 경로로 추가
+            try:
+                self.user_profile.add_favorite_path(folder_path, info.name)
+            except Exception as e:
+                print(f"[Workspace] Personal Memory 저장 오류: {e}")
+        else:
+            self.window.set_workspace_info("")
+            print(f"[Workspace] 설정 실패: 유효하지 않은 경로")
     
     def _on_close_requested(self):
         # 종료 버튼 클릭시 프로그램 자체 종료
