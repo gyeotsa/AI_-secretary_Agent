@@ -348,20 +348,7 @@ class JarvisMainWindow(QWidget):
         self.title_label.setStyleSheet("color: #00d4ff; letter-spacing: 6px;")
         tab_layout.addWidget(self.title_label)
         
-        # Workspace 선택 버튼
-        self.workspace_btn = QPushButton("📁")
-        self.workspace_btn.setStyleSheet(button_style)
-        self.workspace_btn.setFixedSize(35, 35)
-        self.workspace_btn.setToolTip("작업 폴더 선택")
-        self.workspace_btn.clicked.connect(self._select_workspace)
-        tab_layout.addWidget(self.workspace_btn)
-        
-        self.sound_bar = SoundBarWidget(self)
-        self.sound_bar.hide()
-        tab_layout.addWidget(self.sound_bar)
-        
-        tab_layout.addStretch()
-        
+        # 버튼 스타일 정의 (먼저 정의!)
         button_style = """
             QPushButton {
                 background-color: transparent;
@@ -379,6 +366,20 @@ class JarvisMainWindow(QWidget):
                 background-color: rgba(136, 136, 136, 60);
             }
         """
+        
+        # Workspace 선택 버튼
+        self.workspace_btn = QPushButton("📁")
+        self.workspace_btn.setStyleSheet(button_style)
+        self.workspace_btn.setFixedSize(35, 35)
+        self.workspace_btn.setToolTip("작업 폴더 선택")
+        self.workspace_btn.clicked.connect(self._select_workspace)
+        tab_layout.addWidget(self.workspace_btn)
+        
+        self.sound_bar = SoundBarWidget(self)
+        self.sound_bar.hide()
+        tab_layout.addWidget(self.sound_bar)
+        
+        tab_layout.addStretch()
         
         self.minimize_btn = QPushButton("─")
         self.minimize_btn.setStyleSheet(button_style)
