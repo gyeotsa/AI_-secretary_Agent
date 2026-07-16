@@ -47,6 +47,7 @@ class ConsoleReader(QObject):
 class AppSignals(QObject):
     """Thread-safe bridge for callbacks that must run on the Qt GUI thread."""
     ai_response_ready = pyqtSignal(str)
+    tts_finished = pyqtSignal()
 
 
 class JarvisApp:
@@ -74,6 +75,7 @@ class JarvisApp:
         self.console_reader = ConsoleReader()
         self.console_reader.input_received.connect(self._on_console_input)
         self.signals.ai_response_ready.connect(self._on_ai_response)
+        self.signals.tts_finished.connect(self._reset_all)
         
         # 시그널 연결
         self.state_machine.state_changed.connect(self._on_state_changed)
@@ -375,7 +377,7 @@ class JarvisApp:
             print("💡 pyttsx3를 설치하세요: pip install pyttsx3")
         finally:
             # TTS가 끝나면 IDLE 상태로 돌아가고 사운드바 리셋
-            QTimer.singleShot(0, lambda: self._reset_all())
+            self.signals.tts_finished.emit()
     
     def _reset_all(self):
         # 모든 상태를 초기화하고 IDLE로 돌아가기
