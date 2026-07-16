@@ -100,6 +100,30 @@ class JarvisApp:
         # 초기 상태 설정
         self.window.update_state(self.state_machine.state)
         
+        # 가장 최근 세션 불러오기
+        sessions = self.memory.list_sessions()
+        if sessions:
+            last_session_id = sessions[0][0]
+            self.session_id = last_session_id
+            self.messages = self.memory.load_session(last_session_id)
+            print(f"[기억] 가장 최근 세션 {last_session_id}를 불러왔습니다, 메시지 {len(self.messages)}개")
+            
+            # UI에 최근 메시지 표시
+            last_user_msg = None
+            last_assistant_msg = None
+            for msg in reversed(self.messages):
+                if msg["role"] == "user" and not last_user_msg:
+                    last_user_msg = msg["content"]
+                elif msg["role"] == "assistant" and not last_assistant_msg:
+                    last_assistant_msg = msg["content"]
+                if last_user_msg and last_assistant_msg:
+                    break
+            
+            if last_user_msg:
+                self.window.show_user_text(last_user_msg)
+            if last_assistant_msg:
+                self.window.show_assistant_text(last_assistant_msg)
+        
         # 콘솔 입력 처리 시작 (테스트용) - 잠시 주석
         # print("\n자비스가 준비되었습니다! 질문을 입력하세요 (종료하려면 'exit'):")
         # self.console_reader.start()
