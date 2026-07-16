@@ -1,7 +1,10 @@
 import os
 import subprocess
 import tempfile
+import json
 from typing import Optional
+from datetime import datetime
+from dataclasses import asdict
 from config import Config
 from core.harness import SafetyLayer
 from core.user_profile import get_user_profile
@@ -40,6 +43,7 @@ class ToolExecutor:
         self._scheduler_manager = None
         self._hardware_manager = None
         self._multimodal_manager = None
+        self._project_indexer = None
         
         # TTS engine
         self._tts_engine = None
@@ -89,6 +93,16 @@ class ToolExecutor:
             except Exception as e:
                 self._multimodal_manager = None
         return self._multimodal_manager
+        
+    @property
+    def project_indexer(self):
+        if self._project_indexer is None:
+            try:
+                from core.project_indexer import get_project_indexer
+                self._project_indexer = get_project_indexer()
+            except Exception as e:
+                self._project_indexer = None
+        return self._project_indexer
 
     def read_file(self, path: str) -> str:
         # Workspace가 설정되어 있으면 상대경로로 처리
@@ -195,6 +209,349 @@ class ToolExecutor:
             return json.dumps(tree, indent=2, ensure_ascii=False)
         except Exception as e:
             return f"트리 가져오기 오류: {str(e)}"
+            
+    # ------------------------------
+    # Project Indexer 관련 도구 추가
+    # ------------------------------
+    def index_project(self) -> str:
+        """현재 Workspace나 프로젝트 루트를 인덱싱합니다."""
+        if self.project_indexer is None:
+            return "오류: Project Indexer를 초기화할 수 없습니다."
+            
+        try:
+            if not self.project_indexer.project_root and self.workspace.is_set():
+                self.project_indexer.set_project_root(self.workspace.current_workspace)
+                
+            if not self.project_indexer.project_root:
+                return "오류: 프로젝트 루트가 설정되지 않았습니다. 먼저 Workspace를 설정하세요."
+                
+            count = self.project_indexer.index_project()
+            return f"프로젝트 인덱싱 완료: {count}개 파일"
+        except Exception as e:
+            return f"프로젝트 인덱싱 오류: {str(e)}"
+            
+    def search_files(self, query: str, search_type: str = "name") -> str:
+        """파일을 검색합니다 (이름, 내용, 확장자)."""
+        if self.project_indexer is None:
+            return "오류: Project Indexer를 초기화할 수 없습니다."
+            
+        try:
+            results = self.project_indexer.search_files(query, search_type)
+            if not results:
+                return "검색 결과가 없습니다."
+                
+            import json
+            return json.dumps(results, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return f"파일 검색 오류: {str(e)}"
+            
+    def search_symbols(self, query: str, symbol_type: Optional[str] = None) -> str:
+        """코드 심볼을 검색합니다 (함수, 클래스, 변수)."""
+        if self.project_indexer is None:
+            return "오류: Project Indexer를 초기화할 수 없습니다."
+            
+        try:
+            results = self.project_indexer.search_symbols(query, symbol_type)
+            if not results:
+                return "검색 결과가 없습니다."
+                
+            import json
+            return json.dumps(results, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return f"심볼 검색 오류: {str(e)}"
+            
+    def get_file_info(self, path: str) -> str:
+        """파일의 상세 정보를 반환합니다."""
+        if self.project_indexer is None:
+            return "오류: Project Indexer를 초기화할 수 없습니다."
+            
+        try:
+            file_info = self.project_indexer.get_file_info(path)
+            if not file_info:
+                return f"파일 정보를 찾을 수 없습니다: {path}"
+                
+            import json
+            return json.dumps({
+                "path": file_info.path,
+                "name": file_info.name,
+                "extension": file_info.extension,
+                "size": file_info.size,
+                "modified_at": datetime.fromtimestamp(file_info.modified_at).isoformat() if file_info.modified_at else "",
+                "is_text": file_info.is_text,
+                "content_preview": file_info.content_preview,
+                "symbols": file_info.symbols
+            }, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return f"파일 정보 가져오기 오류: {str(e)}"
+            
+    def get_project_tree(self) -> str:
+        """프로젝트의 파일 트리 구조를 반환합니다."""
+        if self.project_indexer is None:
+            return "오류: Project Indexer를 초기화할 수 없습니다."
+            
+        try:
+            tree = self.project_indexer.get_file_tree()
+            import json
+            return json.dumps(tree, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return f"프로젝트 트리 가져오기 오류: {str(e)}"
+            
+    # ------------------------------
+    # Memory 관련 도구 추가
+    # ------------------------------
+    def add_semantic_memory(self, key: str, content: str, category: str = "기타") -> str:
+        """시맨틱 메모리 추가"""
+        try:
+            from core.memory import get_semantic_memory, SemanticMemory
+            semantic_manager = get_semantic_memory()
+            memory = SemanticMemory(
+                key=key,
+                content=content,
+                category=category
+            )
+            semantic_manager.add_memory(memory)
+            return f"시맨틱 메모리가 추가되었습니다: {key}"
+        except Exception as e:
+            return f"시맨틱 메모리 추가 오류: {str(e)}"
+            
+    def get_semantic_memory(self, key: str) -> str:
+        """시맨틱 메모리 조회"""
+        try:
+            from core.memory import get_semantic_memory
+            semantic_manager = get_semantic_memory()
+            memory = semantic_manager.get_memory(key)
+            if memory:
+                return f"{memory.key} ({memory.category}): {memory.content}"
+            else:
+                return f"메모리를 찾을 수 없습니다: {key}"
+        except Exception as e:
+            return f"시맨틱 메모리 조회 오류: {str(e)}"
+            
+    def search_semantic_memory(self, query: str, category: Optional[str] = None) -> str:
+        """시맨틱 메모리 검색"""
+        try:
+            from core.memory import get_semantic_memory
+            semantic_manager = get_semantic_memory()
+            memories = semantic_manager.search_memories(query, category=category)
+            if not memories:
+                return "검색 결과가 없습니다."
+            result = []
+            for mem in memories:
+                result.append(f"- [{mem.category}] {mem.key}: {mem.content}")
+            return "\n".join(result)
+        except Exception as e:
+            return f"시맨틱 메모리 검색 오류: {str(e)}"
+            
+    def delete_semantic_memory(self, key: str) -> str:
+        """시맨틱 메모리 삭제"""
+        try:
+            from core.memory import get_semantic_memory
+            semantic_manager = get_semantic_memory()
+            deleted = semantic_manager.delete_memory(key)
+            if deleted:
+                return f"메모리가 삭제되었습니다: {key}"
+            else:
+                return f"메모리를 찾을 수 없습니다: {key}"
+        except Exception as e:
+            return f"시맨틱 메모리 삭제 오류: {str(e)}"
+            
+    # ------------------------------
+    # Automation Engine 관련 도구 추가
+    # ------------------------------
+    def add_automation_job(self, description: str, schedule_type: str, schedule_value: str, prompt: str) -> str:
+        """자동화 작업 추가"""
+        try:
+            from core.scheduler import get_automation_engine
+            engine = get_automation_engine()
+            return engine.add_job(description, schedule_type, schedule_value, prompt)
+        except Exception as e:
+            return f"자동화 작업 추가 오류: {str(e)}"
+            
+    def list_automation_jobs(self) -> str:
+        """자동화 작업 목록 보기"""
+        try:
+            from core.scheduler import get_automation_engine
+            engine = get_automation_engine()
+            return engine.list_jobs()
+        except Exception as e:
+            return f"자동화 작업 목록 오류: {str(e)}"
+            
+    def get_job_history(self, job_id: int, limit: int = 10) -> str:
+        """자동화 작업 실행 기록 보기"""
+        try:
+            from core.scheduler import get_automation_engine
+            engine = get_automation_engine()
+            return engine.get_job_history(job_id, limit)
+        except Exception as e:
+            return f"실행 기록 조회 오류: {str(e)}"
+            
+    def toggle_automation_job(self, job_id: int, enabled: bool) -> str:
+        """자동화 작업 활성화/비활성화"""
+        try:
+            from core.scheduler import get_automation_engine
+            engine = get_automation_engine()
+            return engine.toggle_job(job_id, enabled)
+        except Exception as e:
+            return f"작업 상태 변경 오류: {str(e)}"
+            
+    def delete_automation_job(self, job_id: int) -> str:
+        """자동화 작업 삭제"""
+        try:
+            from core.scheduler import get_automation_engine
+            engine = get_automation_engine()
+            return engine.delete_job(job_id)
+        except Exception as e:
+            return f"자동화 작업 삭제 오류: {str(e)}"
+            
+    def start_automation_engine(self) -> str:
+        """자동화 엔진 시작"""
+        try:
+            from core.scheduler import get_automation_engine
+            engine = get_automation_engine()
+            return engine.start()
+        except Exception as e:
+            return f"자동화 엔진 시작 오류: {str(e)}"
+            
+    def stop_automation_engine(self) -> str:
+        """자동화 엔진 중지"""
+        try:
+            from core.scheduler import get_automation_engine
+            engine = get_automation_engine()
+            return engine.stop()
+        except Exception as e:
+            return f"자동화 엔진 중지 오류: {str(e)}"
+            
+    def is_automation_engine_running(self) -> str:
+        """자동화 엔진 실행 여부"""
+        try:
+            from core.scheduler import get_automation_engine
+            engine = get_automation_engine()
+            return "실행 중" if engine.is_running() else "중지됨"
+        except Exception as e:
+            return f"상태 확인 오류: {str(e)}"
+            
+    # ------------------------------
+    # Knowledge Graph 관련 도구 추가
+    # ------------------------------
+    def add_entity(self, name: str, entity_type: str, metadata: Optional[str] = None) -> str:
+        """지식 그래프에 엔티티 추가"""
+        try:
+            from core.knowledge_graph import get_knowledge_graph, Entity
+            kg = get_knowledge_graph()
+            meta_dict = json.loads(metadata) if metadata else {}
+            entity = Entity(name=name, entity_type=entity_type, metadata=meta_dict)
+            entity_id = kg.add_entity(entity)
+            return f"✅ 엔티티가 추가되었습니다 (ID: {entity_id}): {name} ({entity_type})"
+        except Exception as e:
+            return f"엔티티 추가 오류: {str(e)}"
+            
+    def get_entity(self, name: str, entity_type: Optional[str] = None) -> str:
+        """지식 그래프에서 엔티티 조회"""
+        try:
+            from core.knowledge_graph import get_knowledge_graph
+            kg = get_knowledge_graph()
+            entity = kg.get_entity(name, entity_type)
+            if not entity:
+                return f"엔티티를 찾을 수 없습니다: {name}"
+            return json.dumps(entity.to_dict(), indent=2, ensure_ascii=False)
+        except Exception as e:
+            return f"엔티티 조회 오류: {str(e)}"
+            
+    def search_entities(self, query: str, entity_type: Optional[str] = None, limit: int = 20) -> str:
+        """지식 그래프에서 엔티티 검색"""
+        try:
+            from core.knowledge_graph import get_knowledge_graph
+            kg = get_knowledge_graph()
+            entities = kg.search_entities(query, entity_type, limit)
+            if not entities:
+                return "검색 결과가 없습니다."
+            result = [f"📋 검색 결과 ({len(entities)}건):"]
+            for entity in entities:
+                result.append(f"\n- {entity.name} ({entity.entity_type})")
+                if entity.metadata:
+                    result.append(f"  메타데이터: {json.dumps(entity.metadata, ensure_ascii=False)}")
+            return "\n".join(result)
+        except Exception as e:
+            return f"엔티티 검색 오류: {str(e)}"
+            
+    def delete_entity(self, name: str, entity_type: Optional[str] = None) -> str:
+        """지식 그래프에서 엔티티 삭제"""
+        try:
+            from core.knowledge_graph import get_knowledge_graph
+            kg = get_knowledge_graph()
+            deleted = kg.delete_entity(name, entity_type)
+            if deleted:
+                return f"✅ 엔티티가 삭제되었습니다: {name}"
+            else:
+                return f"엔티티를 찾을 수 없습니다: {name}"
+        except Exception as e:
+            return f"엔티티 삭제 오류: {str(e)}"
+            
+    def add_triple(self, subject: str, predicate: str, object_: str, 
+                   subject_type: str = "thing", object_type: str = "thing",
+                   metadata: Optional[str] = None) -> str:
+        """지식 그래프에 트리플 추가"""
+        try:
+            from core.knowledge_graph import get_knowledge_graph
+            kg = get_knowledge_graph()
+            meta_dict = json.loads(metadata) if metadata else {}
+            relation_id = kg.add_triple(subject, predicate, object_, subject_type, object_type, meta_dict)
+            return f"✅ 트리플이 추가되었습니다 (ID: {relation_id}): ({subject}) -[{predicate}]-> ({object_})"
+        except Exception as e:
+            return f"트리플 추가 오류: {str(e)}"
+            
+    def get_relations(self, entity_name: str, direction: str = "both") -> str:
+        """엔티티의 관계 조회"""
+        try:
+            from core.knowledge_graph import get_knowledge_graph
+            kg = get_knowledge_graph()
+            relations = kg.get_relations(entity_name, direction)
+            if not relations:
+                return f"엔티티 {entity_name}의 관계가 없습니다."
+            result = [f"🔗 {entity_name}의 관계 ({len(relations)}건):"]
+            for rel in relations:
+                if rel.from_entity == entity_name:
+                    result.append(f"\n- → {rel.relation_type} → {rel.to_entity}")
+                else:
+                    result.append(f"\n- ← {rel.relation_type} ← {rel.from_entity}")
+                if rel.metadata:
+                    result.append(f"  메타데이터: {json.dumps(rel.metadata, ensure_ascii=False)}")
+            return "\n".join(result)
+        except Exception as e:
+            return f"관계 조회 오류: {str(e)}"
+            
+    def get_subgraph(self, entity_name: str, depth: int = 2) -> str:
+        """서브그래프 조회"""
+        try:
+            from core.knowledge_graph import get_knowledge_graph
+            kg = get_knowledge_graph()
+            subgraph = kg.get_subgraph(entity_name, depth)
+            return json.dumps(subgraph, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return f"서브그래프 조회 오류: {str(e)}"
+            
+    # ------------------------------
+    # Multi-Agent 관련 도구 추가
+    # ------------------------------
+    def execute_multi_agent(self, query: str) -> str:
+        """멀티 에이전트 파이프라인 실행 (계획 → 실행 → 반성)"""
+        try:
+            from core.multi_agent import get_multi_agent_orchestrator
+            orchestrator = get_multi_agent_orchestrator()
+            result = orchestrator.execute_full_pipeline(query)
+            return result
+        except Exception as e:
+            return f"멀티 에이전트 실행 오류: {str(e)}"
+            
+    def get_task_history(self) -> str:
+        """멀티 에이전트 작업 히스토리 조회"""
+        try:
+            from core.multi_agent import get_multi_agent_orchestrator
+            orchestrator = get_multi_agent_orchestrator()
+            tasks = [asdict(task) for task in orchestrator.tasks]
+            return json.dumps(tasks, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return f"작업 히스토리 조회 오류: {str(e)}"
 
     def run_command(self, command: str) -> str:
         is_valid, error_msg = self.safety.validate_command(command)
@@ -579,6 +936,33 @@ class ToolExecutor:
             "set_workspace": self.set_workspace,
             "get_workspace_info": self.get_workspace_info,
             "get_workspace_tree": self.get_workspace_tree,
+            # Project Indexer 관련 도구 추가
+            "index_project": self.index_project,
+            "search_files": self.search_files,
+            "search_symbols": self.search_symbols,
+            "get_file_info": self.get_file_info,
+            "get_project_tree": self.get_project_tree,
+            "add_semantic_memory": self.add_semantic_memory,
+            "get_semantic_memory": self.get_semantic_memory,
+            "search_semantic_memory": self.search_semantic_memory,
+            "delete_semantic_memory": self.delete_semantic_memory,
+            "add_automation_job": self.add_automation_job,
+            "list_automation_jobs": self.list_automation_jobs,
+            "get_job_history": self.get_job_history,
+            "toggle_automation_job": self.toggle_automation_job,
+            "delete_automation_job": self.delete_automation_job,
+            "start_automation_engine": self.start_automation_engine,
+            "stop_automation_engine": self.stop_automation_engine,
+            "is_automation_engine_running": self.is_automation_engine_running,
+            "add_entity": self.add_entity,
+            "get_entity": self.get_entity,
+            "search_entities": self.search_entities,
+            "delete_entity": self.delete_entity,
+            "add_triple": self.add_triple,
+            "get_relations": self.get_relations,
+            "get_subgraph": self.get_subgraph,
+            "execute_multi_agent": self.execute_multi_agent,
+            "get_task_history": self.get_task_history,
         }
 
         if tool_name in tool_functions:
@@ -1057,6 +1441,450 @@ def get_tools_schema() -> list[dict]:
         {
             "name": "get_workspace_tree",
             "description": "Workspace의 파일 트리 구조를 반환합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        # ------------------------------
+        # Project Indexer 관련 도구 스키마
+        # ------------------------------
+        {
+            "name": "index_project",
+            "description": "현재 Workspace나 프로젝트 루트의 파일들을 인덱싱합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "search_files",
+            "description": "프로젝트에서 파일을 검색합니다. search_type으로 name, content, extension을 선택할 수 있습니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "검색 쿼리",
+                    },
+                    "search_type": {
+                        "type": "string",
+                        "description": "검색 타입: name, content, extension (기본 name)",
+                        "default": "name",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "search_symbols",
+            "description": "코드에서 심볼을 검색합니다 (함수, 클래스, 메서드 등).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "검색 쿼리",
+                    },
+                    "symbol_type": {
+                        "type": "string",
+                        "description": "심볼 타입: function, class, method, variable (선택사항)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "get_file_info",
+            "description": "파일의 상세 정보를 반환합니다 (크기, 수정일, 내용 미리보기, 심볼 등).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "파일 경로",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+        {
+            "name": "get_project_tree",
+            "description": "프로젝트의 파일 트리 구조를 반환합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        # ------------------------------
+        # Memory 관련 도구 스키마
+        # ------------------------------
+        {
+            "name": "add_semantic_memory",
+            "description": "시맨틱 메모리를 추가합니다. 사용자 프로필, 프로젝트 정보, 기술 지식 등을 저장할 수 있습니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "메모리 키 (검색용)",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "메모리 내용",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "카테고리 (예: 사용자_프로필, 프로젝트_정보, 기술_지식, 기타)",
+                        "default": "기타",
+                    },
+                },
+                "required": ["key", "content"],
+            },
+        },
+        {
+            "name": "get_semantic_memory",
+            "description": "키로 시맨틱 메모리를 조회합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "메모리 키",
+                    },
+                },
+                "required": ["key"],
+            },
+        },
+        {
+            "name": "search_semantic_memory",
+            "description": "시맨틱 메모리를 검색합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "검색 쿼리",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "카테고리 (선택사항)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "delete_semantic_memory",
+            "description": "시맨틱 메모리를 삭제합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "메모리 키",
+                    },
+                },
+                "required": ["key"],
+            },
+        },
+        # ------------------------------
+        # Automation Engine 관련 도구 스키마
+        # ------------------------------
+        {
+            "name": "add_automation_job",
+            "description": "자동화 작업을 추가합니다. 스케줄 기반으로 LLM 작업을 자동 실행합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "작업 설명",
+                    },
+                    "schedule_type": {
+                        "type": "string",
+                        "description": "스케줄 타입: every_minutes, every_hours, every_days, daily_at, every_weeks",
+                    },
+                    "schedule_value": {
+                        "type": "string",
+                        "description": "스케줄 값: 숫자 또는 시간(HH:MM)",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "실행할 프롬프트",
+                    },
+                },
+                "required": ["description", "schedule_type", "schedule_value", "prompt"],
+            },
+        },
+        {
+            "name": "list_automation_jobs",
+            "description": "자동화 작업 목록을 보여줍니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "get_job_history",
+            "description": "자동화 작업의 실행 기록을 보여줍니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "integer",
+                        "description": "작업 ID",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "최근 몇 건을 보여줄지 (기본 10)",
+                        "default": 10,
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+        {
+            "name": "toggle_automation_job",
+            "description": "자동화 작업을 활성화하거나 비활성화합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "integer",
+                        "description": "작업 ID",
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "활성화 여부 (true/false)",
+                    },
+                },
+                "required": ["job_id", "enabled"],
+            },
+        },
+        {
+            "name": "delete_automation_job",
+            "description": "자동화 작업을 삭제합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "integer",
+                        "description": "작업 ID",
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+        {
+            "name": "start_automation_engine",
+            "description": "자동화 엔진을 시작합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "stop_automation_engine",
+            "description": "자동화 엔진을 중지합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "is_automation_engine_running",
+            "description": "자동화 엔진이 실행 중인지 확인합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        # ------------------------------
+        # Knowledge Graph 관련 도구 스키마
+        # ------------------------------
+        {
+            "name": "add_entity",
+            "description": "지식 그래프에 엔티티를 추가합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "엔티티 이름",
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "description": "엔티티 타입",
+                    },
+                    "metadata": {
+                        "type": "string",
+                        "description": "메타데이터 (JSON 문자열, 선택사항)",
+                    },
+                },
+                "required": ["name", "entity_type"],
+            },
+        },
+        {
+            "name": "get_entity",
+            "description": "지식 그래프에서 엔티티를 조회합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "엔티티 이름",
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "description": "엔티티 타입 (선택사항)",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+        {
+            "name": "search_entities",
+            "description": "지식 그래프에서 엔티티를 검색합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "검색 쿼리",
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "description": "엔티티 타입 (선택사항)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "최대 결과 수 (기본 20)",
+                        "default": 20,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "delete_entity",
+            "description": "지식 그래프에서 엔티티를 삭제합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "엔티티 이름",
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "description": "엔티티 타입 (선택사항)",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+        {
+            "name": "add_triple",
+            "description": "지식 그래프에 트리플(주어-술어-목적어)을 추가합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "subject": {
+                        "type": "string",
+                        "description": "주어 엔티티",
+                    },
+                    "predicate": {
+                        "type": "string",
+                        "description": "술어(관계 타입)",
+                    },
+                    "object_": {
+                        "type": "string",
+                        "description": "목적어 엔티티",
+                    },
+                    "subject_type": {
+                        "type": "string",
+                        "description": "주어 엔티티 타입 (기본: thing)",
+                        "default": "thing",
+                    },
+                    "object_type": {
+                        "type": "string",
+                        "description": "목적어 엔티티 타입 (기본: thing)",
+                        "default": "thing",
+                    },
+                    "metadata": {
+                        "type": "string",
+                        "description": "메타데이터 (JSON 문자열, 선택사항)",
+                    },
+                },
+                "required": ["subject", "predicate", "object_"],
+            },
+        },
+        {
+            "name": "get_relations",
+            "description": "엔티티의 관계를 조회합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "entity_name": {
+                        "type": "string",
+                        "description": "엔티티 이름",
+                    },
+                    "direction": {
+                        "type": "string",
+                        "description": "관계 방향: from, to, both (기본: both)",
+                        "default": "both",
+                    },
+                },
+                "required": ["entity_name"],
+            },
+        },
+        {
+            "name": "get_subgraph",
+            "description": "엔티티를 중심으로 서브그래프를 조회합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "entity_name": {
+                        "type": "string",
+                        "description": "엔티티 이름",
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "description": "탐색 깊이 (기본: 2)",
+                        "default": 2,
+                    },
+                },
+                "required": ["entity_name"],
+            },
+        },
+        # ------------------------------
+        # Multi-Agent 관련 도구 스키마
+        # ------------------------------
+        {
+            "name": "execute_multi_agent",
+            "description": "멀티 에이전트 파이프라인을 실행합니다 (계획 → 실행 → 반성).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "사용자 쿼리",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "get_task_history",
+            "description": "멀티 에이전트 작업 히스토리를 조회합니다.",
             "input_schema": {
                 "type": "object",
                 "properties": {},

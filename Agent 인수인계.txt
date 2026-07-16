@@ -403,14 +403,36 @@ AI_-secretary_Agent/
   - execute_tool(): 플러그인 툴 fallback 추가
   - get_tools_schema(): 플러그인 툴 스키마 추가
 
+### 2026-07-16 추가 변경 사항 (Knowledge Engine & Memory & Automation & Knowledge Graph & Multi-Agent)
+
+- [Feat] STEP 5 Knowledge Engine 완성:
+  - core/knowledge_updater.py에 Project Indexer 연동: 파일 생성/수정 시 Project Indexer에도 인덱싱
+  - core/project_indexer.py에 Workspace Manager 연동: Workspace 설정 시 자동으로 Project Root 설정
+- [Feat] STEP 6 Project Indexer 완성:
+  - core/tools.py에 Project Indexer 도구 추가: index_project, search_files, search_symbols, get_file_info, get_project_tree
+  - get_tools_schema()에 Project Indexer 도구 스키마 추가
+- [Feat] STEP 7 Memory 완전 분리:
+  - core/memory.py 전면 수정: EpisodeMemoryManager와 SemanticMemoryManager로 분리
+  - EpisodeMemoryManager: 대화 기록, 세션 관리
+  - SemanticMemoryManager: 의미 기반 지식 저장, 카테고리별 관리
+  - build_memory_context() 함수 추가: LLM 컨텍스트용 메모리 빌더
+  - core/tools.py에 Semantic Memory 도구 추가: add_semantic_memory, get_semantic_memory, search_semantic_memory, delete_semantic_memory
+- [Feat] STEP 10 Automation Engine 구현:
+  - core/scheduler.py 전면 수정: AutomationEngine 클래스 추가
+  - 스케줄 기반 LLM 작업 자동 실행, 작업 히스토리 관리
+  - core/tools.py에 Automation Engine 도구 추가: add_automation_job, list_automation_jobs, get_job_history, toggle_automation_job, delete_automation_job, start_automation_engine, stop_automation_engine, is_automation_engine_running
+- [Feat] STEP 11 Local Knowledge Graph 구현:
+  - core/knowledge_graph.py 신규 생성: Entity, Relation, KnowledgeGraph 클래스
+  - 엔티티-관계 모델, 서브그래프 탐색, LLM 컨텍스트용 지식 추출
+  - core/tools.py에 Knowledge Graph 도구 추가: add_entity, get_entity, search_entities, delete_entity, add_triple, get_relations, get_subgraph
+- [Feat] STEP 12 Multi-Agent 시스템 구현:
+  - core/multi_agent.py 신규 생성: AgentTask, MultiAgentOrchestrator 클래스
+  - Planner Agent: 작업 분해, Executor Agent: 작업 실행, Reflection Agent: 결과 분석
+  - 전체 파이프라인: 계획 → 실행 → 반성 → 최종 답변
+  - core/tools.py에 Multi-Agent 도구 추가: execute_multi_agent, get_task_history
+
 ### 다음 작업
 
 1. 일반 GUI 환경에서 한글 질의로 실제 스피커 음량을 최종 확인합니다.
 2. Ollama 디버그 로그의 전체 도구 스키마 출력을 필요 시 축소합니다.
-3. Personal Memory를 LLM 컨텍스트에 통합 (사용자 습관 반영)
-4. Project Indexer 구현 (Claude Code 수준)
-5. Episode/Semantic Memory 분리
-6. Automation Engine 구현 (스케줄 기반 자동 실행)
-7. Local Knowledge Graph 구현
-8. Multi-Agent 시스템 구현
 

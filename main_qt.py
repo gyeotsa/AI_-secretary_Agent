@@ -71,6 +71,7 @@ class JarvisApp:
         self.hardware_manager = get_hardware_manager()
         self.workspace_manager = get_workspace_manager()
         self.permission_manager = get_permission_manager()
+        self.signals = AppSignals()  # <-- 여기로 옮겼어요!
         
         # 권한 요청 결과 저장용 변수
         self._permission_result = None
@@ -98,7 +99,6 @@ class JarvisApp:
         self.last_response = ""
         
         self._is_processing_ai = False
-        self.signals = AppSignals()
         
         # 콘솔 리더 초기화
         self.console_reader = ConsoleReader()
