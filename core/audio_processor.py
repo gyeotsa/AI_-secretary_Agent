@@ -20,7 +20,7 @@ class AudioProcessor(QObject):
         self._is_running = False
         self._is_speaking = False  # 자비스가 말하는 중인지
         self._sample_rate = 44100  # 기본 샘플 레이트
-        self._chunk_size = 1024  # 한 번에 처리할 샘플 수
+        self._chunk_size = 4096  # 한 번에 처리할 샘플 수 (음성 끊김 방지)
         
     def play_and_analyze_tts(self, wav_path: str):
         """WAV 파일을 재생하면서 오디오 데이터를 분석합니다 (자비스 TTS용)"""
