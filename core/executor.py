@@ -3,6 +3,7 @@ from core.llm import get_llm_client
 from core.scratchpad import get_scratchpad, Task, Observation
 from core.planner import get_planner, DecomposedTask
 from core.tools import get_tool_executor
+from core.reflection import get_reflection
 
 
 class Executor:
@@ -19,6 +20,7 @@ class Executor:
         self.scratchpad = get_scratchpad()
         self.planner = get_planner()
         self.tool_executor = get_tool_executor()
+        self.reflection = get_reflection()
         self.max_iterations = 10  # 최대 반복 횟수
 
     def execute_goal(self, goal: str, context: str = "") -> str:
@@ -140,10 +142,20 @@ class Executor:
         Returns:
             재계획 필요 여부
         """
-        # 간단한 구현: 항상 재계획하지 않고, 일단 false 반환
-        # 실제로는 LLM으로 분석하는 게 좋음
-        print(f"[Executor] 실패 분석: {error}")
-        return False  # 일단 재계획하지 않음
+        # 현재 작업 가져오기
+        current_task = self.scratchpad.current_task
+        if not current_task:
+            return False
+
+        # Reflection으로 실패 분석
+        analysis = self.reflection.analyze_failure(error, current_task.description)
+        
+        # 분석 결과 출력
+        print(f"[Executor] 실패 원인: {analysis['cause']}")
+        print(f"[Executor] 복구 전략: {analysis['recovery_strategy']}")
+        
+        # 재계획 필요 여부 반환
+        return analysis["should_replan"]
 
     def _generate_final_answer(self, goal: str) -> str:
         """
