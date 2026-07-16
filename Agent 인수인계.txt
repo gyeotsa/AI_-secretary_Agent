@@ -331,8 +331,15 @@ AI_-secretary_Agent/
 - [Update] Ollama 모델 성능 향상: llama3.1:8b-instruct-q3_K_S에서 llama3.1:latest로 변경 (기존에 설치된 성능 좋은 모델 사용)
 - [시도] 음성 끊김 문제 해결 2차 (브랜치: fix/tts-audio-stuttering): pyttsx3로 직접 재생 + AudioProcessor로 별도 분석하는 방식으로 변경 → 음성이 아예 안들리는 문제가 발생하여 롤백
 - [Fix] 두 번째 호출부터 음성이 나오지 않는 문제 해결 (브랜치: fix/tts-second-call-no-sound): pyttsx3 엔진을 매번 새로 생성하도록 변경 (상태 꼬임 방지)
+- [Feat] 프로그램 시작 시 가장 최근 세션 자동으로 불러오기 (브랜치: fix/load-last-session): main_qt.py에서 memory.list_sessions()로 최근 세션 찾고 load_session()으로 대화 불러오기, 최근 메시지를 UI에 표시
+- [Test] Qwen2.5-Coder 모델로 교체 + 시스템 프롬프트 강화 (브랜치: test/qwen2.5-coder-improvements):
+  - Ollama 모델을 qwen2.5-coder:7b-instruct로 변경
+  - core/react.py 시스템 프롬프트에 [중요 규칙] 추가 (도구 실행 후 Final Answer 반환 강제)
+  - core/scratchpad.py 추가 (Working Memory 모듈: Task/Observation/Failure 클래스, Scratchpad 싱글톤, get_context() 메서드로 LLM 입력용 텍스트 반환)
 
 ### 다음 작업
 
 1. 일반 GUI 환경에서 한글 질의로 실제 스피커 음량을 최종 확인합니다.
 2. Ollama 디버그 로그의 전체 도구 스키마 출력을 필요 시 축소합니다.
+3. test 브랜치에 Planner.py 추가 (사용자 요청을 작업으로 분해하는 모듈)
+4. test 브랜치에 Executor.py 추가 (작업을 실행하고 루프를 돌리는 모듈)
