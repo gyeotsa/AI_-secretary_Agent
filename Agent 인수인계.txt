@@ -337,6 +337,7 @@ AI_-secretary_Agent/
   - core/react.py 시스템 프롬프트에 [중요 규칙] 추가 (도구 실행 후 Final Answer 반환 강제)
   - core/scratchpad.py 추가 (Working Memory 모듈: Task/Observation/Failure 클래스, Scratchpad 싱글톤, get_context() 메서드로 LLM 입력용 텍스트 반환)
   - core/planner.py 추가 (Planner 모듈: DecomposedTask dataclass, Planner 클래스로 사용자 요청을 작업으로 분해, Scratchpad에 저장, get_planner() 싱글톤)
+  - core/executor.py 추가 (Executor 모듈: 작업 실행 루프 구조, Planner/Scratchpad/Tool 연동, _get_next_task/_execute_task/_reflect_and_replan/_generate_final_answer 메서드, get_executor() 싱글톤)
 
 ### 다음 작업
 
