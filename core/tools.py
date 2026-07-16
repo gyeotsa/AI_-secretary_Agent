@@ -6,6 +6,7 @@ from config import Config
 from core.harness import SafetyLayer
 from core.user_profile import get_user_profile
 from core.workspace import get_workspace_manager
+from core.plugin import get_plugin_registry
 
 try:
     from duckduckgo_search import DDGS
@@ -32,6 +33,7 @@ class ToolExecutor:
         self.safety = SafetyLayer()
         self.user_profile = get_user_profile()
         self.workspace = get_workspace_manager()
+        self.plugin_registry = get_plugin_registry()
         
         # Lazy initialization for optional modules
         self._rag_manager = None
@@ -41,6 +43,12 @@ class ToolExecutor:
         
         # TTS engine
         self._tts_engine = None
+        
+        # Load plugins from plugins directory
+        try:
+            self.plugin_registry.load_plugins_from_directory()
+        except Exception as e:
+            print(f"[ToolExecutor] Plugin 로딩 오류: {e}")
     
     @property
     def rag_manager(self):
@@ -573,17 +581,21 @@ class ToolExecutor:
             "get_workspace_tree": self.get_workspace_tree,
         }
 
-        if tool_name not in tool_functions:
-            return f"오류: 알 수 없는 툴 '{tool_name}'"
-
-        try:
-            return tool_functions[tool_name](**tool_input)
-        except TypeError as e:
-            return f"툴 파라미터 오류: {str(e)}"
+        if tool_name in tool_functions:
+            try:
+                return tool_functions[tool_name](**tool_input)
+            except TypeError as e:
+                return f"툴 파라미터 오류: {str(e)}"
+        else:
+            # Try plugin tools
+            try:
+                return self.plugin_registry.execute_tool(tool_name, tool_input)
+            except Exception as e:
+                return f"오류: 알 수 없는 툴 '{tool_name}' (플러그인 오류: {str(e)})"
 
 
 def get_tools_schema() -> list[dict]:
-    return [
+    schema = [
         {
             "name": "read_file",
             "description": "파일의 내용을 읽어옵니다",
@@ -1052,6 +1064,18 @@ def get_tools_schema() -> list[dict]:
             },
         },
     ]
+    # Add plugin tools
+    try:
+        plugin_registry = get_plugin_registry()
+        for tool in plugin_registry.get_all_tools():
+            schema.append({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.input_schema,
+            })
+    except Exception as e:
+        print(f"[get_tools_schema] Plugin 스키마 로딩 오류: {e}")
+    return schema
 
 
 _tools_executor = None

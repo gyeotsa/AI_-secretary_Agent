@@ -383,17 +383,34 @@ AI_-secretary_Agent/
   - Action Journal과 연동
   - get_knowledge_updater() 싱글톤
 - [Update] core/observer.py: Event Bus 연동 (file_created/file_modified/file_deleted 이벤트 발행)
+- [Feat] ui/main_window.py: PermissionRequestDialog 추가 (권한 요청 대화상자)
+- [Feat] ui/main_window.py: JarvisMainWindow에 request_permission() 메서드 추가
+- [Feat] main_qt.py: PermissionManager UI 연동:
+  - AppSignals에 permission_request / permission_response 시그널 추가
+  - JarvisApp의 __init__에서 permission_callback 설정
+  - _on_permission_request 메서드로 UI에서 권한 요청 처리
+- [Feat] core/observer.py: Git/Chrome/VSCode 이벤트 감지 메서드 추가:
+  - check_git_status(repo_path): Git 저장소 상태 확인 → git_status 이벤트 발행
+  - check_processes(): 실행 중인 프로세스 확인 (Chrome/VSCode) → process_status 이벤트 발행
+- [Feat] plugins/ 폴더 구조 생성 + plugins/__init__.py
+- [Feat] core/plugin.py 추가 (Plugin SDK):
+  - BasePlugin: 플러그인 기본 클래스
+  - ToolSchema: 툴 스키마 dataclass
+  - PluginRegistry: 플러그인 등록/관리
+  - load_plugins_from_directory() 메서드
+- [Feat] plugins/system_tools.py 추가 (예제 플러그인: get_time / get_date 툴)
+- [Feat] core/tools.py: PluginRegistry 연동:
+  - execute_tool(): 플러그인 툴 fallback 추가
+  - get_tools_schema(): 플러그인 툴 스키마 추가
 
 ### 다음 작업
 
 1. 일반 GUI 환경에서 한글 질의로 실제 스피커 음량을 최종 확인합니다.
 2. Ollama 디버그 로그의 전체 도구 스키마 출력을 필요 시 축소합니다.
 3. Personal Memory를 LLM 컨텍스트에 통합 (사용자 습관 반영)
-4. Permission Manager UI 연동 (권한 요청 대화상자)
-5. Plugin 시스템 구축 (Tool Runtime)
-6. Project Indexer 구현 (Claude Code 수준)
-7. Episode/Semantic Memory 분리
-8. Automation Engine 구현 (스케줄 기반 자동 실행)
-9. Local Knowledge Graph 구현
-10. Multi-Agent 시스템 구현
+4. Project Indexer 구현 (Claude Code 수준)
+5. Episode/Semantic Memory 분리
+6. Automation Engine 구현 (스케줄 기반 자동 실행)
+7. Local Knowledge Graph 구현
+8. Multi-Agent 시스템 구현
 

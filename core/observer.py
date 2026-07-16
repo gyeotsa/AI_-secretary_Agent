@@ -4,6 +4,8 @@ from typing import Callable, Optional, List
 from dataclasses import dataclass, field
 from datetime import datetime
 import threading
+import subprocess
+import json
 
 # Event Bus import
 try:
@@ -188,6 +190,95 @@ class ObserverLayer:
     def get_watched_paths(self) -> List[str]:
         """현재 감지 중인 경로 목록을 반환합니다."""
         return list(self._watched_paths)
+    
+    def check_git_status(self, repo_path: str) -> Optional[dict]:
+        """Git 리포지토리의 상태를 확인하고 이벤트 발행"""
+        try:
+            if not Path(repo_path).exists():
+                return None
+            # git status
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode != 0:
+                return None
+            changes = result.stdout.strip().split("\n") if result.stdout else []
+            changes = [c.strip() for c in changes if c.strip()]
+            # git log -1
+            log_result = subprocess.run(
+                ["git", "log", "-1", "--pretty=format:%H|%s|%an"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            last_commit = log_result.stdout.strip() if log_result.returncode == 0 else None
+            event_data = {
+                "repo_path": repo_path,
+                "changes": changes,
+                "last_commit": last_commit
+            }
+            if EVENT_BUS_AVAILABLE:
+                try:
+                    bus = get_event_bus()
+                    bus.publish(Event(
+                        type="git_status",
+                        source="observer_layer",
+                        data=event_data
+                    ))
+                except Exception as e:
+                    pass
+            return event_data
+        except Exception:
+            return None
+    
+    def check_processes(self) -> dict:
+        """실행 중인 프로세스 확인 (Chrome, VSCode)"""
+        try:
+            # Windows에서 tasklist로 프로세스 확인
+            result = subprocess.run(
+                ["tasklist", "/FO", "CSV"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode != 0:
+                return {}
+            lines = result.stdout.strip().split("\n")
+            processes = []
+            for line in lines[1:]:  # 첫 줄은 헤더
+                try:
+                    # CSV 파싱
+                    parts = line.strip().split('","')
+                    if len(parts) >= 1:
+                        name = parts[0].strip('"').lower()
+                        processes.append(name)
+                except Exception:
+                    pass
+            chrome_running = any("chrome" in p for p in processes)
+            vscode_running = any("code" in p for p in processes)
+            event_data = {
+                "chrome_running": chrome_running,
+                "vscode_running": vscode_running,
+                "processes": processes[:20]  # 최근 20개만
+            }
+            if EVENT_BUS_AVAILABLE:
+                try:
+                    bus = get_event_bus()
+                    bus.publish(Event(
+                        type="process_status",
+                        source="observer_layer",
+                        data=event_data
+                    ))
+                except Exception as e:
+                    pass
+            return event_data
+        except Exception:
+            return {}
 
 
 # Singleton 인스턴스

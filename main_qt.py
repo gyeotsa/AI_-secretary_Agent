@@ -16,6 +16,7 @@ from core.rag import get_rag_manager
 from core.hardware import get_hardware_manager
 from core.audio_processor import get_audio_processor
 from core.workspace import get_workspace_manager
+from core.permission import get_permission_manager
 from ui.main_window import JarvisMainWindow
 
 
@@ -49,6 +50,10 @@ class AppSignals(QObject):
     """Thread-safe bridge for callbacks that must run on the Qt GUI thread."""
     ai_response_ready = pyqtSignal(str)
     tts_finished = pyqtSignal()
+    # 권한 요청용 시그널: (permission_name, permission_description)
+    permission_request = pyqtSignal(str, str)
+    # 권한 응답용 시그널: (result_bool)
+    permission_response = pyqtSignal(bool)
 
 
 class JarvisApp:
@@ -65,6 +70,28 @@ class JarvisApp:
         self.rag_manager = get_rag_manager()
         self.hardware_manager = get_hardware_manager()
         self.workspace_manager = get_workspace_manager()
+        self.permission_manager = get_permission_manager()
+        
+        # 권한 요청 결과 저장용 변수
+        self._permission_result = None
+        self._permission_event = threading.Event()
+        
+        # PermissionManager에 UI callback 연결
+        def permission_callback(permission):
+            self._permission_result = None
+            self._permission_event.clear()
+            # 시그널로 메인 스레드에 요청 보내기
+            self.signals.permission_request.emit(permission.name, permission.description)
+            # 결과 기다리기 (최대 30초)
+            if self._permission_event.wait(timeout=30):
+                return self._permission_result
+            return False
+        self.permission_manager.set_request_callback(permission_callback)
+        
+        # 권한 요청 시그널 연결 (메인 스레드에서 실행)
+        self.signals.permission_request.connect(self._on_permission_request)
+        # 권한 응답 시그널 연결 (필요시)
+        self.signals.permission_response.connect(self._on_permission_response)
         
         self.messages = []
         self.session_id = str(uuid.uuid4())
@@ -473,6 +500,16 @@ class JarvisApp:
         else:
             self.window.set_workspace_info("")
             print(f"[Workspace] 설정 실패: 유효하지 않은 경로")
+    
+    def _on_permission_request(self, permission_name: str, permission_description: str):
+        """메인 스레드에서 권한 요청 대화상자를 보여주고 결과를 반환"""
+        result = self.window.request_permission(permission_name, permission_description)
+        self._permission_result = result
+        self._permission_event.set()
+    
+    def _on_permission_response(self, result: bool):
+        """권한 응답 처리 (필요시)"""
+        pass
     
     def _on_close_requested(self):
         # 종료 버튼 클릭시 프로그램 자체 종료

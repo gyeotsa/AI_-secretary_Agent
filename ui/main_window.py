@@ -2,7 +2,8 @@ import sys
 import math
 import random
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, 
-                             QFrame, QHBoxLayout, QLineEdit, QPushButton, QFileDialog)
+                             QFrame, QHBoxLayout, QLineEdit, QPushButton, 
+                             QFileDialog, QDialog, QMessageBox)
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush
 from .visualizer import AudioVisualizer
@@ -289,11 +290,86 @@ class CircularSoundBarWidget(QWidget):
             if height > 0:
                 painter.drawLine(int(inner_x), int(inner_y), int(outer_x), int(outer_y))
 
+class PermissionRequestDialog(QDialog):
+    def __init__(self, permission_name: str, permission_description: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("JARVIS 권한 요청")
+        self.setFixedSize(450, 200)
+        self.result_value = False
+        
+        # UI 스타일
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0a0a1a;
+                border: 2px solid #00d4ff;
+            }
+            QLabel {
+                color: #00d4ff;
+                font-family: Consolas;
+            }
+            QPushButton {
+                background-color: rgba(0, 212, 255, 20);
+                color: #00d4ff;
+                border: 2px solid #00d4ff;
+                border-radius: 8px;
+                padding: 8px 20px;
+                font-family: Consolas;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 212, 255, 40);
+            }
+            QPushButton:pressed {
+                background-color: rgba(0, 212, 255, 60);
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+        
+        # 권한 이름 라벨
+        title_label = QLabel(f"⚠️  권한 요청: {permission_name}")
+        title_font = QFont("Orbitron", 14, QFont.Weight.Bold)
+        title_label.setFont(title_font)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # 권한 설명 라벨
+        desc_label = QLabel(permission_description)
+        desc_label.setWordWrap(True)
+        desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(desc_label)
+        
+        # 버튼 레이아웃
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(20)
+        
+        deny_btn = QPushButton("거부")
+        deny_btn.clicked.connect(self._on_deny)
+        button_layout.addWidget(deny_btn)
+        
+        allow_btn = QPushButton("허용")
+        allow_btn.clicked.connect(self._on_allow)
+        button_layout.addWidget(allow_btn)
+        
+        layout.addLayout(button_layout)
+    
+    def _on_allow(self):
+        self.result_value = True
+        self.accept()
+    
+    def _on_deny(self):
+        self.result_value = False
+        self.reject()
+
 class JarvisMainWindow(QWidget):
     command_triggered = pyqtSignal(str)
     text_submitted = pyqtSignal(str)
     close_requested = pyqtSignal()  # 종료 요청 시그널
     workspace_selected = pyqtSignal(str)  # Workspace 선택 시그널
+    # 권한 요청 시그널: (permission_name, permission_description) -> return bool
+    permission_requested = pyqtSignal(str, str)
     
     def __init__(self, audio_processor=None):
         super().__init__()
@@ -941,6 +1017,12 @@ class JarvisMainWindow(QWidget):
         else:
             self.workspace_label.setText("Workspace: 없음")
             self.workspace_label.setStyleSheet("color: #00a8cc; padding: 5px;")
+    
+    def request_permission(self, permission_name: str, permission_description: str) -> bool:
+        """권한 요청 대화상자를 보여주고 사용자 응답을 반환"""
+        dialog = PermissionRequestDialog(permission_name, permission_description, self)
+        dialog.exec()
+        return dialog.result_value
     
     def _on_text_submitted(self):
         text = self.text_input.text().strip()
