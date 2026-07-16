@@ -75,6 +75,9 @@ class OllamaClient(BaseLLMClient):
         super().__init__()
         self.base_url = Config.OLLAMA_BASE_URL
         self.model = Config.OLLAMA_MODEL
+        # This small instruct model mistakes ordinary chat for tool requests
+        # (notably `listen`), preventing a final response from being returned.
+        self.tools = []
 
     @staticmethod
     def _extract_legacy_speak_text(content: str) -> str | None:
