@@ -12,9 +12,9 @@ import uuid
 
 @dataclass
 class Event:
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
     type: str
     source: str
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
     data: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
 
