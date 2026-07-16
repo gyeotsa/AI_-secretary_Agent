@@ -5,6 +5,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import threading
 
+# Event Bus import
+try:
+    from core.runtime.event_bus import get_event_bus, Event
+    EVENT_BUS_AVAILABLE = True
+except ImportError:
+    EVENT_BUS_AVAILABLE = False
+
 # Watchdog 라이브러리 import (선택사항)
 try:
     from watchdog.observers import Observer
@@ -90,13 +97,23 @@ class ObserverLayer:
             return f"오류: 유효하지 않은 경로입니다: {path}"
             
         try:
-            # 내부 콜백 함수 (이력 저장 + 사용자 콜백 호출)
+            # 내부 콜백 함수 (이력 저장 + Event Bus 발행 + 사용자 콜백 호출)
             def internal_callback(event: FileChangeEvent):
                 with self._lock:
                     self._event_history.append(event)
-                    # 최근 100개 이벤트만 유지
                     if len(self._event_history) > 100:
                         self._event_history.pop(0)
+                # Event Bus로 발행
+                if EVENT_BUS_AVAILABLE:
+                    try:
+                        bus = get_event_bus()
+                        bus.publish(Event(
+                            type=f"file_{event.event_type}",
+                            source="observer_layer",
+                            data={"path": event.file_path}
+                        ))
+                    except Exception as e:
+                        pass
                 if callback:
                     callback(event)
                     

@@ -366,10 +366,34 @@ AI_-secretary_Agent/
   - window.workspace_selected 시그널 연결 → _on_workspace_selected() 메서드
   - 선택한 Workspace를 Personal Memory(favorite_paths)에 자동 저장
 
+### 2026-07-16 추가 변경 사항 (Runtime & Permission & Knowledge Updater)
+
+- [Feat] core/runtime/ 폴더 추가 (Runtime Layer):
+  - event_bus.py (Event Bus: 이벤트 중앙 전달, subscribe/publish, get_event_bus() 싱글톤)
+  - action_journal.py (Action Journal: 모든 행동 기록, SQLite 기반, get_action_journal() 싱글톤)
+  - __init__.py (Runtime 패키지 초기화)
+- [Feat] core/permission.py 추가 (Permission Manager & Capability Registry):
+  - PermissionLevel Enum: SAFE/CONFIRM/SYSTEM/DENIED
+  - PermissionManager: 권한 요청/승인/거절, 상태 저장 (data/permissions.json)
+  - CapabilityRegistry: 플러그인 Capability 관리 (data/capabilities.json)
+  - get_permission_manager(), get_capability_registry() 싱글톤
+- [Feat] core/knowledge_updater.py 추가 (Knowledge Updater):
+  - Observer Layer 이벤트 → Event Bus → RAG 자동 인덱싱
+  - File created/modified/deleted 이벤트 처리
+  - Action Journal과 연동
+  - get_knowledge_updater() 싱글톤
+- [Update] core/observer.py: Event Bus 연동 (file_created/file_modified/file_deleted 이벤트 발행)
+
 ### 다음 작업
 
 1. 일반 GUI 환경에서 한글 질의로 실제 스피커 음량을 최종 확인합니다.
 2. Ollama 디버그 로그의 전체 도구 스키마 출력을 필요 시 축소합니다.
-3. Observer Layer를 Knowledge Updater와 연결 (자동 RAG 인덱싱)
-4. Personal Memory를 LLM 컨텍스트에 통합 (사용자 습관 반영)
+3. Personal Memory를 LLM 컨텍스트에 통합 (사용자 습관 반영)
+4. Permission Manager UI 연동 (권한 요청 대화상자)
+5. Plugin 시스템 구축 (Tool Runtime)
+6. Project Indexer 구현 (Claude Code 수준)
+7. Episode/Semantic Memory 분리
+8. Automation Engine 구현 (스케줄 기반 자동 실행)
+9. Local Knowledge Graph 구현
+10. Multi-Agent 시스템 구현
 
