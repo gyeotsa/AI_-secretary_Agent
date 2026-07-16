@@ -17,6 +17,7 @@ from core.hardware import get_hardware_manager
 from core.audio_processor import get_audio_processor
 from core.workspace import get_workspace_manager
 from core.permission import get_permission_manager
+from core.executor import get_executor
 from ui.main_window import JarvisMainWindow
 
 
@@ -71,6 +72,7 @@ class JarvisApp:
         self.hardware_manager = get_hardware_manager()
         self.workspace_manager = get_workspace_manager()
         self.permission_manager = get_permission_manager()
+        self.executor = get_executor()
         self.signals = AppSignals()  # <-- 여기로 옮겼어요!
         
         # 권한 요청 결과 저장용 변수
@@ -197,6 +199,7 @@ class JarvisApp:
     
     def _process_ai(self, text: str):
         print("[DEBUG] _process_ai called with:", text)
+        
         # RAG로 문서 검색
         try:
             rag_context = self.rag_manager.search_docs(text)
@@ -207,99 +210,23 @@ class JarvisApp:
         except Exception as e:
             print(f"⚠️ RAG 검색 오류: {e}")
         
-        # AI 호출
-        print("[DEBUG] Messages before append:", self.messages)
+        # AI 호출: Planner → Executor → Reflection 파이프라인 사용!
+        print("[DEBUG] Calling Executor.execute_goal...")
         self.messages.append({"role": "user", "content": text})
-        print("[DEBUG] Messages after append:", self.messages)
         
-        while True:
-            print("[DEBUG] Calling llm.chat_with_tools...")
-            response_text, tool_uses = self.llm.chat_with_tools(self.messages)
-            print("[DEBUG] llm.chat_with_tools returned:", response_text, tool_uses)
+        try:
+            # Executor로 목표 실행!
+            response_text = self.executor.execute_goal(text, self.session_id)
+            print("[DEBUG] Executor.execute_goal returned:", response_text)
             
-            if tool_uses:
-                # UI responses are already spoken automatically. Do not loop
-                # when the model returns a speak_text-only tool call.
-                if len(tool_uses) == 1 and tool_uses[0].get("name") == "speak_text":
-                    text = tool_uses[0].get("input", {}).get("text", "").strip()
-                    if text:
-                        self.signals.ai_response_ready.emit(text)
-                        break
-
-                # 툴 실행
-                tool_results = []
-                for tool_use in tool_uses:
-                    # Anthropic은 객체, Ollama는 dict로 반환됨
-                    if hasattr(tool_use, 'id'):
-                        tool_id = tool_use.id
-                        tool_name = tool_use.name
-                        tool_input = tool_use.input
-                    else:
-                        tool_id = tool_use.get('id')
-                        tool_name = tool_use.get('name')
-                        tool_input = tool_use.get('input')
-                    
-                    print(f"[툴 실행 중: {tool_name}]")
-                    
-                    # 툴 실행
-                    tool_result = self.tool_executor.execute_tool(tool_name, tool_input)
-                    print(f"[툴 결과: {tool_name} 완료]")
-                    tool_results.append(tool_result)
-                
-                # Ollama는 content에 툴 결과를 텍스트로 넣어줌
-                if Config.LLM_PROVIDER == "ollama":
-                    self.messages.append({
-                        "role": "user",
-                        "content": f"다음 툴을 실행했습니다: {json.dumps([{'tool': t[0], 'result': t[1]} for t in zip([tu.get('name', '') for tu in tool_uses], tool_results)], ensure_ascii=False)}"
-                    })
-                else:
-                    # Anthropic용
-                    assistant_content_objects = []
-                    tool_use_ids = []
-                    for tool_use in tool_uses:
-                        if hasattr(tool_use, 'id'):
-                            tool_id = tool_use.id
-                            tool_name = tool_use.name
-                            tool_input = tool_use.input
-                        else:
-                            tool_id = tool_use.get('id')
-                            tool_name = tool_use.get('name')
-                            tool_input = tool_use.get('input')
-                        
-                        assistant_content_objects.append({
-                            "type": "tool_use",
-                            "id": tool_id,
-                            "name": tool_name,
-                            "input": tool_input,
-                        })
-                        tool_use_ids.append(tool_id)
-                    
-                    self.messages.append({"role": "assistant", "content": assistant_content_objects})
-                    
-                    for i, tool_use in enumerate(tool_uses):
-                        if hasattr(tool_use, 'id'):
-                            tool_id = tool_use.id
-                        else:
-                            tool_id = tool_use.get('id')
-                        
-                        self.messages.append({
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": tool_id,
-                                    "content": tool_results[i],
-                                }
-                            ],
-                        })
-            else:
-                # 최종 응답
-                # 메인 스레드에서 UI 업데이트하도록 QTimer.singleShot 사용
-                # _process_ai runs in a worker thread. QTimer.singleShot() in
-                # that thread has no event loop, so the UI/TTS callback is
-                # never invoked. Emit a queued Qt signal to the GUI thread.
-                self.signals.ai_response_ready.emit(response_text)
-                break
+            # 최종 응답 전송
+            self.signals.ai_response_ready.emit(response_text)
+        except Exception as e:
+            print(f"⚠️ Executor 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            error_response = f"죄송해요, 보스! 작업 실행 중 오류가 발생했어요: {str(e)}"
+            self.signals.ai_response_ready.emit(error_response)
     
     def _on_ai_response(self, response_text: str):
         print("[DEBUG] _on_ai_response called with:", response_text)
