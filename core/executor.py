@@ -4,6 +4,7 @@ from core.scratchpad import get_scratchpad, Task, Observation
 from core.planner import get_planner, DecomposedTask
 from core.tools import get_tool_executor
 from core.reflection import get_reflection
+from core.context import get_context_manager
 
 
 class Executor:
@@ -21,22 +22,26 @@ class Executor:
         self.planner = get_planner()
         self.tool_executor = get_tool_executor()
         self.reflection = get_reflection()
+        self.context_manager = get_context_manager()
         self.max_iterations = 10  # 최대 반복 횟수
 
-    def execute_goal(self, goal: str, context: str = "") -> str:
+    def execute_goal(self, goal: str, session_id: Optional[str] = None) -> str:
         """
         사용자의 목표를 실행하는 메인 메서드
         
         Args:
             goal: 사용자의 원래 요청
-            context: 추가 컨텍스트
+            session_id: 대화 세션 ID (Context Manager용)
             
         Returns:
             최종 답변
         """
-        # 1. Planner로 작업 분해
+        # 1. Context Manager로 통합 컨텍스트 가져오기
+        full_context = self.context_manager.get_full_context(goal, session_id)
+        
+        # 2. Planner로 작업 분해
         print(f"[Executor] 목표 실행 시작: {goal}")
-        decomposed_tasks = self.planner.decompose_goal(goal, context)
+        decomposed_tasks = self.planner.decompose_goal(goal, full_context)
         if not decomposed_tasks:
             return "죄송합니다, 목표를 분해할 수 없습니다."
 

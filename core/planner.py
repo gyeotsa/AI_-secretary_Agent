@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import json
 from core.llm import get_llm_client
 from core.scratchpad import get_scratchpad, Scratchpad
+from core.context import get_context_manager
 
 
 @dataclass
@@ -21,11 +22,13 @@ class Planner:
     사용자의 요청을 작은 작업으로 분해하는 Planner 클래스
     - LLM을 사용해 목표를 분해
     - Scratchpad에 작업 저장
+    - Context Manager로 통합 컨텍스트 사용
     """
 
     def __init__(self):
         self.llm = get_llm_client()
         self.scratchpad = get_scratchpad()
+        self.context_manager = get_context_manager()
 
     def decompose_goal(self, goal: str, context: str = "") -> List[DecomposedTask]:
         """
