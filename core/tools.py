@@ -5,6 +5,7 @@ from typing import Optional
 from config import Config
 from core.harness import SafetyLayer
 from core.user_profile import get_user_profile
+from core.workspace import get_workspace_manager
 
 try:
     from duckduckgo_search import DDGS
@@ -30,6 +31,7 @@ class ToolExecutor:
     def __init__(self):
         self.safety = SafetyLayer()
         self.user_profile = get_user_profile()
+        self.workspace = get_workspace_manager()
         
         # Lazy initialization for optional modules
         self._rag_manager = None
@@ -81,6 +83,14 @@ class ToolExecutor:
         return self._multimodal_manager
 
     def read_file(self, path: str) -> str:
+        # Workspace가 설정되어 있으면 상대경로로 처리
+        try:
+            if self.workspace.is_set():
+                real_path = self.workspace.resolve(path)
+                path = str(real_path)
+        except Exception as e:
+            return f"오류: {e}"
+                
         is_valid, error_msg = self.safety.validate_path(path)
         if not is_valid:
             return f"오류: {error_msg}"
@@ -92,6 +102,14 @@ class ToolExecutor:
             return f"파일 읽기 오류: {str(e)}"
 
     def write_file(self, path: str, content: str) -> str:
+        # Workspace가 설정되어 있으면 상대경로로 처리
+        try:
+            if self.workspace.is_set():
+                real_path = self.workspace.resolve(path)
+                path = str(real_path)
+        except Exception as e:
+            return f"오류: {e}"
+                
         is_valid, error_msg = self.safety.validate_path(path)
         if not is_valid:
             return f"오류: {error_msg}"
@@ -104,7 +122,19 @@ class ToolExecutor:
         except Exception as e:
             return f"파일 쓰기 오류: {str(e)}"
 
-    def list_directory(self, path: str) -> str:
+    def list_directory(self, path: str = "") -> str:
+        # 경로가 비어있고 Workspace가 설정되어 있으면 Workspace 루트
+        try:
+            if not path and self.workspace.is_set():
+                real_path = self.workspace.get_workspace_path()
+                if real_path:
+                    path = real_path
+            elif self.workspace.is_set():
+                real_path = self.workspace.resolve(path)
+                path = str(real_path)
+        except Exception as e:
+            return f"오류: {e}"
+                
         is_valid, error_msg = self.safety.validate_path(path)
         if not is_valid:
             return f"오류: {error_msg}"
@@ -120,6 +150,43 @@ class ToolExecutor:
             return "\n".join(result)
         except Exception as e:
             return f"디렉토리 목록 오류: {str(e)}"
+            
+    # ------------------------------
+    # Workspace 관련 도구 추가
+    # ------------------------------
+    def set_workspace(self, path: str) -> str:
+        """작업 공간을 설정합니다."""
+        try:
+            success = self.workspace.set_workspace(path)
+            if success:
+                info = self.workspace.get_info()
+                return f"Workspace가 설정되었습니다: {info.name} (파일: {info.file_count}개)"
+            else:
+                return f"Workspace 설정 실패: 유효하지 않은 경로입니다: {path}"
+        except Exception as e:
+            return f"Workspace 설정 오류: {str(e)}"
+            
+    def get_workspace_info(self) -> str:
+        """현재 Workspace 정보를 반환합니다."""
+        if not self.workspace.is_set():
+            info = self.workspace.get_info()
+            return (f"Workspace: {info.name}\n"
+                   f"경로: {info.path}\n"
+                   f"파일 개수: {info.file_count}")
+        else:
+            return "Workspace가 설정되지 않았습니다."
+            
+    def get_workspace_tree(self) -> str:
+        """Workspace의 파일 트리를 반환합니다."""
+        if not self.workspace.is_set():
+            return "Workspace가 설정되지 않았습니다."
+            
+        try:
+            import json
+            tree = self.workspace.get_file_tree()
+            return json.dumps(tree, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return f"트리 가져오기 오류: {str(e)}"
 
     def run_command(self, command: str) -> str:
         is_valid, error_msg = self.safety.validate_command(command)
@@ -500,6 +567,10 @@ class ToolExecutor:
             "create_directory": self.create_directory,
             "delete_directory": self.delete_directory,
             "capture_camera": self.capture_camera,
+            # Workspace 관련 도구 추가
+            "set_workspace": self.set_workspace,
+            "get_workspace_info": self.get_workspace_info,
+            "get_workspace_tree": self.get_workspace_tree,
         }
 
         if tool_name not in tool_functions:
@@ -942,6 +1013,41 @@ def get_tools_schema() -> list[dict]:
                         "description": "저장할 경로 (선택사항, 지정하지 않으면 임시 파일에 저장)",
                     },
                 },
+                "required": [],
+            },
+        },
+        # ------------------------------
+        # Workspace 관련 도구 스키마
+        # ------------------------------
+        {
+            "name": "set_workspace",
+            "description": "작업 공간을 설정합니다. 설정된 경로 내에서만 파일 작업이 가능합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "작업 공간으로 사용할 폴더 경로",
+                    }
+                },
+                "required": ["path"],
+            },
+        },
+        {
+            "name": "get_workspace_info",
+            "description": "현재 설정된 Workspace의 정보를 반환합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "get_workspace_tree",
+            "description": "Workspace의 파일 트리 구조를 반환합니다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
                 "required": [],
             },
         },

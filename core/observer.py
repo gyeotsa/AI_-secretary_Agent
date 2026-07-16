@@ -1,0 +1,186 @@
+
+from pathlib import Path
+from typing import Callable, Optional, List
+from dataclasses import dataclass, field
+from datetime import datetime
+import threading
+
+# Watchdog 라이브러리 import (선택사항)
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileCreatedEvent, FileDeletedEvent
+    WATCHDOG_AVAILABLE = True
+except ImportError:
+    WATCHDOG_AVAILABLE = False
+
+
+@dataclass
+class FileChangeEvent:
+    """파일 변경 이벤트 데이터 클래스"""
+    event_type: str  # 'created', 'modified', 'deleted'
+    file_path: str
+    timestamp: datetime = field(default_factory=datetime.now)
+
+
+class FileChangeHandler(FileSystemEventHandler):
+    """파일 시스템 변경 이벤트 핸들러"""
+    
+    def __init__(self, callback: Callable[[FileChangeEvent], None]):
+        super().__init__()
+        self.callback = callback
+        
+    def on_modified(self, event: FileModifiedEvent):
+        if not event.is_directory:
+            self.callback(FileChangeEvent(
+                event_type='modified',
+                file_path=event.src_path
+            ))
+            
+    def on_created(self, event: FileCreatedEvent):
+        if not event.is_directory:
+            self.callback(FileChangeEvent(
+                event_type='created',
+                file_path=event.src_path
+            ))
+            
+    def on_deleted(self, event: FileDeletedEvent):
+        if not event.is_directory:
+            self.callback(FileChangeEvent(
+                event_type='deleted',
+                file_path=event.src_path
+            ))
+
+
+class ObserverLayer:
+    """
+    파일 시스템 변경을 감지하는 Observer Layer
+    
+    주요 기능:
+    - 지정된 폴더의 파일 변경 감지
+    - 이벤트 큐에 변경 사항 저장
+    - 나중에 Knowledge Updater와 연결할 수 있음
+    """
+    
+    def __init__(self):
+        self.observer: Optional[Observer] = None
+        self._running: bool = False
+        self._event_history: List[FileChangeEvent] = []
+        self._lock = threading.Lock()
+        self._watched_paths: List[str] = []
+        
+    def is_available(self) -> bool:
+        """Watchdog 라이브러리가 사용 가능한지 확인"""
+        return WATCHDOG_AVAILABLE
+        
+    def start_watching(self, path: str, callback: Optional[Callable[[FileChangeEvent], None]] = None) -> str:
+        """
+        지정된 경로의 파일 변경 감지를 시작합니다.
+        
+        Args:
+            path: 감지할 폴더 경로
+            callback: 이벤트 발생 시 호출될 함수 (선택사항)
+            
+        Returns:
+            성공/실패 메시지
+        """
+        if not self.is_available():
+            return "오류: watchdog 라이브러리가 설치되지 않았습니다."
+            
+        if not Path(path).exists() or not Path(path).is_dir():
+            return f"오류: 유효하지 않은 경로입니다: {path}"
+            
+        try:
+            # 내부 콜백 함수 (이력 저장 + 사용자 콜백 호출)
+            def internal_callback(event: FileChangeEvent):
+                with self._lock:
+                    self._event_history.append(event)
+                    # 최근 100개 이벤트만 유지
+                    if len(self._event_history) > 100:
+                        self._event_history.pop(0)
+                if callback:
+                    callback(event)
+                    
+            # Observer 초기화 (필요시)
+            if self.observer is None:
+                self.observer = Observer()
+                
+            # 핸들러 등록
+            event_handler = FileChangeHandler(internal_callback)
+            self.observer.schedule(event_handler, path, recursive=True)
+            
+            # 시작 (아직 실행 중이지 않은 경우)
+            if not self._running:
+                self.observer.start()
+                self._running = True
+                
+            self._watched_paths.append(path)
+            return f"파일 감지가 시작되었습니다: {path}"
+            
+        except Exception as e:
+            return f"감지 시작 오류: {str(e)}"
+            
+    def stop_watching(self, path: Optional[str] = None) -> str:
+        """
+        파일 변경 감지를 중지합니다.
+        
+        Args:
+            path: 특정 경로만 중지 (None이면 전체 중지)
+            
+        Returns:
+            성공 메시지
+        """
+        if not self._running or self.observer is None:
+            return "감지가 실행 중이지 않습니다."
+            
+        try:
+            if path:
+                # 특정 경로만 중지 (watchdog는 스케줄을 직접 제거하기 어려움)
+                # 간단한 구현: 전체 중지 후 다른 경로 재시작
+                return "특정 경로 중지는 현재 지원되지 않습니다. 전체 중지하려면 매개변수 없이 호출하세요."
+            else:
+                # 전체 중지
+                self.observer.stop()
+                self.observer.join(timeout=5)
+                self.observer = None
+                self._running = False
+                self._watched_paths.clear()
+                return "모든 파일 감지가 중지되었습니다."
+                
+        except Exception as e:
+            return f"감지 중지 오류: {str(e)}"
+            
+    def get_event_history(self, limit: int = 20) -> List[FileChangeEvent]:
+        """
+        최근 파일 변경 이력을 가져옵니다.
+        
+        Args:
+            limit: 가져올 이벤트 수 (기본 20개)
+            
+        Returns:
+            FileChangeEvent 리스트
+        """
+        with self._lock:
+            return list(self._event_history[-limit:])
+            
+    def clear_event_history(self) -> str:
+        """이벤트 이력을 초기화합니다."""
+        with self._lock:
+            self._event_history.clear()
+        return "이벤트 이력이 초기화되었습니다."
+        
+    def get_watched_paths(self) -> List[str]:
+        """현재 감지 중인 경로 목록을 반환합니다."""
+        return list(self._watched_paths)
+
+
+# Singleton 인스턴스
+_observer_layer = None
+
+
+def get_observer_layer() -> ObserverLayer:
+    """ObserverLayer 싱글톤 인스턴스 반환"""
+    global _observer_layer
+    if _observer_layer is None:
+        _observer_layer = ObserverLayer()
+    return _observer_layer
+
