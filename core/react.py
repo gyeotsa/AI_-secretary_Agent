@@ -1,7 +1,7 @@
 import json
 from typing import List, Dict, Any
 from core.llm import get_llm_client
-from core.tools import get_tool_executor
+from core.tools import get_tool_executor, get_tools_description_text
 
 
 class ReActAgent:
@@ -35,13 +35,8 @@ class ReActAgent:
 - 질문을 이해했다면: "Final Answer: [답변]"
 - 툴을 사용해야 한다면: "Tool: [툴이름]\nInput: [툴입력 (JSON 형식)]"
 
-사용 가능한 툴:
-- read_file, write_file, list_directory, run_command, web_search
-- set_profile, get_profile, set_preference
-- speak_text, listen
-- add_document, search_docs, list_documents
-- add_schedule_job, list_schedule_jobs, delete_schedule_job, start_scheduler, stop_scheduler
-- start_wakeword_detection, stop_wakeword_detection, start_clap_detection, stop_clap_detection
+사용 가능한 툴 (이름(파라미터*: 필수): 설명, 이 목록에 없는 이름은 사용하지 마세요):
+__TOOLS_TEXT__
 
 예시:
 사용자: 오늘 날씨 어때?
@@ -59,6 +54,11 @@ class ReActAgent:
             },
             {"role": "user", "content": query}
         ]
+        # get_tools_schema()가 유일한 진실 공급원입니다 (Planner, Executor와 동일한 목록 사용).
+        # 이 문자열에는 리터럴 중괄호가 없으므로 단순 치환이면 충분합니다.
+        messages[0]["content"] = messages[0]["content"].replace(
+            "__TOOLS_TEXT__", get_tools_description_text()
+        )
 
         for step in range(self.max_steps):
             print(f"\n📝 Step {step + 1}/{self.max_steps}")
@@ -77,10 +77,10 @@ class ReActAgent:
                 try:
                     tool_part = response.split("Tool:")[-1].split("Input:")[0].strip()
                     input_part = response.split("Input:")[-1].strip()
-                    
+
                     tool_name = tool_part
                     tool_input = json.loads(input_part)
-                    
+
                     print(f"🔧 툴 실행: {tool_name}")
                     print(f"📥 입력: {tool_input}")
 

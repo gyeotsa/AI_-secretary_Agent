@@ -12,11 +12,13 @@ from typing import Dict, List, Optional, Callable
 from datetime import datetime
 import json
 
+
 class PermissionLevel(Enum):
-    SAFE = "safe"       # 자동 실행 OK (읽기, 검색, 계산 등)
-    CONFIRM = "confirm" # 매번 승인 필요 (삭제, 메일 전송, Git Push 등)
-    SYSTEM = "system"   # 1회 승인 후 유지 (카메라, 마이크, 클립보드 등)
-    DENIED = "denied"   # 영구 거부
+    SAFE = "safe"  # 자동 실행 OK (읽기, 검색, 계산 등)
+    CONFIRM = "confirm"  # 매번 승인 필요 (삭제, 메일 전송, Git Push 등)
+    SYSTEM = "system"  # 1회 승인 후 유지 (카메라, 마이크, 클립보드 등)
+    DENIED = "denied"  # 영구 거부
+
 
 @dataclass
 class Permission:
@@ -28,6 +30,7 @@ class Permission:
     granted_at: Optional[datetime] = None
     last_used: Optional[datetime] = None
 
+
 @dataclass
 class Capability:
     id: str
@@ -36,6 +39,47 @@ class Capability:
     plugin_id: str
     enabled: bool = True
     required_permissions: List[str] = field(default_factory=list)
+
+
+# 도구 이름 → 필요한 Permission id 매핑 (단일 진실 공급원).
+# 여기 없는 도구는 위험도가 낮다고 분류된 것으로 보고 별도 확인 없이 실행을 허용합니다
+# (읽기/조회 전용 도구, 자기 자신의 프로필·의미기억·지식그래프에 대한 일반적인 조회/추가 등).
+# 새 도구(특히 파일시스템 쓰기/삭제, 외부 API 호출, 자동 실행류)를 추가할 때는 반드시
+# 여기에도 등록해야 Permission 체크가 누락되지 않습니다.
+TOOL_PERMISSION_MAP: Dict[str, str] = {
+    # 파일 읽기
+    "read_file": "filesystem_read",
+    "list_directory": "filesystem_read",
+    "get_file_info": "filesystem_read",
+    "extract_text_from_pdf": "filesystem_read",
+    # 파일 쓰기
+    "write_file": "filesystem_write",
+    "create_excel_file": "filesystem_write",
+    "write_excel_cell": "filesystem_write",
+    "create_directory": "filesystem_write",
+    # 파일 삭제
+    "delete_directory": "filesystem_delete",
+    # 셸 명령 실행 (가장 위험도 높은 도구)
+    "run_command": "shell_execute",
+    # 카메라/마이크
+    "capture_camera": "camera",
+    "listen": "microphone",
+    "start_wakeword_detection": "microphone",
+    "start_clap_detection": "microphone",
+    # 데이터(파일 아닌 것) 삭제
+    "delete_schedule_job": "data_delete",
+    "delete_semantic_memory": "data_delete",
+    "delete_automation_job": "data_delete",
+    "delete_entity": "data_delete",
+    # 자동화/자율 실행 (나중에 스스로 실행되는 작업을 등록·구동)
+    "add_schedule_job": "automation",
+    "start_scheduler": "automation",
+    "add_automation_job": "automation",
+    "toggle_automation_job": "automation",
+    "start_automation_engine": "automation",
+    "execute_multi_agent": "automation",
+}
+
 
 class PermissionManager:
     def __init__(self, storage_path: Optional[str] = None):
@@ -54,11 +98,16 @@ class PermissionManager:
             Permission(id="git_push", name="Git Push", description="Git Push 실행", level=PermissionLevel.CONFIRM),
             Permission(id="mail_send", name="메일 전송", description="메일 전송", level=PermissionLevel.CONFIRM),
             Permission(id="browser", name="브라우저", description="브라우저 자동 조작", level=PermissionLevel.SYSTEM),
-            Permission(id="windows_api", name="Windows API", description="Windows 시스템 API 접근", level=PermissionLevel.SYSTEM),
+            Permission(id="windows_api", name="Windows API", description="Windows 시스템 API 접근",
+                       level=PermissionLevel.SYSTEM),
+            Permission(id="data_delete", name="데이터 삭제", description="메모리·지식그래프·스케줄·자동화 작업 등 파일이 아닌 데이터 삭제",
+                       level=PermissionLevel.CONFIRM),
+            Permission(id="automation", name="자동화 실행", description="스케줄러·자동화 엔진·멀티에이전트 등 나중에 스스로 실행되는 작업 등록/구동",
+                       level=PermissionLevel.CONFIRM),
         ]
         self._load()
         self._request_callback: Optional[Callable[[Permission], bool]] = None
-        
+
     def _load(self):
         """기존 권한 상태 로드"""
         # 기본 권한으로 초기화
@@ -72,11 +121,13 @@ class PermissionManager:
                     for perm_id, perm_data in data.items():
                         if perm_id in self.permissions:
                             self.permissions[perm_id].granted = perm_data.get("granted", False)
-                            self.permissions[perm_id].granted_at = datetime.fromisoformat(perm_data["granted_at"]) if perm_data.get("granted_at") else None
-                            self.permissions[perm_id].last_used = datetime.fromisoformat(perm_data["last_used"]) if perm_data.get("last_used") else None
+                            self.permissions[perm_id].granted_at = datetime.fromisoformat(
+                                perm_data["granted_at"]) if perm_data.get("granted_at") else None
+                            self.permissions[perm_id].last_used = datetime.fromisoformat(
+                                perm_data["last_used"]) if perm_data.get("last_used") else None
             except Exception as e:
                 print(f"[PermissionManager] Load error: {e}")
-                
+
     def _save(self):
         """현재 권한 상태 저장"""
         data = {}
@@ -88,11 +139,11 @@ class PermissionManager:
             }
         with open(self.storage_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-            
+
     def set_request_callback(self, callback: Callable[[Permission], bool]):
         """권한 요청 UI 콜백 설정 (사용자에게 물어보는 함수)"""
         self._request_callback = callback
-        
+
     def request_permission(self, permission_id: str) -> bool:
         """권한 요청 (필요시 사용자에게 물어봄)"""
         if permission_id not in self.permissions:
@@ -118,21 +169,21 @@ class PermissionManager:
             return granted
         # 콜백이 없으면 CONFIRM은 거부, SYSTEM은 거부
         return False
-        
+
     def grant_permission(self, permission_id: str):
         """권한 직접 부여"""
         if permission_id in self.permissions:
             self.permissions[permission_id].granted = True
             self.permissions[permission_id].granted_at = datetime.now()
             self._save()
-            
+
     def revoke_permission(self, permission_id: str):
         """권한 취소"""
         if permission_id in self.permissions:
             self.permissions[permission_id].granted = False
             self.permissions[permission_id].granted_at = None
             self._save()
-            
+
     def check_permission(self, permission_id: str) -> bool:
         """현재 권한 상태만 확인 (요청 안 함)"""
         if permission_id not in self.permissions:
@@ -141,14 +192,15 @@ class PermissionManager:
         if perm.level == PermissionLevel.SAFE:
             return True
         return perm.granted
-        
+
     def get_all_permissions(self) -> List[Permission]:
         """모든 권한 목록 반환"""
         return list(self.permissions.values())
-        
+
     def get_permission_by_level(self, level: PermissionLevel) -> List[Permission]:
         """특정 레벨의 권한 목록 반환"""
         return [p for p in self.permissions.values() if p.level == level]
+
 
 class CapabilityRegistry:
     def __init__(self, storage_path: Optional[str] = None):
@@ -156,7 +208,7 @@ class CapabilityRegistry:
         self.storage_path.parent.mkdir(exist_ok=True)
         self.capabilities: Dict[str, Capability] = {}
         self._load()
-        
+
     def _load(self):
         if self.storage_path.exists():
             try:
@@ -173,7 +225,7 @@ class CapabilityRegistry:
                         )
             except Exception as e:
                 print(f"[CapabilityRegistry] Load error: {e}")
-                
+
     def _save(self):
         data = {}
         for cap_id, cap in self.capabilities.items():
@@ -186,36 +238,36 @@ class CapabilityRegistry:
             }
         with open(self.storage_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-            
+
     def register_capability(self, capability: Capability):
         """새 Capability 등록"""
         self.capabilities[capability.id] = capability
         self._save()
-        
+
     def unregister_capability(self, capability_id: str):
         """Capability 제거"""
         if capability_id in self.capabilities:
             del self.capabilities[capability_id]
             self._save()
-            
+
     def enable_capability(self, capability_id: str):
         """Capability 활성화"""
         if capability_id in self.capabilities:
             self.capabilities[capability_id].enabled = True
             self._save()
-            
+
     def disable_capability(self, capability_id: str):
         """Capability 비활성화"""
         if capability_id in self.capabilities:
             self.capabilities[capability_id].enabled = False
             self._save()
-            
+
     def get_capability(self, capability_id: str) -> Optional[Capability]:
         return self.capabilities.get(capability_id)
-        
+
     def get_all_capabilities(self) -> List[Capability]:
         return list(self.capabilities.values())
-        
+
     def get_available_capabilities(self, permission_manager: PermissionManager) -> List[Capability]:
         """사용 가능한 Capability (권한이 충족된 것만)"""
         available = []
@@ -231,15 +283,18 @@ class CapabilityRegistry:
                 available.append(cap)
         return available
 
+
 # Singleton instances
 _permission_manager = None
 _capability_registry = None
+
 
 def get_permission_manager() -> PermissionManager:
     global _permission_manager
     if _permission_manager is None:
         _permission_manager = PermissionManager()
     return _permission_manager
+
 
 def get_capability_registry() -> CapabilityRegistry:
     global _capability_registry

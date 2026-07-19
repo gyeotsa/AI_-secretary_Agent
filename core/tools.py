@@ -26,6 +26,7 @@ try:
     import sounddevice as sd
     import numpy as np
     import scipy.io.wavfile as wav
+
     WHISPER_AVAILABLE = True
 except ImportError:
     WHISPER_AVAILABLE = False
@@ -37,23 +38,23 @@ class ToolExecutor:
         self.user_profile = get_user_profile()
         self.workspace = get_workspace_manager()
         self.plugin_registry = get_plugin_registry()
-        
+
         # Lazy initialization for optional modules
         self._rag_manager = None
         self._scheduler_manager = None
         self._hardware_manager = None
         self._multimodal_manager = None
         self._project_indexer = None
-        
+
         # TTS engine
         self._tts_engine = None
-        
+
         # Load plugins from plugins directory
         try:
             self.plugin_registry.load_plugins_from_directory()
         except Exception as e:
             print(f"[ToolExecutor] Plugin 로딩 오류: {e}")
-    
+
     @property
     def rag_manager(self):
         if self._rag_manager is None:
@@ -63,7 +64,7 @@ class ToolExecutor:
             except Exception as e:
                 self._rag_manager = None
         return self._rag_manager
-    
+
     @property
     def scheduler_manager(self):
         if self._scheduler_manager is None:
@@ -73,7 +74,7 @@ class ToolExecutor:
             except Exception as e:
                 self._scheduler_manager = None
         return self._scheduler_manager
-    
+
     @property
     def hardware_manager(self):
         if self._hardware_manager is None:
@@ -83,7 +84,7 @@ class ToolExecutor:
             except Exception as e:
                 self._hardware_manager = None
         return self._hardware_manager
-    
+
     @property
     def multimodal_manager(self):
         if self._multimodal_manager is None:
@@ -93,7 +94,7 @@ class ToolExecutor:
             except Exception as e:
                 self._multimodal_manager = None
         return self._multimodal_manager
-        
+
     @property
     def project_indexer(self):
         if self._project_indexer is None:
@@ -112,7 +113,7 @@ class ToolExecutor:
                 path = str(real_path)
         except Exception as e:
             return f"오류: {e}"
-                
+
         is_valid, error_msg = self.safety.validate_path(path)
         if not is_valid:
             return f"오류: {error_msg}"
@@ -131,7 +132,7 @@ class ToolExecutor:
                 path = str(real_path)
         except Exception as e:
             return f"오류: {e}"
-                
+
         is_valid, error_msg = self.safety.validate_path(path)
         if not is_valid:
             return f"오류: {error_msg}"
@@ -156,7 +157,7 @@ class ToolExecutor:
                 path = str(real_path)
         except Exception as e:
             return f"오류: {e}"
-                
+
         is_valid, error_msg = self.safety.validate_path(path)
         if not is_valid:
             return f"오류: {error_msg}"
@@ -172,7 +173,7 @@ class ToolExecutor:
             return "\n".join(result)
         except Exception as e:
             return f"디렉토리 목록 오류: {str(e)}"
-            
+
     # ------------------------------
     # Workspace 관련 도구 추가
     # ------------------------------
@@ -187,29 +188,29 @@ class ToolExecutor:
                 return f"Workspace 설정 실패: 유효하지 않은 경로입니다: {path}"
         except Exception as e:
             return f"Workspace 설정 오류: {str(e)}"
-            
+
     def get_workspace_info(self) -> str:
         """현재 Workspace 정보를 반환합니다."""
         if not self.workspace.is_set():
             info = self.workspace.get_info()
             return (f"Workspace: {info.name}\n"
-                   f"경로: {info.path}\n"
-                   f"파일 개수: {info.file_count}")
+                    f"경로: {info.path}\n"
+                    f"파일 개수: {info.file_count}")
         else:
             return "Workspace가 설정되지 않았습니다."
-            
+
     def get_workspace_tree(self) -> str:
         """Workspace의 파일 트리를 반환합니다."""
         if not self.workspace.is_set():
             return "Workspace가 설정되지 않았습니다."
-            
+
         try:
             import json
             tree = self.workspace.get_file_tree()
             return json.dumps(tree, indent=2, ensure_ascii=False)
         except Exception as e:
             return f"트리 가져오기 오류: {str(e)}"
-            
+
     # ------------------------------
     # Project Indexer 관련 도구 추가
     # ------------------------------
@@ -217,85 +218,86 @@ class ToolExecutor:
         """현재 Workspace나 프로젝트 루트를 인덱싱합니다."""
         if self.project_indexer is None:
             return "오류: Project Indexer를 초기화할 수 없습니다."
-            
+
         try:
             if not self.project_indexer.project_root and self.workspace.is_set():
                 self.project_indexer.set_project_root(self.workspace.current_workspace)
-                
+
             if not self.project_indexer.project_root:
                 return "오류: 프로젝트 루트가 설정되지 않았습니다. 먼저 Workspace를 설정하세요."
-                
+
             count = self.project_indexer.index_project()
             return f"프로젝트 인덱싱 완료: {count}개 파일"
         except Exception as e:
             return f"프로젝트 인덱싱 오류: {str(e)}"
-            
+
     def search_files(self, query: str, search_type: str = "name") -> str:
         """파일을 검색합니다 (이름, 내용, 확장자)."""
         if self.project_indexer is None:
             return "오류: Project Indexer를 초기화할 수 없습니다."
-            
+
         try:
             results = self.project_indexer.search_files(query, search_type)
             if not results:
                 return "검색 결과가 없습니다."
-                
+
             import json
             return json.dumps(results, indent=2, ensure_ascii=False)
         except Exception as e:
             return f"파일 검색 오류: {str(e)}"
-            
+
     def search_symbols(self, query: str, symbol_type: Optional[str] = None) -> str:
         """코드 심볼을 검색합니다 (함수, 클래스, 변수)."""
         if self.project_indexer is None:
             return "오류: Project Indexer를 초기화할 수 없습니다."
-            
+
         try:
             results = self.project_indexer.search_symbols(query, symbol_type)
             if not results:
                 return "검색 결과가 없습니다."
-                
+
             import json
             return json.dumps(results, indent=2, ensure_ascii=False)
         except Exception as e:
             return f"심볼 검색 오류: {str(e)}"
-            
+
     def get_file_info(self, path: str) -> str:
         """파일의 상세 정보를 반환합니다."""
         if self.project_indexer is None:
             return "오류: Project Indexer를 초기화할 수 없습니다."
-            
+
         try:
             file_info = self.project_indexer.get_file_info(path)
             if not file_info:
                 return f"파일 정보를 찾을 수 없습니다: {path}"
-                
+
             import json
             return json.dumps({
                 "path": file_info.path,
                 "name": file_info.name,
                 "extension": file_info.extension,
                 "size": file_info.size,
-                "modified_at": datetime.fromtimestamp(file_info.modified_at).isoformat() if file_info.modified_at else "",
+                "modified_at": datetime.fromtimestamp(
+                    file_info.modified_at).isoformat() if file_info.modified_at else "",
                 "is_text": file_info.is_text,
                 "content_preview": file_info.content_preview,
                 "symbols": file_info.symbols
             }, indent=2, ensure_ascii=False)
         except Exception as e:
             return f"파일 정보 가져오기 오류: {str(e)}"
-            
+
     def get_project_tree(self) -> str:
         """프로젝트의 파일 트리 구조를 반환합니다."""
         if self.project_indexer is None:
             return "오류: Project Indexer를 초기화할 수 없습니다."
-            
+
         try:
             tree = self.project_indexer.get_file_tree()
             import json
             return json.dumps(tree, indent=2, ensure_ascii=False)
         except Exception as e:
             return f"프로젝트 트리 가져오기 오류: {str(e)}"
-            
+
     # ------------------------------
     # Memory 관련 도구 추가
     # ------------------------------
@@ -313,7 +315,7 @@ class ToolExecutor:
             return f"시맨틱 메모리가 추가되었습니다: {key}"
         except Exception as e:
             return f"시맨틱 메모리 추가 오류: {str(e)}"
-            
+
     def get_semantic_memory(self, key: str) -> str:
         """시맨틱 메모리 조회"""
         try:
@@ -326,7 +328,7 @@ class ToolExecutor:
                 return f"메모리를 찾을 수 없습니다: {key}"
         except Exception as e:
             return f"시맨틱 메모리 조회 오류: {str(e)}"
-            
+
     def search_semantic_memory(self, query: str, category: Optional[str] = None) -> str:
         """시맨틱 메모리 검색"""
         try:
@@ -341,7 +343,7 @@ class ToolExecutor:
             return "\n".join(result)
         except Exception as e:
             return f"시맨틱 메모리 검색 오류: {str(e)}"
-            
+
     def delete_semantic_memory(self, key: str) -> str:
         """시맨틱 메모리 삭제"""
         try:
@@ -354,7 +356,7 @@ class ToolExecutor:
                 return f"메모리를 찾을 수 없습니다: {key}"
         except Exception as e:
             return f"시맨틱 메모리 삭제 오류: {str(e)}"
-            
+
     # ------------------------------
     # Automation Engine 관련 도구 추가
     # ------------------------------
@@ -366,7 +368,7 @@ class ToolExecutor:
             return engine.add_job(description, schedule_type, schedule_value, prompt)
         except Exception as e:
             return f"자동화 작업 추가 오류: {str(e)}"
-            
+
     def list_automation_jobs(self) -> str:
         """자동화 작업 목록 보기"""
         try:
@@ -375,7 +377,7 @@ class ToolExecutor:
             return engine.list_jobs()
         except Exception as e:
             return f"자동화 작업 목록 오류: {str(e)}"
-            
+
     def get_job_history(self, job_id: int, limit: int = 10) -> str:
         """자동화 작업 실행 기록 보기"""
         try:
@@ -384,7 +386,7 @@ class ToolExecutor:
             return engine.get_job_history(job_id, limit)
         except Exception as e:
             return f"실행 기록 조회 오류: {str(e)}"
-            
+
     def toggle_automation_job(self, job_id: int, enabled: bool) -> str:
         """자동화 작업 활성화/비활성화"""
         try:
@@ -393,7 +395,7 @@ class ToolExecutor:
             return engine.toggle_job(job_id, enabled)
         except Exception as e:
             return f"작업 상태 변경 오류: {str(e)}"
-            
+
     def delete_automation_job(self, job_id: int) -> str:
         """자동화 작업 삭제"""
         try:
@@ -402,7 +404,7 @@ class ToolExecutor:
             return engine.delete_job(job_id)
         except Exception as e:
             return f"자동화 작업 삭제 오류: {str(e)}"
-            
+
     def start_automation_engine(self) -> str:
         """자동화 엔진 시작"""
         try:
@@ -411,7 +413,7 @@ class ToolExecutor:
             return engine.start()
         except Exception as e:
             return f"자동화 엔진 시작 오류: {str(e)}"
-            
+
     def stop_automation_engine(self) -> str:
         """자동화 엔진 중지"""
         try:
@@ -420,7 +422,7 @@ class ToolExecutor:
             return engine.stop()
         except Exception as e:
             return f"자동화 엔진 중지 오류: {str(e)}"
-            
+
     def is_automation_engine_running(self) -> str:
         """자동화 엔진 실행 여부"""
         try:
@@ -429,7 +431,7 @@ class ToolExecutor:
             return "실행 중" if engine.is_running() else "중지됨"
         except Exception as e:
             return f"상태 확인 오류: {str(e)}"
-            
+
     # ------------------------------
     # Knowledge Graph 관련 도구 추가
     # ------------------------------
@@ -444,7 +446,7 @@ class ToolExecutor:
             return f"✅ 엔티티가 추가되었습니다 (ID: {entity_id}): {name} ({entity_type})"
         except Exception as e:
             return f"엔티티 추가 오류: {str(e)}"
-            
+
     def get_entity(self, name: str, entity_type: Optional[str] = None) -> str:
         """지식 그래프에서 엔티티 조회"""
         try:
@@ -456,7 +458,7 @@ class ToolExecutor:
             return json.dumps(entity.to_dict(), indent=2, ensure_ascii=False)
         except Exception as e:
             return f"엔티티 조회 오류: {str(e)}"
-            
+
     def search_entities(self, query: str, entity_type: Optional[str] = None, limit: int = 20) -> str:
         """지식 그래프에서 엔티티 검색"""
         try:
@@ -473,7 +475,7 @@ class ToolExecutor:
             return "\n".join(result)
         except Exception as e:
             return f"엔티티 검색 오류: {str(e)}"
-            
+
     def delete_entity(self, name: str, entity_type: Optional[str] = None) -> str:
         """지식 그래프에서 엔티티 삭제"""
         try:
@@ -486,8 +488,8 @@ class ToolExecutor:
                 return f"엔티티를 찾을 수 없습니다: {name}"
         except Exception as e:
             return f"엔티티 삭제 오류: {str(e)}"
-            
-    def add_triple(self, subject: str, predicate: str, object_: str, 
+
+    def add_triple(self, subject: str, predicate: str, object_: str,
                    subject_type: str = "thing", object_type: str = "thing",
                    metadata: Optional[str] = None) -> str:
         """지식 그래프에 트리플 추가"""
@@ -499,7 +501,7 @@ class ToolExecutor:
             return f"✅ 트리플이 추가되었습니다 (ID: {relation_id}): ({subject}) -[{predicate}]-> ({object_})"
         except Exception as e:
             return f"트리플 추가 오류: {str(e)}"
-            
+
     def get_relations(self, entity_name: str, direction: str = "both") -> str:
         """엔티티의 관계 조회"""
         try:
@@ -519,7 +521,7 @@ class ToolExecutor:
             return "\n".join(result)
         except Exception as e:
             return f"관계 조회 오류: {str(e)}"
-            
+
     def get_subgraph(self, entity_name: str, depth: int = 2) -> str:
         """서브그래프 조회"""
         try:
@@ -529,7 +531,7 @@ class ToolExecutor:
             return json.dumps(subgraph, indent=2, ensure_ascii=False)
         except Exception as e:
             return f"서브그래프 조회 오류: {str(e)}"
-            
+
     # ------------------------------
     # Multi-Agent 관련 도구 추가
     # ------------------------------
@@ -542,7 +544,7 @@ class ToolExecutor:
             return result
         except Exception as e:
             return f"멀티 에이전트 실행 오류: {str(e)}"
-            
+
     def get_task_history(self) -> str:
         """멀티 에이전트 작업 히스토리 조회"""
         try:
@@ -621,11 +623,11 @@ class ToolExecutor:
         if pyttsx3 is None:
             print("[DEBUG] pyttsx3 is None")
             return "오류: pyttsx3가 설치되지 않았습니다. requirements.txt를 확인하세요."
-        
+
         # 빈 문자열이나 공백만 있을 때 처리
         if not text or text.strip() == "":
             text = "네, 보스."
-        
+
         temp_wav_path = None
         engine = None
         try:
@@ -633,7 +635,7 @@ class ToolExecutor:
             print("[DEBUG] pyttsx3.init() 호출 전")
             engine = pyttsx3.init()
             print("[DEBUG] pyttsx3.init() 호출 성공")
-            
+
             # 한국어 음성 설정 (가능한 경우)
             voices = engine.getProperty('voices')
             print(f"[DEBUG] voices 개수: {len(voices)}")
@@ -643,16 +645,16 @@ class ToolExecutor:
                     korean_voice_id = voice.id
                     print(f"[DEBUG] 한국어 음성 설정: {voice.name}")
                     break
-            
+
             if korean_voice_id:
                 engine.setProperty('voice', korean_voice_id)
-            
+
             # 1. TTS를 WAV 파일로 저장
             temp_wav_path = tempfile.mktemp(suffix=".wav")
             print(f"[DEBUG] TTS WAV 저장 경로: {temp_wav_path}")
             engine.save_to_file(text, temp_wav_path)
             engine.runAndWait()
-            
+
             # 2. AudioProcessor로 WAV 파일 재생 + 분석
             if audio_processor:
                 audio_processor.play_and_analyze_tts(temp_wav_path)
@@ -660,7 +662,7 @@ class ToolExecutor:
                 # AudioProcessor가 없으면 그냥 재생
                 engine.say(text)
                 engine.runAndWait()
-            
+
             print("[DEBUG] TTS 처리 완료")
             return f"음성으로 읽어주었습니다: {text}"
         except Exception as e:
@@ -675,7 +677,7 @@ class ToolExecutor:
                     engine.stop()
                 except Exception:
                     pass
-            
+
             # 임시 WAV 파일 삭제
             if temp_wav_path and os.path.exists(temp_wav_path):
                 try:
@@ -686,29 +688,29 @@ class ToolExecutor:
     def listen(self, duration: int = 3) -> str:
         if not WHISPER_AVAILABLE:
             return "오류: openai-whisper, sounddevice, scipy, numpy가 설치되지 않았습니다. requirements.txt를 확인하세요."
-        
+
         temp_file_path = None
         try:
             print(f"🎤 {duration}초 동안 말씀하세요...")
             sample_rate = 16000
             recording = sd.rec(
-                int(duration * sample_rate), 
+                int(duration * sample_rate),
                 samplerate=sample_rate,
-                channels=1, 
+                channels=1,
                 dtype='int16'
             )
             sd.wait()
-            
+
             # 임시 파일 생성
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 temp_file_path = f.name
                 wav.write(temp_file_path, sample_rate, recording)
-            
+
             # Whisper로 음성 인식
             model = whisper.load_model("base")
             result = model.transcribe(temp_file_path, language="ko")
             text = result["text"].strip()
-            
+
             if text:
                 return f"음성 인식 결과: {text}"
             else:
@@ -721,7 +723,7 @@ class ToolExecutor:
                 subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 ffmpeg_available = False
-            
+
             if not ffmpeg_available:
                 return "STT 오류: FFmpeg가 설치되지 않았습니다. Windows에서는 https://ffmpeg.org/download.html에서 다운로드한 뒤 PATH에 추가해주세요. (또는 'winget install ffmpeg'로 설치)"
             return f"STT 오류: {str(e)}"
@@ -808,7 +810,7 @@ class ToolExecutor:
         if self.multimodal_manager is None:
             return "오류: 멀티모달 기능을 사용하려면 Pillow, PyMuPDF를 설치하세요."
         return self.multimodal_manager.extract_text_from_pdf(pdf_path, page_num)
-    
+
     def create_excel_file(self, file_path: str, data: Optional[list] = None) -> str:
         """
         엑셀 파일을 생성합니다.
@@ -820,24 +822,24 @@ class ToolExecutor:
                 import openpyxl
             except ImportError:
                 return "오류: openpyxl 라이브러리가 설치되지 않았습니다. 'pip install openpyxl'로 설치하세요."
-            
+
             # 새 워크북 생성
             wb = openpyxl.Workbook()
             ws = wb.active
             ws.title = "Sheet1"
-            
+
             # 데이터 입력
             if data:
                 for row in data:
                     ws.append(row)
-            
+
             # 파일 저장
             wb.save(file_path)
             return f"사장님, 엑셀 파일이 성공적으로 생성되었습니다: {file_path}"
-            
+
         except Exception as e:
             return f"사장님, 엑셀 파일 생성 중 오류가 발생했습니다: {str(e)}"
-    
+
     def write_excel_cell(self, file_path: str, sheet_name: str, cell: str, value: str) -> str:
         """
         엑셀 파일의 특정 셀에 값을 씁니다.
@@ -847,46 +849,46 @@ class ToolExecutor:
                 import openpyxl
             except ImportError:
                 return "오류: openpyxl 라이브러리가 설치되지 않았습니다."
-            
+
             if not os.path.exists(file_path):
                 return f"사장님, 파일을 찾을 수 없습니다: {file_path}"
-            
+
             wb = openpyxl.load_workbook(file_path)
-            
+
             if sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
             else:
                 ws = wb.create_sheet(sheet_name)
-            
+
             ws[cell] = value
             wb.save(file_path)
             return f"사장님, 셀 {sheet_name}!{cell}에 값이 성공적으로 입력되었습니다."
-            
+
         except Exception as e:
             return f"사장님, 셀 쓰기 중 오류가 발생했습니다: {str(e)}"
-    
+
     def create_directory(self, dir_path: str) -> str:
         """폴더를 생성합니다."""
         try:
             is_valid, error_msg = self.safety.validate_path(dir_path)
             if not is_valid:
                 return f"오류: {error_msg}"
-            
+
             os.makedirs(dir_path, exist_ok=True)
             return f"사장님, 폴더가 성공적으로 생성되었습니다: {dir_path}"
         except Exception as e:
             return f"사장님, 폴더 생성 중 오류가 발생했습니다: {str(e)}"
-    
+
     def delete_directory(self, dir_path: str) -> str:
         """폴더를 삭제합니다 (주의: 내용물도 함께 삭제됨)."""
         try:
             is_valid, error_msg = self.safety.validate_path(dir_path)
             if not is_valid:
                 return f"오류: {error_msg}"
-            
+
             if not os.path.exists(dir_path):
                 return f"사장님, 폴더를 찾을 수 없습니다: {dir_path}"
-            
+
             import shutil
             shutil.rmtree(dir_path)
             return f"사장님, 폴더가 성공적으로 삭제되었습니다: {dir_path}"
@@ -1904,6 +1906,50 @@ def get_tools_schema() -> list[dict]:
     except Exception as e:
         print(f"[get_tools_schema] Plugin 스키마 로딩 오류: {e}")
     return schema
+
+
+# 자율 실행 루프(Executor)나 native tool-calling(llm.py)에서 모델이 스스로
+# 선택하면 안 되는 도구 목록. 단일 진실 공급원으로 여기 하나만 둡니다.
+# - speak_text: main_qt.py가 최종 답변을 자동으로 TTS 재생하므로, 루프 중 모델이
+#   이 도구를 스스로 호출하면 중복 발화/무한 호출 루프에 빠질 수 있습니다.
+# - listen: 음성 입력을 기다리며 블로킹되므로 자율 루프 안에서 호출되면 프로그램이 멈춥니다.
+AUTO_LOOP_EXCLUDED_TOOLS = ["speak_text", "listen"]
+
+
+def get_tools_description_text(exclude: Optional[list[str]] = None) -> str:
+    """
+    get_tools_schema()를 사람이 읽을 수 있는 프롬프트 텍스트로 변환합니다.
+
+    Planner / Executor / ReActAgent가 각자 하드코딩된 도구 목록을 유지하던 문제를 없애기 위한
+    단일 진실 공급원(single source of truth)입니다. 새 도구를 추가하려면 get_tools_schema()에만
+    등록하면 되고, 이 함수를 쓰는 모든 곳에 자동으로 반영됩니다.
+
+    Args:
+        exclude: 프롬프트에서 제외할 도구 이름 목록 (예: UI 전용 도구 등)
+    """
+    exclude_set = set(exclude or [])
+    lines = []
+    for tool in get_tools_schema():
+        if tool["name"] in exclude_set:
+            continue
+        # 파라미터 이름까지 같이 보여줘야 LLM이 tool_input을 정확히 채울 수 있음
+        properties = tool.get("input_schema", {}).get("properties", {})
+        required = set(tool.get("input_schema", {}).get("required", []))
+        if properties:
+            params = ", ".join(
+                f"{name}{'*' if name in required else ''}"
+                for name in properties.keys()
+            )
+            lines.append(f"- {tool['name']}({params}): {tool['description']}")
+        else:
+            lines.append(f"- {tool['name']}(): {tool['description']}")
+    return "\n".join(lines)
+
+
+def get_tool_names(exclude: Optional[list[str]] = None) -> list[str]:
+    """등록된 모든 도구 이름 목록 (exclude로 일부 제외 가능)"""
+    exclude_set = set(exclude or [])
+    return [t["name"] for t in get_tools_schema() if t["name"] not in exclude_set]
 
 
 _tools_executor = None

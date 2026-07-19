@@ -5,10 +5,10 @@ import json
 from core.llm import get_llm_client
 from core.scratchpad import get_scratchpad, Task
 from core.planner import get_planner
-from core.tools import get_tool_executor
+from core.tools import get_tool_executor, get_tools_description_text, get_tool_names
 from core.reflection import get_reflection
 from core.context import get_context_manager
-from core.permission import get_permission_manager
+from core.permission import get_permission_manager, TOOL_PERMISSION_MAP
 from core.memory import get_memory, build_memory_context
 from core.workspace import get_workspace_manager
 
@@ -32,6 +32,10 @@ class Executor:
         self.permission_manager = get_permission_manager()
         self.memory = get_memory()
         self.workspace_manager = get_workspace_manager()
+
+        # decide_next_action()에서 잠깐 system_prompt를 바꿔 쓰고 나서 복원하기 위한 원본 보관
+        # (generate_response() 등 다른 메서드가 Jarvis 페르소나 프롬프트를 계속 쓸 수 있어야 함)
+        self._default_system_prompt = self.llm.system_prompt
 
         self.goal = ""
         self.session_id = ""
@@ -68,7 +72,7 @@ class Executor:
         return self.finalize()
 
     def run_iteration(self) -> bool:
-        """한 번의 반복 실행: Task 선택 → Context 빌드 → Reasoning → Action → Verify → Reflect → Update → Evaluate"""
+        """한 번의 반복 실행: Task 선택 → Context 빌드 → (Reasoning+Tool선택 통합) → Action → Verify → Reflect → Update → Evaluate"""
         try:
             # 1. Task 선택
             task = self.select_task()
@@ -82,13 +86,14 @@ class Executor:
             # 2. Context 빌드
             context = self.build_context(task)
 
-            # 3. 다음 Action Reasoning
-            action = self.reason_next_action(task, context)
+            # 3~4. Native Tool Calling으로 '무엇을 할지'와 '어떤 도구를 쓸지'를 한 번에 결정
+            # (예전의 reason_next_action() + select_tool() 두 단계를 decide_next_action() 하나로 통합)
+            action = self.decide_next_action(task, context)
             print(f"[Executor] Action 결정: {action}")
 
-            # 4. Tool 선택
-            tool_name, tool_input = self.select_tool(task, action, context)
-            if tool_name:
+            if action.get("action_type") == "use_tool":
+                tool_name = action["tool_name"]
+                tool_input = action.get("tool_input", {})
                 print(f"[Executor] Tool 선택: {tool_name}, 입력: {tool_input}")
 
                 # 5. Permission Check
@@ -118,7 +123,12 @@ class Executor:
                 # Tool이 필요 없는 경우 (간단한 텍스트 응답 등)
                 simple_result = action.get("simple_result", "Task 완료")
                 print(f"[Executor] 간단한 처리: {simple_result}")
-                self.scratchpad.add_observation("simple_action", action, simple_result, True)
+                self.scratchpad.add_observation("simple_action", {}, simple_result, True)
+                # 예전 코드는 이 분기에서 complete_task()를 호출하지 않아 Task 상태가
+                # "in_progress"에 계속 머물러 있었습니다. (get_pending_tasks()는
+                # status=="pending"만 보므로 evaluate_goal()의 판단 자체를 왜곡하진
+                # 않았지만, Task 상태 자체는 부정확했습니다.) 여기서 명시적으로 완료 처리합니다.
+                self.scratchpad.complete_task(task.id)
 
             # 9. Reflection
             self.reflect(task)
@@ -175,9 +185,16 @@ class Executor:
         if task:
             context_parts.append(f"# 현재 Task\nID: {task.id}\n설명: {task.description}\n우선순위: {task.priority}\n")
 
-        # 6. Context Manager (시스템 상태)
+        # 6. Context Manager (시스템 상태 + RAG 검색 결과 + OS 상태)
+        # 주의: 실제 메서드명은 get_full_context(user_query, session_id)입니다.
+        # 이전 코드는 존재하지 않는 get_context()를 호출해서 매번 예외가 나고 조용히 무시되고
+        # 있었습니다 (즉 OS 상태/RAG 검색 결과가 한 번도 Context에 포함된 적이 없었습니다).
+        # Memory/Scratchpad는 위 2, 3번에서 이미 넣었으므로 여기서는 일부 중복될 수 있지만,
+        # 최소 침습적으로 버그만 우선 고칩니다 (중복 제거는 별도 리팩토링에서 다룰 부분).
         try:
-            system_context = self.context_manager.get_context()
+            system_context = self.context_manager.get_full_context(
+                user_query=self.goal, session_id=self.session_id
+            )
             if system_context:
                 context_parts.append(f"# 시스템 상태 (System Context)\n{system_context}\n")
         except Exception as e:
@@ -195,127 +212,80 @@ class Executor:
         pending_tasks.sort(key=lambda t: t.priority)
         return pending_tasks[0]
 
-    def reason_next_action(self, task: Task, context: str) -> Dict[str, Any]:
-        """다음 Action을 Reasoning: 무엇을 할지 결정"""
-        system_prompt = """당신은 Jarvis의 Action Reasoner입니다.
-현재 Task와 전체 Context를 보고, 다음으로 무엇을 할지 결정해야 합니다.
+    def decide_next_action(self, task: Task, context: str) -> Dict[str, Any]:
+        """
+        Task를 수행하기 위해 도구가 필요한지, 필요하다면 어떤 도구/입력을 쓸지를
+        LLM의 native tool calling(function calling)으로 **한 번에** 결정합니다.
 
-응답 형식 (JSON만 반환):
-{
-    "action_type": "use_tool" | "simple_task" | "request_more_info",
-    "explanation": "왜 이 Action을 선택했는지 설명",
-    "simple_result": "만약 simple_task이면 결과 텍스트"
-}
-"""
-        user_prompt = f"Context:\n{context}\n\nTask: {task.description}\n\n다음 Action은?"
+        기존에는 이 판단이 두 단계(reason_next_action → select_tool)로 나뉘어 있었고,
+        둘 다 모델이 "JSON만 반환하세요"라는 텍스트 지시를 따르길 바라며 응답을 문자열
+        파싱하는 방식이었습니다. 모델이 지시를 안 따르거나(코드블록 없이 설명을 덧붙이거나),
+        빈 응답을 주거나, 목록에 없는 도구 이름을 지어내는 경우 전부 여기서 깨졌습니다.
 
+        Anthropic/Ollama가 이미 지원하는 chat_with_tools()(core/llm.py)를 쓰면, 모델이
+        "도구 호출" 또는 "일반 텍스트 응답" 둘 중 하나를 구조화된 형태로 반환하도록
+        API 레벨에서 강제되므로 이 파싱 실패 자체가 원천적으로 줄어듭니다.
+        """
+        # Tool Selector 전용 system prompt로 잠깐 교체 (끝나면 finally에서 원복)
+        self.llm.set_system_prompt(
+            "당신은 Jarvis의 Action Reasoner 겸 Tool Selector입니다.\n"
+            "주어진 Task를 수행하기 위해 도구가 필요하면 반드시 제공된 도구 중 하나를 호출하세요.\n"
+            "도구 없이 바로 답할 수 있는 간단한 작업이나 이미 끝난 작업이면, 도구를 호출하지 말고 "
+            "결과나 답변을 자연스러운 한국어 텍스트로 바로 답하세요.\n"
+            "제공된 도구 목록에 없는 도구는 절대 지어내지 마세요."
+        )
         try:
-            response = self.llm.chat([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ])
+            messages = [
+                {"role": "user", "content": f"Context:\n{context}\n\nTask: {task.description}\n\n이 Task를 수행하세요."}
+            ]
+            text, tool_use_blocks = self.llm.chat_with_tools(messages)
 
-            json_str = self._extract_json(response)
-            if json_str:
-                return json.loads(json_str)
-            else:
-                return {"action_type": "simple_task", "simple_result": "Task 완료", "explanation": "간단한 처리"}
+            if tool_use_blocks:
+                # 한 iteration에 Tool 호출 1개만 처리 (여러 개는 다음 iteration에서 순차 처리)
+                tool_name, tool_input = self._read_tool_use_block(tool_use_blocks[0])
+                if tool_name and tool_name in get_tool_names():
+                    return {"action_type": "use_tool", "tool_name": tool_name, "tool_input": tool_input}
+                print(f"[Executor] 모델이 존재하지 않는 Tool을 호출함: {tool_name} → 무시하고 simple_task로 처리")
+
+            return {"action_type": "simple_task", "simple_result": text or "Task 완료"}
 
         except Exception as e:
-            print(f"[Executor] Reasoning 오류: {e}")
-            return {"action_type": "simple_task", "simple_result": f"Task 완료: {task.description}", "explanation": "기본 처리"}
+            print(f"[Executor] Action/Tool 결정 오류: {e}")
+            return {"action_type": "simple_task", "simple_result": f"Task 완료: {task.description}"}
+        finally:
+            # 다른 메서드(generate_response 등)에 영향 주지 않도록 원래 시스템 프롬프트로 복원
+            self.llm.set_system_prompt(self._default_system_prompt)
 
-    def select_tool(self, task: Task, action: Dict[str, Any], context: str) -> tuple[Optional[str], Dict[str, Any]]:
+    @staticmethod
+    def _read_tool_use_block(block) -> tuple[Optional[str], Dict[str, Any]]:
         """
-        Tool Registry에서 가능한 Tool 목록을 가져와서 LLM으로 Best Tool 선택!
-        절대 Rule-based로 하지 않습니다!
+        Anthropic SDK는 tool_use 블록을 속성 접근 객체(block.name, block.input)로,
+        Ollama 쪽 구현은 dict(block["name"], block["input"])로 반환하므로 둘 다 처리합니다.
         """
-        if action.get("action_type") != "use_tool":
-            return None, {}
-
-        # 1. Tool Registry에서 모든 Tool 가져오기 (실제로는 Plugin Registry에서 가져올 수 있음)
-        # 여기서는 간단히 ToolExecutor가 아는 Tool 목록을 사용
-        # (나중에 proper Tool Registry로 교체)
-        available_tools = self._get_available_tools()
-
-        # 2. LLM으로 Best Tool 선택
-        system_prompt = """당신은 Tool Selector입니다.
-사용 가능한 Tool 목록을 보고, 주어진 Task와 Context에 가장 적합한 Tool을 선택하세요!
-
-사용 가능한 Tool 목록:
-"""
-        for tool in available_tools:
-            system_prompt += f"- {tool['name']}: {tool['description']}\n"
-
-        system_prompt += """
-응답 형식 (JSON만 반환):
-{
-    "tool_name": "선택한 Tool 이름",
-    "tool_input": { Tool에 전달할 입력 },
-    "explanation": "왜 이 Tool을 선택했는지"
-}
-"""
-        user_prompt = f"Context:\n{context}\n\nTask: {task.description}\n\n적절한 Tool은?"
-
-        try:
-            response = self.llm.chat([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ])
-
-            json_str = self._extract_json(response)
-            if json_str:
-                result = json.loads(json_str)
-                return result.get("tool_name"), result.get("tool_input", {})
-            else:
-                return None, {}
-
-        except Exception as e:
-            print(f"[Executor] Tool Selection 오류: {e}")
-            return None, {}
-
-    def _get_available_tools(self) -> List[Dict[str, Any]]:
-        """사용 가능한 Tool 목록 반환 (나중에 proper Tool Registry로 교체)"""
-        # 여기서는 간단한 하드코드로 제공
-        # 실제로는 get_tools_schema()나 Plugin Registry에서 가져와야 함
-        return [
-            {"name": "read_file", "description": "파일 읽기"},
-            {"name": "write_file", "description": "파일 쓰기"},
-            {"name": "list_directory", "description": "폴더 내용 보기"},
-            {"name": "run_command", "description": "명령 실행"},
-            {"name": "web_search", "description": "웹 검색"},
-            {"name": "speak_text", "description": "텍스트 음성으로 읽기"},
-            {"name": "add_semantic_memory", "description": "의미 기억 추가"},
-            {"name": "get_semantic_memory", "description": "의미 기억 조회"},
-            {"name": "search_semantic_memory", "description": "의미 기억 검색"},
-            {"name": "index_project", "description": "프로젝트 인덱싱"},
-            {"name": "search_files", "description": "파일 검색"},
-            {"name": "search_symbols", "description": "심볼 검색"},
-            {"name": "add_automation_job", "description": "자동화 작업 추가"},
-            {"name": "list_automation_jobs", "description": "자동화 작업 목록"},
-            {"name": "add_entity", "description": "지식 그래프 엔티티 추가"},
-            {"name": "get_entity", "description": "지식 그래프 엔티티 조회"},
-            {"name": "add_triple", "description": "지식 그래프 관계 추가"},
-            {"name": "get_subgraph", "description": "지식 그래프 서브그래프 조회"},
-        ]
+        if isinstance(block, dict):
+            return block.get("name"), block.get("input") or {}
+        return getattr(block, "name", None), getattr(block, "input", None) or {}
 
     def request_permission(self, tool_name: str) -> bool:
-        """Permission 체크: Tool 실행 전 권한 확인"""
-        # Permission Level 결정 (간단한 규칙, 나중에 더 정교하게)
-        permission_level = "safe"
-        dangerous_tools = ["run_command", "delete_entity", "delete_semantic_memory"]
-        system_tools = []  # 카메라, 마이크 등 (나중에)
+        """
+        Permission 체크: Tool 실행 전 실제 PermissionManager를 통해 권한 확인.
 
-        if tool_name in dangerous_tools:
-            permission_level = "confirm"
-        elif tool_name in system_tools:
-            permission_level = "system"
+        예전엔 여기서 무조건 True를 반환했습니다 (permission_level만 계산해놓고 실제로는
+        아무 데도 안 씀). main_qt.py에 이미 UI 승인 다이얼로그 콜백이 PermissionManager에
+        연결돼 있었는데 Executor가 그걸 타지 않고 있었던 것입니다.
 
-        # Permission Manager로 권한 요청
-        # 실제로는 Permission Manager의 request 메서드 호출
-        # 여기서는 간단히 항상 허용 (나중에 제대로 구현)
-        print(f"[Executor] Permission 체크: {tool_name} (Level: {permission_level})")
-        return True  # 일단 항상 허용 (테스트용)
+        TOOL_PERMISSION_MAP(core/permission.py)에 없는 도구는 위험도가 낮다고 분류된
+        도구이므로 확인 없이 통과시킵니다. SAFE 레벨은 자동 허용, CONFIRM은 매번 UI 승인
+        필요, SYSTEM은 최초 1회만 승인하면 이후 자동 허용됩니다 (PermissionManager의 기존
+        구현 그대로).
+        """
+        permission_id = TOOL_PERMISSION_MAP.get(tool_name)
+        if permission_id is None:
+            return True
+
+        granted = self.permission_manager.request_permission(permission_id)
+        print(f"[Executor] Permission 체크: {tool_name} → {permission_id} = {'허용' if granted else '거부'}")
+        return granted
 
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
         """Tool 실행"""

@@ -4,6 +4,7 @@ import json
 from core.llm import get_llm_client
 from core.scratchpad import get_scratchpad, Scratchpad
 from core.context import get_context_manager
+from core.tools import get_tools_description_text
 
 
 @dataclass
@@ -33,11 +34,11 @@ class Planner:
     def decompose_goal(self, goal: str, context: str = "") -> List[DecomposedTask]:
         """
         사용자의 목표를 작업으로 분해합니다.
-        
+
         Args:
             goal: 사용자의 원래 요청
             context: 추가 컨텍스트 (대화 기록, RAG 결과 등)
-            
+
         Returns:
             분해된 작업 리스트
         """
@@ -76,30 +77,14 @@ class Planner:
     ]
 }
 
-사용 가능한 Tool 목록:
-- read_file: 파일 읽기
-- write_file: 파일 쓰기
-- list_directory: 폴더 내용 보기
-- run_command: 명령 실행
-- web_search: 웹 검색
-- set_profile: 사용자 프로필 설정
-- get_profile: 사용자 프로필 가져오기
-- set_preference: 사용자 선호 설정
-- speak_text: 텍스트 음성으로 읽기
-- listen: 음성 듣기
-- add_document: RAG 문서 추가
-- search_docs: RAG 문서 검색
-- list_documents: RAG 문서 목록 보기
-- add_schedule_job: 스케줄 작업 추가
-- list_schedule_jobs: 스케줄 작업 목록 보기
-- delete_schedule_job: 스케줄 작업 삭제
-- start_scheduler: 스케줄러 시작
-- stop_scheduler: 스케줄러 중지
-- start_wakeword_detection: 웨이크워드 감지 시작
-- stop_wakeword_detection: 웨이크워드 감지 중지
-- start_clap_detection: 박수 감지 시작
-- stop_clap_detection: 박수 감지 중지
+사용 가능한 Tool 목록 (실제 등록된 도구 기준, 이 목록에 없는 이름은 사용하지 마세요):
+__TOOLS_TEXT__
 """
+        # get_tools_schema()가 유일한 진실 공급원입니다.
+        # (Executor.select_tool, ReActAgent도 동일한 목록을 참조합니다)
+        # 주의: system_prompt에 JSON 예시의 리터럴 중괄호가 섞여 있으므로 .format()이 아니라
+        # 단순 문자열 치환을 사용합니다 (.format()을 쓰면 그 중괄호들 때문에 KeyError가 납니다).
+        system_prompt = system_prompt.replace("__TOOLS_TEXT__", get_tools_description_text())
 
         # 사용자 프롬프트
         user_prompt = f"사용자 요청: {goal}\n\n"

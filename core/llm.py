@@ -4,15 +4,19 @@ import json
 import re
 from typing import Tuple, List, Dict, Any
 from config import Config
-from core.tools import get_tools_schema
+from core.tools import get_tools_schema, AUTO_LOOP_EXCLUDED_TOOLS
 
 
 class BaseLLMClient:
     def __init__(self):
-        # UI responses are spoken automatically. Do not offer this tool to
-        # Ollama, otherwise small instruct models frequently call it instead
-        # of returning the answer text and can enter an endless tool loop.
-        self.tools = [tool for tool in get_tools_schema() if tool.get("name") != "speak_text"]
+        # UI responses are spoken automatically, and `listen` blocks waiting for
+        # voice input, so neither should ever be offered to the model as a
+        # callable tool (see core/tools.py AUTO_LOOP_EXCLUDED_TOOLS for the
+        # single source of truth on this exclusion list).
+        self.tools = [
+            tool for tool in get_tools_schema()
+            if tool.get("name") not in AUTO_LOOP_EXCLUDED_TOOLS
+        ]
         self.system_prompt = Config.SYSTEM_PROMPT_TEMPLATE.format(user_profile_section="")
 
     def set_system_prompt(self, prompt: str):
@@ -75,9 +79,16 @@ class OllamaClient(BaseLLMClient):
         super().__init__()
         self.base_url = Config.OLLAMA_BASE_URL
         self.model = Config.OLLAMA_MODEL
-        # This small instruct model mistakes ordinary chat for tool requests
-        # (notably `listen`), preventing a final response from being returned.
-        self.tools = []
+        # 과거에는 여기서 self.tools = [] 로 Ollama의 tool calling을 통째로 꺼놨습니다.
+        # (사유: 소형 instruct 모델이 일반 대화도 tool 호출로 착각해서 무한 루프에 빠지는 문제,
+        #  특히 speak_text/listen 관련.)
+        # 지금은 원인이었던 두 도구(speak_text, listen)를 BaseLLMClient에서 이미
+        # AUTO_LOOP_EXCLUDED_TOOLS로 애초에 제외하고, Executor 쪽에서도 모델이 존재하지
+        # 않는 tool 이름을 지어내면 무시하도록 검증하므로, tool calling 자체를 막을 필요가
+        # 없어졌습니다. Executor를 native tool calling(chat_with_tools) 기반으로 전환하려면
+        # 이 목록이 비어있으면 안 되므로 다시 켭니다.
+        # 다만 소형 로컬 모델은 여전히 tool 선택 정확도가 떨어질 수 있으니, 실제로 오작동이
+        # 잦으면 이 부분을 모델 교체(더 큰 모델) 또는 재검토 대상으로 삼으세요.
 
     @staticmethod
     def _extract_legacy_speak_text(content: str) -> str | None:
@@ -119,10 +130,10 @@ class OllamaClient(BaseLLMClient):
             if self.system_prompt:
                 ollama_messages.append({"role": "system", "content": self.system_prompt})
             ollama_messages.extend(messages)
-            
+
             # Ollama용 도구 스키마로 변환
             ollama_tools = self._convert_to_ollama_tools(self.tools)
-            
+
             payload = {
                 "model": self.model,
                 "messages": ollama_messages,
@@ -133,12 +144,12 @@ class OllamaClient(BaseLLMClient):
                 },
                 "tools": ollama_tools
             }
-            
+
             print(f"[DEBUG] Ollama chat_with_tools 호출 전")
             print(f"[DEBUG] Ollama 모델: {self.model}")
             print(f"[DEBUG] Ollama 요청 URL: {self.base_url}/api/chat")
             print(f"[DEBUG] Ollama 요청 페이로드: {json.dumps(payload, indent=2, ensure_ascii=False)}")
-            
+
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
@@ -148,11 +159,11 @@ class OllamaClient(BaseLLMClient):
             response.raise_for_status()
             result = response.json()
             print(f"[DEBUG] Ollama 응답 내용: {json.dumps(result, indent=2, ensure_ascii=False)}")
-            
+
             # Ollama 응답 처리
             if "message" in result:
                 message = result["message"]
-                
+
                 # 도구 호출 확인
                 if "tool_calls" in message and message["tool_calls"]:
                     tool_use_blocks = []
@@ -165,7 +176,7 @@ class OllamaClient(BaseLLMClient):
                             "input": function_info.get("arguments", {})
                         })
                     return "", tool_use_blocks
-                
+
                 # 텍스트 응답
                 if "content" in message:
                     # 이모지 필터링
@@ -174,7 +185,7 @@ class OllamaClient(BaseLLMClient):
                     if legacy_speak_text:
                         return legacy_speak_text, []
                     return text, []
-            
+
             return "", []
         except requests.exceptions.ConnectionError:
             return "오류: Ollama가 실행 중이지 않습니다. 'ollama serve'로 시작해주세요.", []
@@ -234,7 +245,7 @@ class OllamaClient(BaseLLMClient):
                 import re
                 text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
                 return text
-            
+
             return ""
         except requests.exceptions.ConnectionError:
             return "오류: Ollama가 실행 중이지 않습니다. 'ollama serve'로 시작해주세요."

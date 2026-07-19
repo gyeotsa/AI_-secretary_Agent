@@ -25,11 +25,11 @@ class ContextManager:
     def get_full_context(self, user_query: str = "", session_id: Optional[str] = None) -> str:
         """
         모든 소스의 컨텍스트를 통합합니다.
-        
+
         Args:
             user_query: 사용자 쿼리 (RAG 검색용)
             session_id: 대화 세션 ID
-            
+
         Returns:
             통합된 컨텍스트 문자열
         """
@@ -56,7 +56,7 @@ class ContextManager:
             rag_docs = self.rag.search_docs(user_query)
             if rag_docs:
                 rag_str = "\n".join([
-                    f"문서 {i+1}: {doc['content']}"
+                    f"문서 {i + 1}: {doc['content']}"
                     for i, doc in enumerate(rag_docs[:3])  # 최대 3개
                 ])
                 context_parts.append(f"\n[관련 문서]\n{rag_str}")
