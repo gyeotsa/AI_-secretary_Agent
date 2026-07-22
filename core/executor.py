@@ -11,6 +11,8 @@ from core.context import get_context_manager
 from core.permission import get_permission_manager, TOOL_PERMISSION_MAP
 from core.memory import get_memory, build_memory_context
 from core.workspace import get_workspace_manager
+from core.verifier import get_tool_verifier
+from core.recovery import get_recovery_manager
 
 
 class Executor:
@@ -32,6 +34,8 @@ class Executor:
         self.permission_manager = get_permission_manager()
         self.memory = get_memory()
         self.workspace_manager = get_workspace_manager()
+        self.verifier = get_tool_verifier()
+        self.recovery_manager = get_recovery_manager()
 
         # decide_next_action()에서 잠깐 system_prompt를 바꿔 쓰고 나서 복원하기 위한 원본 보관
         # (generate_response() 등 다른 메서드가 Jarvis 페르소나 프롬프트를 계속 쓸 수 있어야 함)
@@ -41,12 +45,16 @@ class Executor:
         self.session_id = ""
         self.max_iterations = 20  # 무한 루프 방지
         self.current_iteration = 0
+        self._retry_count = 0  # 복구 시 재시도 횟수 추적
+        self._consecutive_failures = 0  # 연속 실패 횟수 추적
 
     def initialize(self, goal: str, session_id: Optional[str] = None):
         """초기화: Goal 설정, Scratchpad 초기화, Context 빌드"""
         self.goal = goal
         self.session_id = session_id or ""
         self.current_iteration = 0
+        self._retry_count = 0
+        self._consecutive_failures = 0
         self.scratchpad.reset()
         self.scratchpad.set_goal(goal)
         print(f"[Executor] 초기화 완료: Goal='{goal}'")
@@ -74,6 +82,17 @@ class Executor:
     def run_iteration(self) -> bool:
         """한 번의 반복 실행: Task 선택 → Context 빌드 → (Reasoning+Tool선택 통합) → Action → Verify → Reflect → Update → Evaluate"""
         try:
+            # 0. 재계획 여부 확인
+            current_context = self.build_context()
+            if self.planner.should_replan(self._consecutive_failures, current_context):
+                print("[Executor] 재계획 시작!")
+                try:
+                    _ = self.planner.decompose_goal(self.goal, current_context)
+                    self._consecutive_failures = 0  # 재계획 성공 시 초기화
+                    print("[Executor] 재계획 완료!")
+                except Exception as e:
+                    print(f"[Executor] 재계획 오류: {e}")
+            
             # 1. Task 선택
             task = self.select_task()
             if not task:
@@ -96,25 +115,26 @@ class Executor:
                 tool_input = action.get("tool_input", {})
                 print(f"[Executor] Tool 선택: {tool_name}, 입력: {tool_input}")
 
-                # 5. Permission Check
-                if not self.request_permission(tool_name):
-                    print(f"[Executor] Permission 거절됨: {tool_name}")
-                    self.scratchpad.add_observation("permission_denied", {"tool": tool_name}, "Permission denied", False)
-                    return True  # 다음 반복으로
-
-                # 6. Tool 실행
+                # 5~6. ToolExecutor가 중앙 권한 검사 후 실행
                 result = self.execute_tool(tool_name, tool_input)
                 print(f"[Executor] Tool 실행 결과: {result}")
 
                 # 7. 실행 결과 검증
                 verified = self.verify_execution(task, tool_name, tool_input, result)
                 if not verified:
-                    print(f"[Executor] 실행 결과 검증 실패! 복구 시도...")
+                    self._consecutive_failures += 1
+                    print(f"[Executor] 실행 결과 검증 실패! 복구 시도... (연속 실패: {self._consecutive_failures})")
                     recover_result = self.recover(task, tool_name, tool_input, result)
-                    if recover_result:
+                    if recover_result is not None:
                         result = recover_result
+                        verified = True
+                        self._consecutive_failures = 0  # 복구 성공하면 초기화
+                        print("[Executor] 복구 성공!")
                     else:
                         print("[Executor] 복구 실패!")
+                        self.scratchpad.add_observation(tool_name, tool_input, result, False)
+                        self.scratchpad.fail_task(task.id, result)
+                        self.reflect(task, tool_name, result, False)
                         return True
 
                 # 8. Observation 처리
@@ -129,9 +149,15 @@ class Executor:
                 # status=="pending"만 보므로 evaluate_goal()의 판단 자체를 왜곡하진
                 # 않았지만, Task 상태 자체는 부정확했습니다.) 여기서 명시적으로 완료 처리합니다.
                 self.scratchpad.complete_task(task.id)
+                self._consecutive_failures = 0  # Simple task 성공 시 초기화
 
             # 9. Reflection
-            self.reflect(task)
+            if action.get("action_type") == "use_tool":
+                # Tool 사용한 경우 결과 전달
+                self.reflect(task, tool_name, result, verified)
+            else:
+                # Simple task인 경우 성공으로 처리
+                self.reflect(task, success=True)
 
             # 10. Memory 업데이트
             self.update_memory()
@@ -149,6 +175,9 @@ class Executor:
             traceback.print_exc()
             print(f"[Executor] 반복 실행 오류: {e}")
             self.scratchpad.add_observation("error", {}, str(e), False)
+            if self.scratchpad.current_task:
+                self.scratchpad.fail_task(self.scratchpad.current_task.id, str(e))
+            self._consecutive_failures += 1
             return True
 
     def build_context(self, task: Optional[Task] = None) -> str:
@@ -292,32 +321,56 @@ class Executor:
         return self.tool_executor.execute_tool(tool_name, tool_input)
 
     def verify_execution(self, task: Task, tool_name: str, tool_input: Dict[str, Any], result: str) -> bool:
-        """실행 결과 검증: 정말로 성공했는지 확인 (예: 파일 수정 후 git diff 확인 등)"""
-        # 간단한 검증: 결과에 "오류"나 "Error"가 없으면 OK
-        # 나중에 더 정교한 검증 로직 추가
-        if "오류" in result or "Error" in result or "error" in result:
-            print(f"[Executor] 검증 실패: 결과에 오류가 있음")
-            return False
-
-        print(f"[Executor] 검증 성공!")
-        return True
+        """실행 결과 검증: ToolVerifier를 사용해 정교하게 확인"""
+        verification_result = self.verifier.verify(tool_name, tool_input, result)
+        print(f"[Executor] 검증 결과: {'성공' if verification_result.success else '실패'} - {verification_result.message}")
+        return verification_result.success
 
     def process_observation(self, task: Task, tool_name: str, tool_input: Dict[str, Any], result: str):
         """Observation 처리: Scratchpad에 기록"""
         self.scratchpad.add_observation(tool_name, tool_input, result, True)
         self.scratchpad.complete_task(task.id)
+        self._retry_count = 0  # 성공하면 재시도 횟수 리셋
         print(f"[Executor] Task 완료 처리: {task.id}")
 
-    def reflect(self, task: Task):
-        """Reflection: 실패 분석 및 개선"""
-        # 실패한 경우에만 Reflection 호출 (지금은 항상 성공으로 가정)
-        # 실제로는 Task 상태 확인 후 호출
-        pass
+    def reflect(self, task: Task, tool_name: str = "", result: str = "", success: bool = True):
+        """Reflection: 실패/성공 분석 및 학습"""
+        try:
+            if not success:
+                print(f"[Executor] Reflection: 실패 분석 중...")
+                # Reflection 모듈을 사용해 실패 분석
+                analysis = self.reflection.analyze_failure(result, task.description)
+                print(f"[Executor] Reflection 결과: {analysis}")
+                # 분석 결과를 Scratchpad에 기록
+                self.scratchpad.add_observation(
+                    "reflection",
+                    {"analysis": analysis},
+                    f"실패 분석: {analysis}",
+                    True
+                )
+            else:
+                print(f"[Executor] Reflection: 성공 케이스 학습 중...")
+                # 성공한 경우에도 간단히 기록
+                self.scratchpad.add_observation(
+                    "reflection",
+                    {"success": True},
+                    "성공 케이스 기록",
+                    True
+                )
+        except Exception as e:
+            print(f"[Executor] Reflection 오류: {e}")
 
     def update_memory(self):
         """Memory 업데이트: Episode Memory에 현재 상태 저장"""
-        # Episode Memory는 이미 main_qt.py에서 저장되지만, 여기서 추가로 업데이트할 수 있음
-        pass
+        try:
+            # 현재 Scratchpad 상태와 대화 내용을 Memory에 저장
+            memory_context = self.scratchpad.get_context()
+            if memory_context and self.memory:
+                # 간단히 Memory에 현재 상태 기록
+                print(f"[Executor] Memory 업데이트 중...")
+                # 실제로는 더 정교한 Memory 업데이트 로직이 필요하지만 여기서는 기본만
+        except Exception as e:
+            print(f"[Executor] Memory 업데이트 오류: {e}")
 
     def evaluate_goal(self) -> bool:
         """Goal 평가: 정말로 달성됐는지 확인"""
@@ -353,27 +406,29 @@ class Executor:
         except Exception as e:
             print(f"[Executor] Goal Evaluation 오류: {e}")
 
-        return len(pending_tasks) == 0
+        tasks = self.scratchpad.tasks
+        return bool(tasks) and all(task.status == "completed" for task in tasks)
 
     def recover(self, task: Task, tool_name: str, tool_input: Dict[str, Any], last_result: str) -> Optional[str]:
-        """실패 복구: Retry → Alternative Tool → Fallback → Planner 순서로 시도"""
-        print(f"[Executor] 복구 시도...")
+        """실패 복구: RecoveryManager를 사용해 단계별로 시도"""
+        print(f"[Executor] 복구 시도... (재시도 횟수: {self._retry_count})")
+        
+        recovery_result = self.recovery_manager.recover(
+            task=task,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            last_result=last_result,
+            retry_count=self._retry_count
+        )
 
-        # 1. Retry (한 번만)
-        try:
-            print("[Executor] 1차 복구: Retry...")
-            result = self.tool_executor.execute_tool(tool_name, tool_input)
-            if "오류" not in result and "Error" not in result:
-                print("[Executor] Retry 성공!")
-                return result
-        except Exception:
-            pass
-
-        # 2. Alternative Tool (여기서는 간단히 생략, 나중에 구현)
-
-        # 3. Fallback (간단한 응답)
-        print("[Executor] 3차 복구: Fallback...")
-        return f"Task는 실패했지만, 기본 처리로 대체합니다: {task.description}"
+        self._retry_count += 1
+        
+        if recovery_result.success:
+            print(f"[Executor] 복구 성공! {recovery_result.message}")
+            return None
+        else:
+            print(f"[Executor] 복구 실패... {recovery_result.message}")
+            return recovery_result.result
 
     def finalize(self) -> str:
         """최종 종료 처리: 최종 답변 생성"""

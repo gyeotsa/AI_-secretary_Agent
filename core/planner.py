@@ -31,6 +31,30 @@ class Planner:
         self.scratchpad = get_scratchpad()
         self.context_manager = get_context_manager()
 
+    def should_replan(self, consecutive_failures: int = 0, context: str = "") -> bool:
+        """
+        재계획이 필요한지 판단합니다.
+        
+        Args:
+            consecutive_failures: 연속된 실패 횟수
+            context: 현재 컨텍스트
+            
+        Returns:
+            재계획 필요 여부
+        """
+        # 1. 연속 실패가 3회 이상이면 재계획
+        if consecutive_failures >= 3:
+            print(f"[Planner] 연속 실패 {consecutive_failures}회로 재계획 필요!")
+            return True
+            
+        # 2. 대기 중인 Task가 없는데 목표가 달성되지 않았으면 재계획
+        pending_tasks = self.scratchpad.get_pending_tasks()
+        if not pending_tasks:
+            print(f"[Planner] 대기 Task 없으나 목표 미달성으로 재계획 필요!")
+            return True
+            
+        return False
+        
     def decompose_goal(self, goal: str, context: str = "") -> List[DecomposedTask]:
         """
         사용자의 목표를 작업으로 분해합니다.

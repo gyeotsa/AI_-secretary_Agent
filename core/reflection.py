@@ -63,8 +63,6 @@ class Reflection:
             elif "```" in response:
                 response = response.split("```")[1].strip()
 
-            result = eval(response)  # 간단히 eval 사용 (실제로는 json.loads 권장)
-            # json.loads로 변경 (안전성UP)
             import json
             result = json.loads(response)
 
