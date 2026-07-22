@@ -130,6 +130,20 @@ class HardwareManager:
         gain = min(20.0, 0.25 / peak)
         return np.clip(audio * gain, -1.0, 1.0).astype(np.float32)
 
+    @classmethod
+    def _trim_trailing_silence(cls, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
+        """종료 판정을 위해 쌓인 뒤쪽 무음을 제거해 Whisper 환각을 줄입니다."""
+        audio = np.asarray(audio, dtype=np.float32)
+        frame_size = max(1, int(sample_rate * 0.03))
+        active_end = 0
+        for start in range(0, len(audio), frame_size):
+            frame = audio[start:start + frame_size]
+            if frame.size and float(np.sqrt(np.mean(frame * frame))) >= cls.MIN_SPEECH_RMS:
+                active_end = min(len(audio), start + frame_size)
+        if not active_end:
+            return audio[:0]
+        return audio[:min(len(audio), active_end + int(sample_rate * 0.2))]
+
     def _transcribe_audio(self, audio: np.ndarray) -> dict:
         return self.whisper_model.transcribe(
             self._normalize_audio(audio),
@@ -201,6 +215,7 @@ class HardwareManager:
                     self._stream_ready.set()
                     wake_buffer = np.array([], dtype=np.float32)
                     command_buffer = np.array([], dtype=np.float32)
+                    command_wake_audio = np.array([], dtype=np.float32)
                     command_prefix = ""
                     listening = False
                     silence_started = None
@@ -219,6 +234,7 @@ class HardwareManager:
                         if self._output_active.is_set() or time.monotonic() < self._ignore_input_until:
                             wake_buffer = np.array([], dtype=np.float32)
                             command_buffer = np.array([], dtype=np.float32)
+                            command_wake_audio = np.array([], dtype=np.float32)
                             command_prefix = ""
                             listening = False
                             silence_started = None
@@ -269,6 +285,7 @@ class HardwareManager:
                                     listening = True
                                     command_prefix = wake_command
                                     command_buffer = np.array([], dtype=np.float32)
+                                    command_wake_audio = wake_buffer.copy()
                                     listening_started = now
                                     silence_started = None
                                     voiced_seconds = 0.0
@@ -302,16 +319,21 @@ class HardwareManager:
                                     print("[마이크] 실제 발화가 없는 입력을 폐기했습니다.")
                                     text = ""
                                 else:
-                                    text = self._transcribe_audio(command_buffer)["text"].strip()
-                                    text = " ".join(
-                                        part for part in (command_prefix, text) if part
-                                    ).strip()
+                                    full_utterance = np.concatenate((command_wake_audio, command_buffer))
+                                    full_utterance = self._trim_trailing_silence(full_utterance)
+                                    transcription = (
+                                        self._transcribe_audio(full_utterance)["text"].strip()
+                                        if full_utterance.size else ""
+                                    )
+                                    recovered = self.extract_wake_command(transcription)
+                                    text = recovered if recovered is not None else command_prefix
                                 if text and self.on_text_detected:
                                     print(f"[전송] 음성 인식 결과: {text}")
                                     self.on_text_detected(text)
                                 listening = False
                                 command_prefix = ""
                                 command_buffer = np.array([], dtype=np.float32)
+                                command_wake_audio = np.array([], dtype=np.float32)
                                 silence_started = None
                                 listening_started = None
                                 voiced_seconds = 0.0

@@ -109,6 +109,16 @@ def test_audio_normalization_raises_quiet_signal_without_clipping():
     assert np.max(np.abs(normalized)) <= 1.0
 
 
+def test_trailing_silence_is_removed_before_final_transcription():
+    voice = np.ones(1600, dtype=np.float32) * 0.01
+    silence = np.zeros(32000, dtype=np.float32)
+    trimmed = hardware.HardwareManager._trim_trailing_silence(
+        np.concatenate((voice, silence))
+    )
+    assert len(trimmed) < len(voice) + len(silence)
+    assert len(trimmed) >= len(voice)
+
+
 def test_whisper_uses_deterministic_korean_command_options(monkeypatch):
     manager = _bare_hardware_manager()
     captured = {}

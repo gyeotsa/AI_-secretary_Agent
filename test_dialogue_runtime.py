@@ -6,6 +6,7 @@ from core.intent_router import IntentRouter
 from core.plugin import PluginRegistry
 from plugins.calendar import CalendarPlugin
 from plugins.windows_control import WindowsControlPlugin
+from plugins.word import WordPlugin
 from core.verifier import ToolVerifier
 
 
@@ -336,6 +337,35 @@ def test_windows_launch_request_bypasses_planner_and_llm(tmp_path):
     assert outcome.status == "completed"
     assert "메모장" in outcome.response
     assert executor.context_resolver.requests == []
+
+
+def test_noun_only_word_misrecognition_does_not_open_pending_loop(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+    executor.intent_router.registry.register_plugin(WordPlugin())
+
+    outcome = executor.execute_turn("디스코드, 워드. 고맙습니다.", "voice-word-noise")
+
+    assert outcome.status == "completed"
+    assert "어떤 작업" in outcome.response
+    assert not executor.has_pending_request("voice-word-noise")
+
+
+def test_explicit_new_windows_command_replaces_word_pending_request(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+    executor.intent_router.registry.register_plugin(WordPlugin())
+    executor.intent_router.registry.register_plugin(WindowsControlPlugin())
+    executor.tool_executor = type(
+        "Tools", (), {"execute_tool": lambda _self, name, data: f"앱 종료 요청 성공: {data['target']}"}
+    )()
+    executor.verifier = ToolVerifier()
+
+    first = executor.execute_turn("워드 생성해줘", "replace-word-pending")
+    second = executor.execute_turn("디코 종료해", "replace-word-pending")
+
+    assert first.status == "awaiting_user"
+    assert second.status == "completed"
+    assert "디코" in second.response
+    assert not executor.has_pending_request("replace-word-pending")
 
 
 def test_windows_alias_request_bypasses_planner_and_llm(tmp_path):

@@ -190,6 +190,14 @@ class Executor:
 
         if not pending:
             intent_resolution = direct_resolution
+            if (intent_resolution.matched and intent_resolution.tool_name
+                    and not intent_resolution.execution_requested
+                    and not intent_resolution.capability_response):
+                return ExecutionOutcome(
+                    "대상은 들었지만 어떤 작업을 할지 명확히 인식하지 못했습니다. "
+                    "원하는 동작을 다시 말씀해 주세요, 보스.",
+                    "completed", goal,
+                )
             if not intent_resolution.matched:
                 recent_intent = self.dialogue_state.get_recent_intent(session_key)
                 if (recent_intent and self.intent_router.is_contextual_follow_up(
