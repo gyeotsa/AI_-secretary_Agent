@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict, Any, Callable
 from dataclasses import dataclass
 import json
-import threading
+import re
 
 from core.llm import get_llm_client
 from core.scratchpad import get_scratchpad, Task
@@ -15,6 +15,7 @@ from core.workspace import get_workspace_manager
 from core.verifier import get_tool_verifier
 from core.recovery import get_recovery_manager
 from core.conversation_context import ConversationContextResolver
+from core.dialogue_state import get_dialogue_state_store
 
 
 @dataclass
@@ -23,13 +24,6 @@ class ExecutionOutcome:
     status: str = "completed"
     goal: str = ""
     question: str = ""
-
-
-@dataclass
-class PendingRequest:
-    original_goal: str
-    question: str
-    conversation_history: List[Dict[str, str]]
 
 
 class Executor:
@@ -69,8 +63,7 @@ class Executor:
         self._consecutive_failures = 0  # 연속 실패 횟수 추적
         self._total_failures = 0
         self.terminal_error = None
-        self._pending_requests: Dict[str, PendingRequest] = {}
-        self._pending_lock = threading.Lock()
+        self.dialogue_state = get_dialogue_state_store()
         self._progress_callback: Optional[Callable[[str], None]] = None
 
     def initialize(self, goal: str, session_id: Optional[str] = None):
@@ -98,35 +91,56 @@ class Executor:
         """질문 대기와 재개를 지원하는 한 번의 대화 턴을 실행한다."""
         session_key = session_id or "default"
         history = list(conversation_history or [])
-        with self._pending_lock:
-            pending = self._pending_requests.get(session_key)
+        normalized = goal.strip().lower()
+
+        if normalized in {"대기 작업", "대기 작업 목록", "작업 목록"}:
+            items = self.dialogue_state.list(session_key)
+            if not items:
+                return ExecutionOutcome("현재 답변을 기다리는 작업이 없습니다, 보스.", "completed")
+            lines = [f"- {item.task_id}: {item.original_goal} (질문: {item.question})" for item in items]
+            return ExecutionOutcome("답변을 기다리는 작업입니다, 보스.\n" + "\n".join(lines), "completed")
+
+        cancel_match = re.fullmatch(r"(?:작업\s*)?([0-9a-f]{8})\s*(?:취소|중단)", normalized)
+        if not cancel_match:
+            cancel_match = re.fullmatch(r"(?:작업\s*)?(?:취소|중단)\s*([0-9a-f]{8})", normalized)
+        if cancel_match:
+            task_id = cancel_match.group(1)
+            deleted = self.dialogue_state.delete(session_key, task_id)
+            message = f"작업 {task_id}을 취소했습니다, 보스." if deleted else f"대기 중인 작업 {task_id}을 찾지 못했습니다, 보스."
+            return ExecutionOutcome(message, "cancelled" if deleted else "completed")
+
+        resume_match = re.match(r"(?:작업\s*)?([0-9a-f]{8})\s*재개\s*[:：]?\s*(.+)", goal.strip(), re.I | re.S)
+        selected_task_id = resume_match.group(1).lower() if resume_match else None
+        supplied_answer = resume_match.group(2).strip() if resume_match else goal
+        is_new_request = normalized.startswith(("새 작업:", "새 작업："))
+        if is_new_request:
+            goal = re.sub(r"^새 작업\s*[:：]\s*", "", goal, flags=re.I)
+        pending = None if is_new_request else self.dialogue_state.get(session_key, selected_task_id)
 
         if pending:
-            if goal.strip().lower() in {"취소", "그만", "중단", "cancel", "stop"}:
-                with self._pending_lock:
-                    self._pending_requests.pop(session_key, None)
-                return ExecutionOutcome("진행 중인 요청을 취소했습니다, 보스.", "cancelled")
+            if supplied_answer.strip().lower() in {"취소", "그만", "중단", "cancel", "stop"}:
+                self.dialogue_state.delete(session_key, pending.task_id)
+                return ExecutionOutcome(f"진행 중인 작업 {pending.task_id}을 취소했습니다, 보스.", "cancelled")
             history = pending.conversation_history + [
                 {"role": "assistant", "content": pending.question},
-                {"role": "user", "content": goal},
+                {"role": "user", "content": supplied_answer},
             ]
             goal = (
                 f"원래 요청: {pending.original_goal}\n"
                 f"자비스의 확인 질문: {pending.question}\n"
-                f"사용자가 추가로 제공한 정보: {goal}\n"
+                f"사용자가 추가로 제공한 정보: {supplied_answer}\n"
                 "위 정보를 반영해 원래 요청을 이어서 완료하세요."
             )
-            with self._pending_lock:
-                self._pending_requests.pop(session_key, None)
+            self.dialogue_state.delete(session_key, pending.task_id)
             if progress_callback:
-                progress_callback("확인했습니다, 보스. 중단했던 작업을 이어서 진행하겠습니다.")
+                progress_callback(f"확인했습니다, 보스. 작업 {pending.task_id}을 이어서 진행하겠습니다.")
 
         resolved = self.context_resolver.resolve(goal, history, session_key)
         if resolved.needs_clarification:
             question = resolved.clarification_question or "어떤 대상을 말씀하시는지 조금 더 구체적으로 알려주세요, 보스."
-            with self._pending_lock:
-                self._pending_requests[session_key] = PendingRequest(goal, question, history)
-            return ExecutionOutcome(question, "awaiting_user", goal, question)
+            pending = self.dialogue_state.create(session_key, goal, question, history)
+            response = f"{question}\n대기 작업 ID: {pending.task_id}"
+            return ExecutionOutcome(response, "awaiting_user", goal, question)
         goal = resolved.resolved_request
         if goal != resolved.original_request:
             print(f"[Context] 요청 해석: {resolved.original_request!r} → {goal!r} (confidence={resolved.confidence:.2f})")
@@ -157,8 +171,7 @@ class Executor:
         return ExecutionOutcome(response, "failed" if self.terminal_error else "completed", goal)
 
     def has_pending_request(self, session_id: Optional[str] = None) -> bool:
-        with self._pending_lock:
-            return (session_id or "default") in self._pending_requests
+        return bool(self.dialogue_state.list(session_id or "default"))
 
     def _emit_progress(self, message: str):
         if self._progress_callback:

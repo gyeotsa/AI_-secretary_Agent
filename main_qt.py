@@ -20,6 +20,7 @@ from core.workspace import get_workspace_manager
 from core.permission import get_permission_manager
 from core.executor import get_executor
 from core.scheduler import get_automation_engine
+from core.proactive import ProactiveNotificationPolicy
 from ui.main_window import JarvisMainWindow
 
 
@@ -126,6 +127,8 @@ class JarvisApp:
         self.signals.proactive_message.connect(self._on_proactive_message)
         self.signals.tts_finished.connect(self._reset_all)
         self.automation_engine.set_result_callback(self._on_automation_result)
+        self.proactive_policy = ProactiveNotificationPolicy(self.notify_user)
+        self.proactive_policy.start()
         
         # 시그널 연결
         self.state_machine.state_changed.connect(self._on_state_changed)
@@ -490,6 +493,8 @@ class JarvisApp:
     
     def _on_close_requested(self):
         # 종료 버튼 클릭시 프로그램 자체 종료
+        if hasattr(self, "proactive_policy"):
+            self.proactive_policy.stop()
         self.app.quit()
     
     def run(self):
