@@ -1,0 +1,38 @@
+"""내부 도구 결과를 화면·음성에 적합한 사용자 응답으로 변환한다."""
+
+import re
+
+
+_DETAIL_REQUEST_TERMS = (
+    "상세", "자세히", "세부", "원문", "로그", "경로", "위치",
+    "pid", "프로세스 id", "프로세스 아이디", "실행 파일",
+)
+
+_PROGRAM_LAUNCH_RESULT = re.compile(
+    r"^(?:프로그램 실행 성공|Windows 시작 메뉴 앱 실행 요청 성공):"
+    r"\s*.+?(?:\s*\(PID:\s*\d+\))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def requests_technical_details(user_request: str) -> bool:
+    normalized = (user_request or "").strip().casefold()
+    return any(term in normalized for term in _DETAIL_REQUEST_TERMS)
+
+
+def present_response(response_text: str, user_request: str = "") -> str:
+    """기술 세부정보를 기본 응답에서 감추되 명시적으로 요청하면 보존한다."""
+    text = (response_text or "").strip()
+    if not text or requests_technical_details(user_request):
+        return text
+
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if _PROGRAM_LAUNCH_RESULT.fullmatch(stripped):
+            lines.append("프로그램을 실행했습니다, 보스.")
+            continue
+        # 다른 결과 문장에 PID만 부가된 경우에도 대화에서는 제거한다.
+        stripped = re.sub(r"\s*\(PID:\s*\d+\)", "", stripped, flags=re.IGNORECASE)
+        lines.append(stripped)
+    return "\n".join(lines).strip()

@@ -21,6 +21,7 @@ from core.permission import get_permission_manager
 from core.executor import get_executor
 from core.scheduler import get_automation_engine
 from core.proactive import ProactiveNotificationPolicy
+from core.response_presenter import present_response
 from ui.main_window import JarvisMainWindow
 
 
@@ -119,6 +120,7 @@ class JarvisApp:
         self.messages = []
         self.session_id = str(uuid.uuid4())
         self.last_response = ""
+        self._response_user_request = ""
         
         self._is_processing_ai = False
         
@@ -268,6 +270,7 @@ class JarvisApp:
     
     def _process_ai(self, text: str, existing_task_id=None):
         print("[DEBUG] _process_ai called with:", text)
+        self._response_user_request = text
         
         # RAG로 문서 검색
         try:
@@ -297,7 +300,7 @@ class JarvisApp:
             else:
                 response_text = self.executor.execute_goal(text, self.session_id, conversation_history)
             print("[DEBUG] Executor.execute_goal returned:", response_text)
-            
+
             # 최종 응답 전송
             self.signals.ai_response_ready.emit(response_text)
         except Exception as e:
@@ -333,9 +336,11 @@ class JarvisApp:
     
     def _on_ai_response(self, response_text: str):
         print("[DEBUG] _on_ai_response called with:", response_text)
-        # 이모지 제거 (Windows cp949 문제)
+        response_text = present_response(response_text, self._response_user_request)
+        print("[DEBUG] User-facing response:", response_text)
+        # 이모지는 제거하되 상세정보 요청 시 경로와 PID 문법은 보존한다.
         import re
-        response_text = re.sub(r'[^\w\s가-힣.,!?]', '', response_text)
+        response_text = re.sub(r'[^\w\s가-힣.,!?:/\\()\-]', '', response_text)
         print("[DEBUG] After emoji filter:", response_text)
         
         # 마지막 응답 저장
