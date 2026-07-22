@@ -105,74 +105,109 @@ class ToolExecutor:
                 self._project_indexer = None
         return self._project_indexer
 
-    def read_file(self, path: str) -> str:
-        # Workspace가 설정되어 있으면 상대경로로 처리
+    def _resolve_and_validate_path(self, path: str) -> tuple[bool, str, str]:
+        """경로를 Workspace나 SafetyLayer로 검증하고 유효한 절대 경로 반환"""
+        resolved_path = path
         try:
             if self.workspace.is_set():
                 real_path = self.workspace.resolve(path)
-                path = str(real_path)
+                resolved_path = str(real_path)
         except Exception as e:
-            return f"오류: {e}"
-
-        is_valid, error_msg = self.safety.validate_path(path)
+            return False, f"오류: {e}", ""
+        
+        is_valid, error_msg = self.safety.validate_path(resolved_path)
         if not is_valid:
-            return f"오류: {error_msg}"
+            return False, f"오류: {error_msg}", ""
+        
+        return True, "", resolved_path
+
+    def read_file(self, path: str) -> str:
+        is_valid, error_msg, resolved_path = self._resolve_and_validate_path(path)
+        if not is_valid:
+            return error_msg
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(resolved_path, "r", encoding="utf-8") as f:
                 return f.read()
         except Exception as e:
             return f"파일 읽기 오류: {str(e)}"
 
     def write_file(self, path: str, content: str) -> str:
-        # Workspace가 설정되어 있으면 상대경로로 처리
-        try:
-            if self.workspace.is_set():
-                real_path = self.workspace.resolve(path)
-                path = str(real_path)
-        except Exception as e:
-            return f"오류: {e}"
-
-        is_valid, error_msg = self.safety.validate_path(path)
+        is_valid, error_msg, resolved_path = self._resolve_and_validate_path(path)
         if not is_valid:
-            return f"오류: {error_msg}"
+            return error_msg
 
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(resolved_path), exist_ok=True)
+            with open(resolved_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            return f"파일이 성공적으로 저장되었습니다: {path}"
+            return f"파일이 성공적으로 저장되었습니다: {resolved_path}"
         except Exception as e:
             return f"파일 쓰기 오류: {str(e)}"
 
     def list_directory(self, path: str = "") -> str:
-        # 경로가 비어있고 Workspace가 설정되어 있으면 Workspace 루트
+        target_path = path
         try:
             if not path and self.workspace.is_set():
                 real_path = self.workspace.get_workspace_path()
                 if real_path:
-                    path = real_path
+                    target_path = real_path
             elif self.workspace.is_set():
                 real_path = self.workspace.resolve(path)
-                path = str(real_path)
+                target_path = str(real_path)
         except Exception as e:
             return f"오류: {e}"
 
-        is_valid, error_msg = self.safety.validate_path(path)
+        is_valid, error_msg = self.safety.validate_path(target_path)
         if not is_valid:
             return f"오류: {error_msg}"
 
         try:
-            items = os.listdir(path)
+            items = os.listdir(target_path)
             result = []
             for item in items:
-                item_path = os.path.join(path, item)
+                item_path = os.path.join(target_path, item)
                 is_dir = os.path.isdir(item_path)
                 prefix = "[폴더] " if is_dir else "[파일] "
                 result.append(prefix + item)
             return "\n".join(result)
         except Exception as e:
             return f"디렉토리 목록 오류: {str(e)}"
+
+    def create_directory(self, dir_path: str) -> str:
+        is_valid, error_msg, resolved_path = self._resolve_and_validate_path(dir_path)
+        if not is_valid:
+            return error_msg
+
+        try:
+            os.makedirs(resolved_path, exist_ok=True)
+            return f"사장님, 폴더가 성공적으로 생성되었습니다: {resolved_path}"
+        except Exception as e:
+            return f"사장님, 폴더 생성 중 오류가 발생했습니다: {str(e)}"
+
+    def delete_directory(self, dir_path: str) -> str:
+        is_valid, error_msg, resolved_path = self._resolve_and_validate_path(dir_path)
+        if not is_valid:
+            return error_msg
+
+        try:
+            if not os.path.exists(resolved_path):
+                return f"사장님, 폴더를 찾을 수 없습니다: {resolved_path}"
+
+            import shutil
+            shutil.rmtree(resolved_path)
+            return f"사장님, 폴더가 성공적으로 삭제되었습니다: {resolved_path}"
+        except Exception as e:
+            return f"사장님, 폴더 삭제 중 오류가 발생했습니다: {str(e)}"
+
+    def add_document(self, file_path: str) -> str:
+        is_valid, error_msg, resolved_path = self._resolve_and_validate_path(file_path)
+        if not is_valid:
+            return error_msg
+
+        if self.rag_manager is None:
+            return "오류: RAG 기능을 초기화할 수 없습니다."
+        return self.rag_manager.add_document(resolved_path)
 
     # ------------------------------
     # Workspace 관련 도구 추가
@@ -556,14 +591,16 @@ class ToolExecutor:
             return f"작업 히스토리 조회 오류: {str(e)}"
 
     def run_command(self, command: str) -> str:
-        is_valid, error_msg = self.safety.validate_command(command)
+        is_valid, error_msg, args = self.safety.validate_command(command)
         if not is_valid:
             return f"오류: {error_msg}"
 
         try:
+            # shell=True는 allowlist를 우회하는 연결 연산자 해석 위험이 있으므로 사용하지 않습니다.
+            # 셸 내장 명령은 cmd.exe를 직접 허용하지 않는 한 지원하지 않습니다.
             result = subprocess.run(
-                command,
-                shell=True,
+                args,
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -867,33 +904,7 @@ class ToolExecutor:
         except Exception as e:
             return f"사장님, 셀 쓰기 중 오류가 발생했습니다: {str(e)}"
 
-    def create_directory(self, dir_path: str) -> str:
-        """폴더를 생성합니다."""
-        try:
-            is_valid, error_msg = self.safety.validate_path(dir_path)
-            if not is_valid:
-                return f"오류: {error_msg}"
 
-            os.makedirs(dir_path, exist_ok=True)
-            return f"사장님, 폴더가 성공적으로 생성되었습니다: {dir_path}"
-        except Exception as e:
-            return f"사장님, 폴더 생성 중 오류가 발생했습니다: {str(e)}"
-
-    def delete_directory(self, dir_path: str) -> str:
-        """폴더를 삭제합니다 (주의: 내용물도 함께 삭제됨)."""
-        try:
-            is_valid, error_msg = self.safety.validate_path(dir_path)
-            if not is_valid:
-                return f"오류: {error_msg}"
-
-            if not os.path.exists(dir_path):
-                return f"사장님, 폴더를 찾을 수 없습니다: {dir_path}"
-
-            import shutil
-            shutil.rmtree(dir_path)
-            return f"사장님, 폴더가 성공적으로 삭제되었습니다: {dir_path}"
-        except Exception as e:
-            return f"사장님, 폴더 삭제 중 오류가 발생했습니다: {str(e)}"
 
     def capture_camera(self, save_path: Optional[str] = None) -> str:
         """카메라에서 프레임을 캡처합니다."""
@@ -903,7 +914,30 @@ class ToolExecutor:
         except Exception as e:
             return f"카메라 캡처 오류: {str(e)}"
 
+    def _request_tool_permissions(self, tool_name: str) -> tuple[bool, str]:
+        """모든 진입점에서 동일하게 적용되는 중앙 권한 검사."""
+        try:
+            from core.permission import TOOL_PERMISSION_MAP, get_permission_manager
+            permission_ids = []
+            mapped = TOOL_PERMISSION_MAP.get(tool_name)
+            if mapped:
+                permission_ids.append(mapped)
+            for schema in self.plugin_registry.get_all_tools():
+                if schema.name == tool_name:
+                    permission_ids.extend(schema.required_permissions)
+                    break
+            manager = get_permission_manager()
+            for permission_id in dict.fromkeys(permission_ids):
+                if not manager.request_permission(permission_id):
+                    return False, f"오류: 권한이 거부되었습니다: {permission_id}"
+            return True, ""
+        except Exception as exc:
+            return False, f"오류: 권한 확인에 실패했습니다: {exc}"
+
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
+        granted, error = self._request_tool_permissions(tool_name)
+        if not granted:
+            return error
         tool_functions = {
             "read_file": self.read_file,
             "write_file": self.write_file,
@@ -1897,6 +1931,7 @@ def get_tools_schema() -> list[dict]:
     # Add plugin tools
     try:
         plugin_registry = get_plugin_registry()
+        plugin_registry.load_plugins_from_directory()
         for tool in plugin_registry.get_all_tools():
             schema.append({
                 "name": tool.name,

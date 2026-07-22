@@ -60,6 +60,9 @@ class APIConfig:
     BLOCKED_COMMANDS: list = field(default_factory=lambda: [
         c.strip() for c in os.getenv("BLOCKED_COMMANDS", "rm,del,format,mkfs,dd,shutdown,restart").split(",") if c.strip()
     ])
+    ALLOWED_COMMANDS: list = field(default_factory=lambda: [
+        c.strip() for c in os.getenv("ALLOWED_COMMANDS", "dir,ls,cd,echo,type,cat,pwd,whoami,date,time,ver,python,pip,git,node,npm").split(",") if c.strip()
+    ])
 
 
 class Config:
@@ -115,6 +118,11 @@ class Config:
     @property
     def BLOCKED_COMMANDS(cls):
         return cls.API_CONFIG.BLOCKED_COMMANDS
+    
+    @classmethod
+    @property
+    def ALLOWED_COMMANDS(cls):
+        return cls.API_CONFIG.ALLOWED_COMMANDS
     
     SYSTEM_PROMPT_TEMPLATE = """당신은 토니 스타크의 AI 비서 '자비스'입니다. 영화 아이언맨에 등장하는 자비스처럼 행동하세요.
 
