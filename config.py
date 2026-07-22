@@ -70,6 +70,7 @@ class APIConfig:
     RAG_DEVICE: str = field(default_factory=lambda: os.getenv("RAG_DEVICE", "auto").lower())
     WHISPER_DEVICE: str = field(default_factory=lambda: os.getenv("WHISPER_DEVICE", "auto").lower())
     WHISPER_MODEL: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "small").lower())
+    WAKE_WORD: str = field(default_factory=lambda: os.getenv("WAKE_WORD", "자비스").strip().lower())
     MICROPHONE_DEVICE: str = field(default_factory=lambda: os.getenv("MICROPHONE_DEVICE", "auto"))
     MICROPHONE_SILENCE_SECONDS: float = field(
         default_factory=lambda: float(os.getenv("MICROPHONE_SILENCE_SECONDS", "2.0"))
@@ -168,6 +169,11 @@ class Config:
     @property
     def WHISPER_MODEL(cls):
         return cls.API_CONFIG.WHISPER_MODEL
+
+    @classmethod
+    @property
+    def WAKE_WORD(cls):
+        return cls.API_CONFIG.WAKE_WORD
 
     @classmethod
     @property

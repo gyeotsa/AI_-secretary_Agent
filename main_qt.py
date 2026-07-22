@@ -227,10 +227,11 @@ class JarvisApp:
                     f"현재 작업 다음에 새 작업 {task.task_id}을 이어서 진행하겠습니다, 보스."
                 )
                 return
+            task = self.executor.enqueue_goal(text.strip(), self.session_id)
             self.window.show_assistant_text(
-                "현재 작업이 진행 중입니다, 보스. 작업 목록·상태·일시정지·재개·취소 명령은 바로 처리할 수 있습니다."
+                f"현재 작업이 끝나면 이어서 처리하겠습니다, 보스. 대기 작업 ID: {task.task_id}"
             )
-            print("[DEBUG] Already processing AI, non-control request rejected")
+            print(f"[DEBUG] AI busy, request queued: {task.task_id}")
             return
         
         self._is_processing_ai = True
@@ -446,6 +447,9 @@ class JarvisApp:
     
     def _speak_with_check(self, text: str):
         print(f"[DEBUG] _speak_with_check 호출됨: {text}")
+        hardware = getattr(self, "hardware_manager", None)
+        if hardware is not None:
+            hardware.set_output_active(True)
         try:
             print(f"[DEBUG] tool_executor.speak_text 호출 전")
             result = self.tool_executor.speak_text(text, self.audio_processor)
@@ -459,6 +463,8 @@ class JarvisApp:
             traceback.print_exc()
             print("💡 pyttsx3를 설치하세요: pip install pyttsx3")
         finally:
+            if hardware is not None:
+                hardware.set_output_active(False)
             # TTS가 끝나면 IDLE 상태로 돌아가고 사운드바 리셋
             self.signals.tts_finished.emit()
     

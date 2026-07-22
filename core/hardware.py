@@ -3,6 +3,7 @@ import numpy as np
 import threading
 import time
 import queue
+import re
 from config import Config
 
 
@@ -17,7 +18,7 @@ except ImportError:
 
 
 class HardwareManager:
-    MIN_SPEECH_RMS = 0.0015
+    MIN_SPEECH_RMS = 0.0005
 
     def __init__(self):
         self.running = False
@@ -34,6 +35,8 @@ class HardwareManager:
         self.microphone_info = None
         self._stream_ready = threading.Event()
         self._stream_error = ""
+        self._output_active = threading.Event()
+        self._ignore_input_until = 0.0
         
         if SOUND_AVAILABLE:
             # GPU 사용 가능 여부 확인
@@ -53,6 +56,27 @@ class HardwareManager:
             self.whisper_model_name = Config.WHISPER_MODEL
             print(f"[STT] Whisper 모델 로딩: {self.whisper_model_name}")
             self.whisper_model = whisper.load_model(self.whisper_model_name, device=self.device)
+
+    def set_output_active(self, active: bool, cooldown: float = 0.5) -> None:
+        """TTS 출력이 마이크 명령으로 되먹임되지 않도록 입력 처리를 잠시 멈춥니다."""
+        if active:
+            self._output_active.set()
+            self._ignore_input_until = float("inf")
+        else:
+            self._ignore_input_until = time.monotonic() + max(0.0, cooldown)
+            self._output_active.clear()
+
+    @staticmethod
+    def extract_wake_command(text: str) -> str | None:
+        """호출어가 첫 단어인 경우에만 뒤따르는 명령을 반환합니다."""
+        normalized = text.strip().lower()
+        match = re.match(r"^([^\s]+)(?:\s+(.*))?$", normalized)
+        if not match:
+            return None
+        first_word = re.sub(r"[^0-9a-zA-Z가-힣]", "", match.group(1))
+        if first_word != Config.WAKE_WORD:
+            return None
+        return (match.group(2) or "").strip()
 
     @staticmethod
     def list_input_devices():
@@ -91,7 +115,7 @@ class HardwareManager:
         return np.interp(target, source, audio).astype(np.float32)
 
     def start_continuous_listen(self, on_text_callback, audio_processor=None) -> str:
-        """지속적인 음성 감지 시작 (웨이크워드/박수 감지 포함)"""
+        """호출어로 시작하는 음성 명령을 지속적으로 감지합니다."""
         if not SOUND_AVAILABLE:
             return "오류: sounddevice, whisper가 설치되지 않았습니다."
         
@@ -121,14 +145,24 @@ class HardwareManager:
                     last_wake_check = 0.0
                     noise_samples = []
                     speech_threshold = self.MIN_SPEECH_RMS
-                    clap_count = 0
-                    last_clap = 0.0
+                    wake_voice_chunks = []
+                    voiced_seconds = 0.0
                     while self.running:
                         chunk, overflowed = stream.read(chunk_size)
                         chunk = chunk[:, 0].copy()
                         if overflowed:
                             print("[마이크] 입력 버퍼 overflow 감지")
                         rms = float(np.sqrt(np.mean(chunk * chunk)))
+                        if self._output_active.is_set() or time.monotonic() < self._ignore_input_until:
+                            wake_buffer = np.array([], dtype=np.float32)
+                            command_buffer = np.array([], dtype=np.float32)
+                            command_prefix = ""
+                            listening = False
+                            silence_started = None
+                            listening_started = None
+                            wake_voice_chunks = []
+                            voiced_seconds = 0.0
+                            continue
                         if len(noise_samples) < 10:
                             noise_samples.append(rms)
                             if len(noise_samples) == 10:
@@ -143,37 +177,42 @@ class HardwareManager:
                         audio16 = self._to_16khz(chunk, native_rate)
                         if not listening:
                             now = time.monotonic()
-                            peak = float(np.max(np.abs(chunk)))
-                            clap_threshold = max(0.05, speech_threshold * 20)
-                            if peak >= clap_threshold and now - last_clap >= 0.25:
-                                clap_count = clap_count + 1 if now - last_clap <= 1.2 else 1
-                                last_clap = now
-                                if clap_count >= 2:
-                                    print("[박수] 두 번 감지, 음성 청취 시작")
-                                    listening = True
-                                    command_prefix = ""
-                                    command_buffer = np.array([], dtype=np.float32)
-                                    listening_started = now
-                                    silence_started = None
-                                    clap_count = 0
-                                    wake_buffer = np.array([], dtype=np.float32)
-                                    continue
                             wake_buffer = np.concatenate((wake_buffer, audio16))[-32000:]
+                            wake_voice_chunks.append(rms >= speech_threshold)
+                            wake_voice_chunks = wake_voice_chunks[-20:]
                             if len(wake_buffer) >= 32000 and now - last_wake_check >= 1.5:
                                 last_wake_check = now
+                                if sum(wake_voice_chunks) < 2:
+                                    continue
                                 text = self.whisper_model.transcribe(wake_buffer, language="ko")["text"].strip().lower()
-                                if "자비스" in text or "자비" in text:
+                                wake_command = self.extract_wake_command(text)
+                                if wake_command is not None:
                                     print(f"[웨이크워드] 감지: {text}")
+                                    trailing_silence = 0
+                                    for active in reversed(wake_voice_chunks):
+                                        if active:
+                                            break
+                                        trailing_silence += 1
+                                    if wake_command and trailing_silence >= 5:
+                                        print(f"[전송] 호출어 포함 음성 명령: {wake_command}")
+                                        if self.on_text_detected:
+                                            self.on_text_detected(wake_command)
+                                        wake_buffer = np.array([], dtype=np.float32)
+                                        wake_voice_chunks = []
+                                        continue
                                     listening = True
-                                    command_prefix = text.replace("자비스", "").replace("자비", "").strip()
+                                    command_prefix = wake_command
                                     command_buffer = np.array([], dtype=np.float32)
                                     listening_started = now
                                     silence_started = None
+                                    voiced_seconds = 0.0
                                     wake_buffer = np.array([], dtype=np.float32)
+                                    wake_voice_chunks = []
                         else:
                             command_buffer = np.concatenate((command_buffer, audio16))
                             if rms >= speech_threshold:
                                 silence_started = None
+                                voiced_seconds += len(chunk) / native_rate
                             elif silence_started is None:
                                 silence_started = time.monotonic()
                             now = time.monotonic()
@@ -191,8 +230,16 @@ class HardwareManager:
                                     if silent_long_enough else "최대 발화 시간"
                                 )
                                 print(f"[마이크] 명령 종료 감지: {reason}")
-                                text = self.whisper_model.transcribe(command_buffer, language="ko")["text"].strip()
-                                text = " ".join(part for part in (command_prefix, text) if part).strip()
+                                if not command_prefix and voiced_seconds < 0.25:
+                                    print("[마이크] 실제 발화가 없는 입력을 폐기했습니다.")
+                                    text = ""
+                                else:
+                                    text = self.whisper_model.transcribe(
+                                        command_buffer, language="ko"
+                                    )["text"].strip()
+                                    text = " ".join(
+                                        part for part in (command_prefix, text) if part
+                                    ).strip()
                                 if text and self.on_text_detected:
                                     print(f"[전송] 음성 인식 결과: {text}")
                                     self.on_text_detected(text)
@@ -201,6 +248,7 @@ class HardwareManager:
                                 command_buffer = np.array([], dtype=np.float32)
                                 silence_started = None
                                 listening_started = None
+                                voiced_seconds = 0.0
             except Exception as exc:
                 self._stream_error = str(exc)
                 self.running = False
@@ -251,7 +299,7 @@ class HardwareManager:
                     result = self.whisper_model.transcribe(audio, language="ko")
                     text = result["text"].strip().lower()
                     
-                    if "자비스" in text or "자비" in text:
+                    if self.extract_wake_command(text) is not None:
                         print(f"\n[웨이크워드] 감지! '{text}'")
                         self._on_wakeword_detected()
                 

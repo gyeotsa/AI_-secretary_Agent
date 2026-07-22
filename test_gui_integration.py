@@ -105,6 +105,14 @@ class _SpeechTools:
         return f"spoken: {text}"
 
 
+class _Hardware:
+    def __init__(self):
+        self.output_states = []
+
+    def set_output_active(self, active):
+        self.output_states.append(active)
+
+
 def test_gui_conversation_tool_response_round_trip():
     _app()
     jarvis = JarvisApp.__new__(JarvisApp)
@@ -228,3 +236,33 @@ def test_new_request_is_queued_while_current_task_is_processing():
 
     assert _ControllableExecutor.queued == [("내일 일정도 확인해줘", 0)]
     assert "feedbeef" in jarvis.window.assistants[-1]
+
+
+def test_normal_request_is_queued_instead_of_rejected_while_busy():
+    _app()
+    jarvis = JarvisApp.__new__(JarvisApp)
+    jarvis.window = _Window()
+    jarvis.state_machine = _StateMachine()
+    jarvis.executor = _ControllableExecutor()
+    jarvis.memory = _Memory()
+    jarvis.messages = []
+    jarvis.session_id = "queue-normal-session"
+    jarvis._is_processing_ai = True
+    _ControllableExecutor.queued = []
+
+    jarvis._on_user_input("디코 꺼줘")
+
+    assert _ControllableExecutor.queued == [("디코 꺼줘", 0)]
+    assert "대기 작업 ID" in jarvis.window.assistants[-1]
+
+
+def test_tts_suspends_microphone_until_output_finishes():
+    jarvis = JarvisApp.__new__(JarvisApp)
+    jarvis.tool_executor = _SpeechTools()
+    jarvis.audio_processor = None
+    jarvis.hardware_manager = _Hardware()
+    jarvis.signals = AppSignals()
+
+    jarvis._speak_with_check("테스트 응답")
+
+    assert jarvis.hardware_manager.output_states == [True, False]

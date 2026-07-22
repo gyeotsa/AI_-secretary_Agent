@@ -150,3 +150,31 @@ def test_windows_alias_intent_and_crud_tools(tmp_path, monkeypatch):
     removed=plugin.execute_tool("windows_remove_app_aliases",{"aliases":["디코"]})
     assert removed.startswith("앱 별칭 삭제 성공:")
     assert "디코" not in plugin._user_aliases()
+
+
+def test_windows_close_alias_resolves_window_and_requests_graceful_close(monkeypatch):
+    class Window:
+        title = "Discord"
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    window = Window()
+    monkeypatch.setattr(
+        WindowsControlPlugin, "_resolve_target",
+        classmethod(lambda _cls, _target: r"C:\Start Menu\Discord.lnk"),
+    )
+    monkeypatch.setattr("plugins.windows_control.pygetwindow.getAllWindows", lambda: [window])
+    plugin = WindowsControlPlugin()
+    registry = PluginRegistry()
+    registry.register_plugin(plugin)
+
+    resolution = IntentRouter(registry).resolve("디코 꺼줘")
+    result = plugin.execute_tool(resolution.tool_name, resolution.slots)
+
+    assert resolution.ready
+    assert resolution.tool_name == "windows_close_app"
+    assert resolution.slots == {"target": "디코"}
+    assert result == "앱 종료 요청 성공: Discord"
+    assert window.closed

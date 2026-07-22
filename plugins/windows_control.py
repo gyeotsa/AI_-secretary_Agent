@@ -41,6 +41,9 @@ class WindowsControlPlugin(BasePlugin):
             ToolSchema("windows_focus_window", "제목이 일치하는 창을 복원하고 활성화합니다", {
                 "type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]
             }, ["windows_api"]),
+            ToolSchema("windows_close_app", "앱 별칭이나 이름에 대응하는 창에 정상 종료를 요청합니다", {
+                "type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]
+            }, ["windows_api"]),
             ToolSchema("windows_add_app_aliases", "앱을 찾아 사용자 별칭을 추가합니다", {
                 "type": "object", "properties": {
                     "target": {"type": "string"},
@@ -60,6 +63,9 @@ class WindowsControlPlugin(BasePlugin):
                          ["실행해", "실행해줘", "열어줘", "켜줘"],
                          [SlotSchema("target", "실행할 프로그램", "어떤 프로그램을 실행할까요, 보스?")],
                          follow_up_hints=["다시"]),
+            IntentSchema("windows.close_app", "Windows 프로그램 종료", "windows_close_app",
+                         ["꺼줘", "종료해줘", "닫아줘", "종료해", "닫아"],
+                         [SlotSchema("target", "종료할 프로그램", "어떤 프로그램을 종료할까요, 보스?")]),
             IntentSchema("windows.find_app", "Windows 프로그램 검색", "windows_find_apps",
                          ["앱을 찾아", "프로그램 찾아", "실행 파일 찾아"],
                          [SlotSchema("query", "검색할 프로그램", "어떤 프로그램을 찾을까요, 보스?")]),
@@ -78,6 +84,10 @@ class WindowsControlPlugin(BasePlugin):
         slots = dict(current_slots)
         if intent_name == "windows.launch_app":
             match = re.search(r"(.+?)\s*(?:실행|열어|켜)", text)
+            if match:
+                slots["target"] = match.group(1).strip()
+        elif intent_name == "windows.close_app":
+            match = re.search(r"(.+?)\s*(?:꺼|종료|닫아)", text)
             if match:
                 slots["target"] = match.group(1).strip()
         elif intent_name == "windows.find_app":
@@ -343,6 +353,25 @@ class WindowsControlPlugin(BasePlugin):
                     win.restore()
                 win.activate()
                 return f"창 활성화 성공: {win.title}"
+            if name == "windows_close_app":
+                target = str(data.get("target", "")).strip()
+                if not target:
+                    return "오류: 종료할 프로그램 이름이 필요합니다."
+                resolved = self._resolve_target(target)
+                keywords = {target.casefold()}
+                if resolved:
+                    stem = Path(resolved).stem.casefold()
+                    keywords.update({stem, re.sub(r"[_-]?(?:launcher|setup)$", "", stem)})
+                keywords = {item for item in keywords if len(item) >= 2}
+                windows = [
+                    window for window in pygetwindow.getAllWindows()
+                    if window.title and any(key in window.title.casefold() for key in keywords)
+                ]
+                if not windows:
+                    return f"오류: 종료할 앱 창을 찾지 못했습니다: {target}"
+                title = windows[0].title
+                windows[0].close()
+                return f"앱 종료 요청 성공: {title}"
             if name == "windows_launch_app":
                 resolved = self._resolve_target(str(data["target"]))
                 if not resolved:

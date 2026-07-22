@@ -14,7 +14,27 @@ def test_default_whisper_model_is_small():
 def test_microphone_command_end_defaults():
     assert hardware.Config.MICROPHONE_SILENCE_SECONDS == 2.0
     assert hardware.Config.MICROPHONE_MAX_COMMAND_SECONDS == 15.0
-    assert hardware.HardwareManager.MIN_SPEECH_RMS > 0.00063
+    assert hardware.HardwareManager.MIN_SPEECH_RMS == 0.0005
+
+
+def test_only_exact_first_wake_word_opens_voice_command():
+    assert hardware.HardwareManager.extract_wake_command("자비스 디코 켜") == "디코 켜"
+    assert hardware.HardwareManager.extract_wake_command("자비스, 디코 꺼줘") == "디코 꺼줘"
+    assert hardware.HardwareManager.extract_wake_command("디코 켜 자비스") is None
+    assert hardware.HardwareManager.extract_wake_command("안녕 자비스 디코 켜") is None
+    assert hardware.HardwareManager.extract_wake_command("자비 디코 켜") is None
+    assert hardware.HardwareManager.extract_wake_command("감사합니다") is None
+
+
+def test_tts_output_suspends_microphone_and_adds_cooldown():
+    manager = _bare_hardware_manager()
+    manager.set_output_active(True)
+    assert manager._output_active.is_set()
+    assert manager._ignore_input_until == float("inf")
+
+    manager.set_output_active(False, cooldown=0.5)
+    assert not manager._output_active.is_set()
+    assert manager._ignore_input_until > time.monotonic()
 
 
 def _bare_hardware_manager():
@@ -25,6 +45,8 @@ def _bare_hardware_manager():
     manager.continuous_listen_thread = None
     manager._stream_ready = threading.Event()
     manager._stream_error = ""
+    manager._output_active = threading.Event()
+    manager._ignore_input_until = 0.0
     manager.audio_processor = None
     manager.on_text_detected = None
     return manager
@@ -82,6 +104,8 @@ def test_continuous_listener_submits_after_silence(monkeypatch):
             return {"text": "자비스 테스트 명령" if self.calls == 1 else ""}
 
     class FakeStream:
+        calls = 0
+
         def __enter__(self):
             return self
 
@@ -89,8 +113,10 @@ def test_continuous_listener_submits_after_silence(monkeypatch):
             return None
 
         def read(self, frames):
+            self.calls += 1
             time.sleep(0.01)
-            return np.zeros((frames, 1), dtype=np.float32), False
+            level = 0.01 if 10 < self.calls <= 20 else 0.0
+            return np.full((frames, 1), level, dtype=np.float32), False
 
     manager.whisper_model = FakeModel()
     def select_microphone():
