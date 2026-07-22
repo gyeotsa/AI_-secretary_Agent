@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Optional
 from core.runtime.event_bus import get_event_bus, Event
 from core.rag import get_rag_manager
-from core.user_profile import get_user_profile_manager
 from core.runtime.action_journal import get_action_journal
 from core.project_indexer import get_project_indexer
 
@@ -16,7 +15,6 @@ class KnowledgeUpdater:
     def __init__(self):
         self.event_bus = get_event_bus()
         self.rag = get_rag_manager()
-        self.profile = get_user_profile_manager()
         self.action_journal = get_action_journal()
         self.project_indexer = get_project_indexer()
         self._subscribe()
@@ -34,7 +32,7 @@ class KnowledgeUpdater:
             return
         path = Path(file_path)
         # 지원하는 파일 타입만 처리
-        if path.suffix.lower() in [".txt", ".md", ".pdf", ".docx", ".py", ".js", ".html", ".css"]:
+        if path.suffix.lower() in [".txt", ".md", ".py", ".js", ".html", ".css"]:
             try:
                 self.action_journal.record(
                     action_type="knowledge_index",
@@ -44,22 +42,10 @@ class KnowledgeUpdater:
                 )
                 # Project Indexer에 추가
                 self.project_indexer.index_file(str(path))
-                # RAG에 추가
-                if path.suffix.lower() == ".pdf":
-                    # PDF는 나중에 지원
-                    pass
-                else:
-                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read()
-                        self.rag.add_text(
-                            text=content,
-                            metadata={
-                                "source": "file",
-                                "path": str(path),
-                                "name": path.name,
-                                "type": path.suffix.lower()
-                            }
-                        )
+                # RAG의 공개 API를 사용해 추가
+                rag_result = self.rag.add_document(str(path))
+                if "오류" in rag_result or "⚠️" in rag_result:
+                    raise RuntimeError(rag_result)
                 # Action Journal에 성공 기록
                 self.action_journal.record(
                     action_type="knowledge_index",
@@ -84,14 +70,19 @@ class KnowledgeUpdater:
         if not file_path:
             return
         path = Path(file_path)
-        if path.suffix.lower() in [".txt", ".md", ".pdf", ".docx", ".py", ".js", ".html", ".css"]:
+        if path.suffix.lower() in [".txt", ".md", ".py", ".js", ".html", ".css"]:
             try:
-                # Project Indexer 업데이트
-                self.project_indexer.index_file(str(path))
-                # RAG 업데이트 (기존 문서 삭제 후 재인덱싱, 나중에 최적화)
+                # add_document가 동일 doc_id를 교체하므로 생성 경로를 재사용합니다.
                 self._on_file_created(event)
             except Exception as e:
-                pass
+                self.action_journal.record(
+                    action_type="knowledge_index",
+                    description=f"파일 재인덱싱 실패: {path.name}",
+                    source="knowledge_updater",
+                    data={"path": str(path)},
+                    success=False,
+                    error=str(e)
+                )
                 
     def _on_file_deleted(self, event: Event):
         """파일 삭제 이벤트 처리 → RAG + Project Indexer에서 제거"""

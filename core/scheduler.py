@@ -66,7 +66,7 @@ class AutomationEngine:
         error_text = ""
         
         try:
-            from core.llm import chat
+            from core.llm import get_llm_client
             from core.memory import build_memory_context
             
             # 메모리 컨텍스트 빌드
@@ -74,13 +74,13 @@ class AutomationEngine:
             memory_context = build_memory_context(session_id, max_episodes=10, include_semantic=True)
             
             # 시스템 프롬프트 + 메모리 + 작업 프롬프트
-            full_prompt = f"{Config.SYSTEM_PROMPT}\n\n"
+            full_prompt = f"{Config.get_system_prompt()}\n\n"
             if memory_context:
                 full_prompt += f"{memory_context}\n\n"
             full_prompt += f"[자동화 작업]\n{prompt}"
             
             # LLM 호출
-            result_text = chat(full_prompt)
+            result_text = get_llm_client().chat([{"role": "user", "content": full_prompt}])
             print(f"[Automation] 작업 완료: {description}")
             
         except Exception as e:
