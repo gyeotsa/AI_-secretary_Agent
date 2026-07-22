@@ -36,6 +36,7 @@ class IntentSchema:
     utterance_hints: List[str]
     slots: List[SlotSchema]
     execution_hints: List[str] = field(default_factory=lambda: ["생성", "만들", "작성", "저장", "실행"])
+    follow_up_hints: List[str] = field(default_factory=list)
     capability_response: str = ""
 
 class BasePlugin(ABC):

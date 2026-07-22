@@ -87,13 +87,14 @@ class IntentRouter:
             slots = plugin.extract_slots(intent.name, str(message.get("content", "")), slots)
         return self.resolve(text, intent.name, slots)
 
-    @staticmethod
-    def is_contextual_follow_up(text: str) -> bool:
-        """Return whether the utterance explicitly asks to repeat/modify recent work.
-
-        These are dialogue operators, not domain keywords.  The concrete intent and
-        slots still come exclusively from Plugin Registry contracts.
-        """
+    def is_contextual_follow_up(self, text: str, intent_name: str = "") -> bool:
+        """Check follow-up phrases declared by registered intent contracts."""
         normalized = text.casefold()
-        markers = ("다시", "같은", "그걸", "그거", "이번에는", "이름으로", "바꿔")
-        return any(marker in normalized for marker in markers)
+        contracts = [
+            intent for _plugin, intent in self.registry.get_all_intents()
+            if not intent_name or intent.name == intent_name
+        ]
+        return any(
+            hint.casefold() in normalized
+            for intent in contracts for hint in intent.follow_up_hints
+        )

@@ -190,14 +190,15 @@ class Executor:
 
         if not pending:
             intent_resolution = direct_resolution
-            if (not intent_resolution.matched
-                    and self.intent_router.is_contextual_follow_up(goal)):
+            if not intent_resolution.matched:
                 recent_intent = self.dialogue_state.get_recent_intent(session_key)
-                if recent_intent:
+                if (recent_intent and self.intent_router.is_contextual_follow_up(
+                        goal, recent_intent["intent_name"]
+                )):
                     intent_resolution = self.intent_router.resolve(
                         goal, recent_intent["intent_name"], recent_intent["slots"]
                     )
-                else:
+                elif self.intent_router.is_contextual_follow_up(goal):
                     intent_resolution = self.intent_router.resolve_from_history(goal, history)
             if intent_resolution.capability_response:
                 return ExecutionOutcome(intent_resolution.capability_response, "completed", goal)

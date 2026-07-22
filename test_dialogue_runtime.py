@@ -275,3 +275,48 @@ def test_repeat_follow_up_recovers_intent_from_history_when_recent_state_is_abse
     assert outcome.status == "awaiting_user"
     assert "시작" in outcome.response
     assert "엑셀" not in outcome.response
+
+
+def test_generic_file_request_asks_type_instead_of_inheriting_calendar(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+    executor.dialogue_state.save_recent_intent(
+        "ambiguous-file", "calendar.create_event",
+        {"title": "123", "path": str(tmp_path / "123.ics"),
+         "start": "2026-07-22", "end": "2026-07-23"}, "이전 캘린더 작업",
+    )
+
+    outcome = executor.execute_turn("456이라는 이름으로 파일 생성해줘", "ambiguous-file")
+
+    assert outcome.status == "awaiting_user"
+    assert "시작" not in outcome.response
+    assert executor.context_resolver.requests == ["456이라는 이름으로 파일 생성해줘"]
+
+
+def test_calendar_slots_accept_slash_date_range(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.Config.API_CONFIG.ALLOWED_PATHS", [str(tmp_path)])
+    executor = _executor_for_dialogue_test(tmp_path)
+    registry = executor.intent_router.registry
+    executor.tool_executor = type(
+        "Tools", (), {"execute_tool": lambda _self, name, data: registry.execute_tool(name, data)}
+    )()
+    executor.verifier = ToolVerifier()
+    first = executor.execute_turn(
+        f"{tmp_path / '456.ics'}에 456이라는 이름으로 캘린더 파일 생성해줘", "slash-date"
+    )
+    second = executor.execute_turn("2026/7/26 ~ 2026/7/27", "slash-date")
+
+    assert first.status == "awaiting_user"
+    assert second.status == "completed"
+
+
+def test_calendar_slots_accept_yearless_korean_date_as_start(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+    executor.execute_turn(
+        f"{tmp_path / '456.ics'}에 456이라는 이름으로 캘린더 파일 생성해줘", "short-date"
+    )
+
+    outcome = executor.execute_turn("7월26일", "short-date")
+
+    assert outcome.status == "awaiting_user"
+    assert "끝" in outcome.response
+    assert "시작" not in outcome.response

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 from uuid import uuid4
 import re
+from dateparser.search import search_dates
 
 from core.harness import SafetyLayer
 from core.plugin import BasePlugin, ToolSchema, IntentSchema, SlotSchema
@@ -42,6 +43,7 @@ class CalendarPlugin(BasePlugin):
                 SlotSchema("path", "저장할 .ics 파일 경로", "어디에 저장할까요, 보스?"),
             ],
             execution_hints=["생성해", "만들어", "작성해", "저장해"],
+            follow_up_hints=["다시", "같은 일정", "그 일정", "캘린더로 바꿔"],
             capability_response=(
                 "네, 가능합니다, 보스. 표준 iCalendar(.ics) 일정 파일을 생성할 수 있습니다. "
                 "필요한 정보가 빠져 있으면 하나씩 확인한 뒤 생성합니다."
@@ -72,9 +74,18 @@ class CalendarPlugin(BasePlugin):
         if path_match:
             slots["path"] = path_match.group(1)
 
-        full_dates = re.findall(r"(\d{2,4})년\s*(\d{1,2})월\s*(\d{1,2})일", text)
+        dated_matches = []
+        for pattern in (
+            r"(?P<year>\d{2,4})년\s*(?P<month>\d{1,2})월\s*(?P<day>\d{1,2})일",
+            r"(?P<year>\d{2,4})\s*[/.-]\s*(?P<month>\d{1,2})\s*[/.-]\s*(?P<day>\d{1,2})",
+        ):
+            for match in re.finditer(pattern, text):
+                dated_matches.append((match.start(), match.end(), match.groupdict()))
+        dated_matches.sort(key=lambda item: item[0])
         parsed_dates = []
-        for year, month, day in full_dates:
+        short_dates = []
+        for _start, _end, parts in dated_matches:
+            year, month, day = parts["year"], parts["month"], parts["day"]
             numeric_year = int(year)
             if numeric_year < 100:
                 numeric_year += 2000
@@ -84,11 +95,43 @@ class CalendarPlugin(BasePlugin):
             if len(parsed_dates) > 1:
                 slots["end"] = parsed_dates[1]
             else:
-                tail = text[text.find(f"{full_dates[0][2]}일") + len(f"{full_dates[0][2]}일"):]
+                tail = text[dated_matches[0][1]:]
                 end_day = re.search(r"(\d{1,2})일(?:에)?\s*끝", tail)
                 if end_day:
                     year, month, _ = parsed_dates[0].split("-")
                     slots["end"] = f"{year}-{month}-{int(end_day.group(1)):02d}"
+        else:
+            short_dates = re.findall(r"(?<!년\s)(\d{1,2})월\s*(\d{1,2})일", text)
+            for month, day in short_dates:
+                if slots.get("start"):
+                    year = str(slots["start"])[:4]
+                else:
+                    year = str(datetime.now().year)
+                value = f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+                if not slots.get("start"):
+                    slots["start"] = value
+                elif not slots.get("end"):
+                    slots["end"] = value
+
+        # Standards-based fallback covers additional numeric/ISO date and time
+        # variants without making the caller memorize one input grammar.
+        if not parsed_dates and not short_dates:
+            discovered = search_dates(
+                text,
+                settings={
+                    "RELATIVE_BASE": datetime.now(),
+                    "PREFER_DATES_FROM": "future",
+                    "RETURN_AS_TIMEZONE_AWARE": False,
+                },
+            ) or []
+            normalized_dates = []
+            for matched_text, value in discovered:
+                has_time = bool(re.search(r"\d{1,2}:\d{2}", matched_text))
+                normalized_dates.append(value.isoformat(timespec="seconds") if has_time else value.date().isoformat())
+            if normalized_dates and not slots.get("start"):
+                slots["start"] = normalized_dates[0]
+            if len(normalized_dates) > 1 and not slots.get("end"):
+                slots["end"] = normalized_dates[1]
 
         times = re.findall(r"(오전|오후)?\s*(\d{1,2})시(?:\s*(\d{1,2})분)?", text)
         if times:
