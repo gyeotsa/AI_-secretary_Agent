@@ -776,3 +776,12 @@ AI_-secretary_Agent/
 - 실제 환경에서 Discord를 `C:\Users\ice31\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Discord Inc\Discord.lnk`로 자동 해석했고 플러그인으로 실제 실행 요청 성공을 확인했다.
 - 전체 C 드라이브 fallback 활성/비활성, LOCALAPPDATA Electron 설치, 시작 메뉴 바로가기 해석·Shell 실행 회귀 테스트를 추가했다.
 - 다음 해야 할 일: 전체 테스트 후 커밋하고 GUI 재시작 뒤 `Discord 실행해줘`가 Planner 없이 직접 성공하는지 확인한다.
+## 2026-07-22 Windows 사용자 별칭 CRUD 연결
+
+- 별칭 요청이 실패한 원인은 Windows 플러그인에 실행·검색·포커스 Tool만 있고 별칭 추가 Tool/Intent가 없어서 Planner가 `windows_launch_app`을 대체 호출했기 때문이다.
+- `windows_add_app_aliases`, `windows_list_app_aliases`, `windows_remove_app_aliases` Tool을 추가하고 모두 `windows_api` Permission에 연결했다.
+- `windows.add_aliases`, `windows.list_aliases`, `windows.remove_aliases` Intent/Slot을 선언했다. `Discord 앱의 별칭에 디스코드와 디코를 추가해줘`는 Planner/LLM 없이 target=Discord, aliases=[디스코드, 디코]로 직접 실행된다.
+- 기본 프로젝트 별칭 `data/app_aliases.json`과 사용자 머신별 별칭 `data/user_app_aliases.json`을 분리했다. 사용자 파일은 Git ignore되며 임시 파일 후 replace 방식으로 안전하게 저장한다.
+- 실제 Discord 시작 메뉴 바로가기에 `디스코드`, `디코`를 추가했고 두 별칭이 동일한 `.lnk`로 해석되는 것을 확인했다.
+- 별칭 개수/길이 제한, 대상 앱 탐색 실패, 없는 별칭 삭제를 오류로 처리하며 실제 저장 없이 성공 응답하지 않는다.
+- 다음 해야 할 일: 전체 테스트 후 커밋하고 GUI 재시작 뒤 별칭 추가·목록·삭제 및 `디코 실행해줘`를 확인한다.

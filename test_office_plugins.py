@@ -132,3 +132,21 @@ def test_windows_resolves_and_launches_start_menu_shortcut(tmp_path, monkeypatch
     result=plugin.execute_tool("windows_launch_app",{"target":"Discord"})
     assert result.startswith("Windows 시작 메뉴 앱 실행 요청 성공:")
     assert launched==[str(shortcut)]
+
+
+def test_windows_alias_intent_and_crud_tools(tmp_path, monkeypatch):
+    shortcut=tmp_path/"Discord.lnk"; shortcut.write_bytes(b"shortcut")
+    monkeypatch.setattr(WindowsControlPlugin,"_data_path",staticmethod(lambda name:tmp_path/name))
+    monkeypatch.setattr(WindowsControlPlugin,"_resolve_target",classmethod(lambda _cls,_target:str(shortcut)))
+    plugin=WindowsControlPlugin(); registry=PluginRegistry(); registry.register_plugin(plugin)
+    resolution=IntentRouter(registry).resolve("Discord 앱의 별칭에 디스코드와 디코를 추가해줘")
+    assert resolution.ready
+    assert resolution.tool_name=="windows_add_app_aliases"
+    assert resolution.slots=={"target":"Discord","aliases":["디스코드","디코"]}
+    added=plugin.execute_tool(resolution.tool_name,resolution.slots)
+    assert added.startswith("앱 별칭 추가 성공:")
+    assert plugin._aliases()["디스코드"]==str(shortcut)
+    assert "디코" in plugin.execute_tool("windows_list_app_aliases",{})
+    removed=plugin.execute_tool("windows_remove_app_aliases",{"aliases":["디코"]})
+    assert removed.startswith("앱 별칭 삭제 성공:")
+    assert "디코" not in plugin._user_aliases()

@@ -51,3 +51,4 @@ data/models/
 .DS_Store
 Thumbs.db
 data/discovered_apps.json
+data/user_app_aliases.json

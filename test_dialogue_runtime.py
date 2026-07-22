@@ -336,3 +336,20 @@ def test_windows_launch_request_bypasses_planner_and_llm(tmp_path):
     assert outcome.status == "completed"
     assert "메모장" in outcome.response
     assert executor.context_resolver.requests == []
+
+
+def test_windows_alias_request_bypasses_planner_and_llm(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+    executor.intent_router.registry.register_plugin(WindowsControlPlugin())
+    executor.tool_executor = type(
+        "Tools", (), {"execute_tool": lambda _self, name, data: f"앱 별칭 추가 성공: {', '.join(data['aliases'])}"}
+    )()
+    executor.verifier = ToolVerifier()
+
+    outcome = executor.execute_turn(
+        "Discord 앱의 별칭에 디스코드와 디코를 추가해줘", "windows-alias"
+    )
+
+    assert outcome.status == "completed"
+    assert "디스코드" in outcome.response and "디코" in outcome.response
+    assert executor.context_resolver.requests == []

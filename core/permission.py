@@ -75,6 +75,9 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "windows_find_apps": "windows_api",
     "windows_launch_app": "windows_api",
     "windows_focus_window": "windows_api",
+    "windows_add_app_aliases": "windows_api",
+    "windows_list_app_aliases": "windows_api",
+    "windows_remove_app_aliases": "windows_api",
     # 셸 명령 실행 (가장 위험도 높은 도구)
     "run_command": "shell_execute",
     "git_status": "filesystem_read",

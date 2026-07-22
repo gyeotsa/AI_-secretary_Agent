@@ -41,6 +41,17 @@ class WindowsControlPlugin(BasePlugin):
             ToolSchema("windows_focus_window", "제목이 일치하는 창을 복원하고 활성화합니다", {
                 "type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]
             }, ["windows_api"]),
+            ToolSchema("windows_add_app_aliases", "앱을 찾아 사용자 별칭을 추가합니다", {
+                "type": "object", "properties": {
+                    "target": {"type": "string"},
+                    "aliases": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                }, "required": ["target", "aliases"]}, ["windows_api"]),
+            ToolSchema("windows_list_app_aliases", "사용자 앱 별칭 목록을 조회합니다", {
+                "type": "object", "properties": {}, "required": []}, ["windows_api"]),
+            ToolSchema("windows_remove_app_aliases", "사용자 앱 별칭을 삭제합니다", {
+                "type": "object", "properties": {
+                    "aliases": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                }, "required": ["aliases"]}, ["windows_api"]),
         ]
 
     def get_intents(self):
@@ -52,6 +63,15 @@ class WindowsControlPlugin(BasePlugin):
             IntentSchema("windows.find_app", "Windows 프로그램 검색", "windows_find_apps",
                          ["앱을 찾아", "프로그램 찾아", "실행 파일 찾아"],
                          [SlotSchema("query", "검색할 프로그램", "어떤 프로그램을 찾을까요, 보스?")]),
+            IntentSchema("windows.add_aliases", "Windows 프로그램 별칭 추가", "windows_add_app_aliases",
+                         ["별칭에", "별칭으로", "별칭 추가"],
+                         [SlotSchema("target", "대상 프로그램", "어떤 프로그램의 별칭인가요, 보스?"),
+                          SlotSchema("aliases", "추가할 별칭", "어떤 별칭을 추가할까요, 보스?")]),
+            IntentSchema("windows.list_aliases", "Windows 프로그램 별칭 조회", "windows_list_app_aliases",
+                         ["별칭 목록", "별칭 보여", "별칭 조회"], []),
+            IntentSchema("windows.remove_aliases", "Windows 프로그램 별칭 삭제", "windows_remove_app_aliases",
+                         ["별칭 삭제", "별칭 제거"],
+                         [SlotSchema("aliases", "삭제할 별칭", "어떤 별칭을 삭제할까요, 보스?")]),
         ]
 
     def extract_slots(self, intent_name, text, current_slots):
@@ -64,7 +84,23 @@ class WindowsControlPlugin(BasePlugin):
             match = re.search(r"(.+?)\s*(?:앱|프로그램|실행\s*파일)?\s*(?:을|를)?\s*찾", text)
             if match and match.group(1).strip() not in {"해당", "그", "그럼 해당"}:
                 slots["query"] = match.group(1).strip()
+        elif intent_name == "windows.add_aliases":
+            target = re.search(r"^\s*(.+?)(?:\s*앱)?(?:의)?\s*별칭", text)
+            values = re.search(r"별칭(?:에|으로)?\s*(.+?)\s*(?:을|를)?\s*추가", text)
+            if target:
+                slots["target"] = target.group(1).strip()
+            if values:
+                slots["aliases"] = self._split_aliases(values.group(1))
+        elif intent_name == "windows.remove_aliases":
+            values = re.search(r"(?:별칭(?:에서)?\s*)?(.+?)\s*(?:을|를)?\s*(?:삭제|제거)", text)
+            if values:
+                slots["aliases"] = self._split_aliases(values.group(1))
         return slots
+
+    @staticmethod
+    def _split_aliases(value: str) -> List[str]:
+        cleaned = re.sub(r"[\"']", "", value)
+        return [part.strip() for part in re.split(r"\s*(?:,|와|과|및)\s*", cleaned) if part.strip()]
 
     @staticmethod
     def _data_path(name: str) -> Path:
@@ -80,7 +116,19 @@ class WindowsControlPlugin(BasePlugin):
 
     @classmethod
     def _aliases(cls) -> Dict[str, str]:
-        return cls._json_map("app_aliases.json")
+        return {**cls._json_map("app_aliases.json"), **cls._json_map("user_app_aliases.json")}
+
+    @classmethod
+    def _user_aliases(cls) -> Dict[str, str]:
+        return cls._json_map("user_app_aliases.json")
+
+    @classmethod
+    def _write_user_aliases(cls, aliases: Dict[str, str]) -> None:
+        target = cls._data_path("user_app_aliases.json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(json.dumps(aliases, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(target)
 
     @classmethod
     def _catalog(cls) -> Dict[str, str]:
@@ -243,6 +291,34 @@ class WindowsControlPlugin(BasePlugin):
 
     def execute_tool(self, name: str, data: Dict[str, Any]) -> str:
         try:
+            if name == "windows_add_app_aliases":
+                target = str(data.get("target", "")).strip()
+                raw_aliases = data.get("aliases") or []
+                aliases = list(dict.fromkeys(str(item).strip() for item in raw_aliases if str(item).strip()))
+                if not target or not aliases:
+                    return "오류: 대상 프로그램과 하나 이상의 별칭이 필요합니다."
+                if len(aliases) > 20 or any(len(alias) > 80 for alias in aliases):
+                    return "오류: 별칭 개수 또는 길이가 허용 범위를 초과했습니다."
+                resolved = self._resolve_target(target)
+                if not resolved:
+                    return f"오류: 별칭을 연결할 프로그램을 찾지 못했습니다: {target}"
+                user_aliases = self._user_aliases()
+                for alias in aliases:
+                    user_aliases[alias.casefold()] = resolved
+                self._write_user_aliases(user_aliases)
+                return f"앱 별칭 추가 성공: {', '.join(aliases)} → {resolved}"
+            if name == "windows_list_app_aliases":
+                return json.dumps(self._user_aliases(), ensure_ascii=False, indent=2)
+            if name == "windows_remove_app_aliases":
+                aliases = [str(item).strip() for item in data.get("aliases") or [] if str(item).strip()]
+                if not aliases:
+                    return "오류: 삭제할 별칭이 필요합니다."
+                user_aliases = self._user_aliases()
+                removed = [alias for alias in aliases if user_aliases.pop(alias.casefold(), None) is not None]
+                if not removed:
+                    return "오류: 삭제할 사용자 별칭을 찾지 못했습니다."
+                self._write_user_aliases(user_aliases)
+                return f"앱 별칭 삭제 성공: {', '.join(removed)}"
             if name == "windows_find_apps":
                 query = str(data.get("query", "")).strip()
                 if not query:
