@@ -28,8 +28,13 @@ class AutomationEngine:
         self.scheduler_thread = None
         self.stop_event = threading.Event()
         self.job_results = {}  # job_id -> 결과
+        self.result_callback: Optional[Callable[[Dict[str, Any]], None]] = None
         
         self._init_db()
+
+    def set_result_callback(self, callback: Optional[Callable[[Dict[str, Any]], None]]):
+        """예약 작업 완료 결과를 GUI 등 외부 소비자에게 전달한다."""
+        self.result_callback = callback
         
     def _init_db(self):
         conn = sqlite3.connect(self.scheduler_db_path)
@@ -122,6 +127,16 @@ class AutomationEngine:
             "result": result,
             "error": error
         }
+        if self.result_callback:
+            try:
+                self.result_callback({
+                    "job_id": job_id,
+                    "run_time": now,
+                    "result": result,
+                    "error": error,
+                })
+            except Exception as exc:
+                print(f"[Automation] 결과 callback 오류: {exc}")
         
     def _schedule_job(self, job_id: int, description: str, schedule_type: str, schedule_value: str, prompt: str):
         """스케줄 작업 등록"""

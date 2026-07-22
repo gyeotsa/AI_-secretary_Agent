@@ -1,6 +1,7 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable
 from dataclasses import dataclass
 import json
+import threading
 
 from core.llm import get_llm_client
 from core.scratchpad import get_scratchpad, Task
@@ -14,6 +15,21 @@ from core.workspace import get_workspace_manager
 from core.verifier import get_tool_verifier
 from core.recovery import get_recovery_manager
 from core.conversation_context import ConversationContextResolver
+
+
+@dataclass
+class ExecutionOutcome:
+    response: str
+    status: str = "completed"
+    goal: str = ""
+    question: str = ""
+
+
+@dataclass
+class PendingRequest:
+    original_goal: str
+    question: str
+    conversation_history: List[Dict[str, str]]
 
 
 class Executor:
@@ -53,6 +69,9 @@ class Executor:
         self._consecutive_failures = 0  # 연속 실패 횟수 추적
         self._total_failures = 0
         self.terminal_error = None
+        self._pending_requests: Dict[str, PendingRequest] = {}
+        self._pending_lock = threading.Lock()
+        self._progress_callback: Optional[Callable[[str], None]] = None
 
     def initialize(self, goal: str, session_id: Optional[str] = None):
         """초기화: Goal 설정, Scratchpad 초기화, Context 빌드"""
@@ -68,22 +87,60 @@ class Executor:
         print(f"[Executor] 초기화 완료: Goal='{goal}'")
 
     def execute_goal(self, goal: str, session_id: Optional[str] = None,
-                     conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
-        """메인 메서드: Goal을 받아서 전체 실행 흐름을 관리"""
-        resolved = self.context_resolver.resolve(goal, conversation_history, session_id or "")
+                     conversation_history: Optional[List[Dict[str, str]]] = None,
+                     progress_callback: Optional[Callable[[str], None]] = None) -> str:
+        """하위 호환용 문자열 응답 API."""
+        return self.execute_turn(goal, session_id, conversation_history, progress_callback).response
+
+    def execute_turn(self, goal: str, session_id: Optional[str] = None,
+                     conversation_history: Optional[List[Dict[str, str]]] = None,
+                     progress_callback: Optional[Callable[[str], None]] = None) -> ExecutionOutcome:
+        """질문 대기와 재개를 지원하는 한 번의 대화 턴을 실행한다."""
+        session_key = session_id or "default"
+        history = list(conversation_history or [])
+        with self._pending_lock:
+            pending = self._pending_requests.get(session_key)
+
+        if pending:
+            if goal.strip().lower() in {"취소", "그만", "중단", "cancel", "stop"}:
+                with self._pending_lock:
+                    self._pending_requests.pop(session_key, None)
+                return ExecutionOutcome("진행 중인 요청을 취소했습니다, 보스.", "cancelled")
+            history = pending.conversation_history + [
+                {"role": "assistant", "content": pending.question},
+                {"role": "user", "content": goal},
+            ]
+            goal = (
+                f"원래 요청: {pending.original_goal}\n"
+                f"자비스의 확인 질문: {pending.question}\n"
+                f"사용자가 추가로 제공한 정보: {goal}\n"
+                "위 정보를 반영해 원래 요청을 이어서 완료하세요."
+            )
+            with self._pending_lock:
+                self._pending_requests.pop(session_key, None)
+            if progress_callback:
+                progress_callback("확인했습니다, 보스. 중단했던 작업을 이어서 진행하겠습니다.")
+
+        resolved = self.context_resolver.resolve(goal, history, session_key)
         if resolved.needs_clarification:
-            return resolved.clarification_question or "어떤 대상을 말씀하시는지 조금 더 구체적으로 알려주세요, 보스."
+            question = resolved.clarification_question or "어떤 대상을 말씀하시는지 조금 더 구체적으로 알려주세요, 보스."
+            with self._pending_lock:
+                self._pending_requests[session_key] = PendingRequest(goal, question, history)
+            return ExecutionOutcome(question, "awaiting_user", goal, question)
         goal = resolved.resolved_request
         if goal != resolved.original_request:
             print(f"[Context] 요청 해석: {resolved.original_request!r} → {goal!r} (confidence={resolved.confidence:.2f})")
         unsupported = self._unsupported_capability_message(goal)
         if unsupported:
-            return unsupported
+            return ExecutionOutcome(unsupported, "completed", goal)
+        self._progress_callback = progress_callback
+        self._emit_progress("요청을 이해했습니다. 작업 계획을 준비하고 있습니다.")
         self.initialize(goal, session_id)
 
         # 1. 초기 Planning
         initial_context = self.build_context()
         _ = self.planner.decompose_goal(goal, initial_context)
+        self._emit_progress("작업 계획을 세웠습니다. 실행을 시작하겠습니다.")
 
         # 2. 메인 반복 루프
         while self.current_iteration < self.max_iterations:
@@ -95,7 +152,20 @@ class Executor:
                 break
 
         # 3. 최종 종료 처리
-        return self.finalize()
+        response = self.finalize()
+        self._progress_callback = None
+        return ExecutionOutcome(response, "failed" if self.terminal_error else "completed", goal)
+
+    def has_pending_request(self, session_id: Optional[str] = None) -> bool:
+        with self._pending_lock:
+            return (session_id or "default") in self._pending_requests
+
+    def _emit_progress(self, message: str):
+        if self._progress_callback:
+            try:
+                self._progress_callback(message)
+            except Exception as exc:
+                print(f"[Executor] 진행 상황 callback 오류: {exc}")
 
     def run_iteration(self) -> bool:
         """한 번의 반복 실행: Task 선택 → Context 빌드 → (Reasoning+Tool선택 통합) → Action → Verify → Reflect → Update → Evaluate"""
@@ -119,6 +189,7 @@ class Executor:
 
             self.scratchpad.set_current_task(task.id)
             print(f"[Executor] Task 선택: {task.description}")
+            self._emit_progress(f"진행 중: {task.description}")
 
             # 2. Context 빌드
             context = self.build_context(task)
@@ -137,6 +208,7 @@ class Executor:
                 tool_name = action["tool_name"]
                 tool_input = action.get("tool_input", {})
                 print(f"[Executor] Tool 선택: {tool_name}, 입력: {tool_input}")
+                self._emit_progress(f"도구 실행 중: {tool_name}")
 
                 # 5~6. ToolExecutor가 중앙 권한 검사 후 실행
                 result = self.execute_tool(tool_name, tool_input)
@@ -148,6 +220,7 @@ class Executor:
                     self._consecutive_failures += 1
                     self._total_failures += 1
                     print(f"[Executor] 실행 결과 검증 실패! 복구 시도... (연속 실패: {self._consecutive_failures})")
+                    self._emit_progress(f"{tool_name} 실행 결과를 확인하지 못해 복구를 시도하고 있습니다.")
                     recover_result = self.recover(task, tool_name, tool_input, result)
                     if recover_result is not None:
                         result = recover_result

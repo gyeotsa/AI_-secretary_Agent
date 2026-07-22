@@ -154,3 +154,22 @@ def test_permission_manager_worker_to_gui_signal_round_trip(tmp_path):
     assert _pump_until(lambda: not worker.is_alive())
     worker.join(timeout=1)
     assert result == [True]
+
+
+def test_proactive_message_is_displayed_and_saved_without_user_input():
+    _app()
+    jarvis = JarvisApp.__new__(JarvisApp)
+    jarvis.window = _Window()
+    jarvis.state_machine = _StateMachine()
+    jarvis.memory = _Memory()
+    jarvis.messages = []
+    jarvis.session_id = "proactive-session"
+    jarvis.last_response = ""
+    jarvis.signals = AppSignals()
+    jarvis.signals.proactive_message.connect(jarvis._on_proactive_message)
+
+    jarvis.notify_user("보스, 예약 작업을 완료했습니다.")
+
+    assert _pump_until(lambda: bool(jarvis.window.assistants))
+    assert jarvis.window.assistants[-1] == "보스, 예약 작업을 완료했습니다."
+    assert jarvis.messages[-1]["role"] == "assistant"

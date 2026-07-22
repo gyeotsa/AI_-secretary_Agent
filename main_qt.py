@@ -19,6 +19,7 @@ from core.audio_processor import get_audio_processor
 from core.workspace import get_workspace_manager
 from core.permission import get_permission_manager
 from core.executor import get_executor
+from core.scheduler import get_automation_engine
 from ui.main_window import JarvisMainWindow
 
 
@@ -67,6 +68,8 @@ class AppSignals(QObject):
     permission_request = pyqtSignal(str, str)
     # 권한 응답용 시그널: (result_bool)
     permission_response = pyqtSignal(bool)
+    progress_update = pyqtSignal(str)
+    proactive_message = pyqtSignal(str)
 
 
 class JarvisApp:
@@ -85,6 +88,7 @@ class JarvisApp:
         self.workspace_manager = get_workspace_manager()
         self.permission_manager = get_permission_manager()
         self.executor = get_executor()
+        self.automation_engine = get_automation_engine()
         self.signals = AppSignals()  # <-- 여기로 옮겼어요!
         
         # 권한 요청 결과 저장용 변수
@@ -118,7 +122,10 @@ class JarvisApp:
         self.console_reader = ConsoleReader()
         self.console_reader.input_received.connect(self._on_console_input)
         self.signals.ai_response_ready.connect(self._on_ai_response)
+        self.signals.progress_update.connect(self._on_progress_update)
+        self.signals.proactive_message.connect(self._on_proactive_message)
         self.signals.tts_finished.connect(self._reset_all)
+        self.automation_engine.set_result_callback(self._on_automation_result)
         
         # 시그널 연결
         self.state_machine.state_changed.connect(self._on_state_changed)
@@ -216,11 +223,8 @@ class JarvisApp:
         try:
             rag_context = self.rag_manager.search_docs(text)
             print("[DEBUG] RAG context:", rag_context)
-            if (isinstance(rag_context, str) and rag_context.strip()
-                    and "관련 문서를 찾을 수 없습니다." not in rag_context
-                    and "저장된 문서가 없습니다." not in rag_context):
-                # RAG 결과가 있으면 메시지에 추가
-                text = f"[참고 문서:\n{rag_context}\n\n사용자 질문: {text}"
+            # 검색 결과는 Executor의 ContextManager가 다시 조립한다. 여기서 사용자
+            # 발화 자체를 RAG 문자열로 바꾸면 대화 기록과 확인 질문 재개가 오염된다.
         except Exception as e:
             print(f"⚠️ RAG 검색 오류: {e}")
         
@@ -231,7 +235,14 @@ class JarvisApp:
         
         try:
             # Executor로 목표 실행!
-            response_text = self.executor.execute_goal(text, self.session_id, conversation_history)
+            if hasattr(self.executor, "execute_turn"):
+                outcome = self.executor.execute_turn(
+                    text, self.session_id, conversation_history,
+                    self.signals.progress_update.emit,
+                )
+                response_text = outcome.response
+            else:
+                response_text = self.executor.execute_goal(text, self.session_id, conversation_history)
             print("[DEBUG] Executor.execute_goal returned:", response_text)
             
             # 최종 응답 전송
@@ -242,6 +253,30 @@ class JarvisApp:
             traceback.print_exc()
             error_response = f"죄송해요, 보스! 작업 실행 중 오류가 발생했어요: {str(e)}"
             self.signals.ai_response_ready.emit(error_response)
+
+    def _on_progress_update(self, message: str):
+        """최종 답변 전의 짧은 작업 진행 상황을 GUI에 표시한다."""
+        self.window.show_assistant_text(message)
+
+    def notify_user(self, message: str):
+        """Observer·Scheduler 등이 사용자에게 먼저 말을 걸 수 있는 공개 진입점."""
+        if message and message.strip():
+            self.signals.proactive_message.emit(message.strip())
+
+    def _on_automation_result(self, event):
+        if event.get("error"):
+            message = f"보스, 예약 작업 {event['job_id']} 실행 중 문제가 생겼습니다: {event['error']}"
+        else:
+            message = f"보스, 예약 작업 {event['job_id']}을 완료했습니다. {event.get('result', '')}"
+        self.notify_user(message)
+
+    def _on_proactive_message(self, message: str):
+        """사용자 입력 없이 발생한 알림도 일반 대화 기록과 UI에 남긴다."""
+        self.last_response = message
+        self.window.show_assistant_text(message)
+        self.messages.append({"role": "assistant", "content": message})
+        self.memory.save_message(self.session_id, "assistant", message)
+        self.state_machine.start_responding()
     
     def _on_ai_response(self, response_text: str):
         print("[DEBUG] _on_ai_response called with:", response_text)

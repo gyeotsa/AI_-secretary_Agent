@@ -618,3 +618,22 @@ AI_-secretary_Agent/
 - 플러그인 목록을 실제 Registry에서 반환하는 `list_plugins` 도구를 추가함.
 - 기본 테스트 47개 통과, 통합 테스트 4개는 기본 실행에서 제외, `compileall` 통과.
 - 실제 Ollama + Open-Meteo 전체 흐름에서 `온도는 어느 정도야?`가 앞선 `서울시 구로구 항동` 문맥을 이어받아 현재 27.8°C·체감 34.2°C를 답하고 서울시 기준 근사값임을 표시하는 것을 확인함(관측값은 실행 시점에 따라 변동).
+
+## 2026-07-22 멀티턴 질문·작업 재개·선제 알림 기반
+
+- `ExecutionOutcome`과 `PendingRequest`를 추가해 Executor의 문자열 응답과 작업 상태를 분리함. 기존 `execute_goal()` API는 유지함.
+- 정보가 부족하면 세션별로 원래 요청과 확인 질문을 보관하고 `awaiting_user` 상태로 응답함.
+- 다음 사용자 입력을 확인 질문의 답으로 받아 원래 요청·질문·추가 정보를 하나의 목표로 조립하고 중단 지점의 작업을 자동 재개함.
+- 질문 대기 중 `취소`, `그만`, `중단`, `cancel`, `stop`으로 작업을 취소할 수 있음.
+- 계획 준비, 계획 완료, 현재 Task, Tool 실행, 복구 시도 단계를 progress callback으로 GUI에 중간 표시함.
+- `AppSignals`에 진행 상황과 선제 메시지 신호를 추가하고 `JarvisApp.notify_user()`를 Observer·Scheduler 등 외부 이벤트의 공용 사용자 알림 진입점으로 제공함.
+- AutomationEngine에 결과 callback을 추가해 예약 작업 완료·실패 시 Jarvis가 사용자 입력 없이 먼저 GUI에 보고하고 대화 메모리에 저장함.
+- GUI의 중복 RAG 문자열 주입을 제거함. 사용자 발화는 원문 그대로 보존하고 RAG Context 조립은 Executor의 ContextManager 한 곳에서 담당함.
+- 질문 재개·취소·선제 알림 테스트를 추가함. 기본 테스트 50개 통과, 통합 테스트 4개 기본 제외, `compileall` 통과.
+
+### 다음 해야 할 일
+
+1. 대화형 작업 상태를 SQLite에 영속화해 프로그램 재시작 후에도 질문 대기 작업을 이어받기.
+2. 사용자의 수정·중단·우선순위 변경 명령과 동시에 여러 장기 작업을 식별하는 Task ID 기반 제어 추가.
+3. Observer 이벤트를 중요도·중복 억제 정책에 연결한 뒤 `notify_user()`로 선택적 선제 보고.
+4. 위 대화 상태 기반 위에 Browser·Office·IDE·Mail·Calendar MCP/API 연결 진행.
