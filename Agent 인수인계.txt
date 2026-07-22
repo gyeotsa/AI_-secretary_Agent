@@ -746,3 +746,14 @@ AI_-secretary_Agent/
 - 새 라이브러리: `python-docx`, `python-pptx`, `python-hwpx`, `defusedxml`; 프로젝트 `.venv` 설치 및 requirements 반영.
 - Office/HWPX/PDF 실제 생성·재조회, Registry 노출, 문서 Intent 경로 해석, Windows 미등록 앱 차단 및 파일 검증 테스트를 추가했으며 전체 `81 passed, 4 deselected`.
 - 다음 해야 할 일: Sprint 2 Browser 세션/다운로드/검색/YouTube를 구현한 뒤 Sprint 3 IDE/GitHub로 진행한다. OAuth 공급자는 실제 주 계정을 확인한 뒤 하나씩 연결한다.
+## 2026-07-22 전체 플러그인 실행 점검 및 Windows Intent 수정
+
+- 실제 로그의 `메모장 실행해줄래?`가 실패한 원인은 Windows Tool 자체가 아니라 `windows_control`에 Intent 계약이 없어 85개 Tool을 포함한 Planner/Ollama 경로로 우회한 것이었다.
+- `windows.launch_app` Intent와 target slot을 선언했다. 정확한 사용자 문장은 Planner/LLM을 호출하지 않고 `windows_launch_app`으로 직접 실행된다.
+- 앱 별칭은 Core/Executor 하드코딩이 아니라 `data/app_aliases.json` 데이터 파일로 분리했다. 실행 파일은 App Paths 레지스트리, PATH, 명시 절대 경로 순으로 확인한다.
+- 실제 `Executor → IntentRouter → Permission → ToolExecutor → WindowsControl` 종단 경로로 메모장을 실행했고 WindowsApps Notepad PID 반환을 확인한 뒤 테스트 창을 종료했다.
+- Browser 실제 Chromium 본문 조회·스크린샷과 Weather 실제 Open-Meteo 호출을 별도 integration 테스트로 실행해 `3 passed`.
+- Excel/Word/PowerPoint/PDF/HWPX 실제 파일 왕복, Calendar ICS, Mail 로컬 초안·SMTP 설정 누락 차단, Filesystem tree/search, Git status/diff/log, System 도구, Windows 검색·없는 앱/창 차단을 직접 실행했다.
+- Git commit/push/pull, 실제 SMTP 발송처럼 외부 상태를 변경하는 Tool은 검증 목적으로 실행하지 않고 승인·안전 실패 경로만 확인했다.
+- 기본 전체 테스트 `87 passed, 4 deselected`; 플러그인 집중 테스트 `29 passed, 3 deselected`; 네트워크 integration `3 passed`.
+- 다음 해야 할 일: Browser 고도화 Sprint 2를 진행하되 각 신규 Tool에 자연어 Intent와 실제 종단 검증을 동시에 추가한다.

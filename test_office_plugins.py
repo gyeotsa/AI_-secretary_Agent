@@ -63,3 +63,12 @@ def test_document_intents_resolve_desktop_paths_without_core_branches():
 def test_new_file_verifier_checks_real_output(tmp_path):
     path=tmp_path/"result.docx"; path.write_bytes(b"content")
     assert ToolVerifier().verify("word_create_document",{"path":str(path)},"성공").success
+
+
+def test_windows_launch_intent_bypasses_planner_and_resolves_configured_alias():
+    registry=PluginRegistry(); registry.register_plugin(WindowsControlPlugin())
+    resolution=IntentRouter(registry).resolve("메모장 실행해줄래?")
+    assert resolution.ready
+    assert resolution.tool_name=="windows_launch_app"
+    assert resolution.slots["target"]=="메모장"
+    assert WindowsControlPlugin()._aliases()["메모장"]=="notepad.exe"

@@ -50,3 +50,4 @@
 - 로컬 파일 방식과 실행 중인 앱의 COM/UI 제어 방식을 별도 Tool로 유지한다.
 - 외부 전송·삭제·앱 실행·UI 조작은 Permission 승인을 거친다.
 - Plugin Registry가 Tool과 Intent의 단일 진실 공급원이며 Executor에 도메인 분기를 추가하지 않는다.
+- 모든 실행형 플러그인은 Tool 등록만으로 완료 처리하지 않고 자연어 Intent 우회 방지와 실제 종단 실행을 함께 검증한다.

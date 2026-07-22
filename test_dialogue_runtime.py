@@ -5,6 +5,7 @@ import threading
 from core.intent_router import IntentRouter
 from core.plugin import PluginRegistry
 from plugins.calendar import CalendarPlugin
+from plugins.windows_control import WindowsControlPlugin
 from core.verifier import ToolVerifier
 
 
@@ -320,3 +321,18 @@ def test_calendar_slots_accept_yearless_korean_date_as_start(tmp_path):
     assert outcome.status == "awaiting_user"
     assert "끝" in outcome.response
     assert "시작" not in outcome.response
+
+
+def test_windows_launch_request_bypasses_planner_and_llm(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+    executor.intent_router.registry.register_plugin(WindowsControlPlugin())
+    executor.tool_executor = type(
+        "Tools", (), {"execute_tool": lambda _self, name, data: f"프로그램 실행 성공: {data['target']}"}
+    )()
+    executor.verifier = ToolVerifier()
+
+    outcome = executor.execute_turn("메모장 실행해줄래?", "windows-launch")
+
+    assert outcome.status == "completed"
+    assert "메모장" in outcome.response
+    assert executor.context_resolver.requests == []
