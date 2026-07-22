@@ -23,6 +23,7 @@ class AutomationEngine:
         os.makedirs(self.data_dir, exist_ok=True)
         
         self.scheduled_jobs = []
+        self.scheduler = schedule.Scheduler() if SCHEDULE_AVAILABLE else None
         self.running = False
         self.scheduler_thread = None
         self.stop_event = threading.Event()
@@ -128,15 +129,17 @@ class AutomationEngine:
             self._execute_job(job_id, prompt, description)
             
         if schedule_type == "every_minutes":
-            schedule.every(int(schedule_value)).minutes.do(job).tag(job_id)
+            self.scheduler.every(int(schedule_value)).minutes.do(job).tag(job_id)
         elif schedule_type == "every_hours":
-            schedule.every(int(schedule_value)).hours.do(job).tag(job_id)
+            self.scheduler.every(int(schedule_value)).hours.do(job).tag(job_id)
         elif schedule_type == "every_days":
-            schedule.every(int(schedule_value)).days.do(job).tag(job_id)
+            self.scheduler.every(int(schedule_value)).days.do(job).tag(job_id)
         elif schedule_type == "daily_at":
-            schedule.every().day.at(schedule_value).do(job).tag(job_id)
+            self.scheduler.every().day.at(schedule_value).do(job).tag(job_id)
         elif schedule_type == "every_weeks":
-            schedule.every(int(schedule_value)).weeks.do(job).tag(job_id)
+            self.scheduler.every(int(schedule_value)).weeks.do(job).tag(job_id)
+        else:
+            raise ValueError(f"지원하지 않는 schedule_type입니다: {schedule_type}")
             
         self.scheduled_jobs.append({
             "id": job_id,
@@ -150,6 +153,15 @@ class AutomationEngine:
         """새 작업 추가"""
         if not SCHEDULE_AVAILABLE:
             return "오류: schedule 라이브러리가 설치되지 않았습니다."
+        valid_types = {"every_minutes", "every_hours", "every_days", "daily_at", "every_weeks"}
+        if schedule_type not in valid_types:
+            return f"작업 등록 오류: 지원하지 않는 schedule_type입니다: {schedule_type}"
+        if schedule_type != "daily_at":
+            try:
+                if int(schedule_value) <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return "작업 등록 오류: 반복 간격은 1 이상의 정수여야 합니다."
             
         try:
             now = datetime.now().isoformat()
@@ -173,6 +185,8 @@ class AutomationEngine:
     def _load_jobs_from_db(self):
         """DB에서 작업 로드"""
         try:
+            self.scheduler.clear()
+            self.scheduled_jobs.clear()
             conn = sqlite3.connect(self.scheduler_db_path)
             cursor = conn.cursor()
             cursor.execute("SELECT id, description, schedule_type, schedule_value, prompt FROM jobs WHERE enabled = 1")
@@ -256,14 +270,15 @@ class AutomationEngine:
             
             if enabled:
                 # 스케줄러에 다시 등록
-                cursor = sqlite3.connect(self.scheduler_db_path).cursor()
-                cursor.execute("SELECT description, schedule_type, schedule_value, prompt FROM jobs WHERE id = ?", (job_id,))
-                row = cursor.fetchone()
+                with sqlite3.connect(self.scheduler_db_path) as lookup_conn:
+                    cursor = lookup_conn.cursor()
+                    cursor.execute("SELECT description, schedule_type, schedule_value, prompt FROM jobs WHERE id = ?", (job_id,))
+                    row = cursor.fetchone()
                 if row:
                     self._schedule_job(job_id, row[0], row[1], row[2], row[3])
             else:
                 # 스케줄러에서 제거
-                schedule.clear(job_id)
+                self.scheduler.clear(job_id)
                 self.scheduled_jobs = [j for j in self.scheduled_jobs if j["id"] != job_id]
                 
             status = "활성화" if enabled else "비활성화"
@@ -275,7 +290,7 @@ class AutomationEngine:
     def delete_job(self, job_id: int) -> str:
         """작업 삭제"""
         try:
-            schedule.clear(job_id)
+            self.scheduler.clear(job_id)
             
             conn = sqlite3.connect(self.scheduler_db_path)
             cursor = conn.cursor()
@@ -301,11 +316,12 @@ class AutomationEngine:
             
         try:
             self._load_jobs_from_db()
+            self.stop_event.clear()
+            self.running = True
             
             def run_scheduler():
-                self.running = True
                 while self.running and not self.stop_event.is_set():
-                    schedule.run_pending()
+                    self.scheduler.run_pending()
                     time.sleep(1)
                     
             self.scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
