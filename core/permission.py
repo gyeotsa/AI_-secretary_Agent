@@ -59,8 +59,18 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "create_directory": "filesystem_write",
     # 파일 삭제
     "delete_directory": "filesystem_delete",
+    "filesystem_tree": "filesystem_read",
+    "filesystem_search": "filesystem_read",
     # 셸 명령 실행 (가장 위험도 높은 도구)
     "run_command": "shell_execute",
+    "git_status": "filesystem_read",
+    "git_diff": "filesystem_read",
+    "git_log": "filesystem_read",
+    "git_commit": "git_commit",
+    "git_push": "git_push",
+    "git_pull": "git_push",
+    "browser_get_text": "browser",
+    "browser_screenshot": "browser",
     # 카메라/마이크
     "capture_camera": "camera",
     "listen": "microphone",

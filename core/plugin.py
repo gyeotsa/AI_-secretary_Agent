@@ -57,11 +57,12 @@ class PluginRegistry:
     def __init__(self):
         self.plugins: Dict[str, BasePlugin] = {}
         self._event_bus = get_event_bus()
+        self._loaded_directories: set[str] = set()
     
     def register_plugin(self, plugin: BasePlugin):
         """플러그인 등록"""
         if plugin.name in self.plugins:
-            raise ValueError(f"Plugin '{plugin.name}' already registered")
+            return
         plugin.on_load()
         self.plugins[plugin.name] = plugin
         # 이벤트 구독
@@ -98,23 +99,17 @@ class PluginRegistry:
                 continue
             for tool in plugin.get_tools():
                 if tool.name == tool_name:
-                    # 권한 확인
-                    try:
-                        from core.permission import get_permission_manager
-                        pm = get_permission_manager()
-                        for perm_id in tool.required_permissions:
-                            if not pm.request_permission(perm_id):
-                                return f"오류: 권한이 거부되었습니다: {perm_id}"
-                    except Exception as e:
-                        pass
-                    # 실행
+                    # 권한은 ToolExecutor가 내장/플러그인 도구 모두에 대해 한 번만 검사합니다.
                     return plugin.execute_tool(tool_name, tool_input)
         return f"오류: 툴 '{tool_name}'을 찾을 수 없습니다"
     
-    def load_plugins_from_directory(self, directory: str = "plugins"):
+    def load_plugins_from_directory(self, directory: Optional[str] = None):
         """지정된 디렉토리에서 플러그인 로드"""
-        dir_path = Path(directory)
+        dir_path = Path(directory).resolve() if directory else Path(__file__).resolve().parent.parent / "plugins"
         if not dir_path.exists():
+            return
+        directory_key = str(dir_path)
+        if directory_key in self._loaded_directories:
             return
         # __init__.py와 .py 파일 로드
         for item in dir_path.iterdir():
@@ -131,6 +126,7 @@ class PluginRegistry:
                             self.register_plugin(obj())
                 except Exception as e:
                     print(f"[Plugin] Failed to load {item.name}: {e}")
+        self._loaded_directories.add(directory_key)
 
 # Singleton
 _plugin_registry = None
