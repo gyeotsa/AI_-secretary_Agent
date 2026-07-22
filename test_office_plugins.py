@@ -1,3 +1,4 @@
+import ctypes
 import json
 
 from core.plugin import PluginRegistry
@@ -40,11 +41,12 @@ def test_pdf_plugin_creates_and_extracts_text(tmp_path, monkeypatch):
     assert "테스트" in _run(plugin,"pdf_extract_text",{"path":str(path)})
 
 
-def test_registry_exposes_office_and_windows_tools():
+def test_registry_exposes_office_and_windows_tools(monkeypatch):
     registry=PluginRegistry()
     for plugin in (ExcelPlugin(),WordPlugin(),PowerPointPlugin(),PdfPlugin(),HwpxPlugin(),WindowsControlPlugin()): registry.register_plugin(plugin)
     names={tool.name for tool in registry.get_all_tools()}
     assert {"excel_create_workbook","word_create_document","powerpoint_create_presentation","pdf_create_document","hwpx_create_document","windows_launch_app"} <= names
+    monkeypatch.setattr(WindowsControlPlugin,"_discover_executables",lambda *_args:[])
     assert WindowsControlPlugin().execute_tool("windows_launch_app",{"target":"definitely-not-installed-jarvis-app"}).startswith("오류:")
 
 
@@ -72,3 +74,25 @@ def test_windows_launch_intent_bypasses_planner_and_resolves_configured_alias():
     assert resolution.tool_name=="windows_launch_app"
     assert resolution.slots["target"]=="메모장"
     assert WindowsControlPlugin()._aliases()["메모장"]=="notepad.exe"
+
+
+def test_windows_auto_discovers_executable_without_manual_path(tmp_path, monkeypatch):
+    launcher=tmp_path/"NIKKE_GOOGLE"/"launcher"/"nikke_launcher_google.exe"
+    launcher.parent.mkdir(parents=True); launcher.write_bytes(b"MZ")
+    plugin=WindowsControlPlugin()
+    monkeypatch.setattr(WindowsControlPlugin,"_search_roots",lambda:[tmp_path])
+    monkeypatch.setattr(WindowsControlPlugin,"_aliases",lambda:{})
+    monkeypatch.setattr(WindowsControlPlugin,"_catalog",lambda:{})
+    monkeypatch.setattr(WindowsControlPlugin,"_registered_apps",lambda:{})
+    monkeypatch.setattr(WindowsControlPlugin,"_remember",lambda _paths:None)
+    assert plugin._resolve_target("nikke.exe")==str(launcher)
+
+
+def test_windows_auto_elevates_once_on_winerror_740(tmp_path, monkeypatch):
+    target=tmp_path/"admin.exe"; target.write_bytes(b"MZ")
+    plugin=WindowsControlPlugin()
+    monkeypatch.setattr(plugin,"_resolve_target",lambda _target:str(target))
+    monkeypatch.setattr("plugins.windows_control.subprocess.Popen",lambda *_a,**_k:(_ for _ in ()).throw(ctypes.WinError(740)))
+    monkeypatch.setattr(plugin,"_run_elevated",lambda executable,arguments:f"UAC:{executable}")
+    result=plugin.execute_tool("windows_launch_app",{"target":"admin.exe","elevation":"auto"})
+    assert result==f"UAC:{target}"

@@ -757,3 +757,13 @@ AI_-secretary_Agent/
 - Git commit/push/pull, 실제 SMTP 발송처럼 외부 상태를 변경하는 Tool은 검증 목적으로 실행하지 않고 승인·안전 실패 경로만 확인했다.
 - 기본 전체 테스트 `87 passed, 4 deselected`; 플러그인 집중 테스트 `29 passed, 3 deselected`; 네트워크 integration `3 passed`.
 - 다음 해야 할 일: Browser 고도화 Sprint 2를 진행하되 각 신규 Tool에 자연어 Intent와 실제 종단 검증을 동시에 추가한다.
+## 2026-07-22 Windows 앱 자동 탐색 및 UAC 상승 실행
+
+- 사용자는 앱 경로를 매번 직접 입력할 필요가 없다. Windows App Paths, PATH, 로컬 학습 카탈로그, Program Files/LocalAppData Programs, 시스템 드라이브의 비시스템 최상위 앱 폴더를 제한 깊이·파일 수로 검색한다.
+- 검색은 `MAX_SEARCH_DEPTH=4`, `MAX_SCANNED_FILES=100000`으로 제한하고 Windows/Users/복구/시스템 폴더는 제외한다. 발견 결과는 머신 로컬 `data/discovered_apps.json`에 저장하며 Git에는 커밋하지 않는다.
+- 빈 App Paths 레지스트리 값은 더 이상 검색 성공으로 표시하지 않는다. 검색어가 비어 있으면 전체 앱을 임의 반환하지 않고 오류로 종료한다.
+- `windows_launch_app`에 `elevation=auto|never|always`를 추가했다. 일반 실행에서 WinError 740이 발생하면 동일 실행을 반복하지 않고 Windows `ShellExecuteW(..., runas, ...)`로 UAC 창을 한 번 요청한다.
+- UAC Tool 결과는 앱 실행 완료가 아니라 “관리자 권한 실행 요청 성공, UAC에서 승인 필요”로 정확히 표시한다. 자비스 Permission과 Windows UAC는 계속 별도 승인이다.
+- 실제 제한 검색으로 `C:\NIKKE\...\nikke.exe`, `C:\NIKKE_GOOGLE\...\nikke.exe`, 각 launcher를 발견했다. 사용자가 로그에서 선택한 `C:\NIKKE_GOOGLE\launcher\nikke_launcher_google.exe`를 `nikke`, `nikke.exe`, `니케` 별칭에 연결했다.
+- 자동 검색, 카탈로그, NIKKE 별칭, WinError 740의 단일 UAC 전환을 회귀 테스트했고 전체 `89 passed, 4 deselected`.
+- 다음 해야 할 일: 실제 GUI에서 `니케 실행해줘`를 호출하고 자비스 Permission 승인 뒤 나타나는 Windows UAC를 사용자가 직접 승인해 런처 기동을 확인한다.

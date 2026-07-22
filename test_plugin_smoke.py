@@ -33,8 +33,9 @@ def test_system_tools_execute_directly():
     assert isinstance(plugin.execute_tool("list_plugins", {}), str)
 
 
-def test_windows_discovery_and_safe_failure_execute_directly():
+def test_windows_discovery_and_safe_failure_execute_directly(monkeypatch):
     plugin = WindowsControlPlugin()
+    monkeypatch.setattr(plugin, "_discover_executables", lambda *_args: [])
     assert isinstance(plugin.execute_tool("windows_find_apps", {"query": "notepad"}), str)
     assert plugin.execute_tool("windows_launch_app", {"target": "definitely-not-installed-jarvis-app"}).startswith("오류:")
     assert plugin.execute_tool("windows_focus_window", {"title": "definitely-not-open-jarvis-window"}).startswith("오류:")
