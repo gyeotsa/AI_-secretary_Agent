@@ -3,6 +3,7 @@ import os
 import json
 import uuid
 import threading
+from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer, QObject, pyqtSignal
 from config import Config, request_windows_permissions
@@ -19,6 +20,17 @@ from core.workspace import get_workspace_manager
 from core.permission import get_permission_manager
 from core.executor import get_executor
 from ui.main_window import JarvisMainWindow
+
+
+def get_runtime_warning() -> str:
+    expected = (Path(__file__).resolve().parent / ".venv" / "Scripts" / "python.exe").resolve()
+    actual = Path(sys.executable).resolve()
+    if expected.exists() and actual != expected:
+        return (
+            f"[Runtime 경고] 현재 Python: {actual}\n"
+            f"[Runtime 경고] 프로젝트 Python 3.12를 사용하세요: {expected}"
+        )
+    return ""
 
 
 class ConsoleReader(QObject):
@@ -204,7 +216,9 @@ class JarvisApp:
         try:
             rag_context = self.rag_manager.search_docs(text)
             print("[DEBUG] RAG context:", rag_context)
-            if "관련 문서를 찾을 수 없습니다." not in rag_context and "저장된 문서가 없습니다." not in rag_context:
+            if (isinstance(rag_context, str) and rag_context.strip()
+                    and "관련 문서를 찾을 수 없습니다." not in rag_context
+                    and "저장된 문서가 없습니다." not in rag_context):
                 # RAG 결과가 있으면 메시지에 추가
                 text = f"[참고 문서:\n{rag_context}\n\n사용자 질문: {text}"
         except Exception as e:
@@ -446,6 +460,9 @@ class JarvisApp:
         return self.app.exec()
 
 if __name__ == "__main__":
+    runtime_warning = get_runtime_warning()
+    if runtime_warning:
+        print(runtime_warning)
     # 데이터 폴더 생성
     if not os.path.exists("data"):
         os.makedirs("data")

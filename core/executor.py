@@ -49,6 +49,7 @@ class Executor:
         self.current_iteration = 0
         self._retry_count = 0  # 복구 시 재시도 횟수 추적
         self._consecutive_failures = 0  # 연속 실패 횟수 추적
+        self._total_failures = 0
 
     def initialize(self, goal: str, session_id: Optional[str] = None):
         """초기화: Goal 설정, Scratchpad 초기화, Context 빌드"""
@@ -57,12 +58,16 @@ class Executor:
         self.current_iteration = 0
         self._retry_count = 0
         self._consecutive_failures = 0
+        self._total_failures = 0
         self.scratchpad.reset()
         self.scratchpad.set_goal(goal)
         print(f"[Executor] 초기화 완료: Goal='{goal}'")
 
     def execute_goal(self, goal: str, session_id: Optional[str] = None) -> str:
         """메인 메서드: Goal을 받아서 전체 실행 흐름을 관리"""
+        unsupported = self._unsupported_capability_message(goal)
+        if unsupported:
+            return unsupported
         self.initialize(goal, session_id)
 
         # 1. 초기 Planning
@@ -125,6 +130,7 @@ class Executor:
                 verified = self.verify_execution(task, tool_name, tool_input, result)
                 if not verified:
                     self._consecutive_failures += 1
+                    self._total_failures += 1
                     print(f"[Executor] 실행 결과 검증 실패! 복구 시도... (연속 실패: {self._consecutive_failures})")
                     recover_result = self.recover(task, tool_name, tool_input, result)
                     if recover_result is not None:
@@ -137,7 +143,7 @@ class Executor:
                         self.scratchpad.add_observation(tool_name, tool_input, result, False)
                         self.scratchpad.fail_task(task.id, result)
                         self.reflect(task, tool_name, result, False)
-                        return True
+                        return self._total_failures < 3
 
                 # 8. Observation 처리
                 self.process_observation(task, tool_name, tool_input, result)
@@ -427,10 +433,22 @@ class Executor:
         
         if recovery_result.success:
             print(f"[Executor] 복구 성공! {recovery_result.message}")
-            return None
-        else:
-            print(f"[Executor] 복구 실패... {recovery_result.message}")
             return recovery_result.result
+        print(f"[Executor] 복구 실패... {recovery_result.message}")
+        return None
+
+    @staticmethod
+    def _unsupported_capability_message(goal: str) -> Optional[str]:
+        normalized = goal.lower()
+        mail_account = any(word in normalized for word in ("gmail", "지메일", "구글 메일"))
+        connection = any(word in normalized for word in ("연결", "연동", "oauth", "로그인", "인증"))
+        if mail_account and connection:
+            return (
+                "현재 Gmail OAuth 계정 연결 기능은 아직 구현되어 있지 않습니다, 보스. "
+                "지금 제공되는 Mail 기능은 .env에 설정한 SMTP 계정으로 초안을 만들거나 메일을 전송하는 방식입니다. "
+                "Google OAuth 클라이언트와 토큰 저장 기능을 구현하기 전에는 Gmail 연결을 진행했다고 보고하지 않겠습니다."
+            )
+        return None
 
     def finalize(self) -> str:
         """최종 종료 처리: 최종 답변 생성"""

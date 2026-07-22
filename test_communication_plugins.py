@@ -25,6 +25,17 @@ def test_mail_draft_uses_configured_sender(tmp_path, monkeypatch):
     assert b"receiver@example.com" in target.read_bytes()
 
 
+def test_mail_draft_does_not_require_smtp_account(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.Config.API_CONFIG.ALLOWED_PATHS", [str(tmp_path)])
+    monkeypatch.delenv("MAIL_FROM", raising=False)
+    monkeypatch.delenv("MAIL_SMTP_USERNAME", raising=False)
+    target = tmp_path / "offline-draft.eml"
+    result = MailPlugin().execute_tool("mail_create_draft", {
+        "to": "receiver@example.com", "subject": "오프라인 초안", "body": "본문", "path": str(target),
+    })
+    assert result.startswith("메일 초안 저장 성공:")
+
+
 def test_mail_send_requires_environment_credentials(monkeypatch):
     monkeypatch.setenv("MAIL_FROM", "sender@example.com")
     monkeypatch.delenv("MAIL_SMTP_HOST", raising=False)

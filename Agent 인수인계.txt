@@ -571,3 +571,18 @@ AI_-secretary_Agent/
 1. GUI를 사용자가 직접 보는 일반 Windows 세션에서 입력·권한창·응답·음성 파형의 시각적 최종 확인.
 2. Observer/Scheduler/Automation을 실제 운영 프롬프트로 수 시간 이상 soak test하고 메모리·스레드·DB 증가량 기록.
 3. Mail SMTP 실제 계정 또는 Google/Outlook OAuth 공급자를 선택한 뒤 실제 전송·조회·캘린더 동기화 구현 및 승인 테스트.
+
+## 2026-07-22 Python 3.12 인터프리터 통일 및 Gmail 디버깅 로그 수정
+
+- 사용자가 첨부한 로그는 `C:\Users\ice31\AppData\Local\Programs\Python\Python310\python.exe`로 실행되어 프로젝트 `.venv`와 Playwright 설치 상태가 분리된 것이 첫 번째 원인이었음.
+- 로컬 JetBrains `.idea` 실행 구성의 `main`/`main_qt`와 프로젝트 SDK, TRAE/VS Code `.vscode` 인터프리터·디버그 구성을 모두 `$PROJECT_DIR$/.venv/Scripts/python.exe`(Python 3.12.13)로 변경함. 두 폴더는 기존 Git ignore 정책에 따라 커밋하지 않는 로컬 설정임.
+- `main_qt.py`에 잘못된 인터프리터 실행 시 실제·권장 Python 경로를 출력하는 runtime 경고를 추가함.
+- `.venv`에서 requirements 전체, pytest, Playwright 1.61 및 Chromium 설치 상태를 재동기화하고 `pip check` 통과.
+- 기본 자동 테스트 42개 통과, 실제 외부 Playwright integration 테스트 2개 통과.
+- Gmail OAuth 연결은 구현되지 않았는데도 Executor가 브라우저·SMTP·가상 도구를 반복 호출하며 완료했다고 보고하던 문제를 수정함. Gmail 연결 요청은 즉시 미지원 상태와 현재 SMTP 범위를 안내함.
+- `execute_multi_agent`와 `get_task_history`를 Action Reasoner의 자동 호출 목록에서 제외해 중첩 에이전트 루프와 가상 도구 생성을 방지함.
+- Recovery 성공/실패 반환값이 반대로 해석되어 실패 fallback을 성공 처리하던 핵심 버그를 수정하고, 복구 불가 실패 횟수에 종료 상한을 적용함.
+- Multi-Agent의 dict형 `tool_input` 처리, 등록 도구 검증, 오류 결과 실패 처리를 보강함.
+- 빈 RAG 리스트 `[]`가 사용자 질문에 참고 문서로 삽입되던 문제를 수정함.
+- 로컬 메일 초안은 SMTP 발신자 설정 없이도 생성할 수 있게 하고 실제 SMTP 전송에만 계정 설정을 요구함.
+- `data/permissions.json`은 사용자별 런타임 권한 상태이므로 Git ignore에 추가함.

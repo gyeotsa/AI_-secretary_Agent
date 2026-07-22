@@ -6,7 +6,7 @@ from datetime import datetime
 from core.scratchpad import get_scratchpad, Scratchpad
 from core.context import get_context_manager
 from core.llm import get_llm_client
-from core.tools import get_tool_executor
+from core.tools import get_tool_executor, get_tool_names
 from core.memory import build_memory_context
 
 
@@ -138,8 +138,15 @@ class MultiAgentOrchestrator:
                     if step.get("tool"):
                         # 도구 실행
                         tool_name = step["tool"]
-                        tool_input = json.loads(step.get("tool_input", "{}"))
+                        if tool_name not in get_tool_names():
+                            raise ValueError(f"등록되지 않은 도구입니다: {tool_name}")
+                        raw_input = step.get("tool_input", {})
+                        tool_input = json.loads(raw_input) if isinstance(raw_input, str) else raw_input
+                        if not isinstance(tool_input, dict):
+                            raise ValueError("tool_input은 JSON 객체여야 합니다.")
                         result = self.tool_executor.execute_tool(tool_name, tool_input)
+                        if result.startswith("오류:"):
+                            raise RuntimeError(result)
                         results.append(f"단계 {step['id']}: {result}")
                         
                         # 스크래치패드에 관찰 기록

@@ -1993,7 +1993,7 @@ def get_tools_schema() -> list[dict]:
 # - speak_text: main_qt.py가 최종 답변을 자동으로 TTS 재생하므로, 루프 중 모델이
 #   이 도구를 스스로 호출하면 중복 발화/무한 호출 루프에 빠질 수 있습니다.
 # - listen: 음성 입력을 기다리며 블로킹되므로 자율 루프 안에서 호출되면 프로그램이 멈춥니다.
-AUTO_LOOP_EXCLUDED_TOOLS = ["speak_text", "listen"]
+AUTO_LOOP_EXCLUDED_TOOLS = ["speak_text", "listen", "execute_multi_agent", "get_task_history"]
 
 
 def get_tools_description_text(exclude: Optional[list[str]] = None) -> str:

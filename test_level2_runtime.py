@@ -6,7 +6,8 @@ from pathlib import Path
 
 from core.harness import SafetyLayer
 from core.plugin import get_plugin_registry
-from core.tools import get_tool_executor, get_tools_schema
+from core.executor import Executor
+from core.tools import AUTO_LOOP_EXCLUDED_TOOLS, get_tool_executor, get_tools_schema
 
 
 class SafetyLayerTests(unittest.TestCase):
@@ -35,6 +36,15 @@ class ToolRegistryTests(unittest.TestCase):
             result = get_tool_executor().execute_tool("write_file", {"path": str(target), "content": "x"})
             self.assertTrue(result.startswith("오류: 권한이 거부되었습니다:"))
             self.assertFalse(target.exists())
+
+    def test_nested_multi_agent_tools_are_not_offered_to_reasoner(self):
+        self.assertIn("execute_multi_agent", AUTO_LOOP_EXCLUDED_TOOLS)
+        self.assertIn("get_task_history", AUTO_LOOP_EXCLUDED_TOOLS)
+
+    def test_unimplemented_gmail_oauth_connection_fails_fast(self):
+        message = Executor._unsupported_capability_message("내 Gmail을 연결해줘")
+        self.assertIsNotNone(message)
+        self.assertIn("아직 구현되어 있지 않습니다", message)
 
 
 if __name__ == "__main__":

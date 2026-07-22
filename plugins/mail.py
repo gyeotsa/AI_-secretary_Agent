@@ -33,12 +33,13 @@ class MailPlugin(BasePlugin):
         ]
 
     @staticmethod
-    def _message(data: Dict[str, Any]) -> EmailMessage:
+    def _message(data: Dict[str, Any], require_sender: bool = False) -> EmailMessage:
         sender = os.getenv("MAIL_FROM") or os.getenv("MAIL_SMTP_USERNAME")
-        if not sender:
+        if require_sender and not sender:
             raise ValueError("MAIL_FROM 또는 MAIL_SMTP_USERNAME 설정이 필요합니다.")
         message = EmailMessage()
-        message["From"] = sender
+        if sender:
+            message["From"] = sender
         message["To"] = str(data["to"])
         message["Subject"] = str(data["subject"])
         message.set_content(str(data["body"]))
@@ -46,8 +47,8 @@ class MailPlugin(BasePlugin):
 
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
         try:
-            message = self._message(tool_input)
             if tool_name == "mail_create_draft":
+                message = self._message(tool_input)
                 path = Path(str(tool_input["path"])).expanduser().resolve()
                 ok, error = SafetyLayer.validate_path(str(path))
                 if not ok:
@@ -56,6 +57,7 @@ class MailPlugin(BasePlugin):
                 path.write_bytes(message.as_bytes())
                 return f"메일 초안 저장 성공: {path}"
             if tool_name == "mail_send_smtp":
+                message = self._message(tool_input, require_sender=True)
                 host = os.getenv("MAIL_SMTP_HOST")
                 username = os.getenv("MAIL_SMTP_USERNAME")
                 password = os.getenv("MAIL_SMTP_PASSWORD")

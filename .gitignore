@@ -5,6 +5,7 @@
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/permissions.json
 
 # Python
 __pycache__/
