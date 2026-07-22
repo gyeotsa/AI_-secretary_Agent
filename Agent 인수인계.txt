@@ -547,3 +547,14 @@ AI_-secretary_Agent/
 - 마이크 기본 장치 녹음, Whisper STT, 카메라 1프레임 캡처가 실제 성공함. STT 시작 로그의 이모지가 cp949 콘솔에서 실행을 중단시키던 문제를 수정함.
 - 이 PC에서는 pyttsx3의 SAPI COM 클래스가 등록되지 않아 실패했으므로, 고정된 PowerShell 명령과 환경변수로 .NET `System.Speech`를 호출하는 Windows fallback을 추가함. 실제 한국어 TTS 재생 성공.
 - 장치 테스트 중 녹음·카메라 프레임은 저장하지 않았음.
+
+## 2026-07-22 Observer·Scheduler·Mail·Calendar 및 테스트 안전화
+
+- Observer가 실제 임시 파일 변경 이벤트를 받고 정상 종료하는 경로를 검증함.
+- Scheduler/Automation의 전역 `schedule` 상태 공유를 인스턴스별 Scheduler로 분리하고, stop event 초기화·중복 작업 로드·DB 연결 누수·스케줄 입력 검증을 보강함.
+- 누락된 `schedule>=1.2.2` 의존성을 추가·설치하고 자동화 엔진 시작 → 중지 → 재시작 → 중지를 검증함.
+- import 즉시 장치·네트워크를 실행하던 기존 진단 스크립트는 기본 pytest 수집에서 제외함. 안전한 자동 테스트 파일을 `pytest.ini`에 명시하고 네트워크 테스트는 `integration` marker로 분리함.
+- Mail 플러그인 추가: 허용 경로 내 RFC 822 초안 저장, 환경변수 자격증명 기반 SMTP SSL 전송. 비밀번호를 Tool 인자로 받지 않으며 실제 전송은 `mail_send` 승인이 필요함.
+- Calendar 플러그인 추가: 허용 경로 내 표준 ICS 이벤트 생성, ISO 8601 시간 검증 및 종료 시간 검증.
+- 전체 기본 자동 테스트 38개 통과, 외부 네트워크 통합 테스트 2개는 기본 실행에서 제외됨. `compileall` 통과.
+- 실제 Mail/Calendar 계정 연동은 자격증명/OAuth가 없으므로 수행하지 않음. 현재 Calendar는 로컬 ICS 방식이며 Google/Outlook 양방향 동기화는 후속 OAuth 범위임.
