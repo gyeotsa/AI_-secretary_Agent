@@ -470,6 +470,8 @@ AI_-secretary_Agent/
   - 커밋 해시: `3cdf7e0`
 - 10단계: `[Feat] 10단계 역할 기반 하이브리드 LLM 라우팅 구현`
   - 커밋 해시: `9efc895`
+- Browser 실환경·보안 검증: `[Fix] 브라우저 플러그인 SSRF 방어 및 Chromium 검증`
+  - 커밋 해시: `2ae6f19`
 
 ### 검증 결과
 
@@ -505,12 +507,25 @@ AI_-secretary_Agent/
 - `HybridLLMClient.get_routing_status()`에서 provider별 성공/실패/fallback 횟수와 마지막 지연시간 확인 가능
 - 현재 실제 Anthropic API 키가 없으므로 Claude 성공 경로는 mock 회귀 테스트만 완료됨
 
+### Browser 플러그인 실환경·보안 검증
+
+- `.venv`에 `playwright 1.61.0` 설치 및 Chromium 149 바이너리 설치 완료
+- 공개 페이지 `https://example.com/` 본문 추출과 전체 페이지 스크린샷 성공
+- URL은 http/https 및 80/443 포트만 허용하고 URL 자격 증명을 차단
+- localhost, loopback, 사설 IP, link-local metadata 주소 차단
+- DNS 이름이 사설 IP로 해석되는 경우 차단
+- redirect와 모든 HTTP(S) subresource를 재검증해 사설망 우회 차단
+- screenshot은 브라우저 실행 전에 저장 경로를 검증
+- 중앙 ToolExecutor에서 screenshot 실행 시 `browser`와 `filesystem_write` 권한 모두 확인
+- browser 단위·보안 테스트 12개와 Chromium integration 테스트 2개 통과
+- 기존 하이브리드·Level 2 안전성·RAG 테스트 12개도 재통과
+- Codex 인앱 Browser 연결은 프로젝트 외부 런타임이 `C:\Users\ice31\AppData`를 읽지 못하는 EPERM으로 실패했으나, 프로젝트 Playwright Chromium은 샌드박스 밖 종단 테스트 성공
+
 ### 다음 해야 할 일
 
-1. **Playwright/Chromium 설치 후 8단계 browser 플러그인 실동작 검증**
-2. browser 도구의 public URL 제한, 사설망/localhost 차단, screenshot 경로 권한을 종단 테스트
+1. **실제 Ollama와 GUI 기본 대화·Tool 호출 종단 테스트**
+2. 마이크·카메라·TTS는 장치 권한과 사용자 환경을 확인하며 개별 종단 테스트
 3. 실제 Anthropic API 키가 준비되면 Reasoner 성공 경로의 품질·비용·지연시간 비교
-4. 실제 Ollama, GUI, 마이크·카메라·TTS 종단 검증
-5. mail/calendar OAuth 토큰 저장·권한·계정 선택 정책 설계
-6. 위 작업을 마칠 때 이 인수인계서에 결정·변경·커밋 해시·다음 작업을 다시 기록
+4. mail/calendar OAuth 토큰 저장·권한·계정 선택 정책 설계
+5. 위 작업을 마칠 때 이 인수인계서에 결정·변경·커밋 해시·다음 작업을 다시 기록
 
