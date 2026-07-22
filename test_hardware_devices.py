@@ -7,8 +7,10 @@ import core.hardware as hardware
 import core.multimodal as multimodal
 
 
-def test_default_whisper_model_is_medium():
-    assert hardware.Config.WHISPER_MODEL == "medium"
+def test_default_stt_uses_faster_whisper_large_v3():
+    assert hardware.Config.STT_ENGINE == "faster-whisper"
+    assert hardware.Config.WHISPER_MODEL == "large-v3"
+    assert hardware.Config.WHISPER_COMPUTE_TYPE == "int8_float16"
 
 
 def test_microphone_command_end_defaults():
@@ -30,9 +32,18 @@ def test_only_exact_first_wake_word_opens_voice_command():
 def test_whisper_prompt_uses_registered_app_aliases(monkeypatch):
     manager = _bare_hardware_manager()
     monkeypatch.setattr(manager, "_speech_vocabulary", lambda: ["디스코드", "디코"])
-    prompt = manager._whisper_prompt()
-    assert "디스코드" in prompt
-    assert "디코" in prompt
+    hotwords = manager._whisper_hotwords()
+    assert "디스코드" in hotwords
+    assert "디코" in hotwords
+
+
+def test_whisper_hotwords_stay_within_decoder_budget(monkeypatch):
+    monkeypatch.setattr(
+        hardware.HardwareManager,
+        "_speech_vocabulary",
+        staticmethod(lambda: [f"긴어휘{index}" for index in range(200)]),
+    )
+    assert len(hardware.HardwareManager._whisper_hotwords(120)) <= 120
 
 
 def test_tts_output_suspends_microphone_and_adds_cooldown():
@@ -56,6 +67,7 @@ def _bare_hardware_manager():
     manager._stream_error = ""
     manager._output_active = threading.Event()
     manager._ignore_input_until = 0.0
+    manager.stt_engine = "openai-whisper"
     manager.audio_processor = None
     manager.on_text_detected = None
     return manager
@@ -137,6 +149,37 @@ def test_whisper_uses_deterministic_korean_command_options(monkeypatch):
     assert captured["beam_size"] == 5
     assert captured["condition_on_previous_text"] is False
     assert captured["initial_prompt"] == "동적 어휘"
+
+
+def test_faster_whisper_rejects_low_confidence_hallucination():
+    manager = _bare_hardware_manager()
+    manager.stt_engine = "faster-whisper"
+    result = {
+        "text": "감사합니다",
+        "segments": [{"avg_logprob": -1.4, "no_speech_prob": 0.8, "compression_ratio": 1.0}],
+    }
+    assert manager._trusted_transcription_text(result) == ""
+
+
+def test_faster_whisper_accepts_confident_command():
+    manager = _bare_hardware_manager()
+    manager.stt_engine = "faster-whisper"
+    result = {
+        "text": "자비스 디코 종료해",
+        "segments": [{"avg_logprob": -0.2, "no_speech_prob": 0.05, "compression_ratio": 1.1}],
+    }
+    assert manager._trusted_transcription_text(result) == "자비스 디코 종료해"
+
+
+def test_hangul_phoneme_similarity_prefers_kyeo_over_kkeo():
+    heard = hardware.HardwareManager._hangul_jamo(
+        hardware.HardwareManager._speech_stem("케어")
+    )
+    launch = hardware.HardwareManager._hangul_jamo("켜")
+    close = hardware.HardwareManager._hangul_jamo("꺼")
+    assert hardware.HardwareManager._edit_similarity(heard, launch) > (
+        hardware.HardwareManager._edit_similarity(heard, close)
+    )
 
 
 def test_continuous_listener_submits_after_silence(monkeypatch):

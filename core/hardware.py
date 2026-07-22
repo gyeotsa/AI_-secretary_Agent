@@ -12,13 +12,24 @@ from config import Config
 
 try:
     import sounddevice as sd
-    import whisper
     import librosa
     import torch
     from scipy.signal import resample_poly
     SOUND_AVAILABLE = True
 except ImportError:
     SOUND_AVAILABLE = False
+
+try:
+    from faster_whisper import WhisperModel as FasterWhisperModel
+    FASTER_WHISPER_AVAILABLE = True
+except ImportError:
+    FASTER_WHISPER_AVAILABLE = False
+
+try:
+    import whisper
+    OPENAI_WHISPER_AVAILABLE = True
+except ImportError:
+    OPENAI_WHISPER_AVAILABLE = False
 
 
 class HardwareManager:
@@ -58,9 +69,31 @@ class HardwareManager:
                 self.device = "cpu"
                 print("[CPU] GPU를 사용할 수 없어 CPU를 사용합니다.")
             
+            self.stt_engine = Config.STT_ENGINE
             self.whisper_model_name = Config.WHISPER_MODEL
-            print(f"[STT] Whisper 모델 로딩: {self.whisper_model_name}")
-            self.whisper_model = whisper.load_model(self.whisper_model_name, device=self.device)
+            self.whisper_model = self._load_stt_model()
+
+    def _load_stt_model(self):
+        if self.stt_engine == "faster-whisper" and FASTER_WHISPER_AVAILABLE:
+            compute_type = Config.WHISPER_COMPUTE_TYPE if self.device == "cuda" else "int8"
+            print(
+                f"[STT] faster-whisper 모델 로딩: {self.whisper_model_name} "
+                f"(device={self.device}, compute={compute_type})"
+            )
+            try:
+                return FasterWhisperModel(
+                    self.whisper_model_name,
+                    device=self.device,
+                    compute_type=compute_type,
+                )
+            except Exception as exc:
+                print(f"[STT] faster-whisper 초기화 실패, OpenAI Whisper fallback: {exc}")
+        if not OPENAI_WHISPER_AVAILABLE:
+            raise RuntimeError("faster-whisper와 openai-whisper를 모두 초기화할 수 없습니다.")
+        self.stt_engine = "openai-whisper"
+        self.whisper_model_name = Config.WHISPER_FALLBACK_MODEL
+        print(f"[STT] OpenAI Whisper fallback 로딩: {self.whisper_model_name}")
+        return whisper.load_model(self.whisper_model_name, device=self.device)
 
     def set_output_active(self, active: bool, cooldown: float = 0.5) -> None:
         """TTS 출력이 마이크 명령으로 되먹임되지 않도록 입력 처리를 잠시 멈춥니다."""
@@ -110,13 +143,113 @@ class HardwareManager:
         return list(dict.fromkeys(vocabulary))[:100]
 
     def _whisper_prompt(self) -> str:
-        vocabulary = self._speech_vocabulary()
-        if not vocabulary:
-            return Config.WHISPER_INITIAL_PROMPT
-        return (
-            f"{Config.WHISPER_INITIAL_PROMPT} "
-            f"프로그램 이름과 사용자 별칭: {', '.join(vocabulary)}."
+        return Config.WHISPER_INITIAL_PROMPT[:300]
+
+    @classmethod
+    def _whisper_hotwords(cls, max_characters: int = 240) -> str:
+        selected = []
+        length = 0
+        for word in cls._speech_vocabulary():
+            extra = len(word) + (2 if selected else 0)
+            if length + extra > max_characters:
+                break
+            selected.append(word)
+            length += extra
+        return ", ".join(selected)
+
+    @staticmethod
+    def _hangul_jamo(text: str) -> str:
+        result = []
+        for char in re.sub(r"[^0-9a-zA-Z가-힣]", "", text.casefold()):
+            code = ord(char) - 0xAC00
+            if 0 <= code < 11172:
+                result.append(chr(0x1100 + code // 588))
+                result.append(chr(0x1161 + (code % 588) // 28))
+                tail = code % 28
+                if tail:
+                    result.append(chr(0x11A7 + tail))
+            else:
+                result.append(char)
+        return "".join(result)
+
+    @staticmethod
+    def _edit_similarity(left: str, right: str) -> float:
+        if not left or not right:
+            return 0.0
+        previous = list(range(len(right) + 1))
+        for row, left_char in enumerate(left, 1):
+            current = [row]
+            for column, right_char in enumerate(right, 1):
+                current.append(min(
+                    current[-1] + 1,
+                    previous[column] + 1,
+                    previous[column - 1] + (left_char != right_char),
+                ))
+            previous = current
+        return 1.0 - previous[-1] / max(len(left), len(right))
+
+    @staticmethod
+    def _speech_stem(text: str) -> str:
+        normalized = re.sub(r"[^0-9a-zA-Z가-힣]", "", text.casefold())
+        for ending in ("해주세요", "해줘요", "해요", "세요", "줘요", "주세요", "요", "어요", "아요"):
+            if normalized.endswith(ending) and len(normalized) > len(ending):
+                return normalized[:-len(ending)]
+        if normalized.endswith("어") and len(normalized) > 1:
+            return normalized[:-1]
+        return normalized
+
+    @classmethod
+    def _correct_registry_command(cls, command: str) -> str:
+        """등록된 별칭과 동사 중 음소상 유일하게 가까운 명령만 복원합니다."""
+        normalized = command.casefold()
+        try:
+            from core.plugin import get_plugin_registry
+            registry = get_plugin_registry()
+            intents = [
+                intent for _plugin, intent in registry.get_all_intents()
+                if any(slot.name == "target" for slot in intent.slots)
+            ]
+        except Exception:
+            return command
+        if any(
+            hint.casefold() in normalized
+            for intent in intents for hint in intent.execution_hints
+        ):
+            return command
+        aliases = []
+        data_dir = Path(__file__).resolve().parent.parent / "data"
+        for name in ("app_aliases.json", "user_app_aliases.json"):
+            try:
+                aliases.extend(json.loads((data_dir / name).read_text(encoding="utf-8")).keys())
+            except (OSError, ValueError, TypeError):
+                pass
+        alias = next(
+            (item for item in sorted(set(aliases), key=len, reverse=True) if item.casefold() in normalized),
+            "",
         )
+        if not alias:
+            return command
+        remainder = normalized.split(alias.casefold(), 1)[1]
+        spoken = cls._hangul_jamo(cls._speech_stem(remainder))
+        scored = []
+        for intent in intents:
+            for hint in dict.fromkeys([*intent.execution_hints, *intent.utterance_hints]):
+                candidate = cls._hangul_jamo(cls._speech_stem(hint))
+                score = cls._edit_similarity(spoken, candidate)
+                scored.append((score, hint))
+        scored.sort(reverse=True)
+        if not scored:
+            return command
+        best_score, best_hint = scored[0]
+        second_score = scored[1][0] if len(scored) > 1 else 0.0
+        if best_score < 0.45 or best_score - second_score < 0.08:
+            return command
+        corrected = f"{alias} {best_hint}"
+        print(
+            f"[STT] Registry 음소 보정: {command!r} → {corrected!r} "
+            f"(score={best_score:.2f})"
+        )
+        return corrected
 
     @staticmethod
     def _normalize_audio(audio: np.ndarray) -> np.ndarray:
@@ -145,8 +278,45 @@ class HardwareManager:
         return audio[:min(len(audio), active_end + int(sample_rate * 0.2))]
 
     def _transcribe_audio(self, audio: np.ndarray) -> dict:
+        normalized = self._normalize_audio(audio)
+        if self.stt_engine == "faster-whisper":
+            hotwords = self._whisper_hotwords()
+            segments, info = self.whisper_model.transcribe(
+                normalized,
+                language="ko",
+                task="transcribe",
+                beam_size=5,
+                temperature=0,
+                condition_on_previous_text=False,
+                initial_prompt=self._whisper_prompt(),
+                hotwords=hotwords or None,
+                vad_filter=True,
+                vad_parameters={
+                    "threshold": 0.5,
+                    "min_speech_duration_ms": 200,
+                    "min_silence_duration_ms": 400,
+                    "speech_pad_ms": 150,
+                },
+                word_timestamps=True,
+                hallucination_silence_threshold=1.0,
+            )
+            segment_list = list(segments)
+            text = " ".join(segment.text.strip() for segment in segment_list if segment.text.strip()).strip()
+            return {
+                "text": text,
+                "language": getattr(info, "language", "ko"),
+                "language_probability": float(getattr(info, "language_probability", 0.0)),
+                "segments": [
+                    {
+                        "avg_logprob": float(segment.avg_logprob),
+                        "no_speech_prob": float(segment.no_speech_prob),
+                        "compression_ratio": float(segment.compression_ratio),
+                    }
+                    for segment in segment_list
+                ],
+            }
         return self.whisper_model.transcribe(
-            self._normalize_audio(audio),
+            normalized,
             language="ko",
             task="transcribe",
             temperature=0,
@@ -155,6 +325,25 @@ class HardwareManager:
             initial_prompt=self._whisper_prompt(),
             suppress_blank=True,
         )
+
+    def _trusted_transcription_text(self, result: dict) -> str:
+        text = str(result.get("text", "")).strip()
+        if not text or self.stt_engine != "faster-whisper":
+            return text
+        segments = result.get("segments") or []
+        if not segments:
+            return ""
+        avg_logprob = sum(item["avg_logprob"] for item in segments) / len(segments)
+        max_no_speech = max(item["no_speech_prob"] for item in segments)
+        max_compression = max(item["compression_ratio"] for item in segments)
+        if avg_logprob < -1.0 or max_no_speech > 0.65 or max_compression > 2.4:
+            print(
+                "[STT] 낮은 신뢰도 결과 폐기: "
+                f"logprob={avg_logprob:.2f}, no_speech={max_no_speech:.2f}, "
+                f"compression={max_compression:.2f}, text={text!r}"
+            )
+            return ""
+        return text
 
     @staticmethod
     def list_input_devices():
@@ -266,7 +455,9 @@ class HardwareManager:
                                 last_wake_check = now
                                 if sum(wake_voice_chunks) < 2:
                                     continue
-                                text = self._transcribe_audio(wake_buffer)["text"].strip().lower()
+                                text = self._trusted_transcription_text(
+                                    self._transcribe_audio(wake_buffer)
+                                ).lower()
                                 wake_command = self.extract_wake_command(text)
                                 if wake_command is not None:
                                     print(f"[웨이크워드] 감지: {text}")
@@ -276,6 +467,7 @@ class HardwareManager:
                                             break
                                         trailing_silence += 1
                                     if wake_command and trailing_silence >= 5:
+                                        wake_command = self._correct_registry_command(wake_command)
                                         print(f"[전송] 호출어 포함 음성 명령: {wake_command}")
                                         if self.on_text_detected:
                                             self.on_text_detected(wake_command)
@@ -322,11 +514,14 @@ class HardwareManager:
                                     full_utterance = np.concatenate((command_wake_audio, command_buffer))
                                     full_utterance = self._trim_trailing_silence(full_utterance)
                                     transcription = (
-                                        self._transcribe_audio(full_utterance)["text"].strip()
-                                        if full_utterance.size else ""
+                                        self._trusted_transcription_text(
+                                            self._transcribe_audio(full_utterance)
+                                        ) if full_utterance.size else ""
                                     )
                                     recovered = self.extract_wake_command(transcription)
                                     text = recovered if recovered is not None else command_prefix
+                                    if text:
+                                        text = self._correct_registry_command(text)
                                 if text and self.on_text_detected:
                                     print(f"[전송] 음성 인식 결과: {text}")
                                     self.on_text_detected(text)
@@ -385,7 +580,7 @@ class HardwareManager:
                     sd.wait()
                     audio = self._to_16khz(recording[:, 0], native_rate)
                     result = self._transcribe_audio(audio)
-                    text = result["text"].strip().lower()
+                    text = self._trusted_transcription_text(result).lower()
                     
                     if self.extract_wake_command(text) is not None:
                         print(f"\n[웨이크워드] 감지! '{text}'")

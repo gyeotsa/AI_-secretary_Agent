@@ -15,7 +15,8 @@ def test_configured_gpu_is_used_by_torch_whisper_and_rag():
     hardware = HardwareManager()
     assert hardware.device == "cuda"
     assert hardware.whisper_model_name == Config.WHISPER_MODEL
-    assert next(hardware.whisper_model.parameters()).device.type == "cuda"
+    assert hardware.stt_engine == Config.STT_ENGINE
+    assert hardware.whisper_model.model.device == "cuda"
 
     rag = VectorRAGManager()
     assert rag.use_vector_rag

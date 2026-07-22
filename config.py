@@ -69,7 +69,14 @@ class APIConfig:
     )
     RAG_DEVICE: str = field(default_factory=lambda: os.getenv("RAG_DEVICE", "auto").lower())
     WHISPER_DEVICE: str = field(default_factory=lambda: os.getenv("WHISPER_DEVICE", "auto").lower())
-    WHISPER_MODEL: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "medium").lower())
+    STT_ENGINE: str = field(default_factory=lambda: os.getenv("STT_ENGINE", "faster-whisper").lower())
+    WHISPER_MODEL: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "large-v3").lower())
+    WHISPER_FALLBACK_MODEL: str = field(
+        default_factory=lambda: os.getenv("WHISPER_FALLBACK_MODEL", "medium").lower()
+    )
+    WHISPER_COMPUTE_TYPE: str = field(
+        default_factory=lambda: os.getenv("WHISPER_COMPUTE_TYPE", "int8_float16").lower()
+    )
     WAKE_WORD: str = field(default_factory=lambda: os.getenv("WAKE_WORD", "자비스").strip().lower())
     WHISPER_INITIAL_PROMPT: str = field(default_factory=lambda: os.getenv(
         "WHISPER_INITIAL_PROMPT",
@@ -171,8 +178,23 @@ class Config:
 
     @classmethod
     @property
+    def STT_ENGINE(cls):
+        return cls.API_CONFIG.STT_ENGINE
+
+    @classmethod
+    @property
     def WHISPER_MODEL(cls):
         return cls.API_CONFIG.WHISPER_MODEL
+
+    @classmethod
+    @property
+    def WHISPER_FALLBACK_MODEL(cls):
+        return cls.API_CONFIG.WHISPER_FALLBACK_MODEL
+
+    @classmethod
+    @property
+    def WHISPER_COMPUTE_TYPE(cls):
+        return cls.API_CONFIG.WHISPER_COMPUTE_TYPE
 
     @classmethod
     @property
