@@ -1,6 +1,6 @@
 """Plugin Registry의 선언형 intent/slot 계약을 실행하는 범용 라우터."""
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from core.plugin import BasePlugin, IntentSchema, PluginRegistry
 
@@ -13,6 +13,8 @@ class IntentResolution:
     slots: Dict[str, Any] = field(default_factory=dict)
     question: str = ""
     capability_response: str = ""
+    explicit: bool = False
+    execution_requested: bool = False
 
     @property
     def ready(self) -> bool:
@@ -55,9 +57,43 @@ class IntentRouter:
         is_execution = any(hint.casefold() in normalized for hint in intent.execution_hints)
         is_capability = any(hint in normalized for hint in self.CAPABILITY_HINTS)
         if not intent_name and is_capability and not is_execution:
-            return IntentResolution(True, intent.name, capability_response=intent.capability_response)
+            return IntentResolution(
+                True, intent.name, capability_response=intent.capability_response,
+                explicit=not bool(intent_name), execution_requested=False,
+            )
 
         slots = plugin.extract_slots(intent.name, text, current_slots or {})
         missing = [slot for slot in intent.slots if slot.required and not slots.get(slot.name)]
         question = missing[0].question if missing else ""
-        return IntentResolution(True, intent.name, intent.tool_name, slots, question)
+        return IntentResolution(
+            True, intent.name, intent.tool_name, slots, question,
+            explicit=not bool(intent_name), execution_requested=is_execution,
+        )
+
+    def resolve_from_history(self, text: str, history: List[Dict[str, str]]) -> IntentResolution:
+        """Recover a follow-up's domain and slots from recent dialogue contracts."""
+        selected_index = -1
+        selected = None
+        for index in range(len(history) - 1, -1, -1):
+            candidate = self._find(str(history[index].get("content", "")))
+            if candidate:
+                selected_index, selected = index, candidate
+                break
+        if not selected:
+            return IntentResolution()
+        plugin, intent = selected
+        slots: Dict[str, Any] = {}
+        for message in history[selected_index:]:
+            slots = plugin.extract_slots(intent.name, str(message.get("content", "")), slots)
+        return self.resolve(text, intent.name, slots)
+
+    @staticmethod
+    def is_contextual_follow_up(text: str) -> bool:
+        """Return whether the utterance explicitly asks to repeat/modify recent work.
+
+        These are dialogue operators, not domain keywords.  The concrete intent and
+        slots still come exclusively from Plugin Registry contracts.
+        """
+        normalized = text.casefold()
+        markers = ("다시", "같은", "그걸", "그거", "이번에는", "이름으로", "바꿔")
+        return any(marker in normalized for marker in markers)

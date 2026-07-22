@@ -719,3 +719,11 @@ AI_-secretary_Agent/
 - 리팩터링 전에 생성된 `ee5b7f3f` 같은 intent 상태 없는 기존 pending 작업도 원래 요청을 Registry로 다시 해석해 slot 상태를 자동 마이그레이션함.
 - 향후 Excel·PowerPoint·Browser 플러그인도 Executor 수정 없이 각 플러그인에 IntentSchema와 extract_slots만 추가해 같은 멀티턴 흐름을 사용할 수 있음.
 - 기본 테스트 70개 통과, 통합 테스트 4개 기본 제외, `compileall`과 `git diff --check` 통과.
+## 2026-07-22 생략형 후속 요청과 대기 작업 수명주기 보완
+
+- 원인: 세션에 대기 작업이 있으면 독립적인 새 요청도 무조건 그 작업의 슬롯 답변으로 소비했고, 완료된 Intent/Slot은 삭제되어 `다시 생성해줘` 같은 생략형 후속 요청이 범용 Planner로 떨어졌다.
+- `IntentResolution`에 명시적 Intent 및 실행 요청 여부를 추가했다. Registry가 독립적으로 인식한 새 실행 요청은 오래된 대기 작업을 안전하게 대체하며, 이전 슬롯을 재사용하지 않는다.
+- 완료된 Intent/Slot을 `recent_intents`에 세션별로 보존한다. `다시`, `같은`, `이름으로` 등의 도메인 중립적 대화 연산자가 있을 때만 최근 Intent를 계승한다.
+- 업그레이드 전 세션처럼 `recent_intents`가 없으면 최근 대화에서 Plugin Registry의 Intent 계약을 찾아 슬롯을 복원한다. 부족한 슬롯은 플러그인이 선언한 질문으로 확인하며 Planner의 임의 도메인 추론을 차단한다.
+- 캘린더 플러그인은 계승된 제목이 변경되면 제목에서 파생된 `.ics` 파일명도 함께 변경한다.
+- 회귀 검증: 오래된 대기 작업 대체, 최근 Intent 계승, DB 기록이 없는 대화 이력 복원, Excel 오인 방지를 포함해 전체 `73 passed, 4 deselected`.

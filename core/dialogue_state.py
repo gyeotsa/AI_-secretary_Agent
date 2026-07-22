@@ -80,6 +80,15 @@ class DialogueStateStore:
                     updated_at TEXT NOT NULL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS recent_intents (
+                    session_id TEXT PRIMARY KEY,
+                    intent_name TEXT NOT NULL,
+                    slots TEXT NOT NULL,
+                    original_request TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
             # 비정상 종료 당시 실행 중이던 작업은 자동 실행하지 않고 재개 가능한 상태로 둔다.
             conn.execute("UPDATE agent_tasks SET status = 'interrupted' WHERE status IN ('running', 'pausing')")
 
@@ -186,6 +195,25 @@ class DialogueStateStore:
     def delete_intent_state(self, task_id: str):
         with self._lock, self._connect() as conn:
             conn.execute("DELETE FROM intent_states WHERE task_id = ?", (task_id,))
+
+    def save_recent_intent(self, session_id: str, intent_name: str,
+                           slots: Dict[str, Any], original_request: str):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO recent_intents VALUES (?, ?, ?, ?, ?)",
+                (session_id, intent_name, json.dumps(slots, ensure_ascii=False), original_request, now),
+            )
+
+    def get_recent_intent(self, session_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT intent_name, slots, original_request FROM recent_intents WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {"intent_name": row[0], "slots": json.loads(row[1]), "original_request": row[2]}
 
 
 _dialogue_state_store = None

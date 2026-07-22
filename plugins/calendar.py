@@ -56,7 +56,13 @@ class CalendarPlugin(BasePlugin):
 
         title_match = re.search(r"([^\s]+?)(?:이라는|라는)\s*이름", text)
         if title_match:
+            previous_title = str(slots.get("title", ""))
             slots["title"] = title_match.group(1)
+            previous_path = slots.get("path")
+            if previous_path and previous_title:
+                old_path = Path(str(previous_path))
+                if old_path.stem == previous_title:
+                    slots["path"] = str(old_path.with_name(f"{slots['title']}.ics"))
 
         if "바탕화면" in text:
             title = str(slots.get("title", "일정"))

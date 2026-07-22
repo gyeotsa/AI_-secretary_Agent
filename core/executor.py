@@ -119,7 +119,18 @@ class Executor:
         is_new_request = normalized.startswith(("새 작업:", "새 작업："))
         if is_new_request:
             goal = re.sub(r"^새 작업\s*[:：]\s*", "", goal, flags=re.I)
+        direct_resolution = self.intent_router.resolve(goal)
         pending = None if is_new_request else self.dialogue_state.get(session_key, selected_task_id)
+        # An independently recognisable execution request starts a new task instead
+        # of being consumed as an answer to an unrelated/stale pending question.
+        if (pending and not selected_task_id and direct_resolution.explicit
+                and direct_resolution.execution_requested):
+            self.dialogue_state.delete(session_key, pending.task_id)
+            self.dialogue_state.delete_intent_state(pending.task_id)
+            self.dialogue_state.update_task(
+                pending.task_id, status="cancelled", result="새로운 명시적 요청으로 대체됨"
+            )
+            pending = None
         agent_task_id = pending.task_id if pending else (existing_task_id or "")
         intent_resolution = IntentResolution()
 
@@ -178,7 +189,16 @@ class Executor:
                 progress_callback(f"확인했습니다, 보스. 작업 {pending.task_id}을 이어서 진행하겠습니다.")
 
         if not pending:
-            intent_resolution = self.intent_router.resolve(goal)
+            intent_resolution = direct_resolution
+            if (not intent_resolution.matched
+                    and self.intent_router.is_contextual_follow_up(goal)):
+                recent_intent = self.dialogue_state.get_recent_intent(session_key)
+                if recent_intent:
+                    intent_resolution = self.intent_router.resolve(
+                        goal, recent_intent["intent_name"], recent_intent["slots"]
+                    )
+                else:
+                    intent_resolution = self.intent_router.resolve_from_history(goal, history)
             if intent_resolution.capability_response:
                 return ExecutionOutcome(intent_resolution.capability_response, "completed", goal)
             if intent_resolution.matched and intent_resolution.question:
@@ -667,6 +687,10 @@ class Executor:
         response = result if verified else f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
         self.dialogue_state.update_task(task_id, status=status, result=response)
         self.dialogue_state.delete_intent_state(task_id)
+        if verified:
+            self.dialogue_state.save_recent_intent(
+                session_id, resolution.intent_name, resolution.slots, goal
+            )
         return ExecutionOutcome(response, status, goal, task_id=task_id)
 
     def request_permission(self, tool_name: str) -> bool:

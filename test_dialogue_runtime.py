@@ -217,3 +217,61 @@ def test_legacy_pending_calendar_task_is_migrated_to_intent_slots(tmp_path, monk
 
     assert outcome.status == "completed"
     assert target.exists()
+
+
+def test_explicit_new_intent_replaces_stale_pending_instead_of_reusing_slots(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+    stale = executor.dialogue_state.create_task("replace-session", "오래된 캘린더 파일 생성")
+    executor.dialogue_state.create(
+        "replace-session", "오래된 캘린더 파일 생성", "제목은 무엇인가요?", [], stale.task_id
+    )
+    executor.dialogue_state.save_intent_state(
+        stale.task_id, "replace-session", "calendar.create_event",
+        {"title": "123", "path": str(tmp_path / "123.ics"),
+         "start": "2026-07-22", "end": "2026-07-23"},
+        "오래된 캘린더 파일 생성",
+    )
+
+    outcome = executor.execute_turn("바탕화면에 캘린더 파일 만들어줘", "replace-session")
+
+    assert outcome.status == "awaiting_user"
+    assert "제목" in outcome.response
+    assert executor.dialogue_state.get_task("replace-session", stale.task_id).status == "cancelled"
+
+
+def test_repeat_follow_up_inherits_recent_registry_intent_and_overrides_title(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.Config.API_CONFIG.ALLOWED_PATHS", [str(tmp_path)])
+    executor = _executor_for_dialogue_test(tmp_path)
+    registry = executor.intent_router.registry
+    executor.tool_executor = type(
+        "Tools", (), {"execute_tool": lambda _self, name, data: registry.execute_tool(name, data)}
+    )()
+    executor.verifier = ToolVerifier()
+    executor.dialogue_state.save_recent_intent(
+        "repeat-session", "calendar.create_event",
+        {"title": "123", "path": str(tmp_path / "123.ics"),
+         "start": "2026-07-22", "end": "2026-07-23"},
+        "123이라는 이름으로 캘린더 파일 생성",
+    )
+
+    outcome = executor.execute_turn("452라는 이름으로 다시 생성해줘", "repeat-session")
+
+    assert outcome.status == "completed"
+    assert (tmp_path / "452.ics").exists()
+    assert not (tmp_path / "123.ics").exists()
+
+
+def test_repeat_follow_up_recovers_intent_from_history_when_recent_state_is_absent(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+    history = [
+        {"role": "user", "content": "바탕화면에 캘린더 파일 만들어줘"},
+        {"role": "assistant", "content": "캘린더 이벤트 생성 성공: C:\\Users\\ice31\\Desktop\\123.ics"},
+    ]
+
+    outcome = executor.execute_turn(
+        "452라는 이름으로 다시 생성해줘", "history-repeat-session", history
+    )
+
+    assert outcome.status == "awaiting_user"
+    assert "시작" in outcome.response
+    assert "엑셀" not in outcome.response
