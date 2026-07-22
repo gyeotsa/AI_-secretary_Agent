@@ -558,3 +558,16 @@ AI_-secretary_Agent/
 - Calendar 플러그인 추가: 허용 경로 내 표준 ICS 이벤트 생성, ISO 8601 시간 검증 및 종료 시간 검증.
 - 전체 기본 자동 테스트 38개 통과, 외부 네트워크 통합 테스트 2개는 기본 실행에서 제외됨. `compileall` 통과.
 - 실제 Mail/Calendar 계정 연동은 자격증명/OAuth가 없으므로 수행하지 않음. 현재 Calendar는 로컬 ICS 방식이며 Google/Outlook 양방향 동기화는 후속 OAuth 범위임.
+
+### 이번 실제 통합 검증 커밋
+
+- `37ddbcd` `[Fix] Ollama 도구 호출 JSON 호환성 보강`
+- `e594303` `[Fix] GUI 통합 흐름과 Windows 장치 호환성 보강`
+- `c6b6d8b` `[Fix] Observer Scheduler Automation 런타임 안정화`
+- `e7751a4` `[Feat] Mail Calendar 플러그인과 안전한 테스트 구분 추가`
+
+### 다음 작업
+
+1. GUI를 사용자가 직접 보는 일반 Windows 세션에서 입력·권한창·응답·음성 파형의 시각적 최종 확인.
+2. Observer/Scheduler/Automation을 실제 운영 프롬프트로 수 시간 이상 soak test하고 메모리·스레드·DB 증가량 기록.
+3. Mail SMTP 실제 계정 또는 Google/Outlook OAuth 공급자를 선택한 뒤 실제 전송·조회·캘린더 동기화 구현 및 승인 테스트.
