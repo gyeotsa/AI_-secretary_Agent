@@ -32,3 +32,6 @@ pymupdf>=1.24.0
 
 # Workspace & Observer 기능
 watchdog>=4.0.0
+
+# Browser plugin
+playwright>=1.50.0

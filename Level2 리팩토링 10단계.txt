@@ -155,6 +155,13 @@ Level 2 (Agent OS) 완성을 위해 기존 코드의 문제점을 개선하고, 
   4. 플러그인 자동 로딩을 멱등화하고 LLM 도구 스키마에 동적으로 반영
   5. 모든 내장/플러그인 실행 진입점에 중앙 Permission 검사를 적용
 - **후속 범위**: mail/calendar는 OAuth·계정 정책 설계가 필요하므로 8단계 확장 작업으로 보류
+- **브라우저 실환경 검증 (2026-07-22)**:
+  1. `playwright 1.61.0` 및 Chromium 149 설치 완료
+  2. `https://example.com/` 본문 추출·전체 페이지 스크린샷 종단 테스트 통과
+  3. localhost, loopback, 사설망, link-local metadata 주소, URL 자격 증명, 비표준 포트 차단
+  4. DNS 이름이 사설 IP로 해석되는 경우와 redirect/subresource 사설망 우회 차단
+  5. screenshot 실행 전 경로 검증 및 browser+filesystem_write 중앙 권한 확인
+  6. browser 단위·보안 테스트 12개, Chromium integration 테스트 2개 통과
 
 ---
 
@@ -196,4 +203,4 @@ Level 2 (Agent OS) 완성을 위해 기존 코드의 문제점을 개선하고, 
 ---
 
 ## 📝 다음 단계
-Playwright/Chromium 설치 후 browser 플러그인 실동작 검증 및 GUI·하드웨어 종단 테스트
+실제 Ollama·GUI·마이크·카메라·TTS 종단 테스트 또는 mail/calendar OAuth 설계

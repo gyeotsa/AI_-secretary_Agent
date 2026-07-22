@@ -2,7 +2,7 @@
 
 ## 판정
 
-기존 문서의 “Level 2 완료” 표기는 실제 동작 검증보다 앞서 있었습니다. 이번 검토에서 1–7단계의 핵심 연결 오류를 수정했고 8단계 플러그인, 9단계 RAG, 10단계 역할 기반 하이브리드 LLM 라우팅까지 구현했습니다. Playwright 브라우저 바이너리, 실제 Anthropic 성공 경로 및 GUI·하드웨어 연동은 별도 실환경 검증이 남아 있습니다.
+기존 문서의 “Level 2 완료” 표기는 실제 동작 검증보다 앞서 있었습니다. 이번 검토에서 1–7단계의 핵심 연결 오류를 수정했고 8단계 플러그인과 Chromium 종단 검증, 9단계 RAG, 10단계 역할 기반 하이브리드 LLM 라우팅까지 구현했습니다. 실제 Anthropic 성공 경로 및 GUI·하드웨어 연동은 별도 실환경 검증이 남아 있습니다.
 
 ## 주요 수정
 
@@ -15,6 +15,7 @@
 - Package loading: `core/__init__.py`의 eager import를 제거해 독립 모듈이 불필요한 LLM 의존성 때문에 로드 실패하지 않도록 수정.
 - Step 8: workspace 한정 filesystem 탐색, 인자 배열 기반 Git, 선택적 Playwright browser 플러그인 추가.
 - Step 10: Tool Reasoner만 Claude 우선으로 라우팅하고 API 키·API 장애 시 Ollama로 자동 fallback. 일반 응답과 실행·메모리·RAG는 로컬 유지.
+- Browser: Playwright/Chromium 설치, 공개 페이지 본문·스크린샷 성공. DNS/redirect/subresource SSRF와 screenshot 경로·복합 권한 검증 추가.
 
 ## 검증 결과
 
@@ -28,7 +29,6 @@
 
 ## 남은 우선순위
 
-1. Playwright 설치 및 `playwright install chromium` 후 브라우저 실동작 검증.
-2. 실제 Anthropic API 키로 Reasoner 성공 경로의 품질·비용·지연시간 비교.
-3. 실제 Ollama, GUI, 마이크·카메라·TTS 종단 검증.
-4. mail/calendar는 OAuth 토큰 저장·권한·계정 선택 정책을 먼저 확정한 뒤 확장.
+1. 실제 Anthropic API 키로 Reasoner 성공 경로의 품질·비용·지연시간 비교.
+2. 실제 Ollama, GUI, 마이크·카메라·TTS 종단 검증.
+3. mail/calendar는 OAuth 토큰 저장·권한·계정 선택 정책을 먼저 확정한 뒤 확장.
