@@ -269,7 +269,9 @@ class OllamaClient(BaseLLMClient):
             for msg in messages:
                 role = msg["role"]
                 content = msg["content"]
-                if role == "user":
+                if role == "system":
+                    full_prompt += f"System: {content}\n"
+                elif role == "user":
                     full_prompt += f"User: {content}\n"
                 elif role == "assistant":
                     full_prompt += f"Assistant: {content}\n"

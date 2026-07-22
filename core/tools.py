@@ -658,8 +658,7 @@ class ToolExecutor:
     def speak_text(self, text: str, audio_processor=None) -> str:
         print(f"[DEBUG] ToolExecutor.speak_text 호출됨: {text}")
         if pyttsx3 is None:
-            print("[DEBUG] pyttsx3 is None")
-            return "오류: pyttsx3가 설치되지 않았습니다. requirements.txt를 확인하세요."
+            return self._speak_with_windows_speech(text, audio_processor)
 
         # 빈 문자열이나 공백만 있을 때 처리
         if not text or text.strip() == "":
@@ -704,8 +703,8 @@ class ToolExecutor:
             return f"음성으로 읽어주었습니다: {text}"
         except Exception as e:
             print(f"[DEBUG] TTS 오류 발생: {e}")
-            import traceback
-            traceback.print_exc()
+            if os.name == "nt":
+                return self._speak_with_windows_speech(text, audio_processor)
             return f"TTS 오류: {str(e)}"
         finally:
             # engine 정리
@@ -722,13 +721,59 @@ class ToolExecutor:
                 except Exception:
                     pass
 
+    @staticmethod
+    def _speak_with_windows_speech(text: str, audio_processor=None) -> str:
+        """pyttsx3/SAPI COM 실패 시 .NET System.Speech로 대체한다."""
+        if os.name != "nt":
+            return "TTS 오류: Windows System.Speech는 Windows에서만 사용할 수 있습니다."
+
+        wav_path = None
+        try:
+            env = os.environ.copy()
+            env["JARVIS_TTS_TEXT"] = text or "네, 보스."
+            if audio_processor is not None:
+                fd, wav_path = tempfile.mkstemp(suffix=".wav")
+                os.close(fd)
+                env["JARVIS_TTS_WAV"] = wav_path
+
+            script = (
+                "Add-Type -AssemblyName System.Speech; "
+                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                "try { "
+                "if ($env:JARVIS_TTS_WAV) { $s.SetOutputToWaveFile($env:JARVIS_TTS_WAV) }; "
+                "$s.Speak($env:JARVIS_TTS_TEXT) "
+                "} finally { $s.Dispose() }"
+            )
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=env,
+                check=False,
+            )
+            if completed.returncode != 0:
+                detail = completed.stderr.strip() or f"exit code {completed.returncode}"
+                return f"TTS 오류: Windows System.Speech 실행 실패: {detail}"
+            if wav_path and audio_processor is not None:
+                audio_processor.play_and_analyze_tts(wav_path)
+            return f"음성으로 읽어드렸습니다: {env['JARVIS_TTS_TEXT']}"
+        except Exception as e:
+            return f"TTS 오류: Windows System.Speech 실행 실패: {e}"
+        finally:
+            if wav_path and os.path.exists(wav_path):
+                try:
+                    os.unlink(wav_path)
+                except OSError:
+                    pass
+
     def listen(self, duration: int = 3) -> str:
         if not WHISPER_AVAILABLE:
             return "오류: openai-whisper, sounddevice, scipy, numpy가 설치되지 않았습니다. requirements.txt를 확인하세요."
 
         temp_file_path = None
         try:
-            print(f"🎤 {duration}초 동안 말씀하세요...")
+            print(f"[STT] {duration}초 동안 말씀하세요...")
             sample_rate = 16000
             recording = sd.rec(
                 int(duration * sample_rate),

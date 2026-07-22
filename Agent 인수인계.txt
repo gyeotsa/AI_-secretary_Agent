@@ -537,3 +537,13 @@ AI_-secretary_Agent/
 - `core/llm.py`에서 등록된 도구 이름과 객체형 인자만 허용하는 안전한 legacy tool-call 파서를 추가함. 임의 JSON이나 미등록 도구는 도구 호출로 승격하지 않음.
 - `test_ollama_tool_compat.py` 회귀 테스트 4개 통과 및 실제 `get_date` 도구 선택 응답 변환 성공.
 - Anthropic 실호출은 사용자의 현재 운영 방침에 따라 이번 검증 범위에서 제외함.
+
+## 2026-07-22 GUI·장치 실제 통합 검증
+
+- Qt 이벤트 루프에서 사용자 입력 → 백그라운드 처리 → 중앙 Tool 실행 → GUI 응답 표시 경로를 검증함.
+- Permission 대화상자의 허용·거부 버튼 및 작업 스레드 → GUI → PermissionManager 반환 경로를 검증함.
+- Ollama 일반 `chat()`이 호출별 system 메시지를 누락해 Planner 지시가 전달되지 않던 문제를 수정함. 실제 Planner가 `get_date` 작업을 정상 JSON 분해함.
+- 실제 Executor가 Ollama로 `get_date`를 선택·실행·검증하고 `2026년 7월 22일` 최종 응답을 생성함.
+- 마이크 기본 장치 녹음, Whisper STT, 카메라 1프레임 캡처가 실제 성공함. STT 시작 로그의 이모지가 cp949 콘솔에서 실행을 중단시키던 문제를 수정함.
+- 이 PC에서는 pyttsx3의 SAPI COM 클래스가 등록되지 않아 실패했으므로, 고정된 PowerShell 명령과 환경변수로 .NET `System.Speech`를 호출하는 Windows fallback을 추가함. 실제 한국어 TTS 재생 성공.
+- 장치 테스트 중 녹음·카메라 프레임은 저장하지 않았음.
