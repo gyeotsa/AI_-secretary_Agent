@@ -735,3 +735,14 @@ AI_-secretary_Agent/
 - 캘린더 플러그인의 한국어 날짜 정규화와 `dateparser` 표준 파서 fallback을 결합했다. `2026년 7월 26일`, `2026/7/26`, `2026-7-26`, `7월 26일` 및 추가 숫자/ISO 표기를 지원하며 날짜가 두 개면 시작/종료 슬롯을 함께 채운다.
 - `456이라는 이름으로 파일 생성해줘`처럼 종류가 생략된 독립 요청은 최근 캘린더 Intent로 강제 계승하지 않고 LLM 문맥 해석기의 확인 질문으로 보낸다. `다시`처럼 플러그인이 선언한 후속 표현이 있을 때만 최근 Intent를 계승한다.
 - 회귀 검증: 사용자가 제시한 슬래시 날짜 범위, 연도 없는 한국어 날짜, 일반 파일 요청의 캘린더 오인 방지를 포함해 전체 `76 passed, 4 deselected`.
+## 2026-07-22 업무 자동화 플러그인 Sprint 1
+
+- Gemini 제안과 기존 Codex 제안을 합쳐 `PLUGIN_ROADMAP.md`에 Office/HWP, 웹, 개발, OAuth·클라우드, 협업, Windows 제어 로드맵을 통합했다.
+- 무료 로컬 우선으로 Excel(openpyxl), Word(python-docx), PowerPoint(python-pptx), PDF(PyMuPDF), HWPX(python-hwpx) 플러그인을 실제 Registry에 연결했다.
+- Excel은 생성·조회·셀 수정, Word/PPTX/HWPX는 생성·텍스트 조회, PDF는 생성·텍스트 추출을 지원한다. 모든 경로는 SafetyLayer와 Permission을 거친다.
+- 한컴 프로그램이 현재 탐지되지 않아 pyhwpx COM은 연결하지 않았다. 대신 한컴 없이 동작하는 HWPX를 기본으로 선택했다. 구형 바이너리 `.hwp`와 라이브 한글 제어는 한컴 설치 확인 후 별도 어댑터로 추가한다.
+- Windows Control은 고정 앱 경로 사전 없이 Windows App Paths 레지스트리, PATH, 명시적 절대 실행 파일을 사용한다. `shell=False`, 인자 수 제한, `windows_api` 승인을 적용했다.
+- 공통 문서 슬롯 정규화기로 바탕화면·파일명·확장자를 처리하며 각 플러그인이 IntentSchema를 선언한다. Executor에 Office 전용 분기는 없다.
+- 새 라이브러리: `python-docx`, `python-pptx`, `python-hwpx`, `defusedxml`; 프로젝트 `.venv` 설치 및 requirements 반영.
+- Office/HWPX/PDF 실제 생성·재조회, Registry 노출, 문서 Intent 경로 해석, Windows 미등록 앱 차단 및 파일 검증 테스트를 추가했으며 전체 `81 passed, 4 deselected`.
+- 다음 해야 할 일: Sprint 2 Browser 세션/다운로드/검색/YouTube를 구현한 뒤 Sprint 3 IDE/GitHub로 진행한다. OAuth 공급자는 실제 주 계정을 확인한 뒤 하나씩 연결한다.

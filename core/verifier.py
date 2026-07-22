@@ -29,6 +29,12 @@ class ToolVerifier:
             "add_document": self._verify_add_document,
             "run_command": self._verify_run_command,
             "calendar_create_event": self._verify_calendar_create_event,
+            "excel_create_workbook": self._verify_created_file,
+            "excel_write_cells": self._verify_created_file,
+            "word_create_document": self._verify_created_file,
+            "powerpoint_create_presentation": self._verify_created_file,
+            "pdf_create_document": self._verify_created_file,
+            "hwpx_create_document": self._verify_created_file,
         }
 
     def verify(self, tool_name: str, tool_input: Dict[str, Any], result: str) -> VerificationResult:
@@ -93,6 +99,14 @@ class ToolVerifier:
 
         except Exception as e:
             return VerificationResult(False, f"파일 검증 중 오류가 발생했습니다: {e}")
+
+    def _verify_created_file(self, tool_input: Dict[str, Any], result: str) -> VerificationResult:
+        path = tool_input.get("path") or tool_input.get("file_path")
+        if not path or not os.path.isfile(path):
+            return VerificationResult(False, f"결과 파일이 생성되지 않았습니다: {path}")
+        if os.path.getsize(path) <= 0:
+            return VerificationResult(False, f"결과 파일이 비어 있습니다: {path}")
+        return VerificationResult(True, f"결과 파일 생성 검증 성공: {path}")
 
     def _verify_read_file(self, tool_input: Dict[str, Any], result: str) -> VerificationResult:
         """read_file 도구 검증: 파일이 실제로 존재하고 내용이 반환되었는지 확인"""
