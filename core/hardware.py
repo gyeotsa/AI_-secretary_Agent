@@ -17,6 +17,8 @@ except ImportError:
 
 
 class HardwareManager:
+    MIN_SPEECH_RMS = 0.0015
+
     def __init__(self):
         self.running = False
         self.wakeword_thread = None
@@ -114,10 +116,11 @@ class HardwareManager:
                     command_buffer = np.array([], dtype=np.float32)
                     command_prefix = ""
                     listening = False
-                    last_voice = time.monotonic()
+                    silence_started = None
+                    listening_started = None
                     last_wake_check = 0.0
                     noise_samples = []
-                    speech_threshold = 0.0005
+                    speech_threshold = self.MIN_SPEECH_RMS
                     clap_count = 0
                     last_clap = 0.0
                     while self.running:
@@ -129,7 +132,10 @@ class HardwareManager:
                         if len(noise_samples) < 10:
                             noise_samples.append(rms)
                             if len(noise_samples) == 10:
-                                speech_threshold = max(0.0003, float(np.median(noise_samples)) * 4)
+                                speech_threshold = max(
+                                    self.MIN_SPEECH_RMS,
+                                    float(np.median(noise_samples)) * 4,
+                                )
                                 print(f"[마이크] 자동 음성 임계값: {speech_threshold:.6f}")
                         if self.audio_processor:
                             amplitude, bands = self.audio_processor._analyze_audio(chunk, native_rate)
@@ -147,7 +153,8 @@ class HardwareManager:
                                     listening = True
                                     command_prefix = ""
                                     command_buffer = np.array([], dtype=np.float32)
-                                    last_voice = now
+                                    listening_started = now
+                                    silence_started = None
                                     clap_count = 0
                                     wake_buffer = np.array([], dtype=np.float32)
                                     continue
@@ -160,13 +167,30 @@ class HardwareManager:
                                     listening = True
                                     command_prefix = text.replace("자비스", "").replace("자비", "").strip()
                                     command_buffer = np.array([], dtype=np.float32)
-                                    last_voice = now
+                                    listening_started = now
+                                    silence_started = None
                                     wake_buffer = np.array([], dtype=np.float32)
                         else:
                             command_buffer = np.concatenate((command_buffer, audio16))
                             if rms >= speech_threshold:
-                                last_voice = time.monotonic()
-                            if time.monotonic() - last_voice >= 2.0 and len(command_buffer) >= 4800:
+                                silence_started = None
+                            elif silence_started is None:
+                                silence_started = time.monotonic()
+                            now = time.monotonic()
+                            silent_long_enough = (
+                                silence_started is not None
+                                and now - silence_started >= Config.MICROPHONE_SILENCE_SECONDS
+                            )
+                            command_timed_out = (
+                                listening_started is not None
+                                and now - listening_started >= Config.MICROPHONE_MAX_COMMAND_SECONDS
+                            )
+                            if (silent_long_enough or command_timed_out) and len(command_buffer) >= 4800:
+                                reason = (
+                                    f"{Config.MICROPHONE_SILENCE_SECONDS:g}초 무음"
+                                    if silent_long_enough else "최대 발화 시간"
+                                )
+                                print(f"[마이크] 명령 종료 감지: {reason}")
                                 text = self.whisper_model.transcribe(command_buffer, language="ko")["text"].strip()
                                 text = " ".join(part for part in (command_prefix, text) if part).strip()
                                 if text and self.on_text_detected:
@@ -175,6 +199,8 @@ class HardwareManager:
                                 listening = False
                                 command_prefix = ""
                                 command_buffer = np.array([], dtype=np.float32)
+                                silence_started = None
+                                listening_started = None
             except Exception as exc:
                 self._stream_error = str(exc)
                 self.running = False

@@ -1,4 +1,5 @@
 import threading
+import time
 
 import numpy as np
 
@@ -8,6 +9,12 @@ import core.multimodal as multimodal
 
 def test_default_whisper_model_is_small():
     assert hardware.Config.WHISPER_MODEL == "small"
+
+
+def test_microphone_command_end_defaults():
+    assert hardware.Config.MICROPHONE_SILENCE_SECONDS == 2.0
+    assert hardware.Config.MICROPHONE_MAX_COMMAND_SECONDS == 15.0
+    assert hardware.HardwareManager.MIN_SPEECH_RMS > 0.00063
 
 
 def _bare_hardware_manager():
@@ -62,6 +69,49 @@ def test_audio_is_resampled_to_whisper_rate():
     converted = hardware.HardwareManager._to_16khz(audio, 48000)
     assert converted.dtype == np.float32
     assert len(converted) == 16000
+
+
+def test_continuous_listener_submits_after_silence(monkeypatch):
+    manager = _bare_hardware_manager()
+
+    class FakeModel:
+        calls = 0
+
+        def transcribe(self, audio, language):
+            self.calls += 1
+            return {"text": "자비스 테스트 명령" if self.calls == 1 else ""}
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, frames):
+            time.sleep(0.01)
+            return np.zeros((frames, 1), dtype=np.float32), False
+
+    manager.whisper_model = FakeModel()
+    def select_microphone():
+        manager.microphone_device = 1
+        manager.microphone_info = {"index": 1, "name": "test mic"}
+        return manager.microphone_info, 16000
+
+    monkeypatch.setattr(manager, "_select_microphone", select_microphone)
+    monkeypatch.setattr(hardware.sd, "InputStream", lambda **kwargs: FakeStream())
+    monkeypatch.setattr(hardware.Config, "MICROPHONE_SILENCE_SECONDS", 0.15)
+    monkeypatch.setattr(hardware.Config, "MICROPHONE_MAX_COMMAND_SECONDS", 1.0)
+    received = []
+
+    result = manager.start_continuous_listen(received.append)
+    deadline = time.monotonic() + 2
+    while not received and time.monotonic() < deadline:
+        time.sleep(0.02)
+    manager.stop_continuous_listen()
+
+    assert "성공" in result
+    assert received == ["테스트 명령"]
 
 
 class _FakeCapture:

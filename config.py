@@ -71,6 +71,12 @@ class APIConfig:
     WHISPER_DEVICE: str = field(default_factory=lambda: os.getenv("WHISPER_DEVICE", "auto").lower())
     WHISPER_MODEL: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "small").lower())
     MICROPHONE_DEVICE: str = field(default_factory=lambda: os.getenv("MICROPHONE_DEVICE", "auto"))
+    MICROPHONE_SILENCE_SECONDS: float = field(
+        default_factory=lambda: float(os.getenv("MICROPHONE_SILENCE_SECONDS", "2.0"))
+    )
+    MICROPHONE_MAX_COMMAND_SECONDS: float = field(
+        default_factory=lambda: float(os.getenv("MICROPHONE_MAX_COMMAND_SECONDS", "15.0"))
+    )
     CAMERA_INDEX: str = field(default_factory=lambda: os.getenv("CAMERA_INDEX", "auto"))
     
     ALLOWED_PATHS: list = field(default_factory=lambda: [
@@ -167,6 +173,16 @@ class Config:
     @property
     def MICROPHONE_DEVICE(cls):
         return cls.API_CONFIG.MICROPHONE_DEVICE
+
+    @classmethod
+    @property
+    def MICROPHONE_SILENCE_SECONDS(cls):
+        return cls.API_CONFIG.MICROPHONE_SILENCE_SECONDS
+
+    @classmethod
+    @property
+    def MICROPHONE_MAX_COMMAND_SECONDS(cls):
+        return cls.API_CONFIG.MICROPHONE_MAX_COMMAND_SECONDS
 
     @classmethod
     @property
