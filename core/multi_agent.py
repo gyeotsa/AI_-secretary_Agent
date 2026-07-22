@@ -5,7 +5,7 @@ from datetime import datetime
 
 from core.scratchpad import get_scratchpad, Scratchpad
 from core.context import get_context_manager
-from core.llm import chat_with_tools
+from core.llm import get_llm_client
 from core.tools import get_tool_executor
 from core.memory import build_memory_context
 
@@ -34,6 +34,7 @@ class MultiAgentOrchestrator:
         self.scratchpad = get_scratchpad()
         self.context_manager = get_context_manager()
         self.tool_executor = get_tool_executor()
+        self.llm = get_llm_client()
         self.tasks: List[AgentTask] = []
         
     def create_task(self, description: str, task_type: str) -> AgentTask:
@@ -81,7 +82,7 @@ class MultiAgentOrchestrator:
 
 작업 계획:"""
             
-            response = chat_with_tools([{"role": "user", "content": prompt}])
+            response = self.llm.chat([{"role": "user", "content": prompt}])
             
             # 응답 파싱
             try:
@@ -101,9 +102,8 @@ class MultiAgentOrchestrator:
                 # 스크래치패드에 계획 저장
                 for i, step in enumerate(plan):
                     self.scratchpad.add_task(
-                        description=step["description"],
-                        task_type="subtask",
-                        metadata={"step": i + 1, "tool": step.get("tool")}
+                        task_description=step["description"],
+                        priority=i + 1
                     )
                 
                 task.status = "completed"
@@ -144,8 +144,10 @@ class MultiAgentOrchestrator:
                         
                         # 스크래치패드에 관찰 기록
                         self.scratchpad.add_observation(
-                            content=f"도구 실행 결과: {result}",
-                            source=tool_name
+                            tool_name=tool_name,
+                            input_data=tool_input,
+                            result=result,
+                            success=True
                         )
                     else:
                         # 직접 응답
@@ -158,10 +160,9 @@ class MultiAgentOrchestrator:
                     step_task.status = "failed"
                     step_task.error = str(e)
                     results.append(f"단계 {step['id']} 실패: {str(e)}")
-                    self.scratchpad.add_failure(
-                        error_type="execution_error",
-                        description=str(e),
-                        context=step
+                    self.scratchpad.fail_task(
+                        task_id=step_task.id,
+                        reason=str(e)
                     )
                 finally:
                     step_task.completed_at = datetime.now().isoformat()
@@ -209,12 +210,14 @@ class MultiAgentOrchestrator:
 
 분석 및 개선 제안:"""
             
-            reflection = chat_with_tools([{"role": "user", "content": prompt}])
+            reflection = self.llm.chat([{"role": "user", "content": prompt}])
             
             # 스크래치패드에 반성 기록
             self.scratchpad.add_observation(
-                content=f"반성 결과: {reflection}",
-                source="reflection_agent"
+                tool_name="reflection_agent",
+                input_data={},
+                result=reflection,
+                success=True
             )
             
             task.status = "completed"
@@ -250,7 +253,7 @@ class MultiAgentOrchestrator:
 
 최종 답변을 한국어로 작성하세요."""
         
-        final_answer = chat_with_tools([{"role": "user", "content": final_prompt}])
+        final_answer = self.llm.chat([{"role": "user", "content": final_prompt}])
         return final_answer
         
     def _build_context(self, query: str) -> str:
@@ -271,9 +274,9 @@ class MultiAgentOrchestrator:
             
         # 2. 컨텍스트 매니저
         try:
-            context_info = self.context_manager.get_context()
+            context_info = self.context_manager.get_full_context(query, "multi_agent")
             if context_info:
-                parts.append(f"\n### 시스템 상태 ###\n{json.dumps(context_info, indent=2, ensure_ascii=False)}")
+                parts.append(f"\n### 시스템 상태 ###\n{context_info}")
         except Exception as e:
             pass
             
