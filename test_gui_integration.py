@@ -266,3 +266,25 @@ def test_tts_suspends_microphone_until_output_finishes():
     jarvis._speak_with_check("테스트 응답")
 
     assert jarvis.hardware_manager.output_states == [True, False]
+
+
+def test_standalone_wake_word_does_not_reach_planner():
+    _app()
+    class PlannerMustNotRun:
+        def execute_goal(self, *_args, **_kwargs):
+            raise AssertionError("단독 호출어가 Planner에 전달되었습니다.")
+
+    jarvis = JarvisApp.__new__(JarvisApp)
+    jarvis.window = _Window()
+    jarvis.state_machine = _StateMachine()
+    jarvis.executor = PlannerMustNotRun()
+    jarvis.memory = _Memory()
+    jarvis.messages = []
+    jarvis.session_id = "wake-chat-session"
+    jarvis.last_response = ""
+    jarvis._is_processing_ai = False
+
+    jarvis._on_user_input("자비스")
+
+    assert jarvis.window.assistants[-1] == "네, 보스. 말씀하세요."
+    assert jarvis._is_processing_ai is False

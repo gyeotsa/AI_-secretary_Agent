@@ -4,6 +4,9 @@ import threading
 import time
 import queue
 import re
+import math
+import json
+from pathlib import Path
 from config import Config
 
 
@@ -12,6 +15,7 @@ try:
     import whisper
     import librosa
     import torch
+    from scipy.signal import resample_poly
     SOUND_AVAILABLE = True
 except ImportError:
     SOUND_AVAILABLE = False
@@ -19,6 +23,7 @@ except ImportError:
 
 class HardwareManager:
     MIN_SPEECH_RMS = 0.0005
+    MAX_SPEECH_RMS_THRESHOLD = 0.003
 
     def __init__(self):
         self.running = False
@@ -70,6 +75,11 @@ class HardwareManager:
     def extract_wake_command(text: str) -> str | None:
         """호출어가 첫 단어인 경우에만 뒤따르는 명령을 반환합니다."""
         normalized = text.strip().lower()
+        compact_wake_word = Config.WAKE_WORD.casefold()
+        if normalized.startswith(compact_wake_word) and len(normalized) > len(compact_wake_word):
+            remainder = normalized[len(compact_wake_word):].lstrip(" ,.!?，。！？")
+            if remainder:
+                return remainder
         match = re.match(r"^([^\s]+)(?:\s+(.*))?$", normalized)
         if not match:
             return None
@@ -77,6 +87,60 @@ class HardwareManager:
         if first_word != Config.WAKE_WORD:
             return None
         return (match.group(2) or "").strip()
+
+    @staticmethod
+    def _speech_vocabulary() -> list[str]:
+        """앱 Registry의 별칭을 STT 고유명사 힌트로 재사용합니다."""
+        vocabulary = []
+        data_dir = Path(__file__).resolve().parent.parent / "data"
+        for name in ("app_aliases.json", "user_app_aliases.json"):
+            try:
+                mapping = json.loads((data_dir / name).read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+            aliases = [str(key).strip() for key in mapping if str(key).strip()]
+            vocabulary.extend(aliases)
+        try:
+            from core.plugin import get_plugin_registry
+            for _plugin, intent in get_plugin_registry().get_all_intents():
+                vocabulary.extend(intent.utterance_hints)
+                vocabulary.extend(intent.execution_hints)
+        except Exception:
+            pass
+        return list(dict.fromkeys(vocabulary))[:100]
+
+    def _whisper_prompt(self) -> str:
+        vocabulary = self._speech_vocabulary()
+        if not vocabulary:
+            return Config.WHISPER_INITIAL_PROMPT
+        return (
+            f"{Config.WHISPER_INITIAL_PROMPT} "
+            f"프로그램 이름과 사용자 별칭: {', '.join(vocabulary)}."
+        )
+
+    @staticmethod
+    def _normalize_audio(audio: np.ndarray) -> np.ndarray:
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.size == 0:
+            return audio
+        audio = audio - float(np.mean(audio))
+        peak = float(np.max(np.abs(audio)))
+        if peak <= 1e-6:
+            return audio
+        gain = min(20.0, 0.25 / peak)
+        return np.clip(audio * gain, -1.0, 1.0).astype(np.float32)
+
+    def _transcribe_audio(self, audio: np.ndarray) -> dict:
+        return self.whisper_model.transcribe(
+            self._normalize_audio(audio),
+            language="ko",
+            task="transcribe",
+            temperature=0,
+            beam_size=5,
+            condition_on_previous_text=False,
+            initial_prompt=self._whisper_prompt(),
+            suppress_blank=True,
+        )
 
     @staticmethod
     def list_input_devices():
@@ -109,10 +173,9 @@ class HardwareManager:
     def _to_16khz(audio: np.ndarray, source_rate: int) -> np.ndarray:
         if source_rate == 16000:
             return audio.astype(np.float32, copy=False)
-        size = max(1, round(len(audio) * 16000 / source_rate))
-        source = np.linspace(0.0, 1.0, len(audio), endpoint=False)
-        target = np.linspace(0.0, 1.0, size, endpoint=False)
-        return np.interp(target, source, audio).astype(np.float32)
+        divisor = math.gcd(int(source_rate), 16000)
+        converted = resample_poly(audio, 16000 // divisor, int(source_rate) // divisor)
+        return converted.astype(np.float32, copy=False)
 
     def start_continuous_listen(self, on_text_callback, audio_processor=None) -> str:
         """호출어로 시작하는 음성 명령을 지속적으로 감지합니다."""
@@ -168,7 +231,10 @@ class HardwareManager:
                             if len(noise_samples) == 10:
                                 speech_threshold = max(
                                     self.MIN_SPEECH_RMS,
-                                    float(np.median(noise_samples)) * 4,
+                                    min(
+                                        self.MAX_SPEECH_RMS_THRESHOLD,
+                                        float(np.percentile(noise_samples, 20)) * 3,
+                                    ),
                                 )
                                 print(f"[마이크] 자동 음성 임계값: {speech_threshold:.6f}")
                         if self.audio_processor:
@@ -184,7 +250,7 @@ class HardwareManager:
                                 last_wake_check = now
                                 if sum(wake_voice_chunks) < 2:
                                     continue
-                                text = self.whisper_model.transcribe(wake_buffer, language="ko")["text"].strip().lower()
+                                text = self._transcribe_audio(wake_buffer)["text"].strip().lower()
                                 wake_command = self.extract_wake_command(text)
                                 if wake_command is not None:
                                     print(f"[웨이크워드] 감지: {text}")
@@ -208,6 +274,8 @@ class HardwareManager:
                                     voiced_seconds = 0.0
                                     wake_buffer = np.array([], dtype=np.float32)
                                     wake_voice_chunks = []
+                                elif text:
+                                    print(f"[마이크] 첫 단어가 호출어가 아니어서 무시: {text}")
                         else:
                             command_buffer = np.concatenate((command_buffer, audio16))
                             if rms >= speech_threshold:
@@ -234,9 +302,7 @@ class HardwareManager:
                                     print("[마이크] 실제 발화가 없는 입력을 폐기했습니다.")
                                     text = ""
                                 else:
-                                    text = self.whisper_model.transcribe(
-                                        command_buffer, language="ko"
-                                    )["text"].strip()
+                                    text = self._transcribe_audio(command_buffer)["text"].strip()
                                     text = " ".join(
                                         part for part in (command_prefix, text) if part
                                     ).strip()
@@ -296,7 +362,7 @@ class HardwareManager:
                     )
                     sd.wait()
                     audio = self._to_16khz(recording[:, 0], native_rate)
-                    result = self.whisper_model.transcribe(audio, language="ko")
+                    result = self._transcribe_audio(audio)
                     text = result["text"].strip().lower()
                     
                     if self.extract_wake_command(text) is not None:

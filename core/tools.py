@@ -785,7 +785,7 @@ class ToolExecutor:
             )
             sd.wait()
             audio = self.hardware_manager._to_16khz(recording[:, 0], sample_rate)
-            result = self.hardware_manager.whisper_model.transcribe(audio, language="ko")
+            result = self.hardware_manager._transcribe_audio(audio)
             text = result["text"].strip()
 
             if text:

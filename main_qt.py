@@ -208,6 +208,17 @@ class JarvisApp:
         print("[DEBUG] _on_user_input called with:", text)
         self.window.show_user_text(text)
         self.state_machine.start_listening()
+
+        if text.strip().casefold() == Config.WAKE_WORD.casefold():
+            response = "네, 보스. 말씀하세요."
+            self.window.show_assistant_text(response)
+            self.last_response = response
+            self.messages.append({"role": "user", "content": text})
+            self.messages.append({"role": "assistant", "content": response})
+            self.memory.save_message(self.session_id, "user", text)
+            self.memory.save_message(self.session_id, "assistant", response)
+            self.state_machine.go_idle()
+            return
         
         # LISTENING 상태에서 사운드바 활성화: speaking=False, audio level 설정
         self.window.set_soundbar_speaking(False)

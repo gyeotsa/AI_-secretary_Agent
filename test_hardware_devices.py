@@ -7,8 +7,8 @@ import core.hardware as hardware
 import core.multimodal as multimodal
 
 
-def test_default_whisper_model_is_small():
-    assert hardware.Config.WHISPER_MODEL == "small"
+def test_default_whisper_model_is_medium():
+    assert hardware.Config.WHISPER_MODEL == "medium"
 
 
 def test_microphone_command_end_defaults():
@@ -24,6 +24,15 @@ def test_only_exact_first_wake_word_opens_voice_command():
     assert hardware.HardwareManager.extract_wake_command("안녕 자비스 디코 켜") is None
     assert hardware.HardwareManager.extract_wake_command("자비 디코 켜") is None
     assert hardware.HardwareManager.extract_wake_command("감사합니다") is None
+    assert hardware.HardwareManager.extract_wake_command("자비스디코 켜") == "디코 켜"
+
+
+def test_whisper_prompt_uses_registered_app_aliases(monkeypatch):
+    manager = _bare_hardware_manager()
+    monkeypatch.setattr(manager, "_speech_vocabulary", lambda: ["디스코드", "디코"])
+    prompt = manager._whisper_prompt()
+    assert "디스코드" in prompt
+    assert "디코" in prompt
 
 
 def test_tts_output_suspends_microphone_and_adds_cooldown():
@@ -93,13 +102,40 @@ def test_audio_is_resampled_to_whisper_rate():
     assert len(converted) == 16000
 
 
+def test_audio_normalization_raises_quiet_signal_without_clipping():
+    audio = np.array([-0.001, 0.0, 0.001], dtype=np.float32)
+    normalized = hardware.HardwareManager._normalize_audio(audio)
+    assert np.max(np.abs(normalized)) > np.max(np.abs(audio))
+    assert np.max(np.abs(normalized)) <= 1.0
+
+
+def test_whisper_uses_deterministic_korean_command_options(monkeypatch):
+    manager = _bare_hardware_manager()
+    captured = {}
+
+    class Model:
+        def transcribe(self, audio, **kwargs):
+            captured.update(kwargs)
+            return {"text": "테스트"}
+
+    manager.whisper_model = Model()
+    monkeypatch.setattr(manager, "_whisper_prompt", lambda: "동적 어휘")
+    manager._transcribe_audio(np.ones(1600, dtype=np.float32) * 0.001)
+
+    assert captured["language"] == "ko"
+    assert captured["temperature"] == 0
+    assert captured["beam_size"] == 5
+    assert captured["condition_on_previous_text"] is False
+    assert captured["initial_prompt"] == "동적 어휘"
+
+
 def test_continuous_listener_submits_after_silence(monkeypatch):
     manager = _bare_hardware_manager()
 
     class FakeModel:
         calls = 0
 
-        def transcribe(self, audio, language):
+        def transcribe(self, audio, **kwargs):
             self.calls += 1
             return {"text": "자비스 테스트 명령" if self.calls == 1 else ""}
 
