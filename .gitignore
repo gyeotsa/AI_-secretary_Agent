@@ -8,6 +8,8 @@ data/*.db-wal
 data/permissions.json
 
 # Python
+.pytest_cache/
+.pytest-tmp/
 __pycache__/
 *.py[cod]
 *$py.class

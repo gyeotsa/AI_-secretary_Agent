@@ -74,7 +74,7 @@ class _Rag:
 
 
 class _Executor:
-    def execute_goal(self, _text, _session_id):
+    def execute_goal(self, _text, _session_id, _conversation_history=None):
         return f"오늘 날짜는 {get_tool_executor().execute_tool('get_date', {})}입니다."
 
 

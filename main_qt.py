@@ -226,11 +226,12 @@ class JarvisApp:
         
         # AI 호출: Planner → Executor → Reflection 파이프라인 사용!
         print("[DEBUG] Calling Executor.execute_goal...")
+        conversation_history = list(self.messages[-10:])
         self.messages.append({"role": "user", "content": text})
         
         try:
             # Executor로 목표 실행!
-            response_text = self.executor.execute_goal(text, self.session_id)
+            response_text = self.executor.execute_goal(text, self.session_id, conversation_history)
             print("[DEBUG] Executor.execute_goal returned:", response_text)
             
             # 최종 응답 전송

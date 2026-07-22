@@ -35,6 +35,12 @@ class SystemToolsPlugin(BasePlugin):
                     "required": []
                 },
                 required_permissions=[]
+            ),
+            ToolSchema(
+                name="list_plugins",
+                description="현재 실제로 등록된 플러그인과 제공 도구 목록을 조회합니다",
+                input_schema={"type": "object", "properties": {}, "required": []},
+                required_permissions=[]
             )
         ]
     
@@ -43,4 +49,11 @@ class SystemToolsPlugin(BasePlugin):
             return datetime.now().strftime("%H:%M:%S")
         elif tool_name == "get_date":
             return datetime.now().strftime("%Y-%m-%d")
+        elif tool_name == "list_plugins":
+            from core.plugin import get_plugin_registry
+            registry = get_plugin_registry()
+            return "\n".join(
+                f"{plugin.name}: {', '.join(tool.name for tool in plugin.get_tools())}"
+                for plugin in registry.plugins.values() if plugin.enabled
+            )
         return f"오류: 알 수 없는 툴 '{tool_name}'"

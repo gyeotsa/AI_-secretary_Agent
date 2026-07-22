@@ -13,6 +13,7 @@ from core.memory import get_memory, build_memory_context
 from core.workspace import get_workspace_manager
 from core.verifier import get_tool_verifier
 from core.recovery import get_recovery_manager
+from core.conversation_context import ConversationContextResolver
 
 
 class Executor:
@@ -37,6 +38,7 @@ class Executor:
         self.workspace_manager = get_workspace_manager()
         self.verifier = get_tool_verifier()
         self.recovery_manager = get_recovery_manager()
+        self.context_resolver = ConversationContextResolver(self.llm)
 
         # decide_next_action()에서 잠깐 system_prompt를 바꿔 쓰고 나서 복원하기 위한 원본 보관
         # (generate_response() 등 다른 메서드가 Jarvis 페르소나 프롬프트를 계속 쓸 수 있어야 함)
@@ -50,6 +52,7 @@ class Executor:
         self._retry_count = 0  # 복구 시 재시도 횟수 추적
         self._consecutive_failures = 0  # 연속 실패 횟수 추적
         self._total_failures = 0
+        self.terminal_error = None
 
     def initialize(self, goal: str, session_id: Optional[str] = None):
         """초기화: Goal 설정, Scratchpad 초기화, Context 빌드"""
@@ -59,12 +62,20 @@ class Executor:
         self._retry_count = 0
         self._consecutive_failures = 0
         self._total_failures = 0
+        self.terminal_error = None
         self.scratchpad.reset()
         self.scratchpad.set_goal(goal)
         print(f"[Executor] 초기화 완료: Goal='{goal}'")
 
-    def execute_goal(self, goal: str, session_id: Optional[str] = None) -> str:
+    def execute_goal(self, goal: str, session_id: Optional[str] = None,
+                     conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
         """메인 메서드: Goal을 받아서 전체 실행 흐름을 관리"""
+        resolved = self.context_resolver.resolve(goal, conversation_history, session_id or "")
+        if resolved.needs_clarification:
+            return resolved.clarification_question or "어떤 대상을 말씀하시는지 조금 더 구체적으로 알려주세요, 보스."
+        goal = resolved.resolved_request
+        if goal != resolved.original_request:
+            print(f"[Context] 요청 해석: {resolved.original_request!r} → {goal!r} (confidence={resolved.confidence:.2f})")
         unsupported = self._unsupported_capability_message(goal)
         if unsupported:
             return unsupported
@@ -117,6 +128,11 @@ class Executor:
             action = self.decide_next_action(task, context)
             print(f"[Executor] Action 결정: {action}")
 
+            if action.get("action_type") == "error":
+                self.terminal_error = action.get("simple_result", "요청을 실행할 수 없습니다.")
+                self.scratchpad.add_observation("invalid_tool_request", {}, self.terminal_error, False)
+                self.scratchpad.fail_task(task.id, self.terminal_error)
+                return False
             if action.get("action_type") == "use_tool":
                 tool_name = action["tool_name"]
                 tool_input = action.get("tool_input", {})
@@ -143,7 +159,12 @@ class Executor:
                         self.scratchpad.add_observation(tool_name, tool_input, result, False)
                         self.scratchpad.fail_task(task.id, result)
                         self.reflect(task, tool_name, result, False)
-                        return self._total_failures < 3
+                        if self._total_failures >= 3:
+                            self.terminal_error = (
+                                f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
+                            )
+                            return False
+                        return True
 
                 # 8. Observation 처리
                 self.process_observation(task, tool_name, tool_input, result)
@@ -284,6 +305,18 @@ class Executor:
                     return {"action_type": "use_tool", "tool_name": tool_name, "tool_input": tool_input}
                 print(f"[Executor] 모델이 존재하지 않는 Tool을 호출함: {tool_name} → 무시하고 simple_task로 처리")
 
+            legacy = self._extract_json(text) if text else None
+            if legacy:
+                try:
+                    request = json.loads(legacy)
+                    requested_name = request.get("name") if isinstance(request, dict) else None
+                    raw_input = request.get("arguments", {}) if isinstance(request, dict) else {}
+                    if requested_name in get_tool_names() and isinstance(raw_input, dict):
+                        return {"action_type": "use_tool", "tool_name": requested_name, "tool_input": raw_input}
+                    if requested_name:
+                        return {"action_type": "error", "simple_result": f"등록되지 않은 도구 요청을 차단했습니다: {requested_name}"}
+                except json.JSONDecodeError:
+                    pass
             return {"action_type": "simple_task", "simple_result": text or "Task 완료"}
 
         except Exception as e:
@@ -452,16 +485,56 @@ class Executor:
 
     def finalize(self) -> str:
         """최종 종료 처리: 최종 답변 생성"""
+        if self.terminal_error:
+            return self.terminal_error
         return self.generate_response()
 
     def generate_response(self) -> str:
         """최종 답변 생성"""
         context = self.build_context()
+        successful_observations = [
+            {
+                "tool_name": observation.tool_name,
+                "input": observation.input_data,
+                "result": observation.result,
+            }
+            for observation in self.scratchpad.observations
+            if observation.success and observation.tool_name not in {"reflection", "simple_action"}
+        ][-3:]
+
+        # 현재 날씨처럼 구조가 고정된 외부 사실은 LLM이 수치를 누락하거나 바꾸지
+        # 못하도록 검증된 Tool 결과에서 직접 표현한다. 다른 도구 결과는 아래의
+        # 원문 Observation을 LLM에 전달한다.
+        if successful_observations and successful_observations[-1]["tool_name"] == "get_weather":
+            try:
+                weather = json.loads(successful_observations[-1]["result"])
+                requested = weather.get("requested_location") or weather.get("resolved_location") or "요청한 지역"
+                precision = (
+                    " 정확한 동 단위 관측소 값이 아니라 서울시 기준 근사값입니다."
+                    if weather.get("location_precision") == "city" else ""
+                )
+                return (
+                    f"{requested}은(는) 현재 {weather.get('temperature_c')}°C이고, "
+                    f"체감온도는 {weather.get('apparent_temperature_c')}°C입니다, 보스. "
+                    f"오늘 최저 {weather.get('today_min_c')}°C, 최고 {weather.get('today_max_c')}°C이며, "
+                    f"습도는 {weather.get('humidity_percent')}%입니다.{precision}"
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
         system_prompt = """당신은 Jarvis입니다.
 전체 Context를 보고, 최종 답변을 한국어로 작성하세요!
 보스라는 호칭을 사용하세요.
+외부의 현재 사실(날씨, 일정, 메일, 웹 정보 등)은 성공한 Tool Observation에 있는 값만 사용하세요.
+Tool이 실패했거나 관측값이 없으면 절대 수치를 추측하지 말고 확인하지 못했다고 답하세요.
+location_precision이 city이면 동 단위 관측이 아니라 도시 기준 근사값임을 명시하세요.
+최종 Goal에 적힌 '후속 질문의 핵심 요구'에 먼저 직접 답하고, Tool 수치와 이름을 바꾸거나 생략하지 마세요.
 """
-        user_prompt = f"Context:\n{context}\n\n최종 답변은?"
+        verified_results = json.dumps(successful_observations, ensure_ascii=False, indent=2)
+        user_prompt = (
+            f"Context:\n{context}\n\n"
+            f"검증된 Tool 결과 원문:\n{verified_results}\n\n"
+            f"최종 Goal:\n{self.goal}\n\n최종 답변은?"
+        )
 
         try:
             return self.llm.chat([
