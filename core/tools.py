@@ -2,6 +2,7 @@ import os
 import subprocess
 import tempfile
 import json
+import threading
 from typing import Optional
 from datetime import datetime
 from dataclasses import asdict
@@ -10,6 +11,7 @@ from core.harness import SafetyLayer
 from core.user_profile import get_user_profile
 from core.workspace import get_workspace_manager
 from core.plugin import get_plugin_registry
+from core.tts_settings import get_tts_settings_manager
 
 try:
     from duckduckgo_search import DDGS
@@ -48,6 +50,8 @@ class ToolExecutor:
 
         # TTS engine
         self._tts_engine = None
+        self._tts_lock = threading.Lock()
+        self.tts_settings = get_tts_settings_manager()
 
         # Load plugins from plugins directory
         try:
@@ -657,6 +661,10 @@ class ToolExecutor:
 
     def speak_text(self, text: str, audio_processor=None) -> str:
         print(f"[DEBUG] ToolExecutor.speak_text 호출됨: {text}")
+        with self._tts_lock:
+            return self._speak_text_locked(text, audio_processor)
+
+    def _speak_text_locked(self, text: str, audio_processor=None) -> str:
         if pyttsx3 is None:
             return self._speak_with_windows_speech(text, audio_processor)
 
@@ -675,15 +683,10 @@ class ToolExecutor:
             # 한국어 음성 설정 (가능한 경우)
             voices = engine.getProperty('voices')
             print(f"[DEBUG] voices 개수: {len(voices)}")
-            korean_voice_id = None
-            for voice in voices:
-                if 'ko' in str(voice.languages).lower() or 'korean' in voice.name.lower():
-                    korean_voice_id = voice.id
-                    print(f"[DEBUG] 한국어 음성 설정: {voice.name}")
-                    break
-
-            if korean_voice_id:
-                engine.setProperty('voice', korean_voice_id)
+            selected_voice = self.tts_settings.resolve_voice(voices)
+            if selected_voice:
+                engine.setProperty('voice', selected_voice.id)
+                print(f"[DEBUG] TTS 음성 설정: {selected_voice.name}")
 
             # 1. TTS를 WAV 파일로 저장
             temp_wav_path = tempfile.mktemp(suffix=".wav")
@@ -721,8 +724,7 @@ class ToolExecutor:
                 except Exception:
                     pass
 
-    @staticmethod
-    def _speak_with_windows_speech(text: str, audio_processor=None) -> str:
+    def _speak_with_windows_speech(self, text: str, audio_processor=None) -> str:
         """pyttsx3/SAPI COM 실패 시 .NET System.Speech로 대체한다."""
         if os.name != "nt":
             return "TTS 오류: Windows System.Speech는 Windows에서만 사용할 수 있습니다."
@@ -731,6 +733,7 @@ class ToolExecutor:
         try:
             env = os.environ.copy()
             env["JARVIS_TTS_TEXT"] = text or "네, 보스."
+            env["JARVIS_TTS_VOICE"] = self.tts_settings.selected_voice_name
             if audio_processor is not None:
                 fd, wav_path = tempfile.mkstemp(suffix=".wav")
                 os.close(fd)
@@ -740,6 +743,7 @@ class ToolExecutor:
                 "Add-Type -AssemblyName System.Speech; "
                 "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
                 "try { "
+                "if ($env:JARVIS_TTS_VOICE) { $s.SelectVoice($env:JARVIS_TTS_VOICE) }; "
                 "if ($env:JARVIS_TTS_WAV) { $s.SetOutputToWaveFile($env:JARVIS_TTS_WAV) }; "
                 "$s.Speak($env:JARVIS_TTS_TEXT) "
                 "} finally { $s.Dispose() }"

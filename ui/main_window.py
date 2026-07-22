@@ -4,7 +4,7 @@ import random
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, 
                              QFrame, QHBoxLayout, QLineEdit, QPushButton, 
                              QFileDialog, QDialog, QMessageBox, QScrollArea,
-                             QCheckBox)
+                             QCheckBox, QListWidget, QListWidgetItem)
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush
 from .visualizer import AudioVisualizer
@@ -425,6 +425,55 @@ class PermissionSettingsDialog(QDialog):
         else:
             self.permission_manager.revoke_permission(permission_id)
 
+
+class TTSVoiceDialog(QDialog):
+    """설치된 Windows TTS 음성을 클릭해 선택하는 대화상자."""
+
+    def __init__(self, settings_manager, parent=None):
+        super().__init__(parent)
+        self.settings_manager = settings_manager
+        self.setWindowTitle("JARVIS TTS 목소리")
+        self.resize(520, 400)
+        self.setStyleSheet("""
+            QDialog, QListWidget { background-color: #0a0a1a; color: #c7f7ff; }
+            QLabel { color: #00d4ff; }
+            QListWidget { border: 1px solid #00d4ff; border-radius: 6px; }
+            QListWidget::item { padding: 10px; }
+            QListWidget::item:selected { background-color: #16495a; color: #ffffff; }
+            QPushButton { color: #00d4ff; border: 1px solid #00d4ff;
+                          border-radius: 6px; padding: 7px 16px; }
+        """)
+        layout = QVBoxLayout(self)
+        guide = QLabel("사용할 목소리를 클릭하세요. 선택 결과는 자동 저장됩니다.")
+        layout.addWidget(guide)
+        self.voice_list = QListWidget()
+        voices = self.settings_manager.list_voices()
+        for index, voice in enumerate(voices):
+            language = f" · {voice.languages}" if voice.languages else ""
+            item = QListWidgetItem(f"{voice.name}{language}")
+            item.setData(Qt.ItemDataRole.UserRole, (voice.id, voice.name))
+            self.voice_list.addItem(item)
+            if voice.id == self.settings_manager.selected_voice_id:
+                self.voice_list.setCurrentRow(index)
+        self.voice_list.itemClicked.connect(self._select_voice)
+        layout.addWidget(self.voice_list)
+        self.status_label = QLabel(
+            f"현재 목소리: {self.settings_manager.selected_voice_name or '한국어 기본 음성'}"
+        )
+        layout.addWidget(self.status_label)
+        if not voices:
+            self.status_label.setText("사용 가능한 Windows TTS 음성을 찾지 못했습니다.")
+        close_button = QPushButton("닫기")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+
+    def _select_voice(self, item):
+        voice_id, voice_name = item.data(Qt.ItemDataRole.UserRole)
+        if self.settings_manager.select_voice(voice_id, voice_name):
+            self.status_label.setText(f"현재 목소리: {voice_name}")
+        else:
+            self.status_label.setText("목소리 설정에 실패했습니다.")
+
 class JarvisMainWindow(QWidget):
     command_triggered = pyqtSignal(str)
     text_submitted = pyqtSignal(str)
@@ -446,6 +495,7 @@ class JarvisMainWindow(QWidget):
         self.current_workspace_path = ""
         self.current_workspace_name = ""
         self.permission_manager = None
+        self.tts_settings_manager = None
         
         # 원형 사운드바 상태 변수
         self.soundbar_bar_count = 80
@@ -522,6 +572,13 @@ class JarvisMainWindow(QWidget):
         self.permission_btn.setToolTip("권한 관리")
         self.permission_btn.clicked.connect(self.show_permission_settings)
         tab_layout.addWidget(self.permission_btn)
+
+        self.voice_btn = QPushButton("🔊")
+        self.voice_btn.setStyleSheet(button_style)
+        self.voice_btn.setFixedSize(35, 35)
+        self.voice_btn.setToolTip("TTS 목소리 선택")
+        self.voice_btn.clicked.connect(self.show_tts_voice_settings)
+        tab_layout.addWidget(self.voice_btn)
         
         self.sound_bar = SoundBarWidget(self)
         self.sound_bar.hide()
@@ -1108,6 +1165,15 @@ class JarvisMainWindow(QWidget):
             QMessageBox.warning(self, "권한 관리", "권한 관리자가 아직 준비되지 않았습니다.")
             return
         PermissionSettingsDialog(self.permission_manager, self).exec()
+
+    def set_tts_settings_manager(self, settings_manager):
+        self.tts_settings_manager = settings_manager
+
+    def show_tts_voice_settings(self):
+        if self.tts_settings_manager is None:
+            QMessageBox.warning(self, "TTS 목소리", "TTS 설정 관리자가 아직 준비되지 않았습니다.")
+            return
+        TTSVoiceDialog(self.tts_settings_manager, self).exec()
     
     def _on_text_submitted(self):
         text = self.text_input.text().strip()

@@ -86,6 +86,7 @@ class JarvisApp:
         self.memory = get_memory()
         self.llm = get_llm_client()
         self.tool_executor = get_tool_executor()
+        self.window.set_tts_settings_manager(self.tool_executor.tts_settings)
         self.user_profile = get_user_profile()
         self.rag_manager = get_rag_manager()
         self.hardware_manager = get_hardware_manager()

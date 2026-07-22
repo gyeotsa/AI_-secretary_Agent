@@ -1,9 +1,7 @@
 import sys
-import threading
 import numpy as np
 import sounddevice as sd
-import tempfile
-import os
+import time
 from scipy.io import wavfile
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -32,50 +30,31 @@ class AudioProcessor(QObject):
             sr, data = wavfile.read(wav_path)
             self._sample_rate = sr
             
-            # 스테레오면 모노로 변환
-            if len(data.shape) > 1:
-                data = data.mean(axis=1)
-            
-            # 데이터를 float32로 정규화 (-1 ~ 1)
-            data = data.astype(np.float32)
-            peak = np.max(np.abs(data))
-            if peak == 0:
+            # 원본 음량과 채널을 보존한 float32 재생 데이터로 변환한다.
+            if np.issubdtype(data.dtype, np.integer):
+                scale = float(max(abs(np.iinfo(data.dtype).min), np.iinfo(data.dtype).max))
+                playback_data = data.astype(np.float32) / scale
+            else:
+                playback_data = np.clip(data.astype(np.float32), -1.0, 1.0)
+            if not np.any(playback_data):
                 raise ValueError("TTS generated a silent WAV file")
-            data /= peak
 
-            position = 0
-            finished = threading.Event()
-            
-            # 오디오 재생 + 분석
-            def callback(outdata, frames, time, status):
-                if status:
-                    print(status, file=sys.stderr)
-                nonlocal position
-                remaining = len(data) - position
-                if remaining <= frames:
-                    # 남은 데이터가 부족하면 0으로 채우기
-                    outdata[:remaining, 0] = data[position:]
-                    outdata[remaining:, 0] = 0
-                    position = len(data)
-                else:
-                    outdata[:, 0] = data[position:position + frames]
-                    position += frames
-                
-                # 현재 프레임 분석
-                if len(outdata[:, 0]) > 0:
-                    amplitude, freq_bands = self._analyze_audio(outdata[:, 0], sr)
+            analysis_data = playback_data.mean(axis=1) if playback_data.ndim > 1 else playback_data
+            # sd.play의 내부 콜백에는 복사 작업만 남기고 FFT/Qt 시그널은 이 스레드에서
+            # 낮은 주기로 처리해 출력 underflow와 끊김을 방지한다.
+            sd.play(playback_data, sr, blocking=False)
+            analysis_window = max(512, int(sr * 0.05))
+            started_at = time.monotonic()
+            while True:
+                position = int((time.monotonic() - started_at) * sr)
+                if position >= len(analysis_data):
+                    break
+                chunk = analysis_data[position:position + analysis_window]
+                if len(chunk):
+                    amplitude, freq_bands = self._analyze_audio(chunk, sr)
                     self.audio_update.emit(amplitude, freq_bands, True)
-                if position >= len(data):
-                    raise sd.CallbackStop()
-            
-            with sd.OutputStream(
-                samplerate=sr,
-                channels=1,
-                callback=callback,
-                blocksize=self._chunk_size,
-                finished_callback=finished.set,
-            ):
-                finished.wait()
+                time.sleep(0.05)
+            sd.wait()
                 
         except Exception as e:
             print(f"[AudioProcessor] TTS 분석 오류: {e}")
