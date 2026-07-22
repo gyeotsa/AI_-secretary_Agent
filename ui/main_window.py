@@ -460,9 +460,11 @@ class JarvisMainWindow(QWidget):
             self.audio_processor.audio_update.connect(self._on_audio_update)
     
     def init_ui(self):
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | 
-                           Qt.WindowType.WindowStaysOnTopHint | 
-                           Qt.WindowType.Tool)
+        # Tool 창은 Windows 작업 표시줄에 표시되지 않아 최소화 후 복원이 어렵다.
+        # 일반 최상위 Window로 등록하되 기존 frameless/always-on-top 동작은 유지한다.
+        self.setWindowFlags(Qt.WindowType.Window |
+                           Qt.WindowType.FramelessWindowHint |
+                           Qt.WindowType.WindowStaysOnTopHint)
         
         screen = QApplication.primaryScreen().geometry()
         window_width = 800
@@ -530,7 +532,7 @@ class JarvisMainWindow(QWidget):
         self.minimize_btn = QPushButton("─")
         self.minimize_btn.setStyleSheet(button_style)
         self.minimize_btn.setFixedSize(35, 35)
-        self.minimize_btn.clicked.connect(self.showMinimized)
+        self.minimize_btn.clicked.connect(self.minimize_window)
         tab_layout.addWidget(self.minimize_btn)
         
         self.size_btn = QPushButton("□")
@@ -566,7 +568,7 @@ class JarvisMainWindow(QWidget):
         # 미니 모드용 컨트롤 바
         self.mini_control_bar = MiniControlBar(self)
         self.mini_control_bar.hide()
-        self.mini_control_bar.minimize_btn.clicked.connect(self.showMinimized)
+        self.mini_control_bar.minimize_btn.clicked.connect(self.minimize_window)
         self.mini_control_bar.size_btn.clicked.connect(self.toggle_window_mode)
         self.mini_control_bar.close_btn.clicked.connect(self.close_requested.emit)  # 종료 시그널 보내기
         self.main_layout.addWidget(self.mini_control_bar)
@@ -970,7 +972,7 @@ class JarvisMainWindow(QWidget):
             self.showMaximized()
             self.drag_tab.show()
             self.center_widget.show()
-            
+
             # 원형 사운드바 상태 유지
             if self.current_state in [State.LISTENING, State.RESPONDING]:
                 if self.current_state == State.RESPONDING:
@@ -1013,6 +1015,10 @@ class JarvisMainWindow(QWidget):
                 self.soundbar_bar_heights = [0] * self.soundbar_bar_count
                 
         self.update()
+
+    def minimize_window(self):
+        """Windows 작업 표시줄로 창을 최소화한다."""
+        self.setWindowState(self.windowState() | Qt.WindowState.WindowMinimized)
     
     def show_user_text(self, text: str):
         self.user_text_label.setText(f"> {text}")
