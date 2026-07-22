@@ -29,9 +29,13 @@ wheels/
 *.egg
 
 # 가상 환경
+.venv*/
 venv/
 ENV/
 env/
+
+# 로컬 ML 모델
+data/models/
 
 # IDE
 .vscode/

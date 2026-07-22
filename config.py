@@ -53,6 +53,12 @@ class APIConfig:
     MAX_TOKENS: int = field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "4096")))
     TEMPERATURE: float = field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0.7")))
     DB_PATH: str = field(default_factory=lambda: os.getenv("DB_PATH", "data/assistant.db"))
+    RAG_EMBEDDING_MODEL_PATH: str = field(
+        default_factory=lambda: os.getenv("RAG_EMBEDDING_MODEL_PATH", "data/models/bge-m3")
+    )
+    RAG_RERANKER_MODEL_PATH: str = field(
+        default_factory=lambda: os.getenv("RAG_RERANKER_MODEL_PATH", "")
+    )
     
     ALLOWED_PATHS: list = field(default_factory=lambda: [
         p.strip() for p in os.getenv("ALLOWED_PATHS", "").split(",") if p.strip()
@@ -108,6 +114,16 @@ class Config:
     @property
     def DB_PATH(cls):
         return cls.API_CONFIG.DB_PATH
+
+    @classmethod
+    @property
+    def RAG_EMBEDDING_MODEL_PATH(cls):
+        return cls.API_CONFIG.RAG_EMBEDDING_MODEL_PATH
+
+    @classmethod
+    @property
+    def RAG_RERANKER_MODEL_PATH(cls):
+        return cls.API_CONFIG.RAG_RERANKER_MODEL_PATH
     
     @classmethod
     @property

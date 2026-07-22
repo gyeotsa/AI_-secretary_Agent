@@ -2,7 +2,7 @@
 
 ## 판정
 
-기존 문서의 “Level 2 완료” 표기는 실제 동작 검증보다 앞서 있었습니다. 이번 검토에서 1–7단계의 핵심 연결 오류를 수정했고 8단계의 filesystem/git/browser 플러그인 1차 구현을 완료했습니다. 다만 RAG 선택 의존성, Playwright 브라우저 바이너리, 실제 Ollama/Anthropic 및 GUI·하드웨어 연동은 현재 머신의 깨진 `.venv` 때문에 실환경 종단 검증이 남아 있습니다.
+기존 문서의 “Level 2 완료” 표기는 실제 동작 검증보다 앞서 있었습니다. 이번 검토에서 1–7단계의 핵심 연결 오류를 수정했고 8단계의 filesystem/git/browser 플러그인 1차 구현과 9단계 RAG 종단 검증을 완료했습니다. Playwright 브라우저 바이너리, 실제 Ollama/Anthropic 및 GUI·하드웨어 연동은 별도 실환경 검증이 남아 있습니다.
 
 ## 주요 수정
 
@@ -21,11 +21,13 @@
 - 로컬 import 정합성 검사: 발견된 KnowledgeUpdater/Scheduler 불일치 수정.
 - Tool Registry: 70개/고유 70개, browser/filesystem/git/system_tools 자동 등록 확인.
 - 안전성 회귀: 허용 루트와 이름이 비슷한 형제 경로 차단, `&`/`|` 명령 연결 차단, 승인 콜백 없는 파일 쓰기 거부 확인.
-- 제한: 저장소 `.venv`는 삭제된 Python 3.10을 가리키며 실행 불가. 번들 Python에는 `pytest`, `python-dotenv`, `anthropic`이 없어 전체 기존 테스트와 실제 LLM 호출은 미실행.
+- Python 3.12 `.venv` 재생성 및 전체 `requirements.txt` 설치 완료. 기존 환경은 `.venv-python310-broken`으로 보존.
+- RAG: `BAAI/bge-m3` 로컬 모델(1024차원), Chroma 문서 추가·한국어 검색·재시작 영속성 테스트 통과.
+- 자동 회귀 테스트: Level 2 안전성 4개 + RAG 종단 테스트 1개, 총 5개 통과.
 
 ## 남은 우선순위
 
-1. Python 환경 재생성 후 `requirements.txt` 설치 및 전체 테스트 실행.
-2. 9단계: chromadb/sentence-transformers 설치, 임베딩 모델 로컬 고정, RAG 종단 테스트.
-3. Playwright 설치 및 `playwright install chromium` 후 브라우저 실동작 검증.
+1. 10단계: 로컬 LLM과 Claude API의 역할별 하이브리드 라우팅 설계·검증.
+2. Playwright 설치 및 `playwright install chromium` 후 브라우저 실동작 검증.
+3. 실제 Ollama/Anthropic, GUI, 마이크·카메라·TTS 종단 검증.
 4. mail/calendar는 OAuth 토큰 저장·권한·계정 선택 정책을 먼저 확정한 뒤 확장.

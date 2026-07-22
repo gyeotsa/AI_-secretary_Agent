@@ -30,29 +30,38 @@ class VectorRAGManager:
             
             self.vector_db_dir = os.path.join(self.data_dir, "chroma_db")
             self.chroma_client = chromadb.PersistentClient(path=self.vector_db_dir)
-            self.collection = self.chroma_client.get_or_create_collection(name="jarvis_rag")
             
-            # 2. Embedding 모델 초기화 (BAAI/bge-small-ko-v1.5)
+            # 2. Embedding 모델 초기화 (로컬 고정, 암묵적 다운로드 금지)
+            embedding_model_path = os.path.abspath(Config.RAG_EMBEDDING_MODEL_PATH)
+            if not os.path.isdir(embedding_model_path):
+                raise FileNotFoundError(
+                    f"로컬 임베딩 모델이 없습니다: {embedding_model_path}"
+                )
             self.embedding_model = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name="BAAI/bge-small-ko-v1.5"
+                model_name=embedding_model_path
+            )
+            self.collection = self.chroma_client.get_or_create_collection(
+                name="jarvis_rag_bge_m3",
+                embedding_function=self.embedding_model,
             )
             
             # 3. Reranker 초기화 (BAAI/bge-reranker-v2-m3)
             try:
                 from sentence_transformers import CrossEncoder
-                self.reranker = CrossEncoder("BAAI/bge-reranker-v2-m3")
+                reranker_path = Config.RAG_RERANKER_MODEL_PATH
+                self.reranker = CrossEncoder(os.path.abspath(reranker_path)) if reranker_path else None
             except ImportError:
-                print("⚠️ Reranker 모듈이 없어서 키워드 기반 리랭킹 사용합니다.")
+                print("[RAG] Reranker 모듈이 없어서 키워드 기반 리랭킹을 사용합니다.")
                 self.reranker = None
             
             self.use_vector_rag = True
-            print("✅ Vector RAG 초기화 완료!")
+            print("[RAG] Vector RAG 초기화 완료")
             
         except ImportError as e:
-            print(f"⚠️ Vector RAG 라이브러리가 없어서 Simple RAG로 fallback합니다: {e}")
+            print(f"[RAG] Vector RAG 라이브러리가 없어 Simple RAG로 fallback합니다: {e}")
             self.use_vector_rag = False
         except Exception as e:
-            print(f"⚠️ Vector RAG 초기화 오류: {e}, Simple RAG로 fallback합니다.")
+            print(f"[RAG] Vector RAG 초기화 오류: {e}, Simple RAG로 fallback합니다.")
             self.use_vector_rag = False
     
     def _load(self):
@@ -61,7 +70,7 @@ class VectorRAGManager:
                 with open(self.rag_file, "r", encoding="utf-8") as f:
                     self.documents = json.load(f)
             except Exception as e:
-                print(f"⚠️ RAG 파일 로드 오류: {e}")
+                print(f"[RAG] 파일 로드 오류: {e}")
                 self.documents = {}
     
     def _save(self):
@@ -69,7 +78,7 @@ class VectorRAGManager:
             with open(self.rag_file, "w", encoding="utf-8") as f:
                 json.dump(self.documents, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"⚠️ RAG 파일 저장 오류: {e}")
+            print(f"[RAG] 파일 저장 오류: {e}")
     
     def chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 50) -> list:
         sentences = re.split(r'(?<=[.!?])\s+', text)
@@ -91,7 +100,7 @@ class VectorRAGManager:
     
     def add_document(self, file_path: str) -> str:
         if not os.path.exists(file_path):
-            return f"⚠️ 파일 '{file_path}'가 존재하지 않습니다."
+            return f"오류: 파일 '{file_path}'가 존재하지 않습니다."
         
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -99,7 +108,7 @@ class VectorRAGManager:
             
             chunks = self.chunk_text(text)
             if not chunks:
-                return "⚠️ 파일 내용이 비어있습니다."
+                return "오류: 파일 내용이 비어있습니다."
             
             doc_id = os.path.basename(file_path)
             self.documents[doc_id] = {
@@ -124,9 +133,9 @@ class VectorRAGManager:
                         documents=chunks,
                         metadatas=metadatas
                     )
-                    print(f"✅ Vector DB에 문서 '{doc_id}' 추가 완료!")
+                    print(f"[RAG] Vector DB에 문서 '{doc_id}' 추가 완료")
                 except Exception as e:
-                    print(f"⚠️ Vector DB 추가 오류: {e}")
+                    print(f"[RAG] Vector DB 추가 오류: {e}")
             
             return f"문서 '{doc_id}'가 성공적으로 추가되었습니다! ({len(chunks)}개 청크)"
         
@@ -182,7 +191,7 @@ class VectorRAGManager:
                 ]
         
         except Exception as e:
-            print(f"⚠️ Vector 검색 오류: {e}, Simple 검색으로 fallback합니다.")
+            print(f"[RAG] Vector 검색 오류: {e}, Simple 검색으로 fallback합니다.")
             return self._simple_search(query, top_k)
     
     def _simple_search(self, query: str, top_k: int) -> list:
