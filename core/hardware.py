@@ -48,7 +48,9 @@ class HardwareManager:
                 self.device = "cpu"
                 print("[CPU] GPU를 사용할 수 없어 CPU를 사용합니다.")
             
-            self.whisper_model = whisper.load_model("base", device=self.device)
+            self.whisper_model_name = Config.WHISPER_MODEL
+            print(f"[STT] Whisper 모델 로딩: {self.whisper_model_name}")
+            self.whisper_model = whisper.load_model(self.whisper_model_name, device=self.device)
 
     @staticmethod
     def list_input_devices():

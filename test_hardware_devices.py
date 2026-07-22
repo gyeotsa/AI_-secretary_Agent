@@ -6,6 +6,10 @@ import core.hardware as hardware
 import core.multimodal as multimodal
 
 
+def test_default_whisper_model_is_small():
+    assert hardware.Config.WHISPER_MODEL == "small"
+
+
 def _bare_hardware_manager():
     manager = hardware.HardwareManager.__new__(hardware.HardwareManager)
     manager.microphone_device = None

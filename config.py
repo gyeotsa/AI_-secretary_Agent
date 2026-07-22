@@ -69,6 +69,7 @@ class APIConfig:
     )
     RAG_DEVICE: str = field(default_factory=lambda: os.getenv("RAG_DEVICE", "auto").lower())
     WHISPER_DEVICE: str = field(default_factory=lambda: os.getenv("WHISPER_DEVICE", "auto").lower())
+    WHISPER_MODEL: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "small").lower())
     MICROPHONE_DEVICE: str = field(default_factory=lambda: os.getenv("MICROPHONE_DEVICE", "auto"))
     CAMERA_INDEX: str = field(default_factory=lambda: os.getenv("CAMERA_INDEX", "auto"))
     
@@ -156,6 +157,11 @@ class Config:
     @property
     def WHISPER_DEVICE(cls):
         return cls.API_CONFIG.WHISPER_DEVICE
+
+    @classmethod
+    @property
+    def WHISPER_MODEL(cls):
+        return cls.API_CONFIG.WHISPER_MODEL
 
     @classmethod
     @property
