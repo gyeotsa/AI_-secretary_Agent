@@ -3,10 +3,12 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.harness import SafetyLayer
 from core.plugin import get_plugin_registry
 from core.executor import Executor
+from core.permission import PermissionManager
 from core.tools import AUTO_LOOP_EXCLUDED_TOOLS, get_tool_executor, get_tools_schema
 
 
@@ -33,7 +35,9 @@ class ToolRegistryTests(unittest.TestCase):
     def test_confirm_tool_is_denied_without_permission_callback(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             target = Path(directory) / "denied.txt"
-            result = get_tool_executor().execute_tool("write_file", {"path": str(target), "content": "x"})
+            manager = PermissionManager(str(Path(directory) / "permissions.json"))
+            with patch("core.permission.get_permission_manager", return_value=manager):
+                result = get_tool_executor().execute_tool("write_file", {"path": str(target), "content": "x"})
             self.assertTrue(result.startswith("오류: 권한이 거부되었습니다:"))
             self.assertFalse(target.exists())
 

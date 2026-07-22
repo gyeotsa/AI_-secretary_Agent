@@ -3,7 +3,8 @@ import math
 import random
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, 
                              QFrame, QHBoxLayout, QLineEdit, QPushButton, 
-                             QFileDialog, QDialog, QMessageBox)
+                             QFileDialog, QDialog, QMessageBox, QScrollArea,
+                             QCheckBox)
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush
 from .visualizer import AudioVisualizer
@@ -336,7 +337,7 @@ class PermissionRequestDialog(QDialog):
         layout.addWidget(title_label)
         
         # 권한 설명 라벨
-        desc_label = QLabel(permission_description)
+        desc_label = QLabel(f"{permission_description}\n선택한 결과는 권한 설정에 영구 저장됩니다.")
         desc_label.setWordWrap(True)
         desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(desc_label)
@@ -363,6 +364,67 @@ class PermissionRequestDialog(QDialog):
         self.result_value = False
         self.reject()
 
+
+class PermissionSettingsDialog(QDialog):
+    """저장된 권한을 한 화면에서 확인하고 영구 허용/차단하는 대화상자."""
+
+    def __init__(self, permission_manager, parent=None):
+        super().__init__(parent)
+        self.permission_manager = permission_manager
+        self.setWindowTitle("JARVIS 권한 관리")
+        self.resize(560, 520)
+        self.setStyleSheet("""
+            QDialog, QScrollArea, QWidget { background-color: #0a0a1a; }
+            QLabel { color: #c7f7ff; }
+            QCheckBox { color: #00d4ff; font-weight: bold; spacing: 10px; }
+            QPushButton { color: #00d4ff; border: 1px solid #00d4ff;
+                          border-radius: 6px; padding: 7px 16px; }
+        """)
+        layout = QVBoxLayout(self)
+        intro = QLabel("허용된 권한은 다시 묻지 않고 실행하며, 차단된 권한은 요청창 없이 거부합니다.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        rows = QVBoxLayout(content)
+        for permission in self.permission_manager.get_all_permissions():
+            row = QFrame()
+            row_layout = QHBoxLayout(row)
+            labels = QVBoxLayout()
+            name = QLabel(f"{permission.name}  ({permission.id})")
+            name.setStyleSheet("font-weight: bold; color: #ffffff;")
+            description = QLabel(permission.description)
+            description.setStyleSheet("color: #8db8c0;")
+            labels.addWidget(name)
+            labels.addWidget(description)
+            row_layout.addLayout(labels, 1)
+            toggle = QCheckBox("허용")
+            toggle.setChecked(self.permission_manager.check_permission(permission.id))
+            if permission.level.value == "safe":
+                toggle.setEnabled(False)
+                toggle.setToolTip("안전 권한은 항상 허용됩니다.")
+            else:
+                toggle.toggled.connect(
+                    lambda checked, permission_id=permission.id:
+                    self._set_permission(permission_id, checked)
+                )
+            row_layout.addWidget(toggle)
+            rows.addWidget(row)
+        rows.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+        close_button = QPushButton("닫기")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+
+    def _set_permission(self, permission_id: str, allowed: bool):
+        if allowed:
+            self.permission_manager.grant_permission(permission_id)
+        else:
+            self.permission_manager.revoke_permission(permission_id)
+
 class JarvisMainWindow(QWidget):
     command_triggered = pyqtSignal(str)
     text_submitted = pyqtSignal(str)
@@ -383,6 +445,7 @@ class JarvisMainWindow(QWidget):
         self.audio_processor = audio_processor
         self.current_workspace_path = ""
         self.current_workspace_name = ""
+        self.permission_manager = None
         
         # 원형 사운드바 상태 변수
         self.soundbar_bar_count = 80
@@ -450,6 +513,13 @@ class JarvisMainWindow(QWidget):
         self.workspace_btn.setToolTip("작업 폴더 선택")
         self.workspace_btn.clicked.connect(self._select_workspace)
         tab_layout.addWidget(self.workspace_btn)
+
+        self.permission_btn = QPushButton("🔐")
+        self.permission_btn.setStyleSheet(button_style)
+        self.permission_btn.setFixedSize(35, 35)
+        self.permission_btn.setToolTip("권한 관리")
+        self.permission_btn.clicked.connect(self.show_permission_settings)
+        tab_layout.addWidget(self.permission_btn)
         
         self.sound_bar = SoundBarWidget(self)
         self.sound_bar.hide()
@@ -1023,6 +1093,15 @@ class JarvisMainWindow(QWidget):
         dialog = PermissionRequestDialog(permission_name, permission_description, self)
         dialog.exec()
         return dialog.result_value
+
+    def set_permission_manager(self, permission_manager):
+        self.permission_manager = permission_manager
+
+    def show_permission_settings(self):
+        if self.permission_manager is None:
+            QMessageBox.warning(self, "권한 관리", "권한 관리자가 아직 준비되지 않았습니다.")
+            return
+        PermissionSettingsDialog(self.permission_manager, self).exec()
     
     def _on_text_submitted(self):
         text = self.text_input.text().strip()

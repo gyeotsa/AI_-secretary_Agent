@@ -20,6 +20,12 @@ class PermissionLevel(Enum):
     DENIED = "denied"  # 영구 거부
 
 
+class PermissionDecision(Enum):
+    UNDECIDED = "undecided"
+    ALLOW = "allow"
+    BLOCK = "block"
+
+
 @dataclass
 class Permission:
     id: str
@@ -27,6 +33,7 @@ class Permission:
     description: str
     level: PermissionLevel
     granted: bool = False
+    decision: PermissionDecision = PermissionDecision.UNDECIDED
     granted_at: Optional[datetime] = None
     last_used: Optional[datetime] = None
 
@@ -150,6 +157,12 @@ class PermissionManager:
                     for perm_id, perm_data in data.items():
                         if perm_id in self.permissions:
                             self.permissions[perm_id].granted = perm_data.get("granted", False)
+                            saved_decision = perm_data.get("decision")
+                            if saved_decision:
+                                self.permissions[perm_id].decision = PermissionDecision(saved_decision)
+                            elif perm_data.get("granted", False):
+                                # 이전 형식에서 저장된 허용 상태를 그대로 영구 허용으로 승격한다.
+                                self.permissions[perm_id].decision = PermissionDecision.ALLOW
                             self.permissions[perm_id].granted_at = datetime.fromisoformat(
                                 perm_data["granted_at"]) if perm_data.get("granted_at") else None
                             self.permissions[perm_id].last_used = datetime.fromisoformat(
@@ -163,6 +176,7 @@ class PermissionManager:
         for perm_id, perm in self.permissions.items():
             data[perm_id] = {
                 "granted": perm.granted,
+                "decision": perm.decision.value,
                 "granted_at": perm.granted_at.isoformat() if perm.granted_at else None,
                 "last_used": perm.last_used.isoformat() if perm.last_used else None
             }
@@ -182,17 +196,21 @@ class PermissionManager:
             perm.last_used = datetime.now()
             self._save()
             return True
-        if perm.granted:
-            if perm.level == PermissionLevel.SYSTEM:
-                perm.last_used = datetime.now()
-                self._save()
-                return True
+        if perm.decision != PermissionDecision.UNDECIDED:
+            perm.last_used = datetime.now()
+            self._save()
+            return perm.decision == PermissionDecision.ALLOW
         # 권한 요청 필요
         if self._request_callback:
             granted = self._request_callback(perm)
             if granted:
                 perm.granted = True
                 perm.granted_at = datetime.now()
+                perm.decision = PermissionDecision.ALLOW
+            else:
+                perm.granted = False
+                perm.granted_at = None
+                perm.decision = PermissionDecision.BLOCK
             perm.last_used = datetime.now()
             self._save()
             return granted
@@ -203,6 +221,7 @@ class PermissionManager:
         """권한 직접 부여"""
         if permission_id in self.permissions:
             self.permissions[permission_id].granted = True
+            self.permissions[permission_id].decision = PermissionDecision.ALLOW
             self.permissions[permission_id].granted_at = datetime.now()
             self._save()
 
@@ -210,6 +229,7 @@ class PermissionManager:
         """권한 취소"""
         if permission_id in self.permissions:
             self.permissions[permission_id].granted = False
+            self.permissions[permission_id].decision = PermissionDecision.BLOCK
             self.permissions[permission_id].granted_at = None
             self._save()
 
@@ -220,7 +240,7 @@ class PermissionManager:
         perm = self.permissions[permission_id]
         if perm.level == PermissionLevel.SAFE:
             return True
-        return perm.granted
+        return perm.decision == PermissionDecision.ALLOW
 
     def get_all_permissions(self) -> List[Permission]:
         """모든 권한 목록 반환"""

@@ -90,6 +90,7 @@ class JarvisApp:
         self.hardware_manager = get_hardware_manager()
         self.workspace_manager = get_workspace_manager()
         self.permission_manager = get_permission_manager()
+        self.window.set_permission_manager(self.permission_manager)
         self.executor = get_executor()
         self.automation_engine = get_automation_engine()
         self.signals = AppSignals()  # <-- 여기로 옮겼어요!
