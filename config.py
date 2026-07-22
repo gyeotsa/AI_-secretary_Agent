@@ -69,6 +69,8 @@ class APIConfig:
     )
     RAG_DEVICE: str = field(default_factory=lambda: os.getenv("RAG_DEVICE", "auto").lower())
     WHISPER_DEVICE: str = field(default_factory=lambda: os.getenv("WHISPER_DEVICE", "auto").lower())
+    MICROPHONE_DEVICE: str = field(default_factory=lambda: os.getenv("MICROPHONE_DEVICE", "auto"))
+    CAMERA_INDEX: str = field(default_factory=lambda: os.getenv("CAMERA_INDEX", "auto"))
     
     ALLOWED_PATHS: list = field(default_factory=lambda: [
         p.strip() for p in os.getenv("ALLOWED_PATHS", "").split(",") if p.strip()
@@ -154,6 +156,16 @@ class Config:
     @property
     def WHISPER_DEVICE(cls):
         return cls.API_CONFIG.WHISPER_DEVICE
+
+    @classmethod
+    @property
+    def MICROPHONE_DEVICE(cls):
+        return cls.API_CONFIG.MICROPHONE_DEVICE
+
+    @classmethod
+    @property
+    def CAMERA_INDEX(cls):
+        return cls.API_CONFIG.CAMERA_INDEX
     
     @classmethod
     @property

@@ -72,6 +72,7 @@ class AppSignals(QObject):
     progress_update = pyqtSignal(str)
     proactive_message = pyqtSignal(str)
     control_response_ready = pyqtSignal(object)
+    voice_text_detected = pyqtSignal(str)
 
 
 class JarvisApp:
@@ -127,6 +128,7 @@ class JarvisApp:
         self.signals.progress_update.connect(self._on_progress_update)
         self.signals.proactive_message.connect(self._on_proactive_message)
         self.signals.control_response_ready.connect(self._on_control_response)
+        self.signals.voice_text_detected.connect(self._on_user_input)
         self.signals.tts_finished.connect(self._reset_all)
         self.automation_engine.set_result_callback(self._on_automation_result)
         self.proactive_policy = ProactiveNotificationPolicy(self.notify_user)
@@ -439,8 +441,8 @@ class JarvisApp:
         self.last_response = result
     
     def _on_continuous_text_detected(self, text: str):
-        # 지속적인 음성 감지에서 텍스트가 감지되면 호출
-        QTimer.singleShot(0, lambda: self._on_user_input(text))
+        # 하드웨어 worker에서 Qt GUI thread로 안전하게 전달
+        self.signals.voice_text_detected.emit(text)
     
     def _speak_with_check(self, text: str):
         print(f"[DEBUG] _speak_with_check 호출됨: {text}")

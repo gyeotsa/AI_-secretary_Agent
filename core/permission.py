@@ -90,7 +90,9 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "browser_screenshot": "browser",
     # 카메라/마이크
     "capture_camera": "camera",
+    "list_camera_devices": "camera",
     "listen": "microphone",
+    "list_audio_input_devices": "microphone",
     "start_wakeword_detection": "microphone",
     "start_clap_detection": "microphone",
     # 데이터(파일 아닌 것) 삭제

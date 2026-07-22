@@ -28,6 +28,10 @@ class HardwareManager:
         self.on_text_detected = None  # 텍스트 감지 시 호출될 콜백
         self.audio_processor = None  # 오디오 프로세서
         self.device = "cpu"
+        self.microphone_device = None
+        self.microphone_info = None
+        self._stream_ready = threading.Event()
+        self._stream_error = ""
         
         if SOUND_AVAILABLE:
             # GPU 사용 가능 여부 확인
@@ -46,6 +50,42 @@ class HardwareManager:
             
             self.whisper_model = whisper.load_model("base", device=self.device)
 
+    @staticmethod
+    def list_input_devices():
+        if not SOUND_AVAILABLE:
+            return []
+        return [dict(device) for device in sd.query_devices() if device["max_input_channels"] > 0]
+
+    def _select_microphone(self):
+        devices = self.list_input_devices()
+        if not devices:
+            raise RuntimeError("사용 가능한 마이크 입력 장치가 없습니다.")
+        requested = str(Config.MICROPHONE_DEVICE).strip()
+        selected = None
+        if requested and requested.casefold() != "auto":
+            if requested.isdigit():
+                selected = next((item for item in devices if item["index"] == int(requested)), None)
+            else:
+                selected = next((item for item in devices if requested.casefold() in item["name"].casefold()), None)
+            if selected is None:
+                raise RuntimeError(f"설정한 마이크를 찾을 수 없습니다: {requested}")
+        if selected is None:
+            default_index = sd.default.device[0]
+            selected = next((item for item in devices if item["index"] == default_index), devices[0])
+        sample_rate = int(selected["default_samplerate"] or 16000)
+        sd.check_input_settings(device=selected["index"], channels=1, samplerate=sample_rate, dtype="float32")
+        self.microphone_device, self.microphone_info = selected["index"], selected
+        return selected, sample_rate
+
+    @staticmethod
+    def _to_16khz(audio: np.ndarray, source_rate: int) -> np.ndarray:
+        if source_rate == 16000:
+            return audio.astype(np.float32, copy=False)
+        size = max(1, round(len(audio) * 16000 / source_rate))
+        source = np.linspace(0.0, 1.0, len(audio), endpoint=False)
+        target = np.linspace(0.0, 1.0, size, endpoint=False)
+        return np.interp(target, source, audio).astype(np.float32)
+
     def start_continuous_listen(self, on_text_callback, audio_processor=None) -> str:
         """지속적인 음성 감지 시작 (웨이크워드/박수 감지 포함)"""
         if not SOUND_AVAILABLE:
@@ -57,124 +97,97 @@ class HardwareManager:
         self.running = True
         self.on_text_detected = on_text_callback
         self.audio_processor = audio_processor
+        self._stream_ready.clear()
+        self._stream_error = ""
         
         def continuous_detect():
-            print("[마이크] 지속적인 음성 감지 시작...")
-            fs = 16000
-            chunk_duration = 0.1  # 0.1초마다 오디오 수집
-            chunk_size = int(chunk_duration * fs)
-            
-            silence_threshold = 2  # 2초 무음 시 전송 (보스 요청)
-            silence_start = None
-            current_text = ""
-            is_listening = False  # 웨이크워드/박수 감지 후 청취 모드
-            last_clap_time_local = 0
-            clap_count_local = 0
-            
-            # 오디오 버퍼 (최근 2초치 데이터 저장)
-            audio_buffer = np.array([], dtype=np.float32)
-            buffer_max_size = int(2 * fs)  # 2초
-            
-            while self.running:
-                try:
-                    # 0.1초 오디오 청크 수집
-                    chunk = sd.rec(chunk_size, samplerate=fs, channels=1, dtype='float32')
-                    sd.wait()
-                    chunk = chunk.flatten()
-                    
-                    # 버퍼에 추가
-                    audio_buffer = np.concatenate((audio_buffer, chunk))
-                    if len(audio_buffer) > buffer_max_size:
-                        audio_buffer = audio_buffer[-buffer_max_size:]
-                    
-                    # 사운드바 업데이트
-                    if self.audio_processor:
-                        try:
-                            amplitude, freq_bands = self.audio_processor._analyze_audio(chunk, fs)
-                            self.audio_processor.audio_update.emit(amplitude, freq_bands, False)
-                        except Exception as e:
-                            print(f"[사운드바 업데이트 오류]: {e}")
-                    
-                    if not is_listening:
-                        # 웨이크워드/박수 감지 모드 - 버퍼에 쌓인 2초 데이터 사용
-                        
-                        # 1. 웨이크워드 감지 (버퍼의 2초 데이터 사용)
-                        if len(audio_buffer) >= buffer_max_size:
-                            result = self.whisper_model.transcribe(audio_buffer, language="ko")
-                            text = result["text"].strip().lower()
-                            
-                            if "자비스" in text or "자비" in text:
-                                print(f"\n[웨이크워드] 감지! '{text}'")
-                                is_listening = True
-                                # "자비스"나 "자비" 텍스트를 제외한 나머지 텍스트를 current_text에 추가
-                                cleaned_text = text.replace("자비스", "").replace("자비", "").strip()
-                                if cleaned_text:
-                                    current_text = cleaned_text
-                                    print(f"[명령] 감지된 명령: {current_text}")
-                                    silence_start = None
-                                else:
-                                    current_text = ""
-                                    silence_start = None
-                                # 버퍼 초기화
-                                audio_buffer = np.array([], dtype=np.float32)
-                                continue
-                        
-                        # 2. 박수 감지 (에너지 기반 - 현재 청크 사용)
-                        energy = np.sum(chunk ** 2) / len(chunk)
-                        energy_db = 10 * np.log10(energy + 1e-10)
-                        
-                        if energy_db > -10:
-                            current_time = time.time()
-                            if current_time - last_clap_time_local > 0.3:
-                                clap_count_local += 1
-                                last_clap_time_local = current_time
-                                print(f"[박수] 감지! (총 {clap_count_local}번)")
-                                
-                                if clap_count_local >= 2:
-                                    print("[박수] 두 번 박수 감지! 음성 청취 시작!")
-                                    is_listening = True
-                                    current_text = ""
-                                    silence_start = None
-                                    clap_count_local = 0
-                                    # 버퍼 초기화
-                                    audio_buffer = np.array([], dtype=np.float32)
-                    else:
-                        # 청취 모드 - 계속 버퍼에 쌓으면서 주기적으로 음성 인식
-                        # 0.5초마다 한 번씩 인식 (과도한 CPU 사용 방지)
-                        if len(audio_buffer) >= int(0.5 * fs):
-                            result = self.whisper_model.transcribe(audio_buffer, language="ko")
-                            text = result["text"].strip()
-                            
-                            if text:
-                                current_text += " " + text
-                                current_text = current_text.strip()
-                                print(f"[음성] 감지된 텍스트: {current_text}")
-                                silence_start = None  # 무음 타이머 리셋
-                                # 버퍼 초기화 (새로운 음성 수집 시작)
-                                audio_buffer = np.array([], dtype=np.float32)
-                            else:
-                                # 무음 감지
-                                if silence_start is None:
-                                    silence_start = time.time()
-                                elif time.time() - silence_start > silence_threshold:
-                                    # 2초 무음 시 텍스트 전송
-                                    if current_text:
-                                        print(f"[전송] 텍스트 전송: {current_text}")
-                                        if self.on_text_detected:
-                                            self.on_text_detected(current_text)
-                                    # 리셋
-                                    current_text = ""
-                                    silence_start = None
-                                    is_listening = False
-                                    audio_buffer = np.array([], dtype=np.float32)
-                except Exception as e:
-                    print(f"음성 감지 오류: {e}")
-                    time.sleep(1)
+            try:
+                info, native_rate = self._select_microphone()
+                chunk_size = max(256, int(native_rate * 0.1))
+                print(f"[마이크] 입력 장치 연결: {info['name']} (index={info['index']}, {native_rate}Hz)")
+                with sd.InputStream(device=info["index"], samplerate=native_rate, channels=1,
+                                    dtype="float32", blocksize=chunk_size) as stream:
+                    self._stream_ready.set()
+                    wake_buffer = np.array([], dtype=np.float32)
+                    command_buffer = np.array([], dtype=np.float32)
+                    command_prefix = ""
+                    listening = False
+                    last_voice = time.monotonic()
+                    last_wake_check = 0.0
+                    noise_samples = []
+                    speech_threshold = 0.0005
+                    clap_count = 0
+                    last_clap = 0.0
+                    while self.running:
+                        chunk, overflowed = stream.read(chunk_size)
+                        chunk = chunk[:, 0].copy()
+                        if overflowed:
+                            print("[마이크] 입력 버퍼 overflow 감지")
+                        rms = float(np.sqrt(np.mean(chunk * chunk)))
+                        if len(noise_samples) < 10:
+                            noise_samples.append(rms)
+                            if len(noise_samples) == 10:
+                                speech_threshold = max(0.0003, float(np.median(noise_samples)) * 4)
+                                print(f"[마이크] 자동 음성 임계값: {speech_threshold:.6f}")
+                        if self.audio_processor:
+                            amplitude, bands = self.audio_processor._analyze_audio(chunk, native_rate)
+                            self.audio_processor.audio_update.emit(amplitude, bands, False)
+                        audio16 = self._to_16khz(chunk, native_rate)
+                        if not listening:
+                            now = time.monotonic()
+                            peak = float(np.max(np.abs(chunk)))
+                            clap_threshold = max(0.05, speech_threshold * 20)
+                            if peak >= clap_threshold and now - last_clap >= 0.25:
+                                clap_count = clap_count + 1 if now - last_clap <= 1.2 else 1
+                                last_clap = now
+                                if clap_count >= 2:
+                                    print("[박수] 두 번 감지, 음성 청취 시작")
+                                    listening = True
+                                    command_prefix = ""
+                                    command_buffer = np.array([], dtype=np.float32)
+                                    last_voice = now
+                                    clap_count = 0
+                                    wake_buffer = np.array([], dtype=np.float32)
+                                    continue
+                            wake_buffer = np.concatenate((wake_buffer, audio16))[-32000:]
+                            if len(wake_buffer) >= 32000 and now - last_wake_check >= 1.5:
+                                last_wake_check = now
+                                text = self.whisper_model.transcribe(wake_buffer, language="ko")["text"].strip().lower()
+                                if "자비스" in text or "자비" in text:
+                                    print(f"[웨이크워드] 감지: {text}")
+                                    listening = True
+                                    command_prefix = text.replace("자비스", "").replace("자비", "").strip()
+                                    command_buffer = np.array([], dtype=np.float32)
+                                    last_voice = now
+                                    wake_buffer = np.array([], dtype=np.float32)
+                        else:
+                            command_buffer = np.concatenate((command_buffer, audio16))
+                            if rms >= speech_threshold:
+                                last_voice = time.monotonic()
+                            if time.monotonic() - last_voice >= 2.0 and len(command_buffer) >= 4800:
+                                text = self.whisper_model.transcribe(command_buffer, language="ko")["text"].strip()
+                                text = " ".join(part for part in (command_prefix, text) if part).strip()
+                                if text and self.on_text_detected:
+                                    print(f"[전송] 음성 인식 결과: {text}")
+                                    self.on_text_detected(text)
+                                listening = False
+                                command_prefix = ""
+                                command_buffer = np.array([], dtype=np.float32)
+            except Exception as exc:
+                self._stream_error = str(exc)
+                self.running = False
+                self._stream_ready.set()
+                print(f"[마이크] 입력 장치 오류: {exc}")
         
         self.continuous_listen_thread = threading.Thread(target=continuous_detect, daemon=True)
         self.continuous_listen_thread.start()
-        
-        return "[성공] 지속적인 음성 감지가 시작되었습니다! '자비스' 라고 부르거나 두 번 박수를 쳐보세요."
+        if not self._stream_ready.wait(timeout=5):
+            self.running = False
+            return "오류: 마이크 입력 장치 초기화 시간이 초과되었습니다."
+        if self._stream_error:
+            return f"오류: 마이크 입력 장치를 열 수 없습니다: {self._stream_error}"
+        return (f"[성공] 마이크 연결: {self.microphone_info['name']} "
+                f"(장치 {self.microphone_device}). '자비스'라고 불러주세요.")
 
     def stop_continuous_listen(self) -> str:
         if not self.running:
@@ -197,14 +210,17 @@ class HardwareManager:
         
         def detect_wakeword():
             print("[마이크] 웨이크워드 감지 시작... '자비스' 라고 말하세요!")
+            info, native_rate = self._select_microphone()
             while self.running:
                 try:
                     duration = 2
-                    fs = 16000
-                    recording = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='float32')
+                    recording = sd.rec(
+                        int(duration * native_rate), samplerate=native_rate, channels=1,
+                        dtype="float32", device=info["index"]
+                    )
                     sd.wait()
-                    
-                    result = self.whisper_model.transcribe(recording.flatten(), language="ko")
+                    audio = self._to_16khz(recording[:, 0], native_rate)
+                    result = self.whisper_model.transcribe(audio, language="ko")
                     text = result["text"].strip().lower()
                     
                     if "자비스" in text or "자비" in text:
@@ -246,9 +262,9 @@ class HardwareManager:
         
         def detect_clap():
             print("👏 박수 감지 시작... 박수를 쳐보세요!")
-            fs = 44100
+            info, native_rate = self._select_microphone()
             
-            def audio_callback(indata, frames, time, status):
+            def audio_callback(indata, frames, callback_time, status):
                 if status:
                     print(status)
                 
@@ -267,7 +283,10 @@ class HardwareManager:
                             self._on_clap_detected()
                             self.clap_count = 0
             
-            with sd.InputStream(callback=audio_callback, channels=1, samplerate=fs):
+            with sd.InputStream(
+                callback=audio_callback, channels=1, samplerate=native_rate,
+                device=info["index"], dtype="float32"
+            ):
                 while self.running:
                     time.sleep(0.1)
         

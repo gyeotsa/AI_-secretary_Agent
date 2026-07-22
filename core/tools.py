@@ -771,26 +771,21 @@ class ToolExecutor:
         if not WHISPER_AVAILABLE:
             return "오류: openai-whisper, sounddevice, scipy, numpy가 설치되지 않았습니다. requirements.txt를 확인하세요."
 
-        temp_file_path = None
         try:
             print(f"[STT] {duration}초 동안 말씀하세요...")
-            sample_rate = 16000
+            if self.hardware_manager is None:
+                return "STT 오류: 하드웨어 관리자를 초기화하지 못했습니다."
+            device_info, sample_rate = self.hardware_manager._select_microphone()
             recording = sd.rec(
                 int(duration * sample_rate),
                 samplerate=sample_rate,
                 channels=1,
-                dtype='int16'
+                dtype="float32",
+                device=device_info["index"],
             )
             sd.wait()
-
-            # 임시 파일 생성
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                temp_file_path = f.name
-                wav.write(temp_file_path, sample_rate, recording)
-
-            # Whisper로 음성 인식
-            model = whisper.load_model("base")
-            result = model.transcribe(temp_file_path, language="ko")
+            audio = self.hardware_manager._to_16khz(recording[:, 0], sample_rate)
+            result = self.hardware_manager.whisper_model.transcribe(audio, language="ko")
             text = result["text"].strip()
 
             if text:
@@ -811,14 +806,31 @@ class ToolExecutor:
             return f"STT 오류: {str(e)}"
         except Exception as e:
             return f"STT 오류: {str(e)}"
-        finally:
-            # 임시 파일 삭제
-            if temp_file_path and os.path.exists(temp_file_path):
-                try:
-                    os.unlink(temp_file_path)
-                except Exception:
-                    # 파일 삭제 오류는 무시
-                    pass
+
+    def list_audio_input_devices(self) -> str:
+        if self.hardware_manager is None:
+            return "오류: 마이크 기능을 초기화하지 못했습니다."
+        devices = self.hardware_manager.list_input_devices()
+        if not devices:
+            return "사용 가능한 마이크 입력 장치가 없습니다."
+        lines = ["사용 가능한 마이크 입력 장치:"]
+        for item in devices:
+            marker = " (기본)" if item["index"] == sd.default.device[0] else ""
+            lines.append(
+                f"- {item['index']}: {item['name']} / {int(item['default_samplerate'])}Hz{marker}"
+            )
+        return "\n".join(lines)
+
+    def list_camera_devices(self) -> str:
+        if self.multimodal_manager is None:
+            return "오류: 카메라 기능을 초기화하지 못했습니다."
+        devices = self.multimodal_manager.list_camera_devices()
+        if not devices:
+            return "프레임을 읽을 수 있는 카메라가 없습니다."
+        return "사용 가능한 카메라:\n" + "\n".join(
+            f"- {item['index']}: {item['backend']} / {item['width']}x{item['height']}"
+            for item in devices
+        )
 
     def add_document(self, file_path: str) -> str:
         if self.rag_manager is None:
@@ -1013,6 +1025,8 @@ class ToolExecutor:
             "create_directory": self.create_directory,
             "delete_directory": self.delete_directory,
             "capture_camera": self.capture_camera,
+            "list_audio_input_devices": self.list_audio_input_devices,
+            "list_camera_devices": self.list_camera_devices,
             # Workspace 관련 도구 추가
             "set_workspace": self.set_workspace,
             "get_workspace_info": self.get_workspace_info,
@@ -1492,6 +1506,16 @@ def get_tools_schema() -> list[dict]:
                 },
                 "required": [],
             },
+        },
+        {
+            "name": "list_camera_devices",
+            "description": "현재 실제 프레임을 읽을 수 있는 카메라 장치 목록을 확인합니다.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
+        },
+        {
+            "name": "list_audio_input_devices",
+            "description": "현재 사용 가능한 마이크 입력 장치와 기본 장치를 확인합니다.",
+            "input_schema": {"type": "object", "properties": {}, "required": []},
         },
         # ------------------------------
         # Workspace 관련 도구 스키마
