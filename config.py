@@ -67,6 +67,8 @@ class APIConfig:
     RAG_RERANKER_MODEL_PATH: str = field(
         default_factory=lambda: os.getenv("RAG_RERANKER_MODEL_PATH", "")
     )
+    RAG_DEVICE: str = field(default_factory=lambda: os.getenv("RAG_DEVICE", "auto").lower())
+    WHISPER_DEVICE: str = field(default_factory=lambda: os.getenv("WHISPER_DEVICE", "auto").lower())
     
     ALLOWED_PATHS: list = field(default_factory=lambda: [
         p.strip() for p in os.getenv("ALLOWED_PATHS", "").split(",") if p.strip()
@@ -142,6 +144,16 @@ class Config:
     @property
     def RAG_RERANKER_MODEL_PATH(cls):
         return cls.API_CONFIG.RAG_RERANKER_MODEL_PATH
+
+    @classmethod
+    @property
+    def RAG_DEVICE(cls):
+        return cls.API_CONFIG.RAG_DEVICE
+
+    @classmethod
+    @property
+    def WHISPER_DEVICE(cls):
+        return cls.API_CONFIG.WHISPER_DEVICE
     
     @classmethod
     @property

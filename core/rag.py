@@ -27,6 +27,7 @@ class VectorRAGManager:
             # 1. Chroma DB 초기화
             import chromadb
             from chromadb.utils import embedding_functions
+            import torch
             
             self.vector_db_dir = os.path.join(self.data_dir, "chroma_db")
             self.chroma_client = chromadb.PersistentClient(path=self.vector_db_dir)
@@ -37,9 +38,17 @@ class VectorRAGManager:
                 raise FileNotFoundError(
                     f"로컬 임베딩 모델이 없습니다: {embedding_model_path}"
                 )
+            requested_device = Config.RAG_DEVICE
+            if requested_device == "auto":
+                requested_device = "cuda" if torch.cuda.is_available() else "cpu"
+            if requested_device == "cuda" and not torch.cuda.is_available():
+                print("[RAG] CUDA를 사용할 수 없어 CPU로 fallback합니다.")
+                requested_device = "cpu"
             self.embedding_model = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=embedding_model_path
+                model_name=embedding_model_path,
+                device=requested_device,
             )
+            print(f"[RAG] 임베딩 장치: {requested_device}")
             self.collection = self.chroma_client.get_or_create_collection(
                 name="jarvis_rag_bge_m3",
                 embedding_function=self.embedding_model,

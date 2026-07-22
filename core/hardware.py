@@ -31,13 +31,17 @@ class HardwareManager:
         
         if SOUND_AVAILABLE:
             # GPU 사용 가능 여부 확인
-            if torch.cuda.is_available():
+            requested_device = Config.WHISPER_DEVICE
+            if requested_device == "auto":
+                requested_device = "cuda" if torch.cuda.is_available() else "cpu"
+            if requested_device == "cuda" and torch.cuda.is_available():
                 self.device = "cuda"
                 print(f"[GPU] CUDA를 사용합니다! (GPU: {torch.cuda.get_device_name(0)})")
-            elif torch.backends.mps.is_available():
+            elif requested_device == "mps" and torch.backends.mps.is_available():
                 self.device = "mps"
                 print("[GPU] Apple Silicon MPS를 사용합니다!")
             else:
+                self.device = "cpu"
                 print("[CPU] GPU를 사용할 수 없어 CPU를 사용합니다.")
             
             self.whisper_model = whisper.load_model("base", device=self.device)

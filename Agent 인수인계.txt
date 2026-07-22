@@ -593,3 +593,15 @@ AI_-secretary_Agent/
 - 사용자 SDK의 homePath와 classPath를 현재 프로젝트 `C:\Users\ice31\lepo\AI_-secretary_Agent\.venv`로 변경하고 기본 virtualenv base SDK도 Python 3.12.13 런타임으로 변경함.
 - 프로젝트의 선택 실행 구성은 `Python.Jarvis`, SDK는 `Python 3.12 (Python)`, 실행 스크립트는 `$PROJECT_DIR$/main_qt.py`, 작업 디렉터리는 `$PROJECT_DIR$`로 검증함.
 - 사용자 SDK 원본 백업: `jdk.table.xml.codex-backup-20260722`, `pySdk.xml.codex-backup-20260722`.
+
+## 2026-07-22 RTX 4060 CUDA 활성화
+
+- `.venv`의 `torch 2.13.0+cpu`를 공식 CUDA 12.8 wheel인 `torch 2.11.0+cu128`로 교체함(약 2.8GB).
+- `torch.cuda.is_available() == True`, CUDA build `12.8`, 장치 `NVIDIA GeForce RTX 4060 Laptop GPU` 확인.
+- `cuda:0`에서 2048×2048 행렬 곱 실제 실행 및 동기화 성공.
+- `.env`에 `RAG_DEVICE=cuda`, `WHISPER_DEVICE=cuda` 적용. `.env.example`은 이식성을 위해 기본 `auto`로 문서화함.
+- HardwareManager의 Whisper base 모델 파라미터가 `cuda:0`에 배치되는 것을 확인함.
+- VectorRAGManager가 Chroma SentenceTransformerEmbeddingFunction에 장치를 명시적으로 전달하도록 수정하고 BGE-M3 모델이 `cuda:0`에 배치되는 것을 확인함.
+- CUDA가 없는 환경에서는 `auto` 또는 요청 실패 시 CPU로 안전하게 fallback함.
+- 재설치용 `requirements-cuda.txt` 추가: 일반 requirements와 공식 cu128 PyTorch 고정 버전 포함.
+- GPU 통합 테스트 1개 통과, 기본 테스트 42개 통과, `pip check` 통과.
