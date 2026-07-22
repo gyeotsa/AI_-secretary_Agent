@@ -767,3 +767,12 @@ AI_-secretary_Agent/
 - 실제 제한 검색으로 `C:\NIKKE\...\nikke.exe`, `C:\NIKKE_GOOGLE\...\nikke.exe`, 각 launcher를 발견했다. 사용자가 로그에서 선택한 `C:\NIKKE_GOOGLE\launcher\nikke_launcher_google.exe`를 `nikke`, `nikke.exe`, `니케` 별칭에 연결했다.
 - 자동 검색, 카탈로그, NIKKE 별칭, WinError 740의 단일 UAC 전환을 회귀 테스트했고 전체 `89 passed, 4 deselected`.
 - 다음 해야 할 일: 실제 GUI에서 `니케 실행해줘`를 호출하고 자비스 Permission 승인 뒤 나타나는 Windows UAC를 사용자가 직접 승인해 런처 기동을 확인한다.
+## 2026-07-22 사용자별 앱·시작 메뉴·C 드라이브 전체 검색 보완
+
+- Discord 실행 실패 원인은 `%LOCALAPPDATA%\Discord\app-*` 형태가 기존 `%LOCALAPPDATA%\Programs` 검색 범위 밖이었고, 이 PC에서는 Discord 설치 폴더 직접 열람도 Access Denied였기 때문이다.
+- Squirrel/Electron 계열을 위해 `%LOCALAPPDATA%` 바로 아래에서 검색어와 일치하는 앱 폴더를 우선 제한 검색한다.
+- 사용자/공용 시작 메뉴의 `.lnk`를 범용 앱 소스로 추가했다. 보호된 설치 폴더를 직접 읽을 수 없어도 Windows Shell `os.startfile`로 바로가기를 실행한다.
+- 빠른 검색이 모두 실패하면 사용자의 요청대로 C 시스템 드라이브 전체를 최종 fallback으로 검색한다. 접근 거부는 건너뛰고 링크는 따라가지 않으며, 발견 결과를 머신 로컬 카탈로그에 캐시한다.
+- 실제 환경에서 Discord를 `C:\Users\ice31\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Discord Inc\Discord.lnk`로 자동 해석했고 플러그인으로 실제 실행 요청 성공을 확인했다.
+- 전체 C 드라이브 fallback 활성/비활성, LOCALAPPDATA Electron 설치, 시작 메뉴 바로가기 해석·Shell 실행 회귀 테스트를 추가했다.
+- 다음 해야 할 일: 전체 테스트 후 커밋하고 GUI 재시작 뒤 `Discord 실행해줘`가 Planner 없이 직접 성공하는지 확인한다.

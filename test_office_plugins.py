@@ -84,6 +84,7 @@ def test_windows_auto_discovers_executable_without_manual_path(tmp_path, monkeyp
     monkeypatch.setattr(WindowsControlPlugin,"_aliases",lambda:{})
     monkeypatch.setattr(WindowsControlPlugin,"_catalog",lambda:{})
     monkeypatch.setattr(WindowsControlPlugin,"_registered_apps",lambda:{})
+    monkeypatch.setattr(WindowsControlPlugin,"_shortcut_apps",lambda:{})
     monkeypatch.setattr(WindowsControlPlugin,"_remember",lambda _paths:None)
     assert plugin._resolve_target("nikke.exe")==str(launcher)
 
@@ -96,3 +97,38 @@ def test_windows_auto_elevates_once_on_winerror_740(tmp_path, monkeypatch):
     monkeypatch.setattr(plugin,"_run_elevated",lambda executable,arguments:f"UAC:{executable}")
     result=plugin.execute_tool("windows_launch_app",{"target":"admin.exe","elevation":"auto"})
     assert result==f"UAC:{target}"
+
+
+def test_windows_discovers_per_user_electron_install(tmp_path, monkeypatch):
+    local=tmp_path/"Local"; executable=local/"Discord"/"app-1.2.3"/"Discord.exe"
+    executable.parent.mkdir(parents=True); executable.write_bytes(b"MZ")
+    plugin=WindowsControlPlugin()
+    monkeypatch.setenv("LOCALAPPDATA",str(local))
+    monkeypatch.setattr(WindowsControlPlugin,"_search_roots",lambda:[])
+    monkeypatch.setattr(WindowsControlPlugin,"_remember",lambda _paths:None)
+    found=plugin._discover_executables("Discord",10,True)
+    assert found==[executable]
+
+
+def test_windows_full_drive_fallback_runs_only_after_fast_search_misses(tmp_path, monkeypatch):
+    drive=tmp_path/"drive"; executable=drive/"Custom"/"OnlyHere.exe"
+    executable.parent.mkdir(parents=True); executable.write_bytes(b"MZ")
+    monkeypatch.setenv("SystemDrive",str(drive))
+    monkeypatch.setenv("LOCALAPPDATA",str(tmp_path/"missing-local"))
+    monkeypatch.setattr(WindowsControlPlugin,"_search_roots",lambda:[])
+    monkeypatch.setattr(WindowsControlPlugin,"_remember",lambda _paths:None)
+    assert WindowsControlPlugin._discover_executables("OnlyHere",5,True)==[executable]
+    assert WindowsControlPlugin._discover_executables("OnlyHere",5,False)==[]
+
+
+def test_windows_resolves_and_launches_start_menu_shortcut(tmp_path, monkeypatch):
+    shortcut=tmp_path/"Discord.lnk"; shortcut.write_bytes(b"shortcut")
+    plugin=WindowsControlPlugin()
+    monkeypatch.setattr(WindowsControlPlugin,"_aliases",lambda:{})
+    monkeypatch.setattr(WindowsControlPlugin,"_catalog",lambda:{})
+    monkeypatch.setattr(WindowsControlPlugin,"_registered_apps",lambda:{})
+    monkeypatch.setattr(WindowsControlPlugin,"_shortcut_apps",lambda:{"discord":str(shortcut)})
+    launched=[]; monkeypatch.setattr("plugins.windows_control.os.startfile",lambda path:launched.append(path))
+    result=plugin.execute_tool("windows_launch_app",{"target":"Discord"})
+    assert result.startswith("Windows 시작 메뉴 앱 실행 요청 성공:")
+    assert launched==[str(shortcut)]

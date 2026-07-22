@@ -31,6 +31,7 @@ class WindowsControlPlugin(BasePlugin):
                 "type": "object", "properties": {
                     "query": {"type": "string"}, "max_results": {"type": "integer", "default": 20},
                     "deep_search": {"type": "boolean", "default": True},
+                    "full_drive_search": {"type": "boolean", "default": True},
                 }, "required": ["query"]}, ["windows_api"]),
             ToolSchema("windows_launch_app", "앱 이름·별칭·실행 파일을 찾아 프로그램을 실행합니다", {
                 "type": "object", "properties": {
@@ -119,6 +120,23 @@ class WindowsControlPlugin(BasePlugin):
                 pass
         return apps
 
+    @staticmethod
+    def _shortcut_apps() -> Dict[str, str]:
+        roots = [
+            Path(os.getenv("APPDATA", "")) / "Microsoft/Windows/Start Menu/Programs",
+            Path(os.getenv("ProgramData", "")) / "Microsoft/Windows/Start Menu/Programs",
+        ]
+        apps = {}
+        for root in roots:
+            if not root.is_dir():
+                continue
+            try:
+                for shortcut in root.rglob("*.lnk"):
+                    apps[shortcut.stem.casefold()] = str(shortcut)
+            except OSError:
+                pass
+        return apps
+
     @classmethod
     def _search_roots(cls) -> List[Path]:
         candidates = [os.getenv("ProgramFiles"), os.getenv("ProgramFiles(x86)"),
@@ -138,12 +156,24 @@ class WindowsControlPlugin(BasePlugin):
         return result
 
     @classmethod
-    def _discover_executables(cls, query: str, limit: int = 20) -> List[Path]:
+    def _discover_executables(cls, query: str, limit: int = 20,
+                              full_drive_search: bool = True) -> List[Path]:
         needle = Path(query).stem.casefold()
         if not needle:
             return []
         found, scanned = [], 0
-        roots = cls._search_roots()
+        roots = []
+        # Squirrel/Electron and per-user installers commonly live directly under
+        # %LOCALAPPDATA% (not %LOCALAPPDATA%\Programs). Search matching app
+        # directories first, keeping the scan bounded and domain-independent.
+        local_app_data = Path(os.getenv("LOCALAPPDATA", ""))
+        if local_app_data.is_dir():
+            try:
+                roots.extend(item for item in local_app_data.iterdir()
+                             if item.is_dir() and needle in item.name.casefold())
+            except OSError:
+                pass
+        roots.extend(path for path in cls._search_roots() if path not in roots)
         roots.sort(key=lambda path: (needle not in path.name.casefold(), len(path.parts)))
         for root in roots:
             root_depth = len(root.parts)
@@ -165,18 +195,39 @@ class WindowsControlPlugin(BasePlugin):
                             return found
         if found:
             cls._remember(found)
+        if found or not full_drive_search:
+            return found
+
+        # Final fallback requested by the user: scan the entire system drive.
+        # Permission errors are skipped and links/junction-like entries are not
+        # followed, preventing loops. Results are cached so this normally runs once.
+        system_drive = Path(os.getenv("SystemDrive", "C:") + "\\")
+        for current, dirs, files in os.walk(system_drive, topdown=True, followlinks=False,
+                                            onerror=lambda _error: None):
+            dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(current, name))]
+            for filename in files:
+                if filename.casefold().endswith(".exe") and needle in Path(filename).stem.casefold():
+                    found.append(Path(current) / filename)
+                    if len(found) >= limit:
+                        cls._remember(found)
+                        return found
+        if found:
+            cls._remember(found)
         return found
 
     @classmethod
     def _resolve_target(cls, target: str) -> str:
-        aliases, catalog, registered = cls._aliases(), cls._catalog(), cls._registered_apps()
+        aliases, catalog = cls._aliases(), cls._catalog()
+        shortcuts, registered = cls._shortcut_apps(), cls._registered_apps()
         alias = aliases.get(target.casefold(), target)
         key, exe_key = alias.casefold(), (alias if alias.casefold().endswith(".exe") else alias + ".exe").casefold()
-        resolved = catalog.get(key) or catalog.get(Path(alias).stem.casefold()) or registered.get(key) or registered.get(exe_key) or shutil.which(alias)
+        resolved = (catalog.get(key) or catalog.get(Path(alias).stem.casefold())
+                    or shortcuts.get(key) or shortcuts.get(Path(alias).stem.casefold())
+                    or registered.get(key) or registered.get(exe_key) or shutil.which(alias))
         if not resolved and Path(alias).is_absolute() and Path(alias).is_file():
             resolved = str(Path(alias).resolve())
         if not resolved:
-            candidates = cls._discover_executables(alias, 20)
+            candidates = cls._discover_executables(alias, 20, True)
             exact = next((p for p in candidates if p.name.casefold() == exe_key), None)
             launcher = next((p for p in candidates if "launcher" in p.stem.casefold()), None)
             resolved = str(exact or launcher or (candidates[0] if candidates else ""))
@@ -197,11 +248,12 @@ class WindowsControlPlugin(BasePlugin):
                 if not query:
                     return "오류: 검색할 프로그램 이름이 필요합니다."
                 limit = max(1, min(int(data.get("max_results", 20)), 100))
-                sources = {**self._registered_apps(), **self._catalog()}
+                sources = {**self._registered_apps(), **self._shortcut_apps(), **self._catalog()}
                 found = [(key, value) for key, value in sources.items()
                          if query.casefold() in key or query.casefold() in value.casefold()]
                 if data.get("deep_search", True):
-                    for path in self._discover_executables(query, limit):
+                    for path in self._discover_executables(
+                            query, limit, bool(data.get("full_drive_search", True))):
                         pair = (path.name.casefold(), str(path))
                         if pair not in found:
                             found.append(pair)
@@ -226,6 +278,9 @@ class WindowsControlPlugin(BasePlugin):
                 if elevation == "always":
                     return self._run_elevated(resolved, arguments)
                 try:
+                    if Path(resolved).suffix.casefold() == ".lnk":
+                        os.startfile(resolved)
+                        return f"Windows 시작 메뉴 앱 실행 요청 성공: {resolved}"
                     process = subprocess.Popen([resolved, *arguments], shell=False)
                     return f"프로그램 실행 성공: {resolved} (PID: {process.pid})"
                 except OSError as exc:
