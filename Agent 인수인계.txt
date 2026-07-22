@@ -529,3 +529,11 @@ AI_-secretary_Agent/
 4. mail/calendar OAuth 토큰 저장·권한·계정 선택 정책 설계
 5. 위 작업을 마칠 때 이 인수인계서에 결정·변경·커밋 해시·다음 작업을 다시 기록
 
+## 2026-07-22 실제 Ollama 도구 호출 호환성 검증
+
+- Ollama 서버 `0.32.1` 실행 상태와 `/api/version`, `/api/tags` 응답을 확인함.
+- `.env`의 `qwen2.5-coder:7b-instruct`가 실제 설치되어 있으며 일반 대화 호출이 성공함.
+- 해당 모델이 도구 요청을 native `tool_calls`가 아닌 본문 JSON(`{"name": ..., "arguments": ...}`)으로 반환하는 실제 호환성 문제를 확인함.
+- `core/llm.py`에서 등록된 도구 이름과 객체형 인자만 허용하는 안전한 legacy tool-call 파서를 추가함. 임의 JSON이나 미등록 도구는 도구 호출로 승격하지 않음.
+- `test_ollama_tool_compat.py` 회귀 테스트 4개 통과 및 실제 `get_date` 도구 선택 응답 변환 성공.
+- Anthropic 실호출은 사용자의 현재 운영 방침에 따라 이번 검증 범위에서 제외함.

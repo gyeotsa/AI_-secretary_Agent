@@ -130,6 +130,42 @@ class OllamaClient(BaseLLMClient):
         text = parameters.get("text") if isinstance(parameters, dict) else None
         return text.strip() if isinstance(text, str) and text.strip() else None
 
+    def _extract_legacy_tool_call(self, content: str) -> Optional[Dict[str, Any]]:
+        """본문 JSON으로 반환된 로컬 모델의 Tool 호출을 안전하게 구조화."""
+        candidate = content.strip()
+        if candidate.startswith("```"):
+            candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", candidate, flags=re.IGNORECASE)
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            match = re.search(r'\{\s*"name"\s*:\s*"[^"\r\n]+".*\}\s*$', candidate, re.DOTALL)
+            if not match:
+                return None
+            try:
+                payload = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(payload, dict):
+            return None
+        name = payload.get("name")
+        allowed_names = {tool["name"] for tool in self.tools}
+        if not isinstance(name, str) or name not in allowed_names:
+            return None
+        arguments = payload.get("arguments", payload.get("parameters", payload.get("input", {})))
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(arguments, dict):
+            return None
+        return {
+            "type": "tool_use",
+            "id": f"legacy_{name}_{abs(hash(json.dumps(arguments, sort_keys=True, ensure_ascii=False)))}",
+            "name": name,
+            "input": arguments,
+        }
+
     def _convert_to_ollama_tools(self, tools: List[Dict]) -> List[Dict]:
         """Anthropic 도구 스키마를 Ollama 형식으로 변환"""
         ollama_tools = []
@@ -197,6 +233,9 @@ class OllamaClient(BaseLLMClient):
                 if "content" in message:
                     # 이모지 필터링
                     text = re.sub(r'[\U00010000-\U0010ffff]', '', message["content"])
+                    legacy_tool_call = self._extract_legacy_tool_call(text)
+                    if legacy_tool_call:
+                        return "", [legacy_tool_call]
                     legacy_speak_text = self._extract_legacy_speak_text(text)
                     if legacy_speak_text:
                         return legacy_speak_text, []
