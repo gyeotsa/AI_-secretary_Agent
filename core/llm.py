@@ -2,9 +2,17 @@ import anthropic
 import requests
 import json
 import re
-from typing import Tuple, List, Dict, Any
+import time
+from typing import Tuple, List, Dict, Any, Optional
 from config import Config
 from core.tools import get_tools_schema, AUTO_LOOP_EXCLUDED_TOOLS
+
+
+def has_configured_anthropic_key() -> bool:
+    key = (Config.ANTHROPIC_API_KEY or "").strip()
+    if not key:
+        return False
+    return not key.casefold().startswith(("your_", "replace_", "changeme", "example"))
 
 
 class BaseLLMClient:
@@ -32,17 +40,29 @@ class BaseLLMClient:
 class AnthropicClient(BaseLLMClient):
     def __init__(self):
         super().__init__()
-        if not Config.ANTHROPIC_API_KEY:
+        if not has_configured_anthropic_key():
             raise ValueError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
         self.client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
 
+    def _prepare_messages(self, messages: List[Dict]) -> Tuple[str, List[Dict]]:
+        """Anthropic API에서 허용하지 않는 system role을 최상위 system으로 이동."""
+        system_parts = [self.system_prompt] if self.system_prompt else []
+        api_messages = []
+        for message in messages:
+            if message.get("role") == "system":
+                system_parts.append(str(message.get("content", "")))
+            else:
+                api_messages.append(message)
+        return "\n\n".join(part for part in system_parts if part), api_messages
+
     def chat_with_tools(self, messages: List[Dict]) -> Tuple[str, List[Dict]]:
         try:
+            system_prompt, api_messages = self._prepare_messages(messages)
             response = self.client.messages.create(
-                model=Config.MODEL_NAME,
+                model=Config.ANTHROPIC_MODEL,
                 max_tokens=Config.MAX_TOKENS,
-                system=self.system_prompt,
-                messages=messages,
+                system=system_prompt,
+                messages=api_messages,
                 temperature=Config.TEMPERATURE,
                 tools=self.tools,
             )
@@ -62,11 +82,12 @@ class AnthropicClient(BaseLLMClient):
 
     def chat(self, messages: List[Dict]) -> str:
         try:
+            system_prompt, api_messages = self._prepare_messages(messages)
             response = self.client.messages.create(
-                model=Config.MODEL_NAME,
+                model=Config.ANTHROPIC_MODEL,
                 max_tokens=Config.MAX_TOKENS,
-                system=self.system_prompt,
-                messages=messages,
+                system=system_prompt,
+                messages=api_messages,
                 temperature=Config.TEMPERATURE,
             )
             return response.content[0].text
@@ -145,20 +166,15 @@ class OllamaClient(BaseLLMClient):
                 "tools": ollama_tools
             }
 
-            print(f"[DEBUG] Ollama chat_with_tools 호출 전")
-            print(f"[DEBUG] Ollama 모델: {self.model}")
-            print(f"[DEBUG] Ollama 요청 URL: {self.base_url}/api/chat")
-            print(f"[DEBUG] Ollama 요청 페이로드: {json.dumps(payload, indent=2, ensure_ascii=False)}")
+            print(f"[LLM] Ollama tool 호출: model={self.model}, tools={len(ollama_tools)}")
 
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
                 timeout=120
             )
-            print(f"[DEBUG] Ollama 응답 상태 코드: {response.status_code}")
             response.raise_for_status()
             result = response.json()
-            print(f"[DEBUG] Ollama 응답 내용: {json.dumps(result, indent=2, ensure_ascii=False)}")
 
             # Ollama 응답 처리
             if "message" in result:
@@ -260,17 +276,116 @@ class OllamaClient(BaseLLMClient):
             return f"오류가 발생했습니다: {str(e)}"
 
 
-def get_llm_client() -> BaseLLMClient:
-    global _llm_client
-    if _llm_client is None:
+class HybridLLMClient(BaseLLMClient):
+    """Claude 우선 호출 후 오류 시 Ollama로 자동 전환하는 역할 전용 클라이언트."""
+
+    def __init__(
+        self,
+        primary: Optional[BaseLLMClient] = None,
+        fallback: Optional[BaseLLMClient] = None,
+        enable_configured_primary: bool = True,
+    ):
+        super().__init__()
+        self.fallback = fallback or OllamaClient()
+        self.primary = primary
+        self.primary_unavailable_reason = ""
+        if self.primary is None and enable_configured_primary:
+            if has_configured_anthropic_key():
+                try:
+                    self.primary = AnthropicClient()
+                except Exception as exc:
+                    self.primary_unavailable_reason = str(exc)
+            else:
+                self.primary_unavailable_reason = "ANTHROPIC_API_KEY 미설정"
+        self.last_provider = ""
+        self.last_latency_ms = 0.0
+        self.routing_stats = {
+            "anthropic_success": 0,
+            "anthropic_failure": 0,
+            "ollama_fallback": 0,
+        }
+        self.set_system_prompt(self.system_prompt)
+
+    def set_system_prompt(self, prompt: str):
+        super().set_system_prompt(prompt)
+        if getattr(self, "primary", None) is not None:
+            self.primary.set_system_prompt(prompt)
+        if getattr(self, "fallback", None) is not None:
+            self.fallback.set_system_prompt(prompt)
+
+    @staticmethod
+    def _is_error_text(text: str) -> bool:
+        normalized = (text or "").lstrip().casefold()
+        return normalized.startswith(("오류:", "오류가 발생했습니다:", "error:"))
+
+    def chat_with_tools(self, messages: List[Dict]) -> Tuple[str, List[Dict]]:
+        started = time.perf_counter()
+        if self.primary is not None:
+            try:
+                text, tools = self.primary.chat_with_tools(messages)
+                if tools or (text and not self._is_error_text(text)):
+                    self.last_provider = "anthropic"
+                    self.routing_stats["anthropic_success"] += 1
+                    self.last_latency_ms = (time.perf_counter() - started) * 1000
+                    return text, tools
+                self.primary_unavailable_reason = text
+            except Exception as exc:
+                self.primary_unavailable_reason = str(exc)
+            self.routing_stats["anthropic_failure"] += 1
+        self.last_provider = "ollama"
+        self.routing_stats["ollama_fallback"] += 1
+        result = self.fallback.chat_with_tools(messages)
+        self.last_latency_ms = (time.perf_counter() - started) * 1000
+        return result
+
+    def chat(self, messages: List[Dict]) -> str:
+        started = time.perf_counter()
+        if self.primary is not None:
+            try:
+                text = self.primary.chat(messages)
+                if text and not self._is_error_text(text):
+                    self.last_provider = "anthropic"
+                    self.routing_stats["anthropic_success"] += 1
+                    self.last_latency_ms = (time.perf_counter() - started) * 1000
+                    return text
+                self.primary_unavailable_reason = text
+            except Exception as exc:
+                self.primary_unavailable_reason = str(exc)
+            self.routing_stats["anthropic_failure"] += 1
+        self.last_provider = "ollama"
+        self.routing_stats["ollama_fallback"] += 1
+        result = self.fallback.chat(messages)
+        self.last_latency_ms = (time.perf_counter() - started) * 1000
+        return result
+
+    def get_routing_status(self) -> Dict[str, Any]:
+        return {
+            "last_provider": self.last_provider,
+            "last_latency_ms": round(self.last_latency_ms, 2),
+            "primary_available": self.primary is not None,
+            "primary_unavailable_reason": self.primary_unavailable_reason,
+            **self.routing_stats,
+        }
+
+
+def get_llm_client(role: str = "default") -> BaseLLMClient:
+    normalized_role = role.strip().lower() or "default"
+    cache_key = f"{Config.LLM_PROVIDER}:{normalized_role}"
+    if cache_key not in _llm_clients:
         if Config.LLM_PROVIDER == "anthropic":
-            _llm_client = AnthropicClient()
+            client = AnthropicClient()
         elif Config.LLM_PROVIDER == "ollama":
-            _llm_client = OllamaClient()
+            client = OllamaClient()
+        elif Config.LLM_PROVIDER == "hybrid":
+            if normalized_role in Config.HYBRID_CLAUDE_ROLES:
+                client = HybridLLMClient()
+            else:
+                client = OllamaClient()
         else:
             raise ValueError(f"지원되지 않는 LLM 제공자: {Config.LLM_PROVIDER}")
-    return _llm_client
+        _llm_clients[cache_key] = client
+    return _llm_clients[cache_key]
 
 
 # Singleton instance
-_llm_client = None
+_llm_clients: Dict[str, BaseLLMClient] = {}

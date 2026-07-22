@@ -175,15 +175,25 @@ Level 2 (Agent OS) 완성을 위해 기존 코드의 문제점을 개선하고, 
 
 ---
 
-### ⏳ 10단계: 로컬 LLM 한계 인지 및 하이브리드 방안 검토
-- **상태**: 대기
+### ✅ 10단계: 로컬 LLM 한계 인지 및 하이브리드 방안 검토
+- **상태**: 구현 및 오프라인 fallback 검증 완료 (2026-07-22)
 - **목표**: 모델 성능과 안정성의 균형
 - **작업 계획**:
   1. `core/llm.py`에 Claude API 클라이언트 추가
   2. Tool Selector/Reasoner는 Claude API, 나머지는 로컬 모델로 분리
   3. 성능 비교 테스트
+- **구현 결과**:
+  1. `LLM_PROVIDER=hybrid`와 역할 목록 `HYBRID_CLAUDE_ROLES=reasoning` 추가
+  2. Executor의 Tool Reasoner만 `HybridLLMClient` 사용, 일반 응답·메모리·RAG·실행은 로컬 유지
+  3. Claude 모델 설정을 Ollama의 `MODEL_NAME`과 분리해 `ANTHROPIC_MODEL` 사용
+  4. API 키 없음, placeholder 키, API 오류, 예외, 빈 응답 시 Ollama 자동 fallback
+  5. system role 메시지를 Anthropic API 최상위 system 파라미터로 정규화
+  6. Provider별 성공/실패/fallback 횟수와 마지막 지연시간 측정 기능 추가
+  7. 실제 `.env`를 hybrid로 전환했으며 현재 API 키 미설정 상태에서는 Ollama만 호출
+  8. 하이브리드 라우팅 회귀 테스트 7개 통과
+- **남은 실환경 확인**: 실제 Anthropic API 키 입력 후 Claude 성공 경로의 품질·비용·지연시간 비교
 
 ---
 
 ## 📝 다음 단계
-10단계 로컬 LLM/Claude 하이브리드 라우팅 설계 및 구현
+Playwright/Chromium 설치 후 browser 플러그인 실동작 검증 및 GUI·하드웨어 종단 테스트

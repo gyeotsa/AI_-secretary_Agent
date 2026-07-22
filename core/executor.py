@@ -26,6 +26,7 @@ class Executor:
 
     def __init__(self):
         self.llm = get_llm_client()
+        self.reasoning_llm = get_llm_client("reasoning")
         self.scratchpad = get_scratchpad()
         self.planner = get_planner()
         self.tool_executor = get_tool_executor()
@@ -40,6 +41,7 @@ class Executor:
         # decide_next_action()에서 잠깐 system_prompt를 바꿔 쓰고 나서 복원하기 위한 원본 보관
         # (generate_response() 등 다른 메서드가 Jarvis 페르소나 프롬프트를 계속 쓸 수 있어야 함)
         self._default_system_prompt = self.llm.system_prompt
+        self._default_reasoning_prompt = self.reasoning_llm.system_prompt
 
         self.goal = ""
         self.session_id = ""
@@ -256,7 +258,7 @@ class Executor:
         API 레벨에서 강제되므로 이 파싱 실패 자체가 원천적으로 줄어듭니다.
         """
         # Tool Selector 전용 system prompt로 잠깐 교체 (끝나면 finally에서 원복)
-        self.llm.set_system_prompt(
+        self.reasoning_llm.set_system_prompt(
             "당신은 Jarvis의 Action Reasoner 겸 Tool Selector입니다.\n"
             "주어진 Task를 수행하기 위해 도구가 필요하면 반드시 제공된 도구 중 하나를 호출하세요.\n"
             "도구 없이 바로 답할 수 있는 간단한 작업이나 이미 끝난 작업이면, 도구를 호출하지 말고 "
@@ -267,7 +269,7 @@ class Executor:
             messages = [
                 {"role": "user", "content": f"Context:\n{context}\n\nTask: {task.description}\n\n이 Task를 수행하세요."}
             ]
-            text, tool_use_blocks = self.llm.chat_with_tools(messages)
+            text, tool_use_blocks = self.reasoning_llm.chat_with_tools(messages)
 
             if tool_use_blocks:
                 # 한 iteration에 Tool 호출 1개만 처리 (여러 개는 다음 iteration에서 순차 처리)
@@ -283,7 +285,7 @@ class Executor:
             return {"action_type": "simple_task", "simple_result": f"Task 완료: {task.description}"}
         finally:
             # 다른 메서드(generate_response 등)에 영향 주지 않도록 원래 시스템 프롬프트로 복원
-            self.llm.set_system_prompt(self._default_system_prompt)
+            self.reasoning_llm.set_system_prompt(self._default_reasoning_prompt)
 
     @staticmethod
     def _read_tool_use_block(block) -> tuple[Optional[str], Dict[str, Any]]:

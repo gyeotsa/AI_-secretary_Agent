@@ -47,6 +47,14 @@ def request_windows_permissions():
 class APIConfig:
     LLM_PROVIDER: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "ollama"))
     ANTHROPIC_API_KEY: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    ANTHROPIC_MODEL: str = field(
+        default_factory=lambda: os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+    )
+    HYBRID_CLAUDE_ROLES: list = field(default_factory=lambda: [
+        role.strip().lower()
+        for role in os.getenv("HYBRID_CLAUDE_ROLES", "reasoning").split(",")
+        if role.strip()
+    ])
     OLLAMA_BASE_URL: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
     OLLAMA_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "llama3.1"))
     MODEL_NAME: str = field(default_factory=lambda: os.getenv("MODEL_NAME", "llama3.1"))
@@ -84,6 +92,16 @@ class Config:
     @property
     def ANTHROPIC_API_KEY(cls):
         return cls.API_CONFIG.ANTHROPIC_API_KEY
+
+    @classmethod
+    @property
+    def ANTHROPIC_MODEL(cls):
+        return cls.API_CONFIG.ANTHROPIC_MODEL
+
+    @classmethod
+    @property
+    def HYBRID_CLAUDE_ROLES(cls):
+        return cls.API_CONFIG.HYBRID_CLAUDE_ROLES
     
     @classmethod
     @property
