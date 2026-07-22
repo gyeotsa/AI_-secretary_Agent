@@ -71,6 +71,7 @@ class AppSignals(QObject):
     permission_response = pyqtSignal(bool)
     progress_update = pyqtSignal(str)
     proactive_message = pyqtSignal(str)
+    control_response_ready = pyqtSignal(object)
 
 
 class JarvisApp:
@@ -125,6 +126,7 @@ class JarvisApp:
         self.signals.ai_response_ready.connect(self._on_ai_response)
         self.signals.progress_update.connect(self._on_progress_update)
         self.signals.proactive_message.connect(self._on_proactive_message)
+        self.signals.control_response_ready.connect(self._on_control_response)
         self.signals.tts_finished.connect(self._reset_all)
         self.automation_engine.set_result_callback(self._on_automation_result)
         self.proactive_policy = ProactiveNotificationPolicy(self.notify_user)
@@ -146,6 +148,7 @@ class JarvisApp:
         self.heartbeat_timer.start(3000)
         
         self._init_ui()
+        QTimer.singleShot(0, self._run_next_queued_task)
     
     def _init_ui(self):
         # 시스템 프롬프트 설정
@@ -199,7 +202,7 @@ class JarvisApp:
     def _on_state_changed(self, old_state: State, new_state: State):
         self.window.update_state(new_state)
     
-    def _on_user_input(self, text: str):
+    def _on_user_input(self, text: str, existing_task_id=None):
         print("[DEBUG] _on_user_input called with:", text)
         self.window.show_user_text(text)
         self.state_machine.start_listening()
@@ -209,17 +212,46 @@ class JarvisApp:
         self.window.set_soundbar_audio_level(50)  # 임시로 50% 레벨로 설정
         
         if self._is_processing_ai:
-            print("[DEBUG] Already processing AI, skipping")
+            if hasattr(self.executor, "is_control_command") and self.executor.is_control_command(text):
+                self.messages.append({"role": "user", "content": text})
+                self.memory.save_message(self.session_id, "user", text)
+                thread = threading.Thread(target=self._process_control_command, args=(text,), daemon=True)
+                thread.start()
+                return
+            if text.strip().lower().startswith(("새 작업:", "새 작업：")):
+                queued_goal = text.split(":", 1)[-1].split("：", 1)[-1].strip()
+                task = self.executor.enqueue_goal(queued_goal, self.session_id)
+                self.window.show_assistant_text(
+                    f"현재 작업 다음에 새 작업 {task.task_id}을 이어서 진행하겠습니다, 보스."
+                )
+                return
+            self.window.show_assistant_text(
+                "현재 작업이 진행 중입니다, 보스. 작업 목록·상태·일시정지·재개·취소 명령은 바로 처리할 수 있습니다."
+            )
+            print("[DEBUG] Already processing AI, non-control request rejected")
             return
         
         self._is_processing_ai = True
         self.state_machine.start_processing()
         
         # AI 호출을 별도 스레드로 처리
-        thread = threading.Thread(target=self._process_ai, args=(text,), daemon=True)
+        thread = threading.Thread(target=self._process_ai, args=(text, existing_task_id), daemon=True)
         thread.start()
+
+    def _process_control_command(self, text: str):
+        outcome = self.executor.handle_control_command(text, self.session_id)
+        self.signals.control_response_ready.emit(outcome)
+
+    def _on_control_response(self, outcome):
+        """실행 중 제어 응답은 원래 AI 작업의 processing 상태를 변경하지 않는다."""
+        response_text = outcome.response
+        self.window.show_assistant_text(response_text)
+        self.messages.append({"role": "assistant", "content": response_text})
+        self.memory.save_message(self.session_id, "assistant", response_text)
+        if getattr(outcome, "next_goal", ""):
+            self.executor.enqueue_goal(outcome.next_goal, self.session_id, priority=100)
     
-    def _process_ai(self, text: str):
+    def _process_ai(self, text: str, existing_task_id=None):
         print("[DEBUG] _process_ai called with:", text)
         
         # RAG로 문서 검색
@@ -242,8 +274,11 @@ class JarvisApp:
                 outcome = self.executor.execute_turn(
                     text, self.session_id, conversation_history,
                     self.signals.progress_update.emit,
+                    existing_task_id,
                 )
                 response_text = outcome.response
+                if getattr(outcome, "next_goal", ""):
+                    self.executor.enqueue_goal(outcome.next_goal, self.session_id, priority=100)
             else:
                 response_text = self.executor.execute_goal(text, self.session_id, conversation_history)
             print("[DEBUG] Executor.execute_goal returned:", response_text)
@@ -314,6 +349,7 @@ class JarvisApp:
             self.messages.append({"role": "assistant", "content": response_text})
         
         self._is_processing_ai = False
+        QTimer.singleShot(0, self._run_next_queued_task)
         
         # 대화 저장
         self.memory.save_message(self.session_id, "user", self.messages[-2]["content"])
@@ -325,6 +361,17 @@ class JarvisApp:
         thread = threading.Thread(target=lambda: self._speak_with_check(self.last_response), daemon=True)
         thread.start()
         print("[DEBUG] TTS 스레드 시작됨")
+
+    def _run_next_queued_task(self):
+        if self._is_processing_ai or not hasattr(self.executor, "dialogue_state"):
+            return
+        queued = [
+            task for task in self.executor.dialogue_state.list_tasks(self.session_id, include_finished=False)
+            if task.status == "queued"
+        ]
+        if queued:
+            task = queued[0]
+            self._on_user_input(task.goal, task.task_id)
     
     def _on_command_triggered(self, command: str):
         self.state_machine.start_processing()

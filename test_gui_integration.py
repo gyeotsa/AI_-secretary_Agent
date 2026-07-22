@@ -78,6 +78,23 @@ class _Executor:
         return f"오늘 날짜는 {get_tool_executor().execute_tool('get_date', {})}입니다."
 
 
+class _ControllableExecutor(_Executor):
+    queued = []
+
+    @staticmethod
+    def is_control_command(text):
+        return text.endswith("취소")
+
+    @staticmethod
+    def handle_control_command(_text, _session_id):
+        return type("Outcome", (), {"response": "작업 취소를 요청했습니다, 보스.", "next_goal": ""})()
+
+    @classmethod
+    def enqueue_goal(cls, goal, _session_id, priority=0):
+        cls.queued.append((goal, priority))
+        return type("Task", (), {"task_id": "feedbeef"})()
+
+
 class _Memory:
     def save_message(self, *_args):
         pass
@@ -173,3 +190,41 @@ def test_proactive_message_is_displayed_and_saved_without_user_input():
     assert _pump_until(lambda: bool(jarvis.window.assistants))
     assert jarvis.window.assistants[-1] == "보스, 예약 작업을 완료했습니다."
     assert jarvis.messages[-1]["role"] == "assistant"
+
+
+def test_control_command_is_accepted_while_ai_is_processing():
+    _app()
+    jarvis = JarvisApp.__new__(JarvisApp)
+    jarvis.window = _Window()
+    jarvis.state_machine = _StateMachine()
+    jarvis.executor = _ControllableExecutor()
+    jarvis.memory = _Memory()
+    jarvis.messages = []
+    jarvis.session_id = "control-session"
+    jarvis._is_processing_ai = True
+    jarvis.signals = AppSignals()
+    jarvis.signals.control_response_ready.connect(jarvis._on_control_response)
+
+    jarvis._on_user_input("작업 abcdef12 취소")
+
+    assert _pump_until(lambda: bool(jarvis.window.assistants))
+    assert "취소를 요청" in jarvis.window.assistants[-1]
+    assert jarvis._is_processing_ai is True
+
+
+def test_new_request_is_queued_while_current_task_is_processing():
+    _app()
+    jarvis = JarvisApp.__new__(JarvisApp)
+    jarvis.window = _Window()
+    jarvis.state_machine = _StateMachine()
+    jarvis.executor = _ControllableExecutor()
+    jarvis.memory = _Memory()
+    jarvis.messages = []
+    jarvis.session_id = "queue-session"
+    jarvis._is_processing_ai = True
+    _ControllableExecutor.queued = []
+
+    jarvis._on_user_input("새 작업: 내일 일정도 확인해줘")
+
+    assert _ControllableExecutor.queued == [("내일 일정도 확인해줘", 0)]
+    assert "feedbeef" in jarvis.window.assistants[-1]

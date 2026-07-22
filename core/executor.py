@@ -2,6 +2,7 @@ from typing import List, Optional, Dict, Any, Callable
 from dataclasses import dataclass
 import json
 import re
+import threading
 
 from core.llm import get_llm_client
 from core.scratchpad import get_scratchpad, Task
@@ -24,6 +25,8 @@ class ExecutionOutcome:
     status: str = "completed"
     goal: str = ""
     question: str = ""
+    task_id: str = ""
+    next_goal: str = ""
 
 
 class Executor:
@@ -65,6 +68,9 @@ class Executor:
         self.terminal_error = None
         self.dialogue_state = get_dialogue_state_store()
         self._progress_callback: Optional[Callable[[str], None]] = None
+        self.current_agent_task_id = ""
+        self._task_controls: Dict[str, Dict[str, bool]] = {}
+        self._control_condition = threading.Condition()
 
     def initialize(self, goal: str, session_id: Optional[str] = None):
         """초기화: Goal 설정, Scratchpad 초기화, Context 빌드"""
@@ -81,33 +87,29 @@ class Executor:
 
     def execute_goal(self, goal: str, session_id: Optional[str] = None,
                      conversation_history: Optional[List[Dict[str, str]]] = None,
-                     progress_callback: Optional[Callable[[str], None]] = None) -> str:
+                     progress_callback: Optional[Callable[[str], None]] = None,
+                     existing_task_id: Optional[str] = None) -> str:
         """하위 호환용 문자열 응답 API."""
-        return self.execute_turn(goal, session_id, conversation_history, progress_callback).response
+        return self.execute_turn(goal, session_id, conversation_history, progress_callback, existing_task_id).response
 
     def execute_turn(self, goal: str, session_id: Optional[str] = None,
                      conversation_history: Optional[List[Dict[str, str]]] = None,
-                     progress_callback: Optional[Callable[[str], None]] = None) -> ExecutionOutcome:
+                     progress_callback: Optional[Callable[[str], None]] = None,
+                     existing_task_id: Optional[str] = None) -> ExecutionOutcome:
         """질문 대기와 재개를 지원하는 한 번의 대화 턴을 실행한다."""
         session_key = session_id or "default"
         history = list(conversation_history or [])
         normalized = goal.strip().lower()
 
-        if normalized in {"대기 작업", "대기 작업 목록", "작업 목록"}:
+        if self.is_control_command(goal):
+            return self.handle_control_command(goal, session_key)
+
+        if normalized in {"대기 작업", "대기 작업 목록"}:
             items = self.dialogue_state.list(session_key)
             if not items:
                 return ExecutionOutcome("현재 답변을 기다리는 작업이 없습니다, 보스.", "completed")
             lines = [f"- {item.task_id}: {item.original_goal} (질문: {item.question})" for item in items]
             return ExecutionOutcome("답변을 기다리는 작업입니다, 보스.\n" + "\n".join(lines), "completed")
-
-        cancel_match = re.fullmatch(r"(?:작업\s*)?([0-9a-f]{8})\s*(?:취소|중단)", normalized)
-        if not cancel_match:
-            cancel_match = re.fullmatch(r"(?:작업\s*)?(?:취소|중단)\s*([0-9a-f]{8})", normalized)
-        if cancel_match:
-            task_id = cancel_match.group(1)
-            deleted = self.dialogue_state.delete(session_key, task_id)
-            message = f"작업 {task_id}을 취소했습니다, 보스." if deleted else f"대기 중인 작업 {task_id}을 찾지 못했습니다, 보스."
-            return ExecutionOutcome(message, "cancelled" if deleted else "completed")
 
         resume_match = re.match(r"(?:작업\s*)?([0-9a-f]{8})\s*재개\s*[:：]?\s*(.+)", goal.strip(), re.I | re.S)
         selected_task_id = resume_match.group(1).lower() if resume_match else None
@@ -116,10 +118,12 @@ class Executor:
         if is_new_request:
             goal = re.sub(r"^새 작업\s*[:：]\s*", "", goal, flags=re.I)
         pending = None if is_new_request else self.dialogue_state.get(session_key, selected_task_id)
+        agent_task_id = pending.task_id if pending else (existing_task_id or "")
 
         if pending:
             if supplied_answer.strip().lower() in {"취소", "그만", "중단", "cancel", "stop"}:
                 self.dialogue_state.delete(session_key, pending.task_id)
+                self.dialogue_state.update_task(pending.task_id, status="cancelled", result="사용자 취소")
                 return ExecutionOutcome(f"진행 중인 작업 {pending.task_id}을 취소했습니다, 보스.", "cancelled")
             history = pending.conversation_history + [
                 {"role": "assistant", "content": pending.question},
@@ -138,17 +142,30 @@ class Executor:
         resolved = self.context_resolver.resolve(goal, history, session_key)
         if resolved.needs_clarification:
             question = resolved.clarification_question or "어떤 대상을 말씀하시는지 조금 더 구체적으로 알려주세요, 보스."
-            pending = self.dialogue_state.create(session_key, goal, question, history)
+            task = (self.dialogue_state.get_task(session_key, agent_task_id)
+                    if agent_task_id else None)
+            if task:
+                self.dialogue_state.update_task(task.task_id, status="awaiting_user")
+            else:
+                task = self.dialogue_state.create_task(session_key, goal)
+            pending = self.dialogue_state.create(session_key, goal, question, history, task.task_id)
+            self.dialogue_state.update_task(task.task_id, status="awaiting_user")
             response = f"{question}\n대기 작업 ID: {pending.task_id}"
-            return ExecutionOutcome(response, "awaiting_user", goal, question)
+            return ExecutionOutcome(response, "awaiting_user", goal, question, pending.task_id)
         goal = resolved.resolved_request
         if goal != resolved.original_request:
             print(f"[Context] 요청 해석: {resolved.original_request!r} → {goal!r} (confidence={resolved.confidence:.2f})")
         unsupported = self._unsupported_capability_message(goal)
         if unsupported:
             return ExecutionOutcome(unsupported, "completed", goal)
+        if not agent_task_id:
+            agent_task_id = self.dialogue_state.create_task(session_key, goal).task_id
+        self.current_agent_task_id = agent_task_id
+        self.dialogue_state.update_task(agent_task_id, status="running")
+        with self._control_condition:
+            self._task_controls[agent_task_id] = {"cancel": False, "pause": False}
         self._progress_callback = progress_callback
-        self._emit_progress("요청을 이해했습니다. 작업 계획을 준비하고 있습니다.")
+        self._emit_progress(f"작업 {agent_task_id}: 요청을 이해했습니다. 작업 계획을 준비하고 있습니다.")
         self.initialize(goal, session_id)
 
         # 1. 초기 Planning
@@ -167,11 +184,26 @@ class Executor:
 
         # 3. 최종 종료 처리
         response = self.finalize()
+        control = self._task_controls.get(agent_task_id, {})
+        if control.get("cancel"):
+            status = "cancelled"
+        elif self.terminal_error:
+            status = "failed"
+        else:
+            status = "completed"
+        self.dialogue_state.update_task(agent_task_id, status=status, result=response)
+        with self._control_condition:
+            self._task_controls.pop(agent_task_id, None)
+        self.current_agent_task_id = ""
         self._progress_callback = None
-        return ExecutionOutcome(response, "failed" if self.terminal_error else "completed", goal)
+        return ExecutionOutcome(response, status, goal, task_id=agent_task_id)
 
     def has_pending_request(self, session_id: Optional[str] = None) -> bool:
         return bool(self.dialogue_state.list(session_id or "default"))
+
+    def enqueue_goal(self, goal: str, session_id: Optional[str] = None, priority: int = 0):
+        """현재 실행과 분리해 새 목표를 영속 대기열에 등록한다."""
+        return self.dialogue_state.create_task(session_id or "default", goal, priority)
 
     def _emit_progress(self, message: str):
         if self._progress_callback:
@@ -180,9 +212,106 @@ class Executor:
             except Exception as exc:
                 print(f"[Executor] 진행 상황 callback 오류: {exc}")
 
+    @staticmethod
+    def is_control_command(text: str) -> bool:
+        normalized = text.strip().lower()
+        if normalized in {"작업 목록", "전체 작업 목록"}:
+            return True
+        return bool(re.fullmatch(
+            r"(?:작업\s*)?[0-9a-f]{8}\s*(?:상태|취소|중단|일시정지|재개|우선순위\s*-?\d+|수정\s*[:：].+)",
+            normalized, re.S,
+        ))
+
+    def handle_control_command(self, text: str, session_id: Optional[str] = None) -> ExecutionOutcome:
+        session_key = session_id or "default"
+        normalized = text.strip().lower()
+        if normalized in {"작업 목록", "전체 작업 목록"}:
+            tasks = self.dialogue_state.list_tasks(session_key)
+            if not tasks:
+                return ExecutionOutcome("등록된 작업이 없습니다, 보스.")
+            lines = [f"- {t.task_id} [{t.status}] 우선순위 {t.priority}: {t.goal[:60]}" for t in tasks[:20]]
+            return ExecutionOutcome("작업 목록입니다, 보스.\n" + "\n".join(lines))
+
+        match = re.fullmatch(r"(?:작업\s*)?([0-9a-f]{8})\s*(.+)", normalized, re.S)
+        if not match:
+            return ExecutionOutcome("작업 제어 명령을 이해하지 못했습니다, 보스.", "failed")
+        task_id, command = match.group(1), match.group(2).strip()
+        task = self.dialogue_state.get_task(session_key, task_id)
+        if not task:
+            return ExecutionOutcome(f"작업 {task_id}을 찾지 못했습니다, 보스.", "failed", task_id=task_id)
+        if command == "상태":
+            return ExecutionOutcome(
+                f"작업 {task_id}은 현재 {task.status} 상태이고 우선순위는 {task.priority}입니다, 보스.",
+                task.status, task.goal, task_id=task_id,
+            )
+        priority_match = re.fullmatch(r"우선순위\s*(-?\d+)", command)
+        if priority_match:
+            priority = int(priority_match.group(1))
+            self.dialogue_state.update_task(task_id, priority=priority)
+            return ExecutionOutcome(f"작업 {task_id}의 우선순위를 {priority}로 변경했습니다, 보스.", task.status, task_id=task_id)
+
+        if command in {"취소", "중단"}:
+            self.dialogue_state.delete(session_key, task_id)
+            with self._control_condition:
+                control = self._task_controls.setdefault(task_id, {"cancel": False, "pause": False})
+                control["cancel"] = True
+                control["pause"] = False
+                self._control_condition.notify_all()
+            self.dialogue_state.update_task(task_id, status="cancelled", result="사용자 취소")
+            return ExecutionOutcome(f"작업 {task_id} 취소를 요청했습니다, 보스.", "cancelled", task_id=task_id)
+        revision_match = re.fullmatch(r"수정\s*[:：]\s*(.+)", command, re.S)
+        if revision_match:
+            revision = revision_match.group(1).strip()
+            with self._control_condition:
+                control = self._task_controls.setdefault(task_id, {"cancel": False, "pause": False})
+                control["cancel"] = True
+                control["pause"] = False
+                self._control_condition.notify_all()
+            self.dialogue_state.update_task(task_id, status="cancelled", result=f"수정 지시로 대체: {revision}")
+            next_goal = f"원래 요청: {task.goal}\n사용자 수정 지시: {revision}\n수정 지시를 반영해 작업을 다시 수행하세요."
+            return ExecutionOutcome(
+                f"작업 {task_id}을 중단하고 수정 지시를 반영해 다시 시작하겠습니다, 보스.",
+                "cancelled", task.goal, task_id=task_id, next_goal=next_goal,
+            )
+        if command == "일시정지":
+            with self._control_condition:
+                self._task_controls.setdefault(task_id, {"cancel": False, "pause": False})["pause"] = True
+            self.dialogue_state.update_task(task_id, status="paused")
+            return ExecutionOutcome(f"작업 {task_id}을 일시정지했습니다, 보스.", "paused", task_id=task_id)
+        if command == "재개":
+            with self._control_condition:
+                control = self._task_controls.setdefault(task_id, {"cancel": False, "pause": False})
+                control["pause"] = False
+                self._control_condition.notify_all()
+            if task.status in {"interrupted", "paused"} and task_id != self.current_agent_task_id:
+                self.dialogue_state.update_task(task_id, status="cancelled", result="저장된 목표로 재실행")
+                return ExecutionOutcome(
+                    f"작업 {task_id}의 저장된 목표를 불러와 다시 실행하겠습니다, 보스.",
+                    "interrupted", task.goal, task_id=task_id, next_goal=task.goal,
+                )
+            self.dialogue_state.update_task(task_id, status="running")
+            return ExecutionOutcome(f"작업 {task_id}을 재개했습니다, 보스.", "running", task_id=task_id)
+        return ExecutionOutcome("지원하지 않는 작업 제어 명령입니다, 보스.", "failed", task_id=task_id)
+
+    def _wait_for_task_control(self) -> bool:
+        task_id = self.current_agent_task_id
+        if not task_id:
+            return True
+        with self._control_condition:
+            control = self._task_controls.get(task_id, {})
+            while control.get("pause") and not control.get("cancel"):
+                self._control_condition.wait(timeout=0.5)
+                control = self._task_controls.get(task_id, {})
+            if control.get("cancel"):
+                self.terminal_error = f"작업 {task_id}이 사용자 요청으로 취소되었습니다."
+                return False
+        return True
+
     def run_iteration(self) -> bool:
         """한 번의 반복 실행: Task 선택 → Context 빌드 → (Reasoning+Tool선택 통합) → Action → Verify → Reflect → Update → Evaluate"""
         try:
+            if not self._wait_for_task_control():
+                return False
             # 0. 재계획 여부 확인
             current_context = self.build_context()
             if self.planner.should_replan(self._consecutive_failures, current_context):
@@ -222,6 +351,9 @@ class Executor:
                 tool_input = action.get("tool_input", {})
                 print(f"[Executor] Tool 선택: {tool_name}, 입력: {tool_input}")
                 self._emit_progress(f"도구 실행 중: {tool_name}")
+
+                if not self._wait_for_task_control():
+                    return False
 
                 # 5~6. ToolExecutor가 중앙 권한 검사 후 실행
                 result = self.execute_tool(tool_name, tool_input)
