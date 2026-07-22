@@ -6,6 +6,7 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 data/permissions.json
+data/tts_settings.json
 
 # Python
 .pytest_cache/

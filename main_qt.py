@@ -84,6 +84,7 @@ class JarvisApp:
         self.state_machine = StateMachine()
         self.mode_manager = ModeManager()
         self.memory = get_memory()
+        self.window.set_memory_manager(self.memory)
         self.llm = get_llm_client()
         self.tool_executor = get_tool_executor()
         self.window.set_tts_settings_manager(self.tool_executor.tts_settings)
@@ -143,11 +144,10 @@ class JarvisApp:
         self.window.text_submitted.connect(self._on_user_input)
         self.window.close_requested.connect(self._on_close_requested)  # 종료 요청 연결
         self.window.workspace_selected.connect(self._on_workspace_selected)  # Workspace 선택 연결
-        
-        # 타이머 설정
-        self.visibility_timer = QTimer()
-        self.visibility_timer.timeout.connect(self._ensure_visible)
-        self.visibility_timer.start(1000)
+        self.window.session_selected.connect(self._select_session)
+        self.window.session_created.connect(self._create_session)
+        self.window.session_deleted.connect(self._delete_session)
+        self.window.session_reset.connect(self._reset_session)
         
         self.heartbeat_timer = QTimer()
         self.heartbeat_timer.timeout.connect(lambda: None)
@@ -186,6 +186,9 @@ class JarvisApp:
                 self.window.show_user_text(last_user_msg)
             if last_assistant_msg:
                 self.window.show_assistant_text(last_assistant_msg)
+        else:
+            self.session_id = self.memory.create_session("새 대화")
+        self.window.set_current_session(self.session_id)
         
         # 콘솔 입력 처리 시작 (테스트용) - 잠시 주석
         # print("\n자비스가 준비되었습니다! 질문을 입력하세요 (종료하려면 'exit'):")
@@ -204,6 +207,51 @@ class JarvisApp:
             return
         
         self._on_user_input(user_input)
+
+    def _select_session(self, session_id: str):
+        if self._is_processing_ai:
+            self.window.show_assistant_text("현재 작업이 끝난 뒤 세션을 전환해 주세요, 보스.")
+            return
+        self.session_id = session_id
+        self.messages = self.memory.load_session(session_id)
+        self.window.set_current_session(session_id)
+        self.window.clear_conversation_display()
+        for role in ("user", "assistant"):
+            message = next((item for item in reversed(self.messages) if item["role"] == role), None)
+            if message and role == "user":
+                self.window.show_user_text(message["content"])
+            elif message:
+                self.window.show_assistant_text(message["content"])
+
+    def _create_session(self, title: str):
+        if self._is_processing_ai:
+            self.window.show_assistant_text("현재 작업이 끝난 뒤 새 세션을 만들어 주세요, 보스.")
+            return
+        self._select_session(self.memory.create_session(title))
+
+    def _reset_session(self, session_id: str):
+        if self._is_processing_ai and session_id == self.session_id:
+            self.window.show_assistant_text("현재 작업 중인 세션은 리셋할 수 없습니다, 보스.")
+            return
+        self.memory.clear_session(session_id)
+        self.executor.dialogue_state.clear_session(session_id)
+        if session_id == self.session_id:
+            self.messages = []
+            self.last_response = ""
+            self.window.clear_conversation_display()
+
+    def _delete_session(self, session_id: str):
+        if self._is_processing_ai and session_id == self.session_id:
+            self.window.show_assistant_text("현재 작업 중인 세션은 삭제할 수 없습니다, 보스.")
+            return
+        self.executor.dialogue_state.clear_session(session_id)
+        self.memory.delete_session(session_id)
+        if session_id == self.session_id:
+            remaining = self.memory.list_sessions()
+            if remaining:
+                self._select_session(remaining[0][0])
+            else:
+                self._select_session(self.memory.create_session("새 대화"))
     
     def _on_state_changed(self, old_state: State, new_state: State):
         self.window.update_state(new_state)
@@ -532,10 +580,9 @@ class JarvisApp:
         thread.start()
     
     def _ensure_visible(self):
+        """명시적으로 필요할 때만 창을 복원한다. 주기적으로 앞으로 가져오지 않는다."""
         if not self.window.isVisible():
             self.window.show()
-        if not self.window.isActiveWindow():
-            self.window.raise_()
     
     def _on_workspace_selected(self, folder_path: str):
         # Workspace가 선택되면 처리

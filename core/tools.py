@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import json
 import threading
+import asyncio
 from typing import Optional
 from datetime import datetime
 from dataclasses import asdict
@@ -22,6 +23,11 @@ try:
     import pyttsx3
 except ImportError:
     pyttsx3 = None
+
+try:
+    import edge_tts
+except ImportError:
+    edge_tts = None
 
 try:
     import whisper
@@ -665,6 +671,11 @@ class ToolExecutor:
             return self._speak_text_locked(text, audio_processor)
 
     def _speak_text_locked(self, text: str, audio_processor=None) -> str:
+        if self.tts_settings.selected_edge_voice:
+            edge_result = self._speak_with_edge_tts(text, audio_processor)
+            if not edge_result.startswith("TTS 오류:"):
+                return edge_result
+            print(f"[TTS] Edge 음성 실패, Windows 음성으로 대체: {edge_result}")
         if pyttsx3 is None:
             return self._speak_with_windows_speech(text, audio_processor)
 
@@ -722,6 +733,30 @@ class ToolExecutor:
                 try:
                     os.unlink(temp_wav_path)
                 except Exception:
+                    pass
+
+    def _speak_with_edge_tts(self, text: str, audio_processor=None) -> str:
+        if edge_tts is None:
+            return "TTS 오류: edge-tts가 설치되지 않았습니다."
+        media_path = None
+        try:
+            fd, media_path = tempfile.mkstemp(suffix=".mp3")
+            os.close(fd)
+            communicate = edge_tts.Communicate(
+                text or "네, 보스.", self.tts_settings.selected_edge_voice
+            )
+            asyncio.run(communicate.save(media_path))
+            if audio_processor is None:
+                return "TTS 오류: 온라인 음성을 재생할 오디오 처리기가 없습니다."
+            audio_processor.play_and_analyze_tts(media_path)
+            return f"음성으로 읽어드렸습니다: {text}"
+        except Exception as exc:
+            return f"TTS 오류: Edge 온라인 음성 합성 실패: {exc}"
+        finally:
+            if media_path and os.path.exists(media_path):
+                try:
+                    os.unlink(media_path)
+                except OSError:
                     pass
 
     def _speak_with_windows_speech(self, text: str, audio_processor=None) -> str:

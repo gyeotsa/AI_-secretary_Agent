@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel,
                              QFrame, QHBoxLayout, QLineEdit, QPushButton, 
                              QFileDialog, QDialog, QMessageBox, QScrollArea,
                              QCheckBox, QListWidget, QListWidgetItem)
+from PyQt6.QtWidgets import QTextEdit, QInputDialog
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush
 from .visualizer import AudioVisualizer
@@ -447,10 +448,11 @@ class TTSVoiceDialog(QDialog):
         guide = QLabel("사용할 목소리를 클릭하세요. 선택 결과는 자동 저장됩니다.")
         layout.addWidget(guide)
         self.voice_list = QListWidget()
-        voices = self.settings_manager.list_voices()
+        voices = self.settings_manager.list_voices(refresh=True)
         for index, voice in enumerate(voices):
             language = f" · {voice.languages}" if voice.languages else ""
-            item = QListWidgetItem(f"{voice.name}{language}")
+            provider = "온라인" if voice.provider == "edge" else "Windows"
+            item = QListWidgetItem(f"[{provider}] {voice.name}{language}")
             item.setData(Qt.ItemDataRole.UserRole, (voice.id, voice.name))
             self.voice_list.addItem(item)
             if voice.id == self.settings_manager.selected_voice_id:
@@ -474,6 +476,117 @@ class TTSVoiceDialog(QDialog):
         else:
             self.status_label.setText("목소리 설정에 실패했습니다.")
 
+
+class SessionManagerDialog(QDialog):
+    session_selected = pyqtSignal(str)
+    session_created = pyqtSignal(str)
+    session_deleted = pyqtSignal(str)
+    session_reset = pyqtSignal(str)
+
+    def __init__(self, memory_manager, current_session_id: str, parent=None):
+        super().__init__(parent)
+        self.memory_manager = memory_manager
+        self.current_session_id = current_session_id
+        self.setWindowTitle("JARVIS 대화 세션")
+        self.resize(760, 560)
+        self.setStyleSheet("""
+            QDialog, QListWidget, QTextEdit { background-color: #0a0a1a; color: #d8faff; }
+            QLabel { color: #00d4ff; }
+            QListWidget, QTextEdit { border: 1px solid #26677a; border-radius: 6px; }
+            QListWidget::item { padding: 9px; }
+            QListWidget::item:selected { background-color: #16495a; }
+            QPushButton { color: #00d4ff; border: 1px solid #00d4ff;
+                          border-radius: 6px; padding: 7px 12px; }
+        """)
+        layout = QVBoxLayout(self)
+        content = QHBoxLayout()
+        self.session_list = QListWidget()
+        self.session_list.setMinimumWidth(275)
+        self.history = QTextEdit()
+        self.history.setReadOnly(True)
+        content.addWidget(self.session_list, 1)
+        content.addWidget(self.history, 2)
+        layout.addLayout(content)
+
+        buttons = QHBoxLayout()
+        new_button = QPushButton("새 세션")
+        select_button = QPushButton("선택")
+        reset_button = QPushButton("대화 리셋")
+        delete_button = QPushButton("삭제")
+        close_button = QPushButton("닫기")
+        new_button.clicked.connect(self._create_session)
+        select_button.clicked.connect(self._select_session)
+        reset_button.clicked.connect(self._reset_session)
+        delete_button.clicked.connect(self._delete_session)
+        close_button.clicked.connect(self.accept)
+        for button in (new_button, select_button, reset_button, delete_button):
+            buttons.addWidget(button)
+        buttons.addStretch()
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+        self.session_list.currentItemChanged.connect(self._show_history)
+        self.session_list.itemDoubleClicked.connect(lambda _item: self._select_session())
+        self._load_sessions()
+
+    def _load_sessions(self):
+        self.session_list.clear()
+        current_row = 0
+        for index, session in enumerate(self.memory_manager.list_session_details()):
+            marker = "현재 · " if session["session_id"] == self.current_session_id else ""
+            item = QListWidgetItem(
+                f"{marker}{session['title']}\n{session['message_count']}개 메시지 · {session['end_time'][:16]}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, session["session_id"])
+            self.session_list.addItem(item)
+            if session["session_id"] == self.current_session_id:
+                current_row = index
+        if self.session_list.count():
+            self.session_list.setCurrentRow(current_row)
+
+    def _selected_id(self):
+        item = self.session_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else ""
+
+    def _show_history(self, current, _previous=None):
+        if current is None:
+            self.history.clear()
+            return
+        session_id = current.data(Qt.ItemDataRole.UserRole)
+        messages = self.memory_manager.load_session(session_id)
+        lines = []
+        for message in messages:
+            speaker = "나" if message["role"] == "user" else "자비스"
+            lines.append(f"{speaker}\n{message['content']}")
+        self.history.setPlainText("\n\n".join(lines) or "아직 대화 내용이 없습니다.")
+
+    def _create_session(self):
+        title, accepted = QInputDialog.getText(self, "새 세션", "세션 이름:", text="새 대화")
+        if accepted and title.strip():
+            self.session_created.emit(title.strip())
+            self.accept()
+
+    def _select_session(self):
+        session_id = self._selected_id()
+        if session_id:
+            self.session_selected.emit(session_id)
+            self.accept()
+
+    def _reset_session(self):
+        session_id = self._selected_id()
+        if session_id and QMessageBox.question(
+            self, "대화 리셋", "이 세션의 대화 내용과 대기 작업을 모두 지울까요?"
+        ) == QMessageBox.StandardButton.Yes:
+            self.session_reset.emit(session_id)
+            self.accept()
+
+    def _delete_session(self):
+        session_id = self._selected_id()
+        if session_id and QMessageBox.question(
+            self, "세션 삭제", "선택한 세션을 영구 삭제할까요?"
+        ) == QMessageBox.StandardButton.Yes:
+            self.session_deleted.emit(session_id)
+            self.accept()
+
 class JarvisMainWindow(QWidget):
     command_triggered = pyqtSignal(str)
     text_submitted = pyqtSignal(str)
@@ -481,6 +594,10 @@ class JarvisMainWindow(QWidget):
     workspace_selected = pyqtSignal(str)  # Workspace 선택 시그널
     # 권한 요청 시그널: (permission_name, permission_description) -> return bool
     permission_requested = pyqtSignal(str, str)
+    session_selected = pyqtSignal(str)
+    session_created = pyqtSignal(str)
+    session_deleted = pyqtSignal(str)
+    session_reset = pyqtSignal(str)
     
     def __init__(self, audio_processor=None):
         super().__init__()
@@ -496,6 +613,8 @@ class JarvisMainWindow(QWidget):
         self.current_workspace_name = ""
         self.permission_manager = None
         self.tts_settings_manager = None
+        self.memory_manager = None
+        self.current_session_id = ""
         
         # 원형 사운드바 상태 변수
         self.soundbar_bar_count = 80
@@ -510,11 +629,9 @@ class JarvisMainWindow(QWidget):
             self.audio_processor.audio_update.connect(self._on_audio_update)
     
     def init_ui(self):
-        # Tool 창은 Windows 작업 표시줄에 표시되지 않아 최소화 후 복원이 어렵다.
-        # 일반 최상위 Window로 등록하되 기존 frameless/always-on-top 동작은 유지한다.
+        # 일반 앱처럼 작업 표시줄에 표시하고 다른 창의 앞뒤로 이동할 수 있게 한다.
         self.setWindowFlags(Qt.WindowType.Window |
-                           Qt.WindowType.FramelessWindowHint |
-                           Qt.WindowType.WindowStaysOnTopHint)
+                           Qt.WindowType.FramelessWindowHint)
         
         screen = QApplication.primaryScreen().geometry()
         window_width = 800
@@ -579,6 +696,13 @@ class JarvisMainWindow(QWidget):
         self.voice_btn.setToolTip("TTS 목소리 선택")
         self.voice_btn.clicked.connect(self.show_tts_voice_settings)
         tab_layout.addWidget(self.voice_btn)
+
+        self.session_btn = QPushButton("💬")
+        self.session_btn.setStyleSheet(button_style)
+        self.session_btn.setFixedSize(35, 35)
+        self.session_btn.setToolTip("대화 세션 관리")
+        self.session_btn.clicked.connect(self.show_session_manager)
+        tab_layout.addWidget(self.session_btn)
         
         self.sound_bar = SoundBarWidget(self)
         self.sound_bar.hide()
@@ -1174,6 +1298,27 @@ class JarvisMainWindow(QWidget):
             QMessageBox.warning(self, "TTS 목소리", "TTS 설정 관리자가 아직 준비되지 않았습니다.")
             return
         TTSVoiceDialog(self.tts_settings_manager, self).exec()
+
+    def set_memory_manager(self, memory_manager):
+        self.memory_manager = memory_manager
+
+    def set_current_session(self, session_id: str):
+        self.current_session_id = session_id
+
+    def clear_conversation_display(self):
+        self.user_text_label.setText("")
+        self.assistant_text_label.setText("")
+
+    def show_session_manager(self):
+        if self.memory_manager is None:
+            QMessageBox.warning(self, "대화 세션", "대화 저장소가 아직 준비되지 않았습니다.")
+            return
+        dialog = SessionManagerDialog(self.memory_manager, self.current_session_id, self)
+        dialog.session_selected.connect(self.session_selected.emit)
+        dialog.session_created.connect(self.session_created.emit)
+        dialog.session_deleted.connect(self.session_deleted.emit)
+        dialog.session_reset.connect(self.session_reset.emit)
+        dialog.exec()
     
     def _on_text_submitted(self):
         text = self.text_input.text().strip()

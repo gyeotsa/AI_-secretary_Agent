@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import List, Dict, Optional, Any
 from config import Config
 import os
+import uuid
 from dataclasses import dataclass, asdict
 
 
@@ -64,6 +65,19 @@ class EpisodeMemoryManager:
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_timestamp ON episodes(timestamp)")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_sessions (
+                session_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        cursor.execute("""
+            INSERT OR IGNORE INTO conversation_sessions (session_id, title, created_at, updated_at)
+            SELECT session_id, session_id, MIN(timestamp), MAX(timestamp)
+            FROM episodes GROUP BY session_id
+        """)
         conn.commit()
         conn.close()
         
@@ -71,6 +85,14 @@ class EpisodeMemoryManager:
         """에피소드 추가"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR IGNORE INTO conversation_sessions VALUES (?, ?, ?, ?)",
+            (episode.session_id, episode.session_id, episode.timestamp, episode.timestamp),
+        )
+        cursor.execute(
+            "UPDATE conversation_sessions SET updated_at = ? WHERE session_id = ?",
+            (episode.timestamp, episode.session_id),
+        )
         cursor.execute("""
             INSERT INTO episodes (session_id, role, content, summary, importance, metadata, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -173,10 +195,11 @@ class EpisodeMemoryManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT DISTINCT session_id, MIN(timestamp) as start_time, MAX(timestamp) as end_time, COUNT(*) as message_count
-            FROM episodes
-            GROUP BY session_id
-            ORDER BY start_time DESC
+            SELECT s.session_id, s.title, s.created_at, s.updated_at, COUNT(e.id) as message_count
+            FROM conversation_sessions s
+            LEFT JOIN episodes e ON e.session_id = s.session_id
+            GROUP BY s.session_id, s.title, s.created_at, s.updated_at
+            ORDER BY s.updated_at DESC
         """)
         rows = cursor.fetchall()
         conn.close()
@@ -185,11 +208,39 @@ class EpisodeMemoryManager:
         for row in rows:
             sessions.append({
                 "session_id": row[0],
-                "start_time": datetime.fromtimestamp(row[1]).isoformat() if row[1] else "",
-                "end_time": datetime.fromtimestamp(row[2]).isoformat() if row[2] else "",
-                "message_count": row[3]
+                "title": row[1],
+                "start_time": datetime.fromtimestamp(row[2]).isoformat() if row[2] else "",
+                "end_time": datetime.fromtimestamp(row[3]).isoformat() if row[3] else "",
+                "message_count": row[4]
             })
         return sessions
+
+    def create_session(self, title: str = "새 대화") -> str:
+        session_id = uuid.uuid4().hex
+        now = datetime.now().timestamp()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO conversation_sessions VALUES (?, ?, ?, ?)",
+                (session_id, title.strip() or "새 대화", now, now),
+            )
+        return session_id
+
+    def clear_session(self, session_id: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("DELETE FROM episodes WHERE session_id = ?", (session_id,))
+            conn.execute(
+                "UPDATE conversation_sessions SET updated_at = ? WHERE session_id = ?",
+                (datetime.now().timestamp(), session_id),
+            )
+        return cursor.rowcount > 0
+
+    def delete_session(self, session_id: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM episodes WHERE session_id = ?", (session_id,))
+            cursor = conn.execute(
+                "DELETE FROM conversation_sessions WHERE session_id = ?", (session_id,)
+            )
+        return cursor.rowcount > 0
 
 
 class SemanticMemoryManager:
@@ -340,8 +391,8 @@ class SemanticMemoryManager:
 
 # 기존 ConversationMemory 유지 (하위 호환성)
 class ConversationMemory:
-    def __init__(self):
-        self.episode_manager = EpisodeMemoryManager()
+    def __init__(self, db_path: Optional[str] = None):
+        self.episode_manager = EpisodeMemoryManager(db_path)
         
     def init_db(self):
         # episode_manager가 이미 초기화함
@@ -362,6 +413,18 @@ class ConversationMemory:
     def list_sessions(self) -> List[tuple]:
         sessions = self.episode_manager.list_sessions()
         return [(s["session_id"], s["start_time"]) for s in sessions]
+
+    def list_session_details(self) -> List[Dict[str, Any]]:
+        return self.episode_manager.list_sessions()
+
+    def create_session(self, title: str = "새 대화") -> str:
+        return self.episode_manager.create_session(title)
+
+    def clear_session(self, session_id: str) -> bool:
+        return self.episode_manager.clear_session(session_id)
+
+    def delete_session(self, session_id: str) -> bool:
+        return self.episode_manager.delete_session(session_id)
 
 
 # 싱글톤 인스턴스

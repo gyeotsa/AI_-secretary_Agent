@@ -5,6 +5,11 @@ import time
 from scipy.io import wavfile
 from PyQt6.QtCore import QObject, pyqtSignal
 
+try:
+    import av
+except ImportError:
+    av = None
+
 
 class AudioProcessor(QObject):
     """실제 오디오 데이터를 분석해서 진폭(Amplitude)과 주파수 대역별 에너지를 전달하는 클래스"""
@@ -26,8 +31,7 @@ class AudioProcessor(QObject):
             self._is_speaking = True
             self._is_running = True
             
-            # WAV 파일 읽기
-            sr, data = wavfile.read(wav_path)
+            sr, data = self._read_tts_audio(wav_path)
             self._sample_rate = sr
             
             # 원본 음량과 채널을 보존한 float32 재생 데이터로 변환한다.
@@ -63,6 +67,26 @@ class AudioProcessor(QObject):
             self._is_running = False
             # 마지막으로 0 레벨 신호 보내기
             self.audio_update.emit(0.0, [], False)
+
+    @staticmethod
+    def _read_tts_audio(media_path: str):
+        """로컬 WAV와 온라인 Neural TTS MP3를 공통 배열로 읽는다."""
+        if str(media_path).casefold().endswith(".wav"):
+            return wavfile.read(media_path)
+        if av is None:
+            raise RuntimeError("MP3 TTS 재생을 위해 av 패키지가 필요합니다.")
+        chunks = []
+        sample_rate = 0
+        with av.open(media_path) as container:
+            for frame in container.decode(audio=0):
+                sample_rate = frame.sample_rate
+                chunk = frame.to_ndarray()
+                if chunk.ndim == 2:
+                    chunk = chunk.T
+                chunks.append(chunk)
+        if not chunks or not sample_rate:
+            raise ValueError("TTS 오디오를 디코딩하지 못했습니다.")
+        return sample_rate, np.concatenate(chunks, axis=0)
     
     def start_listen_analysis(self):
         """사용자 음성 입력을 실시간으로 분석합니다 (STT용)"""

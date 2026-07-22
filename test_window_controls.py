@@ -16,6 +16,7 @@ def app():
 def test_main_window_is_taskbar_window_not_tool(app):
     window = JarvisMainWindow()
     assert window.windowType() == Qt.WindowType.Window
+    assert not window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     window.close()
 
 

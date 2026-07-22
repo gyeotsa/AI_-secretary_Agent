@@ -60,6 +60,18 @@ def test_windows_voice_fallback_is_used_when_pyttsx_fails(monkeypatch, tmp_path)
     assert manager.list_voices() == fallback
 
 
+def test_online_korean_voices_are_merged_with_local_voices(monkeypatch, tmp_path):
+    manager = TTSSettingsManager(str(tmp_path / "tts.json"))
+    local = [settings_module.TTSVoice("local", "Local Korean", "ko-KR")]
+    online = [settings_module.TTSVoice("edge:ko-KR-Test", "Online Korean", "ko-KR", "edge")]
+    monkeypatch.setattr(manager, "_list_local_voices", lambda: local)
+    monkeypatch.setattr(manager, "_list_edge_voices", lambda: online)
+
+    assert manager.list_voices(refresh=True) == local + online
+    assert manager.select_voice("edge:ko-KR-Test") is True
+    assert manager.selected_edge_voice == "ko-KR-Test"
+
+
 def test_tts_playback_uses_nonblocking_continuous_player(monkeypatch, tmp_path):
     path = tmp_path / "voice.wav"
     stereo = np.array([[1000, -1000], [500, -500], [0, 0]], dtype=np.int16)

@@ -215,6 +215,14 @@ class DialogueStateStore:
             return None
         return {"intent_name": row[0], "slots": json.loads(row[1]), "original_request": row[2]}
 
+    def clear_session(self, session_id: str):
+        """대화 리셋/삭제 시 연결된 대기 작업과 Intent 문맥도 제거한다."""
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM pending_requests WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM agent_tasks WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM intent_states WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM recent_intents WHERE session_id = ?", (session_id,))
+
 
 _dialogue_state_store = None
 
