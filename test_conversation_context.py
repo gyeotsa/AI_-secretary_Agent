@@ -69,3 +69,24 @@ def test_verified_weather_result_is_rendered_without_llm_hallucination():
     assert "27.8°C" in response
     assert "체감온도는 34.2°C" in response
     assert "서울시 기준 근사값" in response
+
+
+def test_calendar_capability_question_does_not_enter_tool_pipeline():
+    response = Executor._calendar_capability_message("너 .ics 일정 파일 생성은 가능한 거 아니었어?")
+    assert "가능합니다" in response
+    assert "calendar_create_event" in response
+    assert "이메일과 무관" in response
+
+
+def test_calendar_goal_blocks_unrelated_mail_and_weather_tools():
+    executor = Executor.__new__(Executor)
+    executor.goal = "바탕화면에 .ics 일정 파일을 생성해줘"
+    assert "관련 없는 도구" in executor._tool_domain_error({
+        "action_type": "use_tool", "tool_name": "mail_create_draft", "tool_input": {},
+    })
+    assert "관련 없는 도구" in executor._tool_domain_error({
+        "action_type": "use_tool", "tool_name": "get_weather", "tool_input": {},
+    })
+    assert executor._tool_domain_error({
+        "action_type": "use_tool", "tool_name": "calendar_create_event", "tool_input": {},
+    }) is None

@@ -676,3 +676,16 @@ AI_-secretary_Agent/
 - 질문→답변→작업 재개, 중간 보고, 선제 알림, 재시작 복구, 다중 작업 큐, 상태·우선순위·수정·일시정지·취소 제어까지 구현함.
 - 외부 Tool의 네트워크/프로세스 호출 도중 즉시 선점하는 강제 종료는 Tool별 취소 API가 있어야 하므로 향후 각 MCP 연결 단계에서 개별 적용함.
 - 다음 작업은 1번 목표인 MCP/API 연결이며 Browser → Excel → PowerPoint → Word/PDF → IDE → Drive → Mail → Calendar 순으로 진행.
+
+## 2026-07-22 캘린더 요청의 메일·날씨 오염 수정
+
+- 실제 로그에서 `.ics` 기능 문의가 Planner 반복 실행으로 들어간 뒤 오래된 날씨·메일 Memory에 끌려 `get_weather`, `mail_create_draft`, `mail_send_smtp`를 호출하는 문제를 재현함.
+- `.ics`·캘린더 파일 기능 문의는 Tool 파이프라인에 넣지 않고 `calendar_create_event` 지원 여부와 필요한 입력을 즉시 정확하게 답하도록 함.
+- Action Reasoner에 최종 Goal 우선·무관한 과거 Memory 무시 규칙과 캘린더→`calendar_create_event` 전용 라우팅 규칙을 추가함.
+- 명시적인 캘린더/일정 파일 목표에서 mail·weather 등 무관한 Tool 호출을 실행 전에 차단하는 도메인 검증을 추가함.
+- 모델이 `/path/to/...` 예시 경로를 반환하거나 바탕화면 저장을 요청받으면 실제 `C:\Users\ice31\Desktop\<일정 제목>.ics`로 교정함.
+- 로컬 `.env`의 `ALLOWED_PATHS`에 프로젝트 경로와 바탕화면을 명시적으로 추가함(`.env`는 Git 제외).
+- `경로 '...'는 허용되지 않습니다`와 권한 거부 결과를 Verifier가 성공으로 오판하지 않도록 공통 실패 판정을 보강함.
+- `calendar_create_event` 성공 시 실제 파일 존재와 VCALENDAR/VEVENT/DTSTART/DTEND 구조를 검증함.
+- 첨부 로그와 동일한 질문의 실제 Executor 회귀 실행에서 Tool 호출 없이 캘린더 기능을 안내하고 이메일과 무관함을 응답하는 것을 확인함.
+- 기본 테스트 63개 통과, 통합 테스트 4개 기본 제외, `compileall`과 `git diff --check` 통과.

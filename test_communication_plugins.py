@@ -1,5 +1,6 @@
 from plugins.calendar import CalendarPlugin
 from plugins.mail import MailPlugin
+from core.verifier import ToolVerifier
 
 
 def test_calendar_creates_standard_ics(tmp_path, monkeypatch):
@@ -12,6 +13,16 @@ def test_calendar_creates_standard_ics(tmp_path, monkeypatch):
     assert result.startswith("캘린더 이벤트 생성 성공:")
     content = target.read_text(encoding="utf-8")
     assert "BEGIN:VCALENDAR" in content and "SUMMARY:주간 회의" in content
+    verification = ToolVerifier().verify("calendar_create_event", {"path": str(target)}, result)
+    assert verification.success
+
+
+def test_path_denial_is_never_verified_as_success():
+    verification = ToolVerifier().verify(
+        "mail_create_draft", {"path": "C:/blocked/test.ics"},
+        "경로 'C:\\blocked\\test.ics'는 허용되지 않습니다.",
+    )
+    assert not verification.success
 
 
 def test_mail_draft_uses_configured_sender(tmp_path, monkeypatch):

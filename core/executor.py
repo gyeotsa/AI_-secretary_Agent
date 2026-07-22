@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import json
 import re
 import threading
+from pathlib import Path
 
 from core.llm import get_llm_client
 from core.scratchpad import get_scratchpad, Task
@@ -103,6 +104,10 @@ class Executor:
 
         if self.is_control_command(goal):
             return self.handle_control_command(goal, session_key)
+
+        capability_message = self._calendar_capability_message(goal)
+        if capability_message:
+            return ExecutionOutcome(capability_message, "completed", goal)
 
         if normalized in {"대기 작업", "대기 작업 목록"}:
             items = self.dialogue_state.list(session_key)
@@ -339,6 +344,9 @@ class Executor:
             # 3~4. Native Tool Calling으로 '무엇을 할지'와 '어떤 도구를 쓸지'를 한 번에 결정
             # (예전의 reason_next_action() + select_tool() 두 단계를 decide_next_action() 하나로 통합)
             action = self.decide_next_action(task, context)
+            domain_error = self._tool_domain_error(action)
+            if domain_error:
+                action = {"action_type": "error", "simple_result": domain_error}
             print(f"[Executor] Action 결정: {action}")
 
             if action.get("action_type") == "error":
@@ -349,6 +357,8 @@ class Executor:
             if action.get("action_type") == "use_tool":
                 tool_name = action["tool_name"]
                 tool_input = action.get("tool_input", {})
+                if tool_name == "calendar_create_event":
+                    tool_input = self._normalize_calendar_input(tool_input)
                 print(f"[Executor] Tool 선택: {tool_name}, 입력: {tool_input}")
                 self._emit_progress(f"도구 실행 중: {tool_name}")
 
@@ -508,7 +518,9 @@ class Executor:
             "주어진 Task를 수행하기 위해 도구가 필요하면 반드시 제공된 도구 중 하나를 호출하세요.\n"
             "도구 없이 바로 답할 수 있는 간단한 작업이나 이미 끝난 작업이면, 도구를 호출하지 말고 "
             "결과나 답변을 자연스러운 한국어 텍스트로 바로 답하세요.\n"
-            "제공된 도구 목록에 없는 도구는 절대 지어내지 마세요."
+            "제공된 도구 목록에 없는 도구는 절대 지어내지 마세요.\n"
+            "최종 Goal과 현재 Task를 가장 높은 우선순위로 따르고, 과거 Memory의 다른 주제는 무시하세요.\n"
+            ".ics·캘린더·일정 파일 요청에는 calendar_create_event만 사용하고 mail·weather 도구를 사용하지 마세요."
         )
         try:
             messages = [
@@ -553,6 +565,45 @@ class Executor:
         if isinstance(block, dict):
             return block.get("name"), block.get("input") or {}
         return getattr(block, "name", None), getattr(block, "input", None) or {}
+
+    @staticmethod
+    def _calendar_capability_message(goal: str) -> Optional[str]:
+        normalized = goal.casefold()
+        calendar_topic = any(word in normalized for word in (".ics", "ics 파일", "캘린더 파일", "일정 파일"))
+        capability_question = any(word in normalized for word in ("가능", "지원", "할 수 있", "아니었어"))
+        direct_creation = any(word in normalized for word in ("생성해줘", "만들어줘", "작성해줘", "저장해줘"))
+        if calendar_topic and capability_question and not direct_creation:
+            return (
+                "네, 가능합니다, 보스. 표준 iCalendar(.ics) 일정 파일을 생성할 수 있습니다. "
+                "일정 제목, 시작 시간, 종료 시간, 저장할 경로를 알려주시면 생성하겠습니다. "
+                "이 기능은 이메일과 무관하며 calendar_create_event 도구를 사용합니다."
+            )
+        return None
+
+    def _tool_domain_error(self, action: Dict[str, Any]) -> Optional[str]:
+        if action.get("action_type") != "use_tool":
+            return None
+        normalized = self.goal.casefold()
+        tool_name = str(action.get("tool_name", ""))
+        if any(word in normalized for word in (".ics", "ics 파일", "캘린더 파일", "일정 파일")):
+            if tool_name not in {"calendar_create_event", "get_date", "get_time"}:
+                return (
+                    f"캘린더 요청과 관련 없는 도구 호출을 차단했습니다: {tool_name}. "
+                    "일정 제목·시작 시간·종료 시간·저장 경로를 확인한 뒤 calendar_create_event를 사용해야 합니다."
+                )
+        return None
+
+    def _normalize_calendar_input(self, tool_input: Dict[str, Any]) -> Dict[str, Any]:
+        """바탕화면 요청과 모델의 예시 placeholder 경로를 안전한 실제 경로로 교정한다."""
+        normalized = dict(tool_input)
+        requested_path = str(normalized.get("path", ""))
+        placeholder = any(token in requested_path.casefold() for token in ("/path/to", "\\path\\to", "example"))
+        if "바탕화면" in self.goal or not requested_path or placeholder:
+            title = re.sub(r"[^0-9a-zA-Z가-힣_-]+", "_", str(normalized.get("title", "일정"))).strip("_") or "일정"
+            normalized["path"] = str(Path.home() / "Desktop" / f"{title}.ics")
+        elif not requested_path.casefold().endswith(".ics"):
+            normalized["path"] = requested_path + ".ics"
+        return normalized
 
     def request_permission(self, tool_name: str) -> bool:
         """

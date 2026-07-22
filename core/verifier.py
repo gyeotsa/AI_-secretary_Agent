@@ -28,6 +28,7 @@ class ToolVerifier:
             "write_excel_cell": self._verify_write_excel_cell,
             "add_document": self._verify_add_document,
             "run_command": self._verify_run_command,
+            "calendar_create_event": self._verify_calendar_create_event,
         }
 
     def verify(self, tool_name: str, tool_input: Dict[str, Any], result: str) -> VerificationResult:
@@ -44,7 +45,9 @@ class ToolVerifier:
         """
         # 구조화된 오류 접두사만 공통 실패로 봅니다. 정상 출력에 포함된 'error' 단어는 허용합니다.
         normalized = str(result).lstrip().casefold()
-        if normalized.startswith(("오류:", "error:", "툴 파라미터 오류:", "명령어 실행 오류:")):
+        if (normalized.startswith(("오류:", "error:", "툴 파라미터 오류:", "명령어 실행 오류:"))
+                or (normalized.startswith("경로 '") and "허용되지 않습니다" in normalized)
+                or normalized.startswith(("권한이 거부", "권한 거부"))):
             return VerificationResult(
                 success=False,
                 message=f"도구 실행 결과에 오류가 포함되어 있습니다: {result[:100]}",
@@ -154,6 +157,20 @@ class ToolVerifier:
 
         except Exception as e:
             return VerificationResult(False, f"엑셀 파일 검증 중 오류가 발생했습니다: {e}")
+
+    def _verify_calendar_create_event(self, tool_input: Dict[str, Any], result: str) -> VerificationResult:
+        path = tool_input.get("path")
+        if not path or not os.path.isfile(path):
+            return VerificationResult(False, f"캘린더 파일이 생성되지 않았습니다: {path}")
+        try:
+            with open(path, "r", encoding="utf-8") as calendar_file:
+                content = calendar_file.read()
+            required = ("BEGIN:VCALENDAR", "BEGIN:VEVENT", "DTSTART:", "DTEND:", "END:VCALENDAR")
+            if not all(marker in content for marker in required):
+                return VerificationResult(False, "생성된 파일이 유효한 iCalendar 구조를 갖추지 못했습니다.")
+            return VerificationResult(True, f"캘린더 파일 생성 검증 성공: {path}")
+        except Exception as exc:
+            return VerificationResult(False, f"캘린더 파일 검증 중 오류가 발생했습니다: {exc}")
 
     def _verify_write_excel_cell(self, tool_input: Dict[str, Any], result: str) -> VerificationResult:
         """write_excel_cell 도구 검증: 엑셀 파일이 실제로 수정되었는지 확인"""
