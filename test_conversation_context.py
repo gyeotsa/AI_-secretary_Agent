@@ -90,3 +90,34 @@ def test_calendar_goal_blocks_unrelated_mail_and_weather_tools():
     assert executor._tool_domain_error({
         "action_type": "use_tool", "tool_name": "calendar_create_event", "tool_input": {},
     }) is None
+
+
+def test_calendar_creation_without_times_asks_before_planning():
+    assert Executor._calendar_missing_time_question(
+        "바탕화면에 123이라는 이름으로 캘린더 파일 하나 생성해줘"
+    ) == "캘린더 일정은 언제 시작해서 언제 끝나나요, 보스?"
+    assert Executor._calendar_missing_time_question(
+        "내일 15시부터 16시까지 123 캘린더 파일을 생성해줘"
+    ) is None
+
+
+def test_calendar_goal_restricts_llm_to_calendar_tools():
+    assert Executor._allowed_tools_for_goal("바탕화면에 123.ics를 만들어줘") == [
+        "calendar_create_event",
+    ]
+
+
+def test_llm_timeout_text_is_not_treated_as_simple_success():
+    class TimeoutLLM:
+        system_prompt = "original"
+        def set_system_prompt(self, value): self.system_prompt = value
+        def chat_with_tools(self, _messages, _allowed=None):
+            return "오류가 발생했습니다: Read timed out. (read timeout=120)", []
+
+    executor = Executor.__new__(Executor)
+    executor.reasoning_llm = TimeoutLLM()
+    executor._default_reasoning_prompt = "original"
+    executor.goal = "캘린더 파일 생성"
+    action = executor.decide_next_action(SimpleNamespace(description="캘린더 생성"), "")
+    assert action["action_type"] == "error"
+    assert "timed out" in action["simple_result"]

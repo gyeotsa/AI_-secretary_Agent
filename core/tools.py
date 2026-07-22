@@ -1996,7 +1996,8 @@ def get_tools_schema() -> list[dict]:
 AUTO_LOOP_EXCLUDED_TOOLS = ["speak_text", "listen", "execute_multi_agent", "get_task_history"]
 
 
-def get_tools_description_text(exclude: Optional[list[str]] = None) -> str:
+def get_tools_description_text(exclude: Optional[list[str]] = None,
+                               include: Optional[list[str]] = None) -> str:
     """
     get_tools_schema()를 사람이 읽을 수 있는 프롬프트 텍스트로 변환합니다.
 
@@ -2008,9 +2009,12 @@ def get_tools_description_text(exclude: Optional[list[str]] = None) -> str:
         exclude: 프롬프트에서 제외할 도구 이름 목록 (예: UI 전용 도구 등)
     """
     exclude_set = set(exclude or [])
+    include_set = set(include) if include is not None else None
     lines = []
     for tool in get_tools_schema():
         if tool["name"] in exclude_set:
+            continue
+        if include_set is not None and tool["name"] not in include_set:
             continue
         # 파라미터 이름까지 같이 보여줘야 LLM이 tool_input을 정확히 채울 수 있음
         properties = tool.get("input_schema", {}).get("properties", {})

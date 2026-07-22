@@ -109,6 +109,15 @@ class Executor:
         if capability_message:
             return ExecutionOutcome(capability_message, "completed", goal)
 
+        if not self.dialogue_state.get(session_key) and self._calendar_missing_time_question(goal):
+            question = self._calendar_missing_time_question(goal)
+            task = self.dialogue_state.create_task(session_key, goal)
+            pending = self.dialogue_state.create(session_key, goal, question, history, task.task_id)
+            self.dialogue_state.update_task(task.task_id, status="awaiting_user")
+            return ExecutionOutcome(
+                f"{question}\n대기 작업 ID: {pending.task_id}", "awaiting_user", goal, question, pending.task_id
+            )
+
         if normalized in {"대기 작업", "대기 작업 목록"}:
             items = self.dialogue_state.list(session_key)
             if not items:
@@ -144,6 +153,15 @@ class Executor:
             if progress_callback:
                 progress_callback(f"확인했습니다, 보스. 작업 {pending.task_id}을 이어서 진행하겠습니다.")
 
+        repeated_calendar_question = self._calendar_missing_time_question(goal)
+        if agent_task_id and repeated_calendar_question:
+            pending = self.dialogue_state.create(session_key, goal, repeated_calendar_question, history, agent_task_id)
+            self.dialogue_state.update_task(agent_task_id, status="awaiting_user")
+            return ExecutionOutcome(
+                f"{repeated_calendar_question}\n대기 작업 ID: {pending.task_id}",
+                "awaiting_user", goal, repeated_calendar_question, pending.task_id,
+            )
+
         resolved = self.context_resolver.resolve(goal, history, session_key)
         if resolved.needs_clarification:
             question = resolved.clarification_question or "어떤 대상을 말씀하시는지 조금 더 구체적으로 알려주세요, 보스."
@@ -175,7 +193,13 @@ class Executor:
 
         # 1. 초기 Planning
         initial_context = self.build_context()
-        _ = self.planner.decompose_goal(goal, initial_context)
+        allowed_tools = self._allowed_tools_for_goal(goal)
+        if allowed_tools == ["calendar_create_event"]:
+            self.scratchpad.reset()
+            self.scratchpad.set_goal(goal)
+            self.scratchpad.add_task("calendar_create_event 도구로 요청한 .ics 일정 파일을 생성합니다.", 1)
+        else:
+            _ = self.planner.decompose_goal(goal, initial_context, allowed_tools)
         self._emit_progress("작업 계획을 세웠습니다. 실행을 시작하겠습니다.")
 
         # 2. 메인 반복 루프
@@ -322,7 +346,9 @@ class Executor:
             if self.planner.should_replan(self._consecutive_failures, current_context):
                 print("[Executor] 재계획 시작!")
                 try:
-                    _ = self.planner.decompose_goal(self.goal, current_context)
+                    _ = self.planner.decompose_goal(
+                        self.goal, current_context, self._allowed_tools_for_goal(self.goal)
+                    )
                     self._consecutive_failures = 0  # 재계획 성공 시 초기화
                     print("[Executor] 재계획 완료!")
                 except Exception as e:
@@ -526,7 +552,12 @@ class Executor:
             messages = [
                 {"role": "user", "content": f"Context:\n{context}\n\nTask: {task.description}\n\n이 Task를 수행하세요."}
             ]
-            text, tool_use_blocks = self.reasoning_llm.chat_with_tools(messages)
+            allowed_tools = self._allowed_tools_for_goal(getattr(self, "goal", ""))
+            try:
+                text, tool_use_blocks = self.reasoning_llm.chat_with_tools(messages, allowed_tools)
+            except TypeError:
+                # 기존 테스트/사용자 정의 LLM 구현 하위 호환
+                text, tool_use_blocks = self.reasoning_llm.chat_with_tools(messages)
 
             if tool_use_blocks:
                 # 한 iteration에 Tool 호출 1개만 처리 (여러 개는 다음 iteration에서 순차 처리)
@@ -547,7 +578,13 @@ class Executor:
                         return {"action_type": "error", "simple_result": f"등록되지 않은 도구 요청을 차단했습니다: {requested_name}"}
                 except json.JSONDecodeError:
                     pass
-            return {"action_type": "simple_task", "simple_result": text or "Task 완료"}
+            normalized_text = (text or "").lstrip().casefold()
+            if not text or normalized_text.startswith(("오류:", "오류가 발생했습니다:", "error:")):
+                return {
+                    "action_type": "error",
+                    "simple_result": text or "LLM이 빈 응답을 반환해 작업을 중단했습니다.",
+                }
+            return {"action_type": "simple_task", "simple_result": text}
 
         except Exception as e:
             print(f"[Executor] Action/Tool 결정 오류: {e}")
@@ -578,6 +615,27 @@ class Executor:
                 "일정 제목, 시작 시간, 종료 시간, 저장할 경로를 알려주시면 생성하겠습니다. "
                 "이 기능은 이메일과 무관하며 calendar_create_event 도구를 사용합니다."
             )
+        return None
+
+    @staticmethod
+    def _calendar_missing_time_question(goal: str) -> Optional[str]:
+        normalized = goal.casefold()
+        calendar_topic = any(word in normalized for word in (".ics", "캘린더 파일", "일정 파일"))
+        creation = any(word in normalized for word in ("생성해줘", "만들어줘", "작성해줘", "저장해줘"))
+        if not (calendar_topic and creation):
+            return None
+        korean_times = re.findall(r"\d{1,2}\s*(?::\s*\d{2}|시)", normalized)
+        iso_times = re.findall(r"\d{4}-\d{2}-\d{2}t\d{2}:\d{2}", normalized)
+        has_duration = any(word in normalized for word in ("동안", "duration", "분간", "시간 동안"))
+        if len(korean_times) + len(iso_times) < 2 and not (korean_times and has_duration):
+            return "캘린더 일정은 언제 시작해서 언제 끝나나요, 보스?"
+        return None
+
+    @staticmethod
+    def _allowed_tools_for_goal(goal: str) -> Optional[List[str]]:
+        normalized = goal.casefold()
+        if any(word in normalized for word in (".ics", "캘린더 파일", "일정 파일")):
+            return ["calendar_create_event"]
         return None
 
     def _tool_domain_error(self, action: Dict[str, Any]) -> Optional[str]:
@@ -688,6 +746,13 @@ class Executor:
         pending_tasks = self.scratchpad.get_pending_tasks()
         if pending_tasks:
             return False
+        tasks = self.scratchpad.tasks
+        successful_tool_observations = [
+            observation for observation in self.scratchpad.observations
+            if observation.success and observation.tool_name not in {"reflection", "simple_action"}
+        ]
+        if tasks and all(task.status == "completed" for task in tasks) and successful_tool_observations:
+            return True
 
         # LLM으로 최종 Goal 달성 여부 확인
         context = self.build_context()

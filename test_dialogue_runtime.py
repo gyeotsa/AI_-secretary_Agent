@@ -154,3 +154,14 @@ def test_queued_tasks_are_ordered_by_priority_and_survive_restart(tmp_path):
     second = _executor_for_dialogue_test(tmp_path)
     queued = second.dialogue_state.list_tasks("queue-session", include_finished=False)
     assert [task.task_id for task in queued] == [high.task_id, low.task_id]
+
+
+def test_calendar_creation_waits_for_times_before_planner_or_llm(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+
+    outcome = executor.execute_turn(
+        "바탕화면에 123이라는 이름으로 캘린더 파일 하나 생성해줘", "calendar-session"
+    )
+    assert outcome.status == "awaiting_user"
+    assert "언제 시작해서 언제 끝" in outcome.response
+    assert executor.context_resolver.requests == []

@@ -36,3 +36,23 @@ def test_accepts_json_encoded_arguments():
         '{"name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}'
     )
     assert block["input"] == {"path": "README.md"}
+
+
+def test_chat_sends_only_domain_allowed_tools(monkeypatch):
+    captured = {}
+
+    class Response:
+        def raise_for_status(self): pass
+        def json(self): return {"message": {"content": "완료"}}
+
+    def fake_post(_url, json, timeout):
+        captured.update(json)
+        return Response()
+
+    monkeypatch.setattr("core.llm.requests.post", fake_post)
+    client = _client_with_tools()
+    text, calls = client.chat_with_tools(
+        [{"role": "user", "content": "날짜"}], allowed_tool_names=["get_date"]
+    )
+    assert text == "완료" and calls == []
+    assert [tool["function"]["name"] for tool in captured["tools"]] == ["get_date"]

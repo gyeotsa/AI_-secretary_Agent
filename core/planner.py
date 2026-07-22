@@ -55,7 +55,8 @@ class Planner:
             
         return False
         
-    def decompose_goal(self, goal: str, context: str = "") -> List[DecomposedTask]:
+    def decompose_goal(self, goal: str, context: str = "",
+                       allowed_tool_names: List[str] | None = None) -> List[DecomposedTask]:
         """
         사용자의 목표를 작업으로 분해합니다.
 
@@ -108,7 +109,9 @@ __TOOLS_TEXT__
         # (Executor.select_tool, ReActAgent도 동일한 목록을 참조합니다)
         # 주의: system_prompt에 JSON 예시의 리터럴 중괄호가 섞여 있으므로 .format()이 아니라
         # 단순 문자열 치환을 사용합니다 (.format()을 쓰면 그 중괄호들 때문에 KeyError가 납니다).
-        system_prompt = system_prompt.replace("__TOOLS_TEXT__", get_tools_description_text())
+        system_prompt = system_prompt.replace(
+            "__TOOLS_TEXT__", get_tools_description_text(include=allowed_tool_names)
+        )
 
         # 사용자 프롬프트
         user_prompt = f"사용자 요청: {goal}\n\n"
@@ -122,6 +125,8 @@ __TOOLS_TEXT__
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ])
+            if not response or response.lstrip().casefold().startswith(("오류:", "오류가 발생했습니다:", "error:")):
+                raise RuntimeError(response or "Planner가 빈 응답을 반환했습니다.")
 
             # JSON 파싱
             # 응답에서 ```json ... ``` 부분 추출 (있으면)

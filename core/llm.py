@@ -30,7 +30,7 @@ class BaseLLMClient:
     def set_system_prompt(self, prompt: str):
         self.system_prompt = prompt
 
-    def chat_with_tools(self, messages: List[Dict]) -> Tuple[str, List[Dict]]:
+    def chat_with_tools(self, messages: List[Dict], allowed_tool_names=None) -> Tuple[str, List[Dict]]:
         raise NotImplementedError
 
     def chat(self, messages: List[Dict]) -> str:
@@ -55,7 +55,7 @@ class AnthropicClient(BaseLLMClient):
                 api_messages.append(message)
         return "\n\n".join(part for part in system_parts if part), api_messages
 
-    def chat_with_tools(self, messages: List[Dict]) -> Tuple[str, List[Dict]]:
+    def chat_with_tools(self, messages: List[Dict], allowed_tool_names=None) -> Tuple[str, List[Dict]]:
         try:
             system_prompt, api_messages = self._prepare_messages(messages)
             response = self.client.messages.create(
@@ -64,7 +64,7 @@ class AnthropicClient(BaseLLMClient):
                 system=system_prompt,
                 messages=api_messages,
                 temperature=Config.TEMPERATURE,
-                tools=self.tools,
+                tools=[tool for tool in self.tools if allowed_tool_names is None or tool["name"] in allowed_tool_names],
             )
 
             tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
@@ -180,7 +180,7 @@ class OllamaClient(BaseLLMClient):
             })
         return ollama_tools
 
-    def chat_with_tools(self, messages: List[Dict]) -> Tuple[str, List[Dict]]:
+    def chat_with_tools(self, messages: List[Dict], allowed_tool_names=None) -> Tuple[str, List[Dict]]:
         try:
             # 시스템 프롬프트를 메시지에 추가
             ollama_messages = []
@@ -189,7 +189,11 @@ class OllamaClient(BaseLLMClient):
             ollama_messages.extend(messages)
 
             # Ollama용 도구 스키마로 변환
-            ollama_tools = self._convert_to_ollama_tools(self.tools)
+            selected_tools = [
+                tool for tool in self.tools
+                if allowed_tool_names is None or tool["name"] in allowed_tool_names
+            ]
+            ollama_tools = self._convert_to_ollama_tools(selected_tools)
 
             payload = {
                 "model": self.model,
@@ -359,11 +363,14 @@ class HybridLLMClient(BaseLLMClient):
         normalized = (text or "").lstrip().casefold()
         return normalized.startswith(("오류:", "오류가 발생했습니다:", "error:"))
 
-    def chat_with_tools(self, messages: List[Dict]) -> Tuple[str, List[Dict]]:
+    def chat_with_tools(self, messages: List[Dict], allowed_tool_names=None) -> Tuple[str, List[Dict]]:
         started = time.perf_counter()
         if self.primary is not None:
             try:
-                text, tools = self.primary.chat_with_tools(messages)
+                try:
+                    text, tools = self.primary.chat_with_tools(messages, allowed_tool_names)
+                except TypeError:
+                    text, tools = self.primary.chat_with_tools(messages)
                 if tools or (text and not self._is_error_text(text)):
                     self.last_provider = "anthropic"
                     self.routing_stats["anthropic_success"] += 1
@@ -375,7 +382,10 @@ class HybridLLMClient(BaseLLMClient):
             self.routing_stats["anthropic_failure"] += 1
         self.last_provider = "ollama"
         self.routing_stats["ollama_fallback"] += 1
-        result = self.fallback.chat_with_tools(messages)
+        try:
+            result = self.fallback.chat_with_tools(messages, allowed_tool_names)
+        except TypeError:
+            result = self.fallback.chat_with_tools(messages)
         self.last_latency_ms = (time.perf_counter() - started) * 1000
         return result
 
