@@ -468,6 +468,8 @@ AI_-secretary_Agent/
   - 커밋 해시: `3096500`
 - 9단계: `[Feat] 9단계 로컬 벡터 RAG 설치 및 검증`
   - 커밋 해시: `3cdf7e0`
+- 10단계: `[Feat] 10단계 역할 기반 하이브리드 LLM 라우팅 구현`
+  - 커밋 해시: `9efc895`
 
 ### 검증 결과
 
@@ -479,6 +481,7 @@ AI_-secretary_Agent/
 - Python 3.12 가상환경에서 Level 2 안전성 4개 + RAG 종단 테스트 1개, 총 5개 통과
 - `BAAI/bge-m3` 로컬 모델 1024차원 임베딩 확인
 - 한국어 문서 추가 → Chroma 벡터 검색 → Manager 재생성 후 영속 검색 확인
+- 하이브리드 라우팅·보안·RAG 신규 회귀 테스트 총 12개 통과
 
 ### 9단계 환경 변경 및 유지사항
 
@@ -490,12 +493,24 @@ AI_-secretary_Agent/
 - 실행 중 모델 자동 다운로드 금지. 로컬 모델이 없으면 Simple RAG로 fallback
 - Playwright 및 Chromium, 실제 Ollama/Anthropic, GUI·하드웨어 종단 검증은 아직 남아 있음
 
+### 10단계 하이브리드 LLM 결정사항
+
+- 실제 `.env`의 `LLM_PROVIDER`는 `hybrid`로 전환됨(비밀 파일이므로 Git에는 포함하지 않음)
+- 기본 역할 목록은 `HYBRID_CLAUDE_ROLES=reasoning`: Executor의 Tool Reasoner만 Claude 우선
+- 일반 대화·최종 응답·도구 실행·Permission·Memory·RAG는 Ollama/로컬에서 유지
+- `ANTHROPIC_MODEL=claude-sonnet-4-20250514`로 Ollama 모델 설정과 분리
+- API 키 미설정·placeholder·API 오류·예외·빈 응답이면 Ollama로 자동 fallback
+- placeholder `your_anthropic_api_key_here`는 유효한 API 키로 취급하지 않음
+- Anthropic 호출의 system role 메시지는 API 최상위 system 파라미터로 이동
+- `HybridLLMClient.get_routing_status()`에서 provider별 성공/실패/fallback 횟수와 마지막 지연시간 확인 가능
+- 현재 실제 Anthropic API 키가 없으므로 Claude 성공 경로는 mock 회귀 테스트만 완료됨
+
 ### 다음 해야 할 일
 
-1. **10단계 로컬 LLM/Claude 하이브리드 라우팅 설계 및 구현**
-2. Tool Selector/Reasoner만 Claude로 보내고 실행·메모리·RAG는 로컬에서 유지하는 정책 검토
-3. API 키가 없거나 Claude 호출이 실패하면 Ollama로 안전하게 fallback하는 테스트 작성
-4. Playwright/Chromium 설치 후 8단계 browser 플러그인 실동작 검증
-5. 실제 Ollama/Anthropic, GUI, 마이크·카메라·TTS 종단 검증
+1. **Playwright/Chromium 설치 후 8단계 browser 플러그인 실동작 검증**
+2. browser 도구의 public URL 제한, 사설망/localhost 차단, screenshot 경로 권한을 종단 테스트
+3. 실제 Anthropic API 키가 준비되면 Reasoner 성공 경로의 품질·비용·지연시간 비교
+4. 실제 Ollama, GUI, 마이크·카메라·TTS 종단 검증
+5. mail/calendar OAuth 토큰 저장·권한·계정 선택 정책 설계
 6. 위 작업을 마칠 때 이 인수인계서에 결정·변경·커밋 해시·다음 작업을 다시 기록
 
