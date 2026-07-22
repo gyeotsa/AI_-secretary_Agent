@@ -3,9 +3,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 from uuid import uuid4
+import re
 
 from core.harness import SafetyLayer
-from core.plugin import BasePlugin, ToolSchema
+from core.plugin import BasePlugin, ToolSchema, IntentSchema, SlotSchema
 
 
 def _escape(value: str) -> str:
@@ -28,6 +29,77 @@ class CalendarPlugin(BasePlugin):
             }, "required": ["path", "title", "start", "end"],
         }, ["filesystem_write"])]
 
+    def get_intents(self) -> List[IntentSchema]:
+        return [IntentSchema(
+            name="calendar.create_event",
+            description="표준 iCalendar 일정 파일 생성",
+            tool_name="calendar_create_event",
+            utterance_hints=[".ics", "ics 파일", "캘린더 파일", "일정 파일"],
+            slots=[
+                SlotSchema("title", "일정 또는 파일 제목", "일정 제목은 무엇으로 할까요, 보스?"),
+                SlotSchema("start", "ISO 8601 시작 날짜/시간", "일정은 언제 시작하나요, 보스?"),
+                SlotSchema("end", "ISO 8601 종료 날짜/시간", "일정은 언제 끝나나요, 보스?"),
+                SlotSchema("path", "저장할 .ics 파일 경로", "어디에 저장할까요, 보스?"),
+            ],
+            execution_hints=["생성해", "만들어", "작성해", "저장해"],
+            capability_response=(
+                "네, 가능합니다, 보스. 표준 iCalendar(.ics) 일정 파일을 생성할 수 있습니다. "
+                "필요한 정보가 빠져 있으면 하나씩 확인한 뒤 생성합니다."
+            ),
+        )]
+
+    def extract_slots(self, intent_name: str, text: str,
+                      current_slots: Dict[str, Any]) -> Dict[str, Any]:
+        slots = dict(current_slots)
+        if intent_name != "calendar.create_event":
+            return slots
+
+        title_match = re.search(r"([^\s]+?)(?:이라는|라는)\s*이름", text)
+        if title_match:
+            slots["title"] = title_match.group(1)
+
+        if "바탕화면" in text:
+            title = str(slots.get("title", "일정"))
+            safe_title = re.sub(r"[^0-9a-zA-Z가-힣_-]+", "_", title).strip("_") or "일정"
+            slots["path"] = str(Path.home() / "Desktop" / f"{safe_title}.ics")
+        path_match = re.search(r"([A-Za-z]:\\[^\r\n]+?\.ics|/[^\r\n]+?\.ics)", text, re.I)
+        if path_match:
+            slots["path"] = path_match.group(1)
+
+        full_dates = re.findall(r"(\d{2,4})년\s*(\d{1,2})월\s*(\d{1,2})일", text)
+        parsed_dates = []
+        for year, month, day in full_dates:
+            numeric_year = int(year)
+            if numeric_year < 100:
+                numeric_year += 2000
+            parsed_dates.append(f"{numeric_year:04d}-{int(month):02d}-{int(day):02d}")
+        if parsed_dates:
+            slots["start"] = parsed_dates[0]
+            if len(parsed_dates) > 1:
+                slots["end"] = parsed_dates[1]
+            else:
+                tail = text[text.find(f"{full_dates[0][2]}일") + len(f"{full_dates[0][2]}일"):]
+                end_day = re.search(r"(\d{1,2})일(?:에)?\s*끝", tail)
+                if end_day:
+                    year, month, _ = parsed_dates[0].split("-")
+                    slots["end"] = f"{year}-{month}-{int(end_day.group(1)):02d}"
+
+        times = re.findall(r"(오전|오후)?\s*(\d{1,2})시(?:\s*(\d{1,2})분)?", text)
+        if times:
+            converted = []
+            for meridiem, hour, minute in times:
+                numeric_hour = int(hour)
+                if meridiem == "오후" and numeric_hour < 12:
+                    numeric_hour += 12
+                if meridiem == "오전" and numeric_hour == 12:
+                    numeric_hour = 0
+                converted.append(f"{numeric_hour:02d}:{int(minute or 0):02d}:00")
+            if slots.get("start") and "T" not in str(slots["start"]):
+                slots["start"] = f"{slots['start']}T{converted[0]}"
+            if len(converted) > 1 and slots.get("end") and "T" not in str(slots["end"]):
+                slots["end"] = f"{slots['end']}T{converted[1]}"
+        return slots
+
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
         if tool_name != "calendar_create_event":
             return f"오류: 알 수 없는 툴 '{tool_name}'"
@@ -36,16 +108,19 @@ class CalendarPlugin(BasePlugin):
             ok, error = SafetyLayer.validate_path(str(path))
             if not ok:
                 return error
-            start = datetime.fromisoformat(str(tool_input["start"]))
-            end = datetime.fromisoformat(str(tool_input["end"]))
+            start_text, end_text = str(tool_input["start"]), str(tool_input["end"])
+            start = datetime.fromisoformat(start_text)
+            end = datetime.fromisoformat(end_text)
             if end <= start:
                 raise ValueError("종료 시간은 시작 시간보다 뒤여야 합니다.")
             fmt = "%Y%m%dT%H%M%S"
             content = "\r\n".join([
                 "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//JARVIS//AI Secretary//KO",
                 "BEGIN:VEVENT", f"UID:{uuid4()}@jarvis.local",
-                f"DTSTAMP:{datetime.now(timezone.utc).strftime(fmt)}Z", f"DTSTART:{start.strftime(fmt)}",
-                f"DTEND:{end.strftime(fmt)}", f"SUMMARY:{_escape(str(tool_input['title']))}",
+                f"DTSTAMP:{datetime.now(timezone.utc).strftime(fmt)}Z",
+                (f"DTSTART;VALUE=DATE:{start.strftime('%Y%m%d')}" if "T" not in start_text else f"DTSTART:{start.strftime(fmt)}"),
+                (f"DTEND;VALUE=DATE:{end.strftime('%Y%m%d')}" if "T" not in end_text else f"DTEND:{end.strftime(fmt)}"),
+                f"SUMMARY:{_escape(str(tool_input['title']))}",
                 f"DESCRIPTION:{_escape(str(tool_input.get('description', '')))}",
                 "END:VEVENT", "END:VCALENDAR", "",
             ])

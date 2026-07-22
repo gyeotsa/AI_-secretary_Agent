@@ -165,8 +165,11 @@ class ToolVerifier:
         try:
             with open(path, "r", encoding="utf-8") as calendar_file:
                 content = calendar_file.read()
-            required = ("BEGIN:VCALENDAR", "BEGIN:VEVENT", "DTSTART:", "DTEND:", "END:VCALENDAR")
-            if not all(marker in content for marker in required):
+            required = ("BEGIN:VCALENDAR", "BEGIN:VEVENT", "END:VCALENDAR")
+            has_dates = ("DTSTART:" in content or "DTSTART;VALUE=DATE:" in content) and (
+                "DTEND:" in content or "DTEND;VALUE=DATE:" in content
+            )
+            if not all(marker in content for marker in required) or not has_dates:
                 return VerificationResult(False, "생성된 파일이 유효한 iCalendar 구조를 갖추지 못했습니다.")
             return VerificationResult(True, f"캘린더 파일 생성 검증 성공: {path}")
         except Exception as exc:

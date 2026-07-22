@@ -4,6 +4,15 @@ from types import SimpleNamespace
 from core.conversation_context import ConversationContextResolver
 from core.executor import Executor
 from core.scratchpad import Observation
+from core.intent_router import IntentRouter
+from core.plugin import PluginRegistry
+from plugins.calendar import CalendarPlugin
+
+
+def _calendar_router():
+    registry = PluginRegistry()
+    registry.register_plugin(CalendarPlugin())
+    return IntentRouter(registry)
 
 
 class _LLM:
@@ -72,15 +81,14 @@ def test_verified_weather_result_is_rendered_without_llm_hallucination():
 
 
 def test_calendar_capability_question_does_not_enter_tool_pipeline():
-    response = Executor._calendar_capability_message("너 .ics 일정 파일 생성은 가능한 거 아니었어?")
-    assert "가능합니다" in response
-    assert "calendar_create_event" in response
-    assert "이메일과 무관" in response
+    resolution = _calendar_router().resolve("너 .ics 일정 파일 생성은 가능한 거 아니었어?")
+    assert "가능합니다" in resolution.capability_response
 
 
 def test_calendar_goal_blocks_unrelated_mail_and_weather_tools():
     executor = Executor.__new__(Executor)
     executor.goal = "바탕화면에 .ics 일정 파일을 생성해줘"
+    executor.intent_router = _calendar_router()
     assert "관련 없는 도구" in executor._tool_domain_error({
         "action_type": "use_tool", "tool_name": "mail_create_draft", "tool_input": {},
     })
@@ -93,16 +101,18 @@ def test_calendar_goal_blocks_unrelated_mail_and_weather_tools():
 
 
 def test_calendar_creation_without_times_asks_before_planning():
-    assert Executor._calendar_missing_time_question(
+    resolution = _calendar_router().resolve(
         "바탕화면에 123이라는 이름으로 캘린더 파일 하나 생성해줘"
-    ) == "캘린더 일정은 언제 시작해서 언제 끝나나요, 보스?"
-    assert Executor._calendar_missing_time_question(
-        "내일 15시부터 16시까지 123 캘린더 파일을 생성해줘"
-    ) is None
+    )
+    assert resolution.question == "일정은 언제 시작하나요, 보스?"
+    assert resolution.slots["title"] == "123"
+    assert resolution.slots["path"].endswith("Desktop\\123.ics")
 
 
 def test_calendar_goal_restricts_llm_to_calendar_tools():
-    assert Executor._allowed_tools_for_goal("바탕화면에 123.ics를 만들어줘") == [
+    executor = Executor.__new__(Executor)
+    executor.intent_router = _calendar_router()
+    assert executor._allowed_tools_for_goal("바탕화면에 123.ics를 만들어줘") == [
         "calendar_create_event",
     ]
 
@@ -118,6 +128,7 @@ def test_llm_timeout_text_is_not_treated_as_simple_success():
     executor.reasoning_llm = TimeoutLLM()
     executor._default_reasoning_prompt = "original"
     executor.goal = "캘린더 파일 생성"
+    executor.intent_router = _calendar_router()
     action = executor.decide_next_action(SimpleNamespace(description="캘린더 생성"), "")
     assert action["action_type"] == "error"
     assert "timed out" in action["simple_result"]

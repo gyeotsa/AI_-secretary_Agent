@@ -702,3 +702,20 @@ AI_-secretary_Agent/
 - 성공한 실제 Tool Observation과 완료 Task가 있으면 Goal Evaluator LLM을 다시 호출하지 않고 완료해 불필요한 추가 timeout과 재계획을 방지함.
 - 첨부 로그와 동일한 생성 요청의 실제 Executor 회귀 실행에서 Ollama 호출 없이 시작·종료 시간 질문과 Task ID가 반환되는 것을 확인함.
 - 기본 테스트 68개 통과, 통합 테스트 4개 기본 제외, `compileall`과 `git diff --check` 통과.
+
+## 2026-07-22 Plugin Registry 기반 범용 Intent/Slot 리팩터링
+
+- 날짜만 답했을 때 같은 시작·종료 시간 질문을 반복한 원인은 Executor의 캘린더 전용 “시간 표현 2개” 정규식이 날짜 범위를 slot으로 인정하지 못했기 때문임.
+- Executor에서 `.ics`·캘린더 키워드 판별, 고정 capability 문구, 시간 누락 정규식, 바탕화면 경로 보정, 캘린더 단일 Planner 분기를 모두 제거함.
+- Plugin SDK에 `IntentSchema`, `SlotSchema`, `BasePlugin.get_intents()`, `BasePlugin.extract_slots()` 계약을 추가함.
+- Plugin Registry가 활성 플러그인의 intent 계약을 한 곳에서 제공하고, 범용 `IntentRouter`가 발화 매칭·기능 문의·slot 누적·다음 질문·실행 Tool 결정을 담당함.
+- `DialogueStateStore.intent_states`에 task별 intent 이름·누적 slot·원래 요청을 저장해 프로그램 재시작과 여러 차례 확인 질문에서도 정보를 잃지 않음.
+- Executor는 특정 플러그인 이름을 알지 않고 IntentRouter 결과가 질문이면 대기, 준비 완료면 계약의 Tool을 직접 실행·검증함.
+- 도메인 Tool 제한과 잘못된 Tool 차단도 하드코딩 키워드가 아니라 Registry intent 계약의 `tool_name`을 기준으로 동작함.
+- CalendarPlugin이 `calendar.create_event` intent와 title/start/end/path slot, 질문, capability 응답, 발화·실행 힌트를 선언함.
+- CalendarPlugin 내부 정규화가 `123이라는 이름`, 바탕화면/명시 경로, 한국어 연·월·일 범위, 오전·오후 시간을 누적 slot으로 변환함.
+- 날짜만 있는 일정은 표준 all-day iCalendar의 `DTSTART;VALUE=DATE`/`DTEND;VALUE=DATE`로 생성함.
+- 실제 사용자 흐름과 동일한 2턴 테스트에서 첫 요청 후 시작 날짜만 질문하고, `26년 7월22일에 시작해서 23일에 끝나` 답변을 start/end로 누적해 질문 반복 없이 `.ics` 파일 생성·구조 검증까지 통과함.
+- 리팩터링 전에 생성된 `ee5b7f3f` 같은 intent 상태 없는 기존 pending 작업도 원래 요청을 Registry로 다시 해석해 slot 상태를 자동 마이그레이션함.
+- 향후 Excel·PowerPoint·Browser 플러그인도 Executor 수정 없이 각 플러그인에 IntentSchema와 extract_slots만 추가해 같은 멀티턴 흐름을 사용할 수 있음.
+- 기본 테스트 70개 통과, 통합 테스트 4개 기본 제외, `compileall`과 `git diff --check` 통과.

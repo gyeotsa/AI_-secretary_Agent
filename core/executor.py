@@ -3,7 +3,6 @@ from dataclasses import dataclass
 import json
 import re
 import threading
-from pathlib import Path
 
 from core.llm import get_llm_client
 from core.scratchpad import get_scratchpad, Task
@@ -18,6 +17,7 @@ from core.verifier import get_tool_verifier
 from core.recovery import get_recovery_manager
 from core.conversation_context import ConversationContextResolver
 from core.dialogue_state import get_dialogue_state_store
+from core.intent_router import IntentRouter, IntentResolution
 
 
 @dataclass
@@ -68,6 +68,7 @@ class Executor:
         self._total_failures = 0
         self.terminal_error = None
         self.dialogue_state = get_dialogue_state_store()
+        self.intent_router = IntentRouter(self.tool_executor.plugin_registry)
         self._progress_callback: Optional[Callable[[str], None]] = None
         self.current_agent_task_id = ""
         self._task_controls: Dict[str, Dict[str, bool]] = {}
@@ -105,19 +106,6 @@ class Executor:
         if self.is_control_command(goal):
             return self.handle_control_command(goal, session_key)
 
-        capability_message = self._calendar_capability_message(goal)
-        if capability_message:
-            return ExecutionOutcome(capability_message, "completed", goal)
-
-        if not self.dialogue_state.get(session_key) and self._calendar_missing_time_question(goal):
-            question = self._calendar_missing_time_question(goal)
-            task = self.dialogue_state.create_task(session_key, goal)
-            pending = self.dialogue_state.create(session_key, goal, question, history, task.task_id)
-            self.dialogue_state.update_task(task.task_id, status="awaiting_user")
-            return ExecutionOutcome(
-                f"{question}\n대기 작업 ID: {pending.task_id}", "awaiting_user", goal, question, pending.task_id
-            )
-
         if normalized in {"대기 작업", "대기 작업 목록"}:
             items = self.dialogue_state.list(session_key)
             if not items:
@@ -133,33 +121,84 @@ class Executor:
             goal = re.sub(r"^새 작업\s*[:：]\s*", "", goal, flags=re.I)
         pending = None if is_new_request else self.dialogue_state.get(session_key, selected_task_id)
         agent_task_id = pending.task_id if pending else (existing_task_id or "")
+        intent_resolution = IntentResolution()
 
         if pending:
             if supplied_answer.strip().lower() in {"취소", "그만", "중단", "cancel", "stop"}:
                 self.dialogue_state.delete(session_key, pending.task_id)
                 self.dialogue_state.update_task(pending.task_id, status="cancelled", result="사용자 취소")
                 return ExecutionOutcome(f"진행 중인 작업 {pending.task_id}을 취소했습니다, 보스.", "cancelled")
+            intent_state = self.dialogue_state.get_intent_state(pending.task_id)
+            if not intent_state:
+                legacy_resolution = self.intent_router.resolve(pending.original_goal)
+                if legacy_resolution.matched and legacy_resolution.tool_name:
+                    intent_state = {
+                        "session_id": session_key,
+                        "intent_name": legacy_resolution.intent_name,
+                        "slots": legacy_resolution.slots,
+                        "original_request": pending.original_goal,
+                    }
+                    self.dialogue_state.save_intent_state(
+                        pending.task_id, session_key, legacy_resolution.intent_name,
+                        legacy_resolution.slots, pending.original_goal,
+                    )
+            if intent_state:
+                intent_resolution = self.intent_router.resolve(
+                    supplied_answer, intent_state["intent_name"], intent_state["slots"]
+                )
+                self.dialogue_state.delete(session_key, pending.task_id)
+                if intent_resolution.question:
+                    self.dialogue_state.save_intent_state(
+                        pending.task_id, session_key, intent_resolution.intent_name,
+                        intent_resolution.slots, intent_state["original_request"],
+                    )
+                    next_pending = self.dialogue_state.create(
+                        session_key, intent_state["original_request"], intent_resolution.question,
+                        pending.conversation_history, pending.task_id,
+                    )
+                    return ExecutionOutcome(
+                        f"{intent_resolution.question}\n대기 작업 ID: {next_pending.task_id}",
+                        "awaiting_user", intent_state["original_request"],
+                        intent_resolution.question, next_pending.task_id,
+                    )
+                goal = intent_state["original_request"]
             history = pending.conversation_history + [
                 {"role": "assistant", "content": pending.question},
                 {"role": "user", "content": supplied_answer},
             ]
-            goal = (
-                f"원래 요청: {pending.original_goal}\n"
-                f"자비스의 확인 질문: {pending.question}\n"
-                f"사용자가 추가로 제공한 정보: {supplied_answer}\n"
-                "위 정보를 반영해 원래 요청을 이어서 완료하세요."
-            )
-            self.dialogue_state.delete(session_key, pending.task_id)
+            if not intent_state:
+                goal = (
+                    f"원래 요청: {pending.original_goal}\n"
+                    f"자비스의 확인 질문: {pending.question}\n"
+                    f"사용자가 추가로 제공한 정보: {supplied_answer}\n"
+                    "위 정보를 반영해 원래 요청을 이어서 완료하세요."
+                )
+                self.dialogue_state.delete(session_key, pending.task_id)
             if progress_callback:
                 progress_callback(f"확인했습니다, 보스. 작업 {pending.task_id}을 이어서 진행하겠습니다.")
 
-        repeated_calendar_question = self._calendar_missing_time_question(goal)
-        if agent_task_id and repeated_calendar_question:
-            pending = self.dialogue_state.create(session_key, goal, repeated_calendar_question, history, agent_task_id)
-            self.dialogue_state.update_task(agent_task_id, status="awaiting_user")
-            return ExecutionOutcome(
-                f"{repeated_calendar_question}\n대기 작업 ID: {pending.task_id}",
-                "awaiting_user", goal, repeated_calendar_question, pending.task_id,
+        if not pending:
+            intent_resolution = self.intent_router.resolve(goal)
+            if intent_resolution.capability_response:
+                return ExecutionOutcome(intent_resolution.capability_response, "completed", goal)
+            if intent_resolution.matched and intent_resolution.question:
+                task = self.dialogue_state.create_task(session_key, goal)
+                self.dialogue_state.save_intent_state(
+                    task.task_id, session_key, intent_resolution.intent_name,
+                    intent_resolution.slots, goal,
+                )
+                pending = self.dialogue_state.create(
+                    session_key, goal, intent_resolution.question, history, task.task_id,
+                )
+                self.dialogue_state.update_task(task.task_id, status="awaiting_user")
+                return ExecutionOutcome(
+                    f"{intent_resolution.question}\n대기 작업 ID: {pending.task_id}",
+                    "awaiting_user", goal, intent_resolution.question, pending.task_id,
+                )
+
+        if intent_resolution.ready:
+            return self._execute_resolved_intent(
+                intent_resolution, goal, session_key, agent_task_id, progress_callback
             )
 
         resolved = self.context_resolver.resolve(goal, history, session_key)
@@ -194,12 +233,7 @@ class Executor:
         # 1. 초기 Planning
         initial_context = self.build_context()
         allowed_tools = self._allowed_tools_for_goal(goal)
-        if allowed_tools == ["calendar_create_event"]:
-            self.scratchpad.reset()
-            self.scratchpad.set_goal(goal)
-            self.scratchpad.add_task("calendar_create_event 도구로 요청한 .ics 일정 파일을 생성합니다.", 1)
-        else:
-            _ = self.planner.decompose_goal(goal, initial_context, allowed_tools)
+        _ = self.planner.decompose_goal(goal, initial_context, allowed_tools)
         self._emit_progress("작업 계획을 세웠습니다. 실행을 시작하겠습니다.")
 
         # 2. 메인 반복 루프
@@ -383,8 +417,6 @@ class Executor:
             if action.get("action_type") == "use_tool":
                 tool_name = action["tool_name"]
                 tool_input = action.get("tool_input", {})
-                if tool_name == "calendar_create_event":
-                    tool_input = self._normalize_calendar_input(tool_input)
                 print(f"[Executor] Tool 선택: {tool_name}, 입력: {tool_input}")
                 self._emit_progress(f"도구 실행 중: {tool_name}")
 
@@ -546,7 +578,7 @@ class Executor:
             "결과나 답변을 자연스러운 한국어 텍스트로 바로 답하세요.\n"
             "제공된 도구 목록에 없는 도구는 절대 지어내지 마세요.\n"
             "최종 Goal과 현재 Task를 가장 높은 우선순위로 따르고, 과거 Memory의 다른 주제는 무시하세요.\n"
-            ".ics·캘린더·일정 파일 요청에는 calendar_create_event만 사용하고 mail·weather 도구를 사용하지 마세요."
+            "Plugin Registry가 현재 요청에 허용한 도구만 사용하고 다른 도메인의 도구는 호출하지 마세요."
         )
         try:
             messages = [
@@ -603,65 +635,39 @@ class Executor:
             return block.get("name"), block.get("input") or {}
         return getattr(block, "name", None), getattr(block, "input", None) or {}
 
-    @staticmethod
-    def _calendar_capability_message(goal: str) -> Optional[str]:
-        normalized = goal.casefold()
-        calendar_topic = any(word in normalized for word in (".ics", "ics 파일", "캘린더 파일", "일정 파일"))
-        capability_question = any(word in normalized for word in ("가능", "지원", "할 수 있", "아니었어"))
-        direct_creation = any(word in normalized for word in ("생성해줘", "만들어줘", "작성해줘", "저장해줘"))
-        if calendar_topic and capability_question and not direct_creation:
-            return (
-                "네, 가능합니다, 보스. 표준 iCalendar(.ics) 일정 파일을 생성할 수 있습니다. "
-                "일정 제목, 시작 시간, 종료 시간, 저장할 경로를 알려주시면 생성하겠습니다. "
-                "이 기능은 이메일과 무관하며 calendar_create_event 도구를 사용합니다."
-            )
-        return None
-
-    @staticmethod
-    def _calendar_missing_time_question(goal: str) -> Optional[str]:
-        normalized = goal.casefold()
-        calendar_topic = any(word in normalized for word in (".ics", "캘린더 파일", "일정 파일"))
-        creation = any(word in normalized for word in ("생성해줘", "만들어줘", "작성해줘", "저장해줘"))
-        if not (calendar_topic and creation):
+    def _allowed_tools_for_goal(self, goal: str) -> Optional[List[str]]:
+        if not hasattr(self, "intent_router"):
             return None
-        korean_times = re.findall(r"\d{1,2}\s*(?::\s*\d{2}|시)", normalized)
-        iso_times = re.findall(r"\d{4}-\d{2}-\d{2}t\d{2}:\d{2}", normalized)
-        has_duration = any(word in normalized for word in ("동안", "duration", "분간", "시간 동안"))
-        if len(korean_times) + len(iso_times) < 2 and not (korean_times and has_duration):
-            return "캘린더 일정은 언제 시작해서 언제 끝나나요, 보스?"
-        return None
-
-    @staticmethod
-    def _allowed_tools_for_goal(goal: str) -> Optional[List[str]]:
-        normalized = goal.casefold()
-        if any(word in normalized for word in (".ics", "캘린더 파일", "일정 파일")):
-            return ["calendar_create_event"]
-        return None
+        resolution = self.intent_router.resolve(goal)
+        return [resolution.tool_name] if resolution.matched and resolution.tool_name else None
 
     def _tool_domain_error(self, action: Dict[str, Any]) -> Optional[str]:
         if action.get("action_type") != "use_tool":
             return None
-        normalized = self.goal.casefold()
         tool_name = str(action.get("tool_name", ""))
-        if any(word in normalized for word in (".ics", "ics 파일", "캘린더 파일", "일정 파일")):
-            if tool_name not in {"calendar_create_event", "get_date", "get_time"}:
-                return (
-                    f"캘린더 요청과 관련 없는 도구 호출을 차단했습니다: {tool_name}. "
-                    "일정 제목·시작 시간·종료 시간·저장 경로를 확인한 뒤 calendar_create_event를 사용해야 합니다."
-                )
+        resolution = self.intent_router.resolve(self.goal)
+        if resolution.matched and resolution.tool_name and tool_name != resolution.tool_name:
+            return (
+                f"요청 intent '{resolution.intent_name}'와 관련 없는 도구 호출을 차단했습니다: {tool_name}. "
+                f"Plugin Registry 계약에 따라 {resolution.tool_name}을 사용해야 합니다."
+            )
         return None
 
-    def _normalize_calendar_input(self, tool_input: Dict[str, Any]) -> Dict[str, Any]:
-        """바탕화면 요청과 모델의 예시 placeholder 경로를 안전한 실제 경로로 교정한다."""
-        normalized = dict(tool_input)
-        requested_path = str(normalized.get("path", ""))
-        placeholder = any(token in requested_path.casefold() for token in ("/path/to", "\\path\\to", "example"))
-        if "바탕화면" in self.goal or not requested_path or placeholder:
-            title = re.sub(r"[^0-9a-zA-Z가-힣_-]+", "_", str(normalized.get("title", "일정"))).strip("_") or "일정"
-            normalized["path"] = str(Path.home() / "Desktop" / f"{title}.ics")
-        elif not requested_path.casefold().endswith(".ics"):
-            normalized["path"] = requested_path + ".ics"
-        return normalized
+    def _execute_resolved_intent(self, resolution: IntentResolution, goal: str,
+                                 session_id: str, task_id: str = "",
+                                 progress_callback: Optional[Callable[[str], None]] = None) -> ExecutionOutcome:
+        task_id = task_id or self.dialogue_state.create_task(session_id, goal).task_id
+        self.dialogue_state.update_task(task_id, status="running")
+        if progress_callback:
+            progress_callback(f"작업 {task_id}: {resolution.tool_name} 실행을 시작합니다.")
+        task = Task(task_id, resolution.intent_name, status="in_progress")
+        result = self.execute_tool(resolution.tool_name, resolution.slots)
+        verified = self.verify_execution(task, resolution.tool_name, resolution.slots, result)
+        status = "completed" if verified else "failed"
+        response = result if verified else f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
+        self.dialogue_state.update_task(task_id, status=status, result=response)
+        self.dialogue_state.delete_intent_state(task_id)
+        return ExecutionOutcome(response, status, goal, task_id=task_id)
 
     def request_permission(self, tool_name: str) -> bool:
         """

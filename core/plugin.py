@@ -19,6 +19,25 @@ class ToolSchema:
     input_schema: Dict[str, Any] = field(default_factory=dict)  # JSON Schema
     required_permissions: List[str] = field(default_factory=list)
 
+
+@dataclass
+class SlotSchema:
+    name: str
+    description: str
+    question: str
+    required: bool = True
+
+
+@dataclass
+class IntentSchema:
+    name: str
+    description: str
+    tool_name: str
+    utterance_hints: List[str]
+    slots: List[SlotSchema]
+    execution_hints: List[str] = field(default_factory=lambda: ["생성", "만들", "작성", "저장", "실행"])
+    capability_response: str = ""
+
 class BasePlugin(ABC):
     """플러그인 기본 클래스"""
     
@@ -50,6 +69,15 @@ class BasePlugin(ABC):
     def on_event(self, event: Event):
         """이벤트가 발생했을 때 호출"""
         pass
+
+    def get_intents(self) -> List[IntentSchema]:
+        """플러그인이 처리할 수 있는 사용자 intent 계약."""
+        return []
+
+    def extract_slots(self, intent_name: str, text: str,
+                      current_slots: Dict[str, Any]) -> Dict[str, Any]:
+        """플러그인 도메인에 맞게 새 발화의 slot을 누적한다."""
+        return dict(current_slots)
 
 class PluginRegistry:
     """플러그인 레지스트리"""
@@ -91,6 +119,13 @@ class PluginRegistry:
             if plugin.enabled:
                 tools.extend(plugin.get_tools())
         return tools
+
+    def get_all_intents(self) -> List[tuple[BasePlugin, IntentSchema]]:
+        intents = []
+        for plugin in self.plugins.values():
+            if plugin.enabled:
+                intents.extend((plugin, intent) for intent in plugin.get_intents())
+        return intents
     
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
         """툴 실행 (어떤 플러그인의 툴인지 찾아서 실행)"""

@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import json
 import sqlite3
 import threading
@@ -70,6 +70,16 @@ class DialogueStateStore:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_tasks_session ON agent_tasks(session_id, updated_at)")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS intent_states (
+                    task_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    intent_name TEXT NOT NULL,
+                    slots TEXT NOT NULL,
+                    original_request TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
             # 비정상 종료 당시 실행 중이던 작업은 자동 실행하지 않고 재개 가능한 상태로 둔다.
             conn.execute("UPDATE agent_tasks SET status = 'interrupted' WHERE status IN ('running', 'pausing')")
 
@@ -153,6 +163,29 @@ class DialogueStateStore:
                 (session_id,),
             ).fetchall()
         return [StoredAgentTask(*row) for row in rows]
+
+    def save_intent_state(self, task_id: str, session_id: str, intent_name: str,
+                          slots: Dict[str, Any], original_request: str):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO intent_states VALUES (?, ?, ?, ?, ?, ?)",
+                (task_id, session_id, intent_name, json.dumps(slots, ensure_ascii=False), original_request, now),
+            )
+
+    def get_intent_state(self, task_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT session_id, intent_name, slots, original_request FROM intent_states WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {"session_id": row[0], "intent_name": row[1], "slots": json.loads(row[2]), "original_request": row[3]}
+
+    def delete_intent_state(self, task_id: str):
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM intent_states WHERE task_id = ?", (task_id,))
 
 
 _dialogue_state_store = None

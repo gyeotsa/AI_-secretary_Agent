@@ -2,6 +2,10 @@ from core.conversation_context import ResolvedRequest
 from core.dialogue_state import DialogueStateStore
 from core.executor import Executor
 import threading
+from core.intent_router import IntentRouter
+from core.plugin import PluginRegistry
+from plugins.calendar import CalendarPlugin
+from core.verifier import ToolVerifier
 
 
 class _Resolver:
@@ -22,6 +26,9 @@ def _executor_for_dialogue_test(tmp_path):
     executor = Executor.__new__(Executor)
     executor.context_resolver = _Resolver()
     executor.dialogue_state = DialogueStateStore(str(tmp_path / "dialogue.db"))
+    registry = PluginRegistry()
+    registry.register_plugin(CalendarPlugin())
+    executor.intent_router = IntentRouter(registry)
     executor._progress_callback = None
     executor.current_agent_task_id = ""
     executor._task_controls = {}
@@ -163,5 +170,50 @@ def test_calendar_creation_waits_for_times_before_planner_or_llm(tmp_path):
         "바탕화면에 123이라는 이름으로 캘린더 파일 하나 생성해줘", "calendar-session"
     )
     assert outcome.status == "awaiting_user"
-    assert "언제 시작해서 언제 끝" in outcome.response
+    assert "언제 시작" in outcome.response
     assert executor.context_resolver.requests == []
+
+
+def test_calendar_slots_accumulate_dates_and_execute_without_repeating_question(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.Config.API_CONFIG.ALLOWED_PATHS", [str(tmp_path)])
+    executor = _executor_for_dialogue_test(tmp_path)
+    target = tmp_path / "123.ics"
+    registry = executor.intent_router.registry
+    executor.tool_executor = type(
+        "Tools", (), {"execute_tool": lambda _self, name, data: registry.execute_tool(name, data)}
+    )()
+    executor.verifier = ToolVerifier()
+
+    first = executor.execute_turn(
+        f"{target}에 123이라는 이름으로 캘린더 파일을 생성해줘", "calendar-accumulate"
+    )
+    second = executor.execute_turn("26년 7월22일에 시작해서 23일에 끝나", "calendar-accumulate")
+
+    assert first.status == "awaiting_user"
+    assert second.status == "completed"
+    assert target.exists()
+    content = target.read_text(encoding="utf-8")
+    assert "DTSTART;VALUE=DATE:20260722" in content
+    assert "DTEND;VALUE=DATE:20260723" in content
+
+
+def test_legacy_pending_calendar_task_is_migrated_to_intent_slots(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.Config.API_CONFIG.ALLOWED_PATHS", [str(tmp_path)])
+    executor = _executor_for_dialogue_test(tmp_path)
+    target = tmp_path / "legacy.ics"
+    original = f"{target}에 legacy라는 이름으로 캘린더 파일을 생성해줘"
+    task = executor.dialogue_state.create_task("legacy-session", original)
+    executor.dialogue_state.create(
+        "legacy-session", original, "캘린더 일정은 언제 시작해서 언제 끝나나요, 보스?", [], task.task_id
+    )
+    executor.dialogue_state.update_task(task.task_id, status="awaiting_user")
+    registry = executor.intent_router.registry
+    executor.tool_executor = type(
+        "Tools", (), {"execute_tool": lambda _self, name, data: registry.execute_tool(name, data)}
+    )()
+    executor.verifier = ToolVerifier()
+
+    outcome = executor.execute_turn("26년 7월22일에 시작해서 23일에 끝나", "legacy-session")
+
+    assert outcome.status == "completed"
+    assert target.exists()
