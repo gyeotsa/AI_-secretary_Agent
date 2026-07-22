@@ -586,3 +586,10 @@ AI_-secretary_Agent/
 - 빈 RAG 리스트 `[]`가 사용자 질문에 참고 문서로 삽입되던 문제를 수정함.
 - 로컬 메일 초안은 SMTP 발신자 설정 없이도 생성할 수 있게 하고 실제 SMTP 전송에만 계정 설정을 요구함.
 - `data/permissions.json`은 사용자별 런타임 권한 상태이므로 Git ignore에 추가함.
+
+### PyCharm Jarvis 실행 구성 직접 복구
+
+- PyCharm 사용자 SDK `Python 3.12 (Python)`이 삭제된 `PycharmProjects/One_Of_Neglected-feat.AI-/Python/.venv`를 가리키던 원인을 확인함.
+- 사용자 SDK의 homePath와 classPath를 현재 프로젝트 `C:\Users\ice31\lepo\AI_-secretary_Agent\.venv`로 변경하고 기본 virtualenv base SDK도 Python 3.12.13 런타임으로 변경함.
+- 프로젝트의 선택 실행 구성은 `Python.Jarvis`, SDK는 `Python 3.12 (Python)`, 실행 스크립트는 `$PROJECT_DIR$/main_qt.py`, 작업 디렉터리는 `$PROJECT_DIR$`로 검증함.
+- 사용자 SDK 원본 백업: `jdk.table.xml.codex-backup-20260722`, `pySdk.xml.codex-backup-20260722`.
