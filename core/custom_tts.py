@@ -8,7 +8,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
-from urllib.error import URLError
+import unicodedata
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -82,8 +83,15 @@ class GPTSoVITSClient:
 
     def synthesize(self, text: str) -> str:
         self.ensure_running()
+        clean_text = unicodedata.normalize("NFC", str(text))
+        clean_text = "".join(
+            character for character in clean_text
+            if character in "\n\t" or unicodedata.category(character)[0] != "C"
+        ).strip()
+        if not clean_text:
+            clean_text = "네, 듣고 있어요."
         payload = {
-            "text": text,
+            "text": clean_text,
             "text_lang": self.profile.get("language", "ko"),
             "ref_audio_path": str(self._resolve(self.profile["reference_audio"])),
             "prompt_text": self.profile["reference_text"],
@@ -92,7 +100,8 @@ class GPTSoVITSClient:
             "batch_size": 1,
             "media_type": "wav",
             "streaming_mode": False,
-            "sample_steps": 32,
+            "sample_steps": int(self.profile.get("sample_steps", 32)),
+            "speed_factor": float(self.profile.get("speed_factor", 1.0)),
         }
         request = Request(
             f"{self.base_url}/tts",
@@ -109,6 +118,10 @@ class GPTSoVITSClient:
                 raise RuntimeError("GPT-SoVITS가 비어 있는 오디오를 반환했습니다.")
             Path(output).write_bytes(audio)
             return output
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            Path(output).unlink(missing_ok=True)
+            raise RuntimeError(f"GPT-SoVITS HTTP {exc.code}: {detail}") from exc
         except Exception:
             Path(output).unlink(missing_ok=True)
             raise

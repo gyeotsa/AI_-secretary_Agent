@@ -675,9 +675,9 @@ class ToolExecutor:
     def _speak_text_locked(self, text: str, audio_processor=None) -> str:
         if self.tts_settings.selected_custom_voice:
             custom_result = self._speak_with_custom_tts(text, audio_processor)
-            if not custom_result.startswith("TTS 오류:"):
-                return custom_result
-            print(f"[TTS] 커스텀 음성 실패, 기본 음성으로 대체: {custom_result}")
+            # 사용자가 명시적으로 고른 커스텀 음성을 다른 사람의 목소리로
+            # 조용히 대체하지 않는다. 실패 원인을 그대로 알려 다시 선택할 수 있게 한다.
+            return custom_result
         if self.tts_settings.selected_edge_voice:
             edge_result = self._speak_with_edge_tts(text, audio_processor)
             if not edge_result.startswith("TTS 오류:"):

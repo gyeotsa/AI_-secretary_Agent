@@ -230,6 +230,18 @@ class Executor:
                 intent_resolution, goal, session_key, agent_task_id, progress_callback
             )
 
+        # Registry가 실행 의도를 찾지 못한 발화는 일반 대화다. Planner에 보내면
+        # 작은 로컬 모델이 "반드시 도구를 골라야 한다"고 오해해 날씨·문서 도구를
+        # 임의 호출할 수 있으므로, 도구가 없는 대화 전용 경로로 분리한다.
+        if (not intent_resolution.matched
+                and hasattr(self, "llm")
+                and hasattr(self, "tool_executor")):
+            return ExecutionOutcome(
+                self._respond_conversationally(goal, history),
+                "completed",
+                goal,
+            )
+
         resolved = self.context_resolver.resolve(goal, history, session_key)
         if resolved.needs_clarification:
             question = resolved.clarification_question or "어떤 대상을 말씀하시는지 조금 더 구체적으로 알려주세요, 보스."
@@ -861,6 +873,40 @@ class Executor:
         if self.terminal_error:
             return self.terminal_error
         return self.generate_response()
+
+    def _respond_conversationally(
+        self, message: str, history: List[Dict[str, str]]
+    ) -> str:
+        """Answer ordinary conversation without exposing or invoking tools."""
+        custom_voice = self.tool_executor.tts_settings.selected_custom_voice
+        style_prompt = ""
+        if custom_voice == "Anis":
+            style_prompt = (
+                "\n현재 선택된 음성 이름은 Anis입니다. 답변은 밝고 활기차며 솔직하고 "
+                "장난기 있는 친근한 말투로 하되, 과장된 연기나 특정 작품의 대사·유행어를 "
+                "복제하지 마세요. 사용자를 자연스럽게 챙기는 느낌을 유지하세요."
+            )
+        system_prompt = (
+            "당신은 로컬 개인 비서 Jarvis입니다. 지금은 도구 실행이 아니라 일반 대화입니다. "
+            "도구를 찾거나 호출하거나, 등록되지 않은 도구를 언급하지 마세요. "
+            "사용자의 가장 최근 발화에 먼저 직접 답하세요. 이전 대화는 대명사나 생략된 "
+            "문맥을 이해할 때만 참고하고, 과거 주제를 임의로 이어가지 마세요. "
+            "모르는 현재 정보가 필요할 때만 확인이 필요하다고 설명하세요. "
+            "자연스럽고 간결한 한국어로 답하세요."
+            + style_prompt
+        )
+        recent_history = [
+            {"role": item.get("role", "user"), "content": str(item.get("content", ""))}
+            for item in history[-6:]
+            if item.get("role") in {"user", "assistant"} and item.get("content")
+        ]
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(recent_history)
+        messages.append({"role": "user", "content": message})
+        response = self.llm.chat(messages).strip()
+        if not response:
+            return "응, 듣고 있어. 무슨 이야기부터 해볼까?"
+        return response
 
     def generate_response(self) -> str:
         """최종 답변 생성"""

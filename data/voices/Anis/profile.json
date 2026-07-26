@@ -6,7 +6,9 @@
   "runtime_root": "../../../external/GPT-SoVITS",
   "python": "../../../.gpt-sovits-venv/Scripts/python.exe",
   "config": "tmp/anis_tts.yaml",
-  "reference_audio": "../../../data/voice_training/anis/segments/vocal_yc4fTT-g7s0.wav_10.wav_0001563840_0001708800.wav",
-  "reference_text": "그러고 보니까 지휘관님은 어디 가고 싶은데 없어?",
-  "port": 9881
+  "reference_audio": "../../../data/voice_training/anis/bright_segments/vocal_ZrB_BC_rpCg.wav_10.wav_0000361600_0000470080.wav",
+  "reference_text": "걱정 마. 지휘관님은 우리가 지키니까.",
+  "port": 9881,
+  "sample_steps": 16,
+  "speed_factor": 1.0
 }
