@@ -3,6 +3,7 @@
   "name": "Anis",
   "provider": "gpt-sovits",
   "language": "ko",
+  "default_address": "지휘관님",
   "runtime_root": "../../../external/GPT-SoVITS",
   "python": "../../../.gpt-sovits-venv/Scripts/python.exe",
   "config": "tmp/anis_tts.yaml",

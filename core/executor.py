@@ -878,7 +878,9 @@ class Executor:
         self, message: str, history: List[Dict[str, str]]
     ) -> str:
         """Answer ordinary conversation without exposing or invoking tools."""
-        custom_voice = self.tool_executor.tts_settings.selected_custom_voice
+        tts_settings = self.tool_executor.tts_settings
+        custom_voice = tts_settings.selected_custom_voice
+        address = getattr(tts_settings, "selected_address", "보스")
         style_prompt = ""
         if custom_voice == "Anis":
             style_prompt = (
@@ -886,6 +888,10 @@ class Executor:
                 "장난기 있는 친근한 말투로 하되, 과장된 연기나 특정 작품의 대사·유행어를 "
                 "복제하지 마세요. 사용자를 자연스럽게 챙기는 느낌을 유지하세요."
             )
+        address_prompt = (
+            f"\n사용자 호칭은 반드시 '{address}'로 사용하세요. "
+            "'보스' 등 다른 호칭으로 바꾸지 마세요."
+        )
         system_prompt = (
             "당신은 로컬 개인 비서 Jarvis입니다. 지금은 도구 실행이 아니라 일반 대화입니다. "
             "도구를 찾거나 호출하거나, 등록되지 않은 도구를 언급하지 마세요. "
@@ -893,6 +899,7 @@ class Executor:
             "문맥을 이해할 때만 참고하고, 과거 주제를 임의로 이어가지 마세요. "
             "모르는 현재 정보가 필요할 때만 확인이 필요하다고 설명하세요. "
             "자연스럽고 간결한 한국어로 답하세요."
+            + address_prompt
             + style_prompt
         )
         recent_history = [
@@ -910,6 +917,8 @@ class Executor:
 
     def generate_response(self) -> str:
         """최종 답변 생성"""
+        tts_settings = getattr(getattr(self, "tool_executor", None), "tts_settings", None)
+        address = getattr(tts_settings, "selected_address", "보스")
         context = self.build_context()
         successful_observations = [
             {
@@ -934,15 +943,15 @@ class Executor:
                 )
                 return (
                     f"{requested}은(는) 현재 {weather.get('temperature_c')}°C이고, "
-                    f"체감온도는 {weather.get('apparent_temperature_c')}°C입니다, 보스. "
+                    f"체감온도는 {weather.get('apparent_temperature_c')}°C입니다, {address}. "
                     f"오늘 최저 {weather.get('today_min_c')}°C, 최고 {weather.get('today_max_c')}°C이며, "
                     f"습도는 {weather.get('humidity_percent')}%입니다.{precision}"
                 )
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
-        system_prompt = """당신은 Jarvis입니다.
+        system_prompt = f"""당신은 Jarvis입니다.
 전체 Context를 보고, 최종 답변을 한국어로 작성하세요!
-보스라는 호칭을 사용하세요.
+사용자 호칭은 반드시 '{address}'로 사용하고 다른 호칭으로 바꾸지 마세요.
 외부의 현재 사실(날씨, 일정, 메일, 웹 정보 등)은 성공한 Tool Observation에 있는 값만 사용하세요.
 Tool이 실패했거나 관측값이 없으면 절대 수치를 추측하지 말고 확인하지 못했다고 답하세요.
 location_precision이 city이면 동 단위 관측이 아니라 도시 기준 근사값임을 명시하세요.
@@ -961,7 +970,7 @@ location_precision이 city이면 동 단위 관측이 아니라 도시 기준 �
                 {"role": "user", "content": user_prompt}
             ])
         except Exception as e:
-            return f"죄송해요, 보스! 최종 답변 생성 중 오류가 발생했어요: {e}"
+            return f"죄송해요, {address}! 최종 답변 생성 중 오류가 발생했어요: {e}"
 
     def _extract_json(self, text: str) -> Optional[str]:
         """응답에서 JSON 문자열 추출"""

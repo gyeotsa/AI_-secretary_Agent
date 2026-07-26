@@ -49,6 +49,7 @@ def test_unknown_voice_is_not_saved(monkeypatch, tmp_path):
 
 
 def test_windows_voice_fallback_is_used_when_pyttsx_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings_module, "load_custom_voice_profiles", lambda: [])
     monkeypatch.setattr(
         settings_module,
         "pyttsx3",
@@ -61,6 +62,7 @@ def test_windows_voice_fallback_is_used_when_pyttsx_fails(monkeypatch, tmp_path)
 
 
 def test_online_korean_voices_are_merged_with_local_voices(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings_module, "load_custom_voice_profiles", lambda: [])
     manager = TTSSettingsManager(str(tmp_path / "tts.json"))
     local = [settings_module.TTSVoice("local", "Local Korean", "ko-KR")]
     online = [settings_module.TTSVoice("edge:ko-KR-Test", "Online Korean", "ko-KR", "edge")]
@@ -70,6 +72,38 @@ def test_online_korean_voices_are_merged_with_local_voices(monkeypatch, tmp_path
     assert manager.list_voices(refresh=True) == local + online
     assert manager.select_voice("edge:ko-KR-Test") is True
     assert manager.selected_edge_voice == "ko-KR-Test"
+
+
+def test_voice_address_is_saved_per_voice_and_personalizes_output(monkeypatch, tmp_path):
+    manager = TTSSettingsManager(str(tmp_path / "tts.json"))
+    voices = [
+        settings_module.TTSVoice("gpt-sovits:Anis", "Anis", provider="gpt-sovits",
+                                 default_address="지휘관님"),
+        settings_module.TTSVoice("local", "Local Korean", "ko-KR"),
+    ]
+    monkeypatch.setattr(manager, "list_voices", lambda refresh=False: voices)
+
+    assert manager.select_voice("gpt-sovits:Anis")
+    assert manager.selected_address == "지휘관님"
+    assert manager.personalize_address("알겠습니다, 보스.") == "알겠습니다, 지휘관님."
+    assert manager.set_voice_address("gpt-sovits:Anis", "대장님")
+
+    restored = TTSSettingsManager(str(tmp_path / "tts.json"))
+    monkeypatch.setattr(restored, "list_voices", lambda refresh=False: voices)
+    assert restored.selected_address == "대장님"
+
+
+def test_voice_addresses_are_independent(monkeypatch, tmp_path):
+    manager = TTSSettingsManager(str(tmp_path / "tts.json"))
+    voices = [
+        settings_module.TTSVoice("voice-a", "A"),
+        settings_module.TTSVoice("voice-b", "B"),
+    ]
+    monkeypatch.setattr(manager, "list_voices", lambda refresh=False: voices)
+    assert manager.set_voice_address("voice-a", "선생님")
+    assert manager.set_voice_address("voice-b", "대장님")
+    assert manager.get_voice_address("voice-a") == "선생님"
+    assert manager.get_voice_address("voice-b") == "대장님"
 
 
 def test_tts_playback_uses_nonblocking_continuous_player(monkeypatch, tmp_path):

@@ -27,6 +27,7 @@ class TTSVoice:
     name: str
     languages: str = ""
     provider: str = "windows"
+    default_address: str = "보스"
 
 
 class TTSSettingsManager:
@@ -36,6 +37,7 @@ class TTSSettingsManager:
         self.selected_voice_id = ""
         self.selected_voice_name = ""
         self.selected_provider = "windows"
+        self.voice_addresses: dict[str, str] = {}
         self._voice_cache: Optional[list[TTSVoice]] = None
         self._load()
 
@@ -47,6 +49,13 @@ class TTSSettingsManager:
             self.selected_voice_id = str(data.get("voice_id", ""))
             self.selected_voice_name = str(data.get("voice_name", ""))
             self.selected_provider = str(data.get("provider", "windows"))
+            addresses = data.get("voice_addresses", {})
+            if isinstance(addresses, dict):
+                self.voice_addresses = {
+                    str(voice_id): self._normalize_address(address)
+                    for voice_id, address in addresses.items()
+                    if self._normalize_address(address)
+                }
         except (OSError, ValueError, TypeError) as exc:
             print(f"[TTS] 음성 설정 로드 실패: {exc}")
 
@@ -55,6 +64,7 @@ class TTSSettingsManager:
             "voice_id": self.selected_voice_id,
             "voice_name": self.selected_voice_name,
             "provider": self.selected_provider,
+            "voice_addresses": self.voice_addresses,
         }
         self.storage_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -71,6 +81,7 @@ class TTSSettingsManager:
                 name=str(profile.get("name") or profile["id"]),
                 languages=f"{profile.get('language', 'ko')} · 로컬 커스텀 음성",
                 provider="gpt-sovits",
+                default_address=str(profile.get("default_address") or "보스"),
             )
             for profile in load_custom_voice_profiles()
         ]
@@ -170,6 +181,38 @@ class TTSSettingsManager:
         self.selected_provider = selected.provider
         self._save()
         return True
+
+    @staticmethod
+    def _normalize_address(address) -> str:
+        return " ".join(str(address or "").strip().split())[:30]
+
+    def get_voice_address(self, voice_id: str) -> str:
+        configured = self._normalize_address(self.voice_addresses.get(voice_id, ""))
+        if configured:
+            return configured
+        voice = next((item for item in self.list_voices() if item.id == voice_id), None)
+        return self._normalize_address(voice.default_address if voice else "") or "보스"
+
+    def set_voice_address(self, voice_id: str, address: str) -> bool:
+        if not any(voice.id == voice_id for voice in self.list_voices()):
+            return False
+        normalized = self._normalize_address(address)
+        if not normalized:
+            return False
+        self.voice_addresses[voice_id] = normalized
+        self._save()
+        return True
+
+    @property
+    def selected_address(self) -> str:
+        return self.get_voice_address(self.selected_voice_id) if self.selected_voice_id else "보스"
+
+    def personalize_address(self, text: str) -> str:
+        """Replace the legacy default title at the presentation boundary."""
+        address = self.selected_address
+        if address == "보스":
+            return str(text)
+        return str(text).replace("보스님", address).replace("보스", address)
 
     def resolve_voice(self, voices) -> Optional[object]:
         if self.selected_voice_id:

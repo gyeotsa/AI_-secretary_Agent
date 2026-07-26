@@ -200,6 +200,39 @@ def test_proactive_message_is_displayed_and_saved_without_user_input():
     assert jarvis.messages[-1]["role"] == "assistant"
 
 
+def test_selected_voice_address_is_applied_at_gui_boundary():
+    _app()
+    jarvis = JarvisApp.__new__(JarvisApp)
+    jarvis.window = _Window()
+    jarvis.state_machine = _StateMachine()
+    jarvis.memory = _Memory()
+    jarvis.messages = []
+    jarvis.session_id = "address-session"
+    jarvis.last_response = ""
+    jarvis.tool_executor = type(
+        "SpeechTools",
+        (),
+        {
+            "tts_settings": type(
+                "Settings",
+                (),
+                {
+                    "personalize_address": staticmethod(
+                        lambda text: text.replace("보스", "지휘관님")
+                    )
+                },
+            )()
+        },
+    )()
+    jarvis.signals = AppSignals()
+    jarvis.signals.proactive_message.connect(jarvis._on_proactive_message)
+
+    jarvis.notify_user("보스, 예약 작업을 완료했습니다.")
+
+    assert _pump_until(lambda: bool(jarvis.window.assistants))
+    assert jarvis.window.assistants[-1] == "지휘관님, 예약 작업을 완료했습니다."
+
+
 def test_control_command_is_accepted_while_ai_is_processing():
     _app()
     jarvis = JarvisApp.__new__(JarvisApp)

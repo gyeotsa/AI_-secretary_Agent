@@ -288,7 +288,7 @@ class JarvisApp:
         self.state_machine.start_listening()
 
         if text.strip().casefold() == Config.WAKE_WORD.casefold():
-            response = "네, 보스. 말씀하세요."
+            response = self._personalize_address("네, 보스. 말씀하세요.")
             self.window.show_assistant_text(response)
             self.last_response = response
             self.messages.append({"role": "user", "content": text})
@@ -336,7 +336,7 @@ class JarvisApp:
 
     def _on_control_response(self, outcome):
         """실행 중 제어 응답은 원래 AI 작업의 processing 상태를 변경하지 않는다."""
-        response_text = outcome.response
+        response_text = self._personalize_address(outcome.response)
         self.window.show_assistant_text(response_text)
         self.messages.append({"role": "assistant", "content": response_text})
         self.memory.save_message(self.session_id, "assistant", response_text)
@@ -387,7 +387,7 @@ class JarvisApp:
 
     def _on_progress_update(self, message: str):
         """최종 답변 전의 짧은 작업 진행 상황을 GUI에 표시한다."""
-        self.window.show_assistant_text(message)
+        self.window.show_assistant_text(self._personalize_address(message))
 
     def notify_user(self, message: str):
         """Observer·Scheduler 등이 사용자에게 먼저 말을 걸 수 있는 공개 진입점."""
@@ -403,6 +403,7 @@ class JarvisApp:
 
     def _on_proactive_message(self, message: str):
         """사용자 입력 없이 발생한 알림도 일반 대화 기록과 UI에 남긴다."""
+        message = self._personalize_address(message)
         self.last_response = message
         self.window.show_assistant_text(message)
         self.messages.append({"role": "assistant", "content": message})
@@ -412,6 +413,7 @@ class JarvisApp:
     def _on_ai_response(self, response_text: str):
         print("[DEBUG] _on_ai_response called with:", response_text)
         response_text = present_response(response_text, self._response_user_request)
+        response_text = self._personalize_address(response_text)
         print("[DEBUG] User-facing response:", response_text)
         # 이모지는 제거하되 상세정보 요청 시 경로와 PID 문법은 보존한다.
         import re
@@ -456,6 +458,12 @@ class JarvisApp:
         thread = threading.Thread(target=lambda: self._speak_with_check(self.last_response), daemon=True)
         thread.start()
         print("[DEBUG] TTS 스레드 시작됨")
+
+    def _personalize_address(self, text: str) -> str:
+        settings = getattr(getattr(self, "tool_executor", None), "tts_settings", None)
+        if settings is not None and hasattr(settings, "personalize_address"):
+            return settings.personalize_address(text)
+        return str(text)
 
     def _run_next_queued_task(self):
         if self._is_processing_ai or not hasattr(self.executor, "dialogue_state"):

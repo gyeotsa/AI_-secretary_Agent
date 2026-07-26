@@ -16,11 +16,14 @@ class RecordingLLM:
         return self.response
 
 
-def make_executor(tmp_path, voice=""):
+def make_executor(tmp_path, voice="", address="보스"):
     executor = Executor.__new__(Executor)
     executor.llm = RecordingLLM()
     executor.tool_executor = SimpleNamespace(
-        tts_settings=SimpleNamespace(selected_custom_voice=voice)
+        tts_settings=SimpleNamespace(
+            selected_custom_voice=voice,
+            selected_address=address,
+        )
     )
     executor.dialogue_state = DialogueStateStore(str(tmp_path / "dialogue.db"))
     executor.intent_router = IntentRouter(PluginRegistry())
@@ -43,8 +46,9 @@ def test_greeting_uses_conversation_path_without_planner(tmp_path):
 
 
 def test_anis_voice_enables_bright_conversation_style(tmp_path):
-    executor = make_executor(tmp_path, voice="Anis")
+    executor = make_executor(tmp_path, voice="Anis", address="지휘관님")
     executor.execute_turn("오늘 좀 피곤하네", "anis-chat")
     system_prompt = executor.llm.messages[0]["content"]
     assert "밝고 활기차며 솔직하고" in system_prompt
     assert "특정 작품의 대사" in system_prompt
+    assert "호칭은 반드시 '지휘관님'" in system_prompt

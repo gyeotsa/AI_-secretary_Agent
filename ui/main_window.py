@@ -428,7 +428,7 @@ class PermissionSettingsDialog(QDialog):
 
 
 class TTSVoiceDialog(QDialog):
-    """설치된 Windows TTS 음성을 클릭해 선택하는 대화상자."""
+    """Select a voice and configure its user address."""
 
     def __init__(self, settings_manager, parent=None):
         super().__init__(parent)
@@ -445,7 +445,7 @@ class TTSVoiceDialog(QDialog):
                           border-radius: 6px; padding: 7px 16px; }
         """)
         layout = QVBoxLayout(self)
-        guide = QLabel("사용할 목소리를 클릭하세요. 선택 결과는 자동 저장됩니다.")
+        guide = QLabel("사용할 목소리를 클릭하고, 음성별 사용자 호칭을 설정하세요.")
         layout.addWidget(guide)
         self.voice_list = QListWidget()
         voices = self.settings_manager.list_voices(refresh=True)
@@ -466,6 +466,19 @@ class TTSVoiceDialog(QDialog):
             f"현재 목소리: {self.settings_manager.selected_voice_name or '한국어 기본 음성'}"
         )
         layout.addWidget(self.status_label)
+        address_row = QHBoxLayout()
+        address_row.addWidget(QLabel("선택 음성의 호칭"))
+        self.address_input = QLineEdit()
+        self.address_input.setPlaceholderText("예: 보스, 지휘관님, 주인님")
+        self.address_input.setMaxLength(30)
+        address_row.addWidget(self.address_input, 1)
+        self.save_address_button = QPushButton("호칭 저장")
+        self.save_address_button.clicked.connect(self._save_address)
+        address_row.addWidget(self.save_address_button)
+        layout.addLayout(address_row)
+        self.address_status = QLabel("")
+        layout.addWidget(self.address_status)
+        self._load_selected_address()
         if not voices:
             self.status_label.setText("사용 가능한 Windows TTS 음성을 찾지 못했습니다.")
         close_button = QPushButton("닫기")
@@ -476,8 +489,31 @@ class TTSVoiceDialog(QDialog):
         voice_id, voice_name = item.data(Qt.ItemDataRole.UserRole)
         if self.settings_manager.select_voice(voice_id, voice_name):
             self.status_label.setText(f"현재 목소리: {voice_name}")
+            self._load_selected_address()
         else:
             self.status_label.setText("목소리 설정에 실패했습니다.")
+
+    def _selected_voice_id(self):
+        item = self.voice_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole)[0] if item else ""
+
+    def _load_selected_address(self):
+        voice_id = self._selected_voice_id()
+        self.address_input.setText(
+            self.settings_manager.get_voice_address(voice_id) if voice_id else ""
+        )
+        self.address_status.setText("")
+
+    def _save_address(self):
+        voice_id = self._selected_voice_id()
+        if not voice_id:
+            self.address_status.setText("먼저 목소리를 선택하세요.")
+            return
+        if self.settings_manager.set_voice_address(voice_id, self.address_input.text()):
+            self.address_input.setText(self.settings_manager.get_voice_address(voice_id))
+            self.address_status.setText("이 음성의 호칭을 저장했습니다.")
+        else:
+            self.address_status.setText("빈 호칭은 저장할 수 없습니다.")
 
 
 class SessionManagerDialog(QDialog):
@@ -696,7 +732,7 @@ class JarvisMainWindow(QWidget):
         self.voice_btn = QPushButton("🔊")
         self.voice_btn.setStyleSheet(button_style)
         self.voice_btn.setFixedSize(35, 35)
-        self.voice_btn.setToolTip("TTS 목소리 선택")
+        self.voice_btn.setToolTip("TTS 목소리 및 호칭 설정")
         self.voice_btn.clicked.connect(self.show_tts_voice_settings)
         tab_layout.addWidget(self.voice_btn)
 
