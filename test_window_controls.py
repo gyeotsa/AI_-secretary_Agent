@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
 from ui.main_window import JarvisMainWindow
+from main_qt import resource_path
 
 
 @pytest.fixture(scope="module")
@@ -29,3 +30,7 @@ def test_both_minimize_buttons_use_standard_minimize(app):
     window.minimize_window()
     assert window.windowState() & Qt.WindowState.WindowMinimized
     window.close()
+
+
+def test_packaged_app_icon_exists():
+    assert resource_path("assets/jarvis.ico").is_file()

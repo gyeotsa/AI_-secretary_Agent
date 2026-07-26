@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer, QObject, pyqtSignal
+from PyQt6.QtGui import QIcon
 from config import Config, request_windows_permissions
 from core.state_machine import StateMachine, State
 from core.mode_manager import ModeManager
@@ -22,7 +23,25 @@ from core.executor import get_executor
 from core.scheduler import get_automation_engine
 from core.proactive import ProactiveNotificationPolicy
 from core.response_presenter import present_response
+from core.runtime_services import get_runtime_service_manager
 from ui.main_window import JarvisMainWindow
+
+
+def resource_path(relative_path: str) -> Path:
+    """개발 실행과 PyInstaller 배포 실행 모두에서 리소스 경로를 찾는다."""
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return bundle_root / relative_path
+
+
+def configure_windows_app_identity():
+    """Windows 작업 표시줄이 Python이 아닌 JARVIS 아이콘으로 그룹화하게 한다."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("JARVIS.AI.Assistant")
+    except Exception as exc:
+        print(f"[UI] Windows AppUserModelID 설정 실패: {exc}")
 
 
 def get_runtime_warning() -> str:
@@ -78,10 +97,17 @@ class AppSignals(QObject):
 
 class JarvisApp:
     def __init__(self):
+        configure_windows_app_identity()
         self.app = QApplication(sys.argv)
+        icon = QIcon(str(resource_path("assets/jarvis.ico")))
+        self.app.setWindowIcon(icon)
         self.audio_processor = get_audio_processor()
         self.window = JarvisMainWindow(self.audio_processor)
+        self.window.setWindowIcon(icon)
         self.state_machine = StateMachine()
+        self.runtime_services = get_runtime_service_manager()
+        self.runtime_services.configure_model_environment()
+        self.runtime_services.ensure_ollama()
         self.mode_manager = ModeManager()
         self.memory = get_memory()
         self.window.set_memory_manager(self.memory)
@@ -615,12 +641,25 @@ class JarvisApp:
         # 종료 버튼 클릭시 프로그램 자체 종료
         if hasattr(self, "proactive_policy"):
             self.proactive_policy.stop()
+        if hasattr(self, "runtime_services"):
+            self.runtime_services.stop()
         self.app.quit()
     
     def run(self):
         return self.app.exec()
 
 if __name__ == "__main__":
+    if os.getenv("JARVIS_PACKAGING_SMOKE") == "1":
+        configure_windows_app_identity()
+        smoke_app = QApplication(sys.argv)
+        smoke_icon = QIcon(str(resource_path("assets/jarvis.ico")))
+        smoke_app.setWindowIcon(smoke_icon)
+        if smoke_icon.isNull():
+            raise RuntimeError("배포 아이콘을 불러오지 못했습니다.")
+        smoke_report = os.getenv("JARVIS_PACKAGING_SMOKE_REPORT")
+        if smoke_report:
+            Path(smoke_report).write_text("OK", encoding="utf-8")
+        sys.exit(0)
     runtime_warning = get_runtime_warning()
     if runtime_warning:
         print(runtime_warning)

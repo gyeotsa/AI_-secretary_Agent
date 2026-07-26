@@ -19,6 +19,7 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+release/
 downloads/
 eggs/
 .eggs/
@@ -53,3 +54,6 @@ data/models/
 Thumbs.db
 data/discovered_apps.json
 data/user_app_aliases.json
+assets/jarvis_icon_chroma.png
+assets/jarvis_icon_v2.png
+assets/jarvis_icon_final.png

@@ -7,6 +7,29 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-07-26 Windows 오프라인 배포 완료
+
+- 앱·작업 표시줄·설치 프로그램·바로가기에 `assets/jarvis.ico`를 동일하게 적용했다.
+- Python 3.12와 전체 라이브러리, BGE-M3, faster-whisper large-v3, Whisper medium fallback, Ollama, `qwen2.5-coder:7b-instruct`, Playwright 브라우저를 포함한 페이로드는 20,501,193,600바이트이다.
+- 14GB 7-Zip SFX는 내부 무결성 검사는 통과했지만 Windows PE/SFX의 4GB 초과 실행 파일 한계로 실제 실행이 거부됐다. 물리적인 단일 EXE 요구는 포함 데이터 크기상 충족할 수 없어 Inno Setup 공식 `DiskSpanning` 설치 형식으로 전환했다.
+- 최종 배포물은 `release/installer` 폴더이다. `JARVIS-Setup.exe`와 자동 인식되는 `.bin` 8개로 구성되며 총 약 13.77GB이다. 사용자는 폴더 전체를 받은 뒤 Setup EXE 하나만 실행하면 된다.
+- 실제 Setup 무인 설치 결과 종료 코드 0, 설치 파일·바탕화면/시작 메뉴 바로가기·제거 프로그램 등록을 확인했다. 설치된 `JARVIS.exe` 패키징 스모크 결과도 종료 코드 0/`OK`이며 아이콘·Ollama·Qwen 포함 경로를 확인했다.
+- 공식 uninstaller 제거 결과 종료 코드 0이며 설치 폴더·바로가기·앱 제거 등록이 모두 정리됐다.
+- 배포 산출물은 코드 서명이 없어 다른 PC에서 Windows SmartScreen 경고가 나타날 수 있다. 공개 배포 전 Authenticode 코드 서명 인증서 적용이 권장된다.
+- HWP/Office 프로그램 본체, Google/Microsoft OAuth 로그인, 인터넷 TTS 및 실제 장치 권한은 라이선스·계정·하드웨어 특성상 설치본에 자동 활성화할 수 없다.
+- 다음 해야 할 일: 깨끗한 Windows VM 또는 별도 PC에서 일반 사용자 방식으로 `release/installer/JARVIS-Setup.exe`를 실행하고 실제 LLM 대화·마이크·카메라·도구 실행을 최종 수락 테스트한다. 공개 배포 전 코드 서명을 적용한다.
+
+## 2026-07-23 Windows 오프라인 배포 준비
+
+- 제공 이미지에서 외부 배경을 제거한 투명 아이콘을 `assets/jarvis_icon.png`, `assets/jarvis_icon_1024.png`, `assets/jarvis.ico`로 만들었다. PyInstaller 실행 파일, Qt 앱/창, 작업 표시줄, 바탕화면·시작 메뉴 바로가기에 같은 ICO를 사용한다.
+- PyInstaller onedir 배포 설정 `packaging/Jarvis.spec`과 설치·제거·릴리스 조립 스크립트를 추가했다. Python 3.12와 라이브러리는 실행 파일 배포 폴더에 포함된다.
+- 배포 실행에서는 사용자 DB를 `%LOCALAPPDATA%\JARVIS\data`에 저장하고, BGE-M3·Whisper·Hugging Face·Ollama·Playwright를 `_internal`의 포함 경로에서 찾도록 변경했다.
+- Ollama 서버가 실행 중이지 않으면 포함된 Ollama와 Qwen 모델로 로컬 서버를 시작하고 앱 종료 시 앱이 시작한 서버를 정리한다.
+- 최신 `dist/JARVIS` 빌드는 성공했으며 크기는 약 4.89GB이다. 패키지 경로 단위 테스트 4개도 통과했다.
+- `DEPLOYMENT.md`에 포함 항목과 외부 의존 기능을 구분해 기록했다. HWP/Office 본체, OAuth 계정 동의, 인터넷 서비스, 실제 마이크·카메라 권한은 설치 파일에 자동 내장할 수 없다.
+- 현재 Codex의 외부 실행 승인 사용량 한도로 7-Zip 설치, 빌드 EXE 직접 스모크 실행, 사용자 캐시의 Ollama/Playwright 복사가 거절되었다. 이 제한 때문에 `release/JARVIS-Offline-Setup.exe` 최종 조립은 아직 완료되지 않았다.
+- 다음 해야 할 일: 승인 제한이 해제된 뒤 7-Zip 설치 → `packaging/build_release.ps1` 실행 → 단일 EXE 무결성 검사 → 깨끗한 Windows VM에서 설치·대화·도구·STT/TTS·제거 E2E 검증을 수행한다.
+
 ## 📌 이번 업데이트 (2026-07-15) 주요 변경사항
 - ✅ **프로젝트 구조 통합**: Jarvis 폴더와 AI_-secretary_Agent 폴더를 하나로 통합, 프로젝트 루트에 모든 파일 배치
 - ✅ [Fix] core/tools.py TTS 오류 수정: pyttsx3 engine을 인스턴스 변수로 유지하여 재사용

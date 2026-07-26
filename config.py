@@ -1,9 +1,22 @@
 import os
 import sys
+from pathlib import Path
 from dotenv import load_dotenv
 from dataclasses import dataclass, field
 
 load_dotenv()
+
+
+def _bundle_root() -> Path:
+    return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+
+
+def _default_data_path(filename: str) -> str:
+    if getattr(sys, "frozen", False):
+        root = Path(os.getenv("LOCALAPPDATA", Path.home())) / "JARVIS" / "data"
+        root.mkdir(parents=True, exist_ok=True)
+        return str(root / filename)
+    return str(Path("data") / filename)
 
 
 def request_windows_permissions():
@@ -56,13 +69,17 @@ class APIConfig:
         if role.strip()
     ])
     OLLAMA_BASE_URL: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
-    OLLAMA_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "llama3.1"))
-    MODEL_NAME: str = field(default_factory=lambda: os.getenv("MODEL_NAME", "llama3.1"))
+    OLLAMA_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b-instruct"))
+    MODEL_NAME: str = field(default_factory=lambda: os.getenv("MODEL_NAME", "qwen2.5-coder:7b-instruct"))
     MAX_TOKENS: int = field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "4096")))
     TEMPERATURE: float = field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0.7")))
-    DB_PATH: str = field(default_factory=lambda: os.getenv("DB_PATH", "data/assistant.db"))
+    DB_PATH: str = field(default_factory=lambda: os.getenv("DB_PATH", _default_data_path("assistant.db")))
     RAG_EMBEDDING_MODEL_PATH: str = field(
-        default_factory=lambda: os.getenv("RAG_EMBEDDING_MODEL_PATH", "data/models/bge-m3")
+        default_factory=lambda: os.getenv(
+            "RAG_EMBEDDING_MODEL_PATH",
+            str(_bundle_root() / "models" / "bge-m3") if getattr(sys, "frozen", False)
+            else "data/models/bge-m3",
+        )
     )
     RAG_RERANKER_MODEL_PATH: str = field(
         default_factory=lambda: os.getenv("RAG_RERANKER_MODEL_PATH", "")
@@ -74,6 +91,11 @@ class APIConfig:
     WHISPER_FALLBACK_MODEL: str = field(
         default_factory=lambda: os.getenv("WHISPER_FALLBACK_MODEL", "medium").lower()
     )
+    WHISPER_CACHE_DIR: str = field(default_factory=lambda: os.getenv(
+        "WHISPER_CACHE_DIR",
+        str(_bundle_root() / "models" / "whisper") if getattr(sys, "frozen", False)
+        else str(Path.home() / ".cache" / "whisper"),
+    ))
     WHISPER_COMPUTE_TYPE: str = field(
         default_factory=lambda: os.getenv("WHISPER_COMPUTE_TYPE", "int8_float16").lower()
     )
@@ -190,6 +212,11 @@ class Config:
     @property
     def WHISPER_FALLBACK_MODEL(cls):
         return cls.API_CONFIG.WHISPER_FALLBACK_MODEL
+
+    @classmethod
+    @property
+    def WHISPER_CACHE_DIR(cls):
+        return cls.API_CONFIG.WHISPER_CACHE_DIR
 
     @classmethod
     @property
