@@ -49,6 +49,18 @@ class GPTSoVITSClient:
         except (OSError, URLError):
             return False
 
+    @staticmethod
+    def _build_process_env(runtime_root: Path) -> dict[str, str]:
+        """Expose bundled NLP resources to the isolated GPT-SoVITS process."""
+        process_env = os.environ.copy()
+        nltk_data = runtime_root / "nltk_data"
+        nltk_data.mkdir(parents=True, exist_ok=True)
+        existing_nltk_data = process_env.get("NLTK_DATA", "")
+        process_env["NLTK_DATA"] = os.pathsep.join(
+            value for value in (str(nltk_data), existing_nltk_data) if value
+        )
+        return process_env
+
     def ensure_running(self, timeout: float = 60.0) -> None:
         if self._ready():
             return
@@ -57,6 +69,7 @@ class GPTSoVITSClient:
         if not python.exists() or not runtime_root.exists():
             raise RuntimeError("GPT-SoVITS 런타임 또는 전용 Python을 찾을 수 없습니다.")
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        process_env = self._build_process_env(runtime_root)
         self.process = subprocess.Popen(
             [
                 str(python),
@@ -70,6 +83,7 @@ class GPTSoVITSClient:
                 str(self.profile["config"]),
             ],
             cwd=runtime_root,
+            env=process_env,
             creationflags=creationflags,
         )
         deadline = time.monotonic() + timeout

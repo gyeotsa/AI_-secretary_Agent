@@ -51,6 +51,20 @@ def test_gpt_sovits_client_resolves_paths_from_profile(tmp_path):
     assert client._resolve("../../runtime") == (tmp_path / "runtime").resolve()
 
 
+def test_gpt_sovits_process_uses_bundled_nltk_data(tmp_path, monkeypatch):
+    previous = str(tmp_path / "shared-nltk")
+    monkeypatch.setenv("NLTK_DATA", previous)
+    runtime = tmp_path / "runtime"
+
+    process_env = GPTSoVITSClient._build_process_env(runtime)
+
+    assert process_env["NLTK_DATA"].split(__import__("os").pathsep) == [
+        str(runtime / "nltk_data"),
+        previous,
+    ]
+    assert (runtime / "nltk_data").is_dir()
+
+
 def test_gpt_sovits_http_error_includes_server_detail(tmp_path, monkeypatch):
     profile_path = tmp_path / "Anis" / "profile.json"
     profile_path.parent.mkdir()
