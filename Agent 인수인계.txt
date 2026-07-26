@@ -9,6 +9,7 @@
 ---
 ## 2026-07-26 Windows 오프라인 배포 완료
 
+- 구현 커밋: `c72fdae` (`[배포] JARVIS 오프라인 설치본 및 앱 아이콘 구성`)
 - 앱·작업 표시줄·설치 프로그램·바로가기에 `assets/jarvis.ico`를 동일하게 적용했다.
 - Python 3.12와 전체 라이브러리, BGE-M3, faster-whisper large-v3, Whisper medium fallback, Ollama, `qwen2.5-coder:7b-instruct`, Playwright 브라우저를 포함한 페이로드는 20,501,193,600바이트이다.
 - 14GB 7-Zip SFX는 내부 무결성 검사는 통과했지만 Windows PE/SFX의 4GB 초과 실행 파일 한계로 실제 실행이 거부됐다. 물리적인 단일 EXE 요구는 포함 데이터 크기상 충족할 수 없어 Inno Setup 공식 `DiskSpanning` 설치 형식으로 전환했다.
