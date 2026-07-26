@@ -13,6 +13,7 @@ from core.user_profile import get_user_profile
 from core.workspace import get_workspace_manager
 from core.plugin import get_plugin_registry
 from core.tts_settings import get_tts_settings_manager
+from core.custom_tts import GPTSoVITSClient, load_custom_voice_profiles
 
 try:
     from duckduckgo_search import DDGS
@@ -58,6 +59,7 @@ class ToolExecutor:
         self._tts_engine = None
         self._tts_lock = threading.Lock()
         self.tts_settings = get_tts_settings_manager()
+        self._custom_tts_clients = {}
 
         # Load plugins from plugins directory
         try:
@@ -671,6 +673,11 @@ class ToolExecutor:
             return self._speak_text_locked(text, audio_processor)
 
     def _speak_text_locked(self, text: str, audio_processor=None) -> str:
+        if self.tts_settings.selected_custom_voice:
+            custom_result = self._speak_with_custom_tts(text, audio_processor)
+            if not custom_result.startswith("TTS 오류:"):
+                return custom_result
+            print(f"[TTS] 커스텀 음성 실패, 기본 음성으로 대체: {custom_result}")
         if self.tts_settings.selected_edge_voice:
             edge_result = self._speak_with_edge_tts(text, audio_processor)
             if not edge_result.startswith("TTS 오류:"):
@@ -733,6 +740,34 @@ class ToolExecutor:
                 try:
                     os.unlink(temp_wav_path)
                 except Exception:
+                    pass
+
+    def _speak_with_custom_tts(self, text: str, audio_processor=None) -> str:
+        voice_id = self.tts_settings.selected_custom_voice
+        profile = next(
+            (item for item in load_custom_voice_profiles() if str(item.get("id")) == voice_id),
+            None,
+        )
+        if profile is None:
+            return f"TTS 오류: 커스텀 음성 프로필을 찾을 수 없습니다: {voice_id}"
+        media_path = None
+        try:
+            client = self._custom_tts_clients.get(voice_id)
+            if client is None:
+                client = GPTSoVITSClient(profile)
+                self._custom_tts_clients[voice_id] = client
+            media_path = client.synthesize(text or "네, 보스.")
+            if audio_processor is None:
+                return "TTS 오류: 커스텀 음성을 재생할 오디오 처리기가 없습니다."
+            audio_processor.play_and_analyze_tts(media_path)
+            return f"음성으로 읽어드렸습니다: {text}"
+        except Exception as exc:
+            return f"TTS 오류: GPT-SoVITS 합성 실패: {exc}"
+        finally:
+            if media_path and os.path.exists(media_path):
+                try:
+                    os.unlink(media_path)
+                except OSError:
                     pass
 
     def _speak_with_edge_tts(self, text: str, audio_processor=None) -> str:

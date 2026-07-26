@@ -931,3 +931,13 @@ AI_-secretary_Agent/
 - 상단 `💬` 버튼에 세션 관리 창을 추가했다. 세션 선택·새 세션 추가·영구 삭제·대화 리셋과 전체 대화 기록 보기를 지원한다.
 - 세션 리셋/삭제 시 episodes뿐 아니라 pending requests, agent tasks, intent states, recent intent까지 제거해 이전 작업 문맥에 다시 갇히지 않게 했다. 실행 중인 현재 세션은 안전을 위해 리셋·삭제·전환하지 않는다.
 - TTS 설정 JSON은 사용자별 상태이므로 `.gitignore`에 추가했다. 세션 CRUD·대화 표시·연결 상태 초기화·온라인/오프라인 음성 병합 회귀 테스트와 전체 `118 passed, 4 deselected`를 통과했다.
+
+## 2026-07-27 GPT-SoVITS 커스텀 음성 Anis
+
+- 사용자에게 사용 허가를 받은 동일 화자의 영상 3개를 로컬에 내려받았고, 보컬 분리·무음 분할·faster-whisper large-v3 전사를 수행했다. 다른 화자 혼입 위험을 줄이기 위해 최종 학습에는 장편 ASMR 원본에서 선별한 193개 구간만 사용했다.
+- GPT-SoVITS 공식 저장소와 Python 3.10 전용 `.gpt-sovits-venv`를 구성했다. Windows 한국어 전처리를 위해 `eunjeon 0.4.0`과 `setuptools<81`을 고정하고, CUDA 호환을 위해 `torch/torchaudio 2.7.1+cu126`을 사용한다.
+- 텍스트·HuBERT·시맨틱 전처리 결과는 각각 193건으로 검증했다. v3 SoVITS LoRA는 RTX 4060 8GB에 맞춰 batch 1, gradient checkpoint, rank 32로 9 epoch 학습했고 `Anis_e9_s1737_l32.pth`를 생성했다. GPT는 batch 4로 12 epoch 학습해 `Anis-e12.ckpt`를 생성했다.
+- `data/voices/Anis/profile.json` 프로필과 `core/custom_tts.py`를 추가했다. 음성 UI에서 `[커스텀] Anis`를 선택하면 로컬 API를 지연 시작하고, 합성 WAV를 기존 AudioProcessor로 재생한다. 커스텀 합성 실패 시 Windows/Edge 기본 음성으로 대체한다.
+- 실제 API 수동 합성, 서버 자동 시작 후 합성, ToolExecutor 전체 호출을 검증했다. 샘플은 `data/voice_training/anis/Anis_sample.wav`이며 로컬 학습 자료·가중치·외부 런타임은 Git 및 일반 배포에서 제외한다.
+- 데이터 준비 도구 `transcribe_voice_dataset.py`, `align_youtube_captions.py`, `finalize_gpt_sovits_semantics.py`를 추가했다. 캡션 정렬 결과는 문맥 중복 때문에 최종 학습에 사용하지 않았다.
+- 전체 테스트 결과는 `118 passed, 4 deselected`다.

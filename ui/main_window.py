@@ -451,7 +451,10 @@ class TTSVoiceDialog(QDialog):
         voices = self.settings_manager.list_voices(refresh=True)
         for index, voice in enumerate(voices):
             language = f" · {voice.languages}" if voice.languages else ""
-            provider = "온라인" if voice.provider == "edge" else "Windows"
+            provider = {
+                "edge": "온라인",
+                "gpt-sovits": "커스텀",
+            }.get(voice.provider, "Windows")
             item = QListWidgetItem(f"[{provider}] {voice.name}{language}")
             item.setData(Qt.ItemDataRole.UserRole, (voice.id, voice.name))
             self.voice_list.addItem(item)

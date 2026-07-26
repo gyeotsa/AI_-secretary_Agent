@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 from typing import Optional
+from core.custom_tts import load_custom_voice_profiles
 
 try:
     import asyncio
@@ -64,7 +65,16 @@ class TTSSettingsManager:
             return list(self._voice_cache)
         local_voices = self._list_local_voices()
         online_voices = self._list_edge_voices()
-        self._voice_cache = local_voices + online_voices
+        custom_voices = [
+            TTSVoice(
+                id=f"gpt-sovits:{profile['id']}",
+                name=str(profile.get("name") or profile["id"]),
+                languages=f"{profile.get('language', 'ko')} · 로컬 커스텀 음성",
+                provider="gpt-sovits",
+            )
+            for profile in load_custom_voice_profiles()
+        ]
+        self._voice_cache = custom_voices + local_voices + online_voices
         return list(self._voice_cache)
 
     def _list_local_voices(self) -> list[TTSVoice]:
@@ -184,6 +194,12 @@ class TTSSettingsManager:
     @property
     def selected_edge_voice(self) -> str:
         if self.selected_provider == "edge" and self.selected_voice_id.startswith("edge:"):
+            return self.selected_voice_id.split(":", 1)[1]
+        return ""
+
+    @property
+    def selected_custom_voice(self) -> str:
+        if self.selected_provider == "gpt-sovits" and self.selected_voice_id.startswith("gpt-sovits:"):
             return self.selected_voice_id.split(":", 1)[1]
         return ""
 

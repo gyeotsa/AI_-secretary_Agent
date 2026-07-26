@@ -1,0 +1,12 @@
+{
+  "id": "Anis",
+  "name": "Anis",
+  "provider": "gpt-sovits",
+  "language": "ko",
+  "runtime_root": "../../../external/GPT-SoVITS",
+  "python": "../../../.gpt-sovits-venv/Scripts/python.exe",
+  "config": "tmp/anis_tts.yaml",
+  "reference_audio": "../../../data/voice_training/anis/segments/vocal_yc4fTT-g7s0.wav_10.wav_0001563840_0001708800.wav",
+  "reference_text": "그러고 보니까 지휘관님은 어디 가고 싶은데 없어?",
+  "port": 9881
+}

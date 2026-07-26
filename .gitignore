@@ -54,6 +54,12 @@ data/models/
 Thumbs.db
 data/discovered_apps.json
 data/user_app_aliases.json
+data/voice_training/
+external/GPT-SoVITS/
+.gpt-sovits-venv/
+data/voices/*/reference.wav
+data/voices/*/*.pth
+data/voices/*/*.ckpt
 assets/jarvis_icon_chroma.png
 assets/jarvis_icon_v2.png
 assets/jarvis_icon_final.png
