@@ -87,10 +87,21 @@
   Excel은 재열기 셀 값 검증을 연결했다. PDF 전체 추출이 반복문에서 `page_num`을
   잘못 참조하던 오류와 클래스 내 중복 `add_document` 정의도 제거했다.
 - 코드 커밋: `ee82336` (`[Feat] 지식 음성 호환 Tool 결과 타입화`)
-- 회귀 테스트 기준선: `167 passed, 4 deselected`.
-- 다음 해야 할 일: GUI 직접 호출 호환 때문에 문자열을 유지하는 TTS 재생 결과의
-  별도 계약을 설계하고, 일반 대화의 실행 완료 주장 차단·Action Journal·Presenter
-  상태 연결·취소/부분 완료/재시도 표시를 마무리한다.
+- TTS는 GUI가 직접 사용하는 문자열 API를 보존하면서 Registry용 typed 결과
+  `speak_text_result()`를 추가했다. provider·voice·본문 해시와 동기 재생 반환을
+  Evidence로 기록한다.
+- 모든 중앙 Tool 실행은 권한 거부도 포함해 Action Journal에 입력·상태·Evidence·
+  Artifact·지연 시간을 저장한다. password/token/secret/API key 계열 값은
+  `[REDACTED]`로 마스킹하며 Journal 기록 실패가 Tool 결과를 변경하지 않는다.
+- 일반 대화 경로의 시스템 프롬프트와 출력 후 조건 검사에 “실행하지 않은 외부 작업
+  완료 주장 금지”를 추가했다. 실행 요청처럼 보이는 발화에 모델이 생성·수정·삭제·
+  실행·전송 등의 완료를 주장하면 실제 미실행 사실로 교체한다.
+- `PresentedResponse`를 추가해 원문 기술 로그와 화면·음성용 본문을 분리하고
+  `main_qt.py`가 이 채널 계약을 사용하도록 연결했다.
+- 코드 커밋: `6d090e6` (`[Feat] 실행 증거 Journal과 응답 경계 연결`)
+- 회귀 테스트 기준선: `170 passed, 4 deselected`.
+- 다음 해야 할 일: 레거시 하위 계층의 문자열 오류 판정을 제거하고, 취소·부분 완료·
+  재시도 상태를 Tool 결과와 최종 사용자 응답까지 일관되게 전달해 P0를 마무리한다.
 
 ## 2026-07-27 웹 검색 답변 길이와 출처 표시 간소화
 

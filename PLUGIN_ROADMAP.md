@@ -84,3 +84,6 @@
 - 프로필·환경설정·Knowledge Graph·Multi-Agent·STT/감지·Scheduler 호환 API와
   구형 웹 검색·Vision·PDF·Excel 내장 Tool도 직접 typed 결과 전환을 완료했다.
   모델 출력이나 장치 스트림처럼 아직 완결 증거가 없는 결과는 `unverified`로 남긴다.
+- TTS는 GUI 문자열 호환과 Registry typed 결과를 분리했다. 중앙 Tool 실행은
+  Action Journal에 상태·Evidence·Artifact·지연 시간을 기록하고, 일반 대화가
+  Tool 없이 외부 작업 완료를 주장하는 응답은 사용자 경계에서 차단한다.

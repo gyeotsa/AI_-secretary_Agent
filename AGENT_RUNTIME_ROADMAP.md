@@ -123,19 +123,24 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
   이미지/PDF·통합문서 재열기를 Evidence로 사용합니다. 최종 답변 사실성을 검증할
   수 없는 Multi-Agent와 실제 스트림 개방 신호가 없는 감지 시작은 `unverified`로
   유지합니다. PDF 전체 페이지 추출이 같은 페이지를 잘못 참조하던 오류도 수정했습니다.
+- 2026-07-27: GUI가 직접 사용하는 `speak_text()` 문자열 API는 유지하되 Tool
+  Registry에는 `speak_text_result()` typed 경계를 연결했습니다. 모든 중앙 Tool
+  실행은 권한 거부를 포함해 입력·상태·Evidence·Artifact·지연 시간을 Action
+  Journal에 기록하며 비밀번호·토큰·API 키는 마스킹합니다. 일반 대화 LLM이
+  실행하지 않은 외부 작업을 완료형으로 주장하면 출력 경계에서 차단합니다.
+  `PresentedResponse`로 원문 기술 로그와 화면·음성 본문도 명시적으로 분리했습니다.
 
-- [ ] 모든 Tool 결과를 `ToolRunResult` 타입으로 통일
+- [x] 모든 중앙 Tool 결과를 `ToolRunResult` 타입으로 통일
 - [x] 중앙 ToolExecutor 반환 경계의 `status`, `output`, `error`, `artifacts`, `evidence`, `timing` 통일
 - [ ] 문자열의 `오류:` 포함 여부에 의존하는 성공 판정 제거
 - [x] 검증기가 없는 실행형 Tool은 `unverified` 처리
-- [ ] 일반 대화 경로의 실행 완료 주장 차단
-- [ ] Action Journal에 Tool 입력·결과·검증 증거·지연 시간 연결
-- [ ] UI 표시, TTS, 기술 로그 Presenter 분리
+- [x] 일반 대화 경로의 실행 완료 주장 차단
+- [x] Action Journal에 Tool 입력·결과·검증 증거·지연 시간 연결
+- [x] UI 표시, TTS, 기술 로그 Presenter 분리
 - [ ] 취소·부분 완료·재시도 상태를 사용자에게 정확히 표시
 
-현재 남은 P0 핵심 범위는 GUI 직접 호출 호환 때문에 문자열을 유지하는 TTS 재생
-결과의 별도 계약, 일반 대화의 실행 완료 주장 차단, Action Journal과 Presenter
-상태 연결, 취소·부분 완료·재시도 사용자 표시입니다.
+현재 남은 P0 핵심 범위는 레거시 하위 계층의 문자열 오류 판정 제거와 취소·부분
+완료·재시도 상태를 최종 사용자 응답에 일관되게 표시하는 일입니다.
 
 수락 기준:
 

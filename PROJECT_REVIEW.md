@@ -61,8 +61,12 @@ Tool도 직접 typed 결과로 이전했습니다. 파일 해시, 프로젝트 �
 Vision·PDF·Excel 내장 Tool도 직접 typed 결과로 이전했습니다. 검증할 수 없는
 모델 해석과 장치 스트림 준비 전 상태는 성공으로 승격하지 않습니다. PDF 전체 추출의
 페이지 인덱스 오류와 중복 `add_document` 정의도 제거했습니다.
+TTS는 GUI 문자열 호환 API와 Registry typed API를 분리했습니다. 중앙 Tool 결과는
+권한 거부까지 Action Journal에 입력·상태·Evidence·Artifact·지연 시간으로 기록되고
+자격 증명은 마스킹됩니다. 일반 대화의 실행하지 않은 완료 주장도 차단하며,
+Presenter는 기술 로그와 화면·음성 본문을 별도 채널로 제공합니다.
 
-현재 기본 자동 회귀 테스트 기준선은 `167 passed, 4 deselected`입니다. 이는
+현재 기본 자동 회귀 테스트 기준선은 `170 passed, 4 deselected`입니다. 이는
 네트워크·OAuth·실제 장치·Office COM·장시간 자동화를 모두 보증하는 수치는 아닙니다.
 
 ## 판정
