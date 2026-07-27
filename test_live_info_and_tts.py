@@ -85,7 +85,7 @@ def test_tts_normalizer_reads_words_clocks_numbers_and_units_naturally():
 
 
 def test_uppercase_dictionary_word_is_pronounced_as_a_word_not_an_acronym():
-    assert normalize_for_tts("GAME API GPU") == "게임 API GPU"
+    assert normalize_for_tts("GAME API GPU") == "게임 에이피아이 지피유"
 
 
 def test_read_aloud_intent_returns_literal_text_without_llm_generation():

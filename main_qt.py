@@ -162,6 +162,7 @@ class JarvisApp:
         self.signals.voice_text_detected.connect(self._on_user_input)
         self.signals.tts_finished.connect(self._reset_all)
         self.automation_engine.set_result_callback(self._on_automation_result)
+        print(f"[Automation] 시작 상태: {self.automation_engine.start()}")
         self.proactive_policy = ProactiveNotificationPolicy(self.notify_user)
         self.proactive_policy.start()
         
@@ -397,9 +398,11 @@ class JarvisApp:
 
     def _on_automation_result(self, event):
         if event.get("error"):
-            message = f"보스, 예약 작업 {event['job_id']} 실행 중 문제가 생겼습니다: {event['error']}"
+            message = f"보스, 예약 작업 실행 중 문제가 생겼습니다: {event['error']}"
+        elif event.get("action_type") == "alarm":
+            message = f"보스, {event.get('result') or '알람 시간입니다.'}"
         else:
-            message = f"보스, 예약 작업 {event['job_id']}을 완료했습니다. {event.get('result', '')}"
+            message = f"보스, 예약 작업을 완료했습니다. {event.get('result', '')}"
         self.notify_user(message)
 
     def _on_proactive_message(self, message: str):
@@ -410,6 +413,14 @@ class JarvisApp:
         self.messages.append({"role": "assistant", "content": message})
         self.memory.save_message(self.session_id, "assistant", message)
         self.state_machine.start_responding()
+        tool_executor = getattr(self, "tool_executor", None)
+        if tool_executor is not None and callable(
+            getattr(tool_executor, "speak_text", None)
+        ):
+            threading.Thread(
+                target=lambda: self._speak_with_check(message),
+                daemon=True,
+            ).start()
     
     def _on_ai_response(self, response_text: str):
         print("[DEBUG] _on_ai_response called with:", response_text)
@@ -556,13 +567,13 @@ class JarvisApp:
             result = self.tool_executor.speak_text(text, self.audio_processor)
             print(f"[DEBUG] tool_executor.speak_text 반환값: {result}")
             if result.lstrip().startswith("TTS 오류:"):
-                print(f"⚠️ TTS 오류: {result}")
-                print("💡 pyttsx3를 설치하세요: pip install pyttsx3")
+                print(f"[TTS] 오류: {result}")
+                print("[TTS] pyttsx3를 설치하세요: pip install pyttsx3")
         except Exception as e:
-            print(f"⚠️ TTS 오류: {e}")
+            print(f"[TTS] 오류: {e}")
             import traceback
             traceback.print_exc()
-            print("💡 pyttsx3를 설치하세요: pip install pyttsx3")
+            print("[TTS] pyttsx3를 설치하세요: pip install pyttsx3")
         finally:
             if hardware is not None:
                 hardware.set_output_active(False)

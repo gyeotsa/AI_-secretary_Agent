@@ -13,6 +13,13 @@ _G2P = None
 _DIGITS = "영일이삼사오육칠팔구"
 _SMALL_UNITS = ("", "십", "백", "천")
 _LARGE_UNITS = ("", "만", "억", "조", "경")
+_ENGLISH_LETTER_NAMES = {
+    "A": "에이", "B": "비", "C": "씨", "D": "디", "E": "이", "F": "에프",
+    "G": "지", "H": "에이치", "I": "아이", "J": "제이", "K": "케이",
+    "L": "엘", "M": "엠", "N": "엔", "O": "오", "P": "피", "Q": "큐",
+    "R": "알", "S": "에스", "T": "티", "U": "유", "V": "브이",
+    "W": "더블유", "X": "엑스", "Y": "와이", "Z": "지",
+}
 
 
 def _sino_number(value: str) -> str:
@@ -59,9 +66,14 @@ def _english_to_hangul(match: re.Match) -> str:
     token = match.group(0)
     if convert_eng is None or G2p is None:
         return token
+    if token.isupper() and len(token) <= 2:
+        return "".join(_ENGLISH_LETTER_NAMES.get(char, char) for char in token)
     if _G2P is None:
         _G2P = G2p()
-    return convert_eng(token, _G2P.cmu)
+    converted = convert_eng(token, _G2P.cmu)
+    if token.isupper() and converted == token:
+        return "".join(_ENGLISH_LETTER_NAMES.get(char, char) for char in token)
+    return converted
 
 
 def normalize_for_tts(text: str) -> str:
@@ -99,6 +111,10 @@ def normalize_for_tts(text: str) -> str:
                   f"{' '.join(_DIGITS[int(ch)] for ch in m.group(2))}",
         value,
     )
-    value = re.sub(r"\b[A-Za-z][A-Za-z'-]*\b", _english_to_hangul, value)
+    value = re.sub(
+        r"(?<![A-Za-z])[A-Za-z][A-Za-z'-]*(?![A-Za-z])",
+        _english_to_hangul,
+        value,
+    )
     value = re.sub(r"(?<!\d)\d+(?!\d)", lambda m: _sino_number(m.group(0)), value)
     return re.sub(r"\s+", " ", value).strip()

@@ -111,6 +111,7 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "add_schedule_job": "automation",
     "start_scheduler": "automation",
     "add_automation_job": "automation",
+    "set_alarm": "automation",
     "toggle_automation_job": "automation",
     "start_automation_engine": "automation",
     "execute_multi_agent": "automation",

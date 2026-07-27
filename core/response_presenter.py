@@ -15,6 +15,7 @@ _PROGRAM_LAUNCH_RESULT = re.compile(
 )
 _CJK_OR_KANA = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _NON_KOREAN_REQUEST_TERMS = ("중국어", "일본어", "한자", "번역", "원문")
+_INTERNAL_PENDING_ID = re.compile(r"^대기\s*작업\s*ID\s*:\s*[0-9a-f]+$", re.IGNORECASE)
 
 
 def requests_technical_details(user_request: str) -> bool:
@@ -32,6 +33,8 @@ def present_response(response_text: str, user_request: str = "") -> str:
     lines = []
     for line in text.splitlines():
         stripped = line.strip()
+        if _INTERNAL_PENDING_ID.fullmatch(stripped):
+            continue
         if not allow_cjk and _CJK_OR_KANA.search(stripped):
             stripped = _CJK_OR_KANA.split(stripped, maxsplit=1)[0].rstrip(" :：,，")
             completed_sentence = max(

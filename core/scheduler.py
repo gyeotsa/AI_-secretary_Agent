@@ -3,7 +3,7 @@ import sqlite3
 import threading
 import time
 from config import Config
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Callable, Any, Dict
 import json
 
@@ -49,9 +49,13 @@ class AutomationEngine:
                 enabled INTEGER DEFAULT 1,
                 last_run TEXT,
                 last_result TEXT,
+                action_type TEXT NOT NULL DEFAULT 'llm',
                 created_at TEXT NOT NULL
             )
         """)
+        columns = {row[1] for row in cursor.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "action_type" not in columns:
+            cursor.execute("ALTER TABLE jobs ADD COLUMN action_type TEXT NOT NULL DEFAULT 'llm'")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS job_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,13 +69,18 @@ class AutomationEngine:
         conn.commit()
         conn.close()
         
-    def _execute_job(self, job_id: int, prompt: str, description: str):
+    def _execute_job(self, job_id: int, prompt: str, description: str,
+                     action_type: str = "llm"):
         """작업 실행 (LLM 호출)"""
         print(f"[Automation] 작업 실행 중: {description} (ID: {job_id})")
         result_text = ""
         error_text = ""
         
         try:
+            if action_type == "alarm":
+                result_text = prompt or "알람 시간입니다."
+                print(f"[Automation] 알람 발생: {result_text}")
+                return
             from core.llm import get_llm_client
             from core.memory import build_memory_context
             
@@ -97,9 +106,10 @@ class AutomationEngine:
             
         finally:
             # 결과 저장
-            self._save_job_result(job_id, result_text, error_text)
+            self._save_job_result(job_id, result_text, error_text, action_type, description)
             
-    def _save_job_result(self, job_id: int, result: str, error: str):
+    def _save_job_result(self, job_id: int, result: str, error: str,
+                         action_type: str = "llm", description: str = ""):
         """작업 결과 저장"""
         now = datetime.now().isoformat()
         
@@ -114,9 +124,9 @@ class AutomationEngine:
         # jobs 테이블 업데이트
         cursor.execute("""
             UPDATE jobs 
-            SET last_run = ?, last_result = ?
+            SET last_run = ?, last_result = ?, enabled = CASE WHEN ? = 'alarm' THEN 0 ELSE enabled END
             WHERE id = ?
-        """, (now, result[:1000] if result else error[:1000], job_id))
+        """, (now, result[:1000] if result else error[:1000], action_type, job_id))
         
         conn.commit()
         conn.close()
@@ -134,14 +144,19 @@ class AutomationEngine:
                     "run_time": now,
                     "result": result,
                     "error": error,
+                    "action_type": action_type,
+                    "description": description,
                 })
             except Exception as exc:
                 print(f"[Automation] 결과 callback 오류: {exc}")
         
-    def _schedule_job(self, job_id: int, description: str, schedule_type: str, schedule_value: str, prompt: str):
+    def _schedule_job(self, job_id: int, description: str, schedule_type: str,
+                      schedule_value: str, prompt: str, action_type: str = "llm"):
         """스케줄 작업 등록"""
         def job():
-            self._execute_job(job_id, prompt, description)
+            self._execute_job(job_id, prompt, description, action_type)
+            if schedule_type == "once_at":
+                return schedule.CancelJob
             
         if schedule_type == "every_minutes":
             self.scheduler.every(int(schedule_value)).minutes.do(job).tag(job_id)
@@ -153,6 +168,11 @@ class AutomationEngine:
             self.scheduler.every().day.at(schedule_value).do(job).tag(job_id)
         elif schedule_type == "every_weeks":
             self.scheduler.every(int(schedule_value)).weeks.do(job).tag(job_id)
+        elif schedule_type == "once_at":
+            target = datetime.fromisoformat(schedule_value)
+            now = datetime.now(target.tzinfo) if target.tzinfo else datetime.now()
+            delay_seconds = max(0.1, (target - now).total_seconds())
+            self.scheduler.every(delay_seconds).seconds.do(job).tag(job_id)
         else:
             raise ValueError(f"지원하지 않는 schedule_type입니다: {schedule_type}")
             
@@ -161,7 +181,8 @@ class AutomationEngine:
             "description": description,
             "schedule_type": schedule_type,
             "schedule_value": schedule_value,
-            "prompt": prompt
+            "prompt": prompt,
+            "action_type": action_type,
         })
         
     def add_job(self, description: str, schedule_type: str, schedule_value: str, prompt: str) -> str:
@@ -196,6 +217,41 @@ class AutomationEngine:
             
         except Exception as e:
             return f"작업 등록 오류: {str(e)}"
+
+    def add_alarm(self, delay_seconds: int, message: str = "알람 시간입니다.") -> str:
+        """한 번만 실행되는 상대 시간 알람을 등록하고 엔진을 보장해 시작한다."""
+        try:
+            delay_seconds = int(delay_seconds)
+            if delay_seconds <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return "알람 등록 오류: 알람 시간은 1초 이상이어야 합니다."
+        if not SCHEDULE_AVAILABLE:
+            return "오류: schedule 라이브러리가 설치되지 않았습니다."
+        if not self.running:
+            started = self.start()
+            if started.startswith("오류:"):
+                return started
+        target = datetime.now().astimezone() + timedelta(seconds=delay_seconds)
+        description = f"{delay_seconds}초 뒤 알람"
+        try:
+            with sqlite3.connect(self.scheduler_db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO jobs
+                    (description, schedule_type, schedule_value, prompt, action_type, created_at)
+                    VALUES (?, 'once_at', ?, ?, 'alarm', ?)
+                """, (description, target.isoformat(), message, datetime.now().isoformat()))
+                job_id = cursor.lastrowid
+            self._schedule_job(
+                job_id, description, "once_at", target.isoformat(), message, "alarm"
+            )
+            return json.dumps({
+                "status": "scheduled", "delay_seconds": delay_seconds,
+                "fire_at": target.isoformat(), "message": message,
+            }, ensure_ascii=False)
+        except Exception as exc:
+            return f"알람 등록 오류: {exc}"
             
     def _load_jobs_from_db(self):
         """DB에서 작업 로드"""
@@ -204,12 +260,15 @@ class AutomationEngine:
             self.scheduled_jobs.clear()
             conn = sqlite3.connect(self.scheduler_db_path)
             cursor = conn.cursor()
-            cursor.execute("SELECT id, description, schedule_type, schedule_value, prompt FROM jobs WHERE enabled = 1")
+            cursor.execute(
+                "SELECT id, description, schedule_type, schedule_value, prompt, action_type "
+                "FROM jobs WHERE enabled = 1"
+            )
             rows = cursor.fetchall()
             conn.close()
             
             for row in rows:
-                self._schedule_job(row[0], row[1], row[2], row[3], row[4])
+                self._schedule_job(row[0], row[1], row[2], row[3], row[4], row[5])
                 
         except Exception as e:
             print(f"DB에서 작업 로드 오류: {e}")
