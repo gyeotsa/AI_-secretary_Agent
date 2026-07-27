@@ -123,6 +123,25 @@ class ToolRunResult:
             evidence=list(evidence or [Evidence("tool_error", message)]),
         )
 
+    @classmethod
+    def unverified(
+        cls,
+        *,
+        tool_name: str,
+        raw_output: str,
+        evidence: Optional[List[Evidence]] = None,
+        artifacts: Optional[List[Artifact]] = None,
+        duration_ms: float = 0.0,
+    ) -> "ToolRunResult":
+        return cls(
+            tool_name=tool_name,
+            status=ToolRunStatus.UNVERIFIED,
+            raw_output=str(raw_output),
+            duration_ms=max(0.0, float(duration_ms)),
+            evidence=list(evidence or []),
+            artifacts=list(artifacts or []),
+        )
+
 
 def _extract_artifacts(raw_output: str) -> List[Artifact]:
     """Extract common path and URL artifacts from structured plugin output."""

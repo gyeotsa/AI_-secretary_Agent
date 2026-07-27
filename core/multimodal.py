@@ -145,7 +145,7 @@ class MultimodalManager:
                 result.append("-" * 40)
                 all_text = ""
                 for i in range(total_pages):
-                    page = doc[page_num - 1]
+                    page = doc[i]
                     all_text += page.get_text() + "\n"
                 
                 result.append(all_text[:3000])

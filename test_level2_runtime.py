@@ -59,11 +59,12 @@ class ToolRegistryTests(unittest.TestCase):
             self.assertEqual(result.raw_output, "hello")
             self.assertTrue(result.evidence)
 
-    def test_legacy_tool_without_verifier_is_unverified(self):
+    def test_profile_tool_returns_direct_database_evidence(self):
         result = get_tool_executor().execute_tool("get_profile", {})
         self.assertIsInstance(result, ToolRunResult)
-        self.assertEqual(result.status, ToolRunStatus.UNVERIFIED)
-        self.assertFalse(result.succeeded)
+        self.assertEqual(result.status, ToolRunStatus.SUCCEEDED)
+        self.assertTrue(result.succeeded)
+        self.assertEqual(result.evidence[0].kind, "profile_database")
 
     def test_directory_and_workspace_tools_return_direct_evidence(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

@@ -296,15 +296,6 @@ class ToolExecutor:
         except Exception as e:
             return ToolRunResult.failed(tool_name="delete_directory", error=f"폴더 삭제 오류: {e}")
 
-    def add_document(self, file_path: str) -> str:
-        is_valid, error_msg, resolved_path = self._resolve_and_validate_path(file_path)
-        if not is_valid:
-            return error_msg
-
-        if self.rag_manager is None:
-            return "오류: RAG 기능을 초기화할 수 없습니다."
-        return self.rag_manager.add_document(resolved_path)
-
     # ------------------------------
     # Workspace 관련 도구 추가
     # ------------------------------
@@ -754,7 +745,7 @@ class ToolExecutor:
     # ------------------------------
     # Knowledge Graph 관련 도구 추가
     # ------------------------------
-    def add_entity(self, name: str, entity_type: str, metadata: Optional[str] = None) -> str:
+    def add_entity(self, name: str, entity_type: str, metadata: Optional[str] = None):
         """지식 그래프에 엔티티 추가"""
         try:
             from core.knowledge_graph import get_knowledge_graph, Entity
@@ -762,51 +753,81 @@ class ToolExecutor:
             meta_dict = json.loads(metadata) if metadata else {}
             entity = Entity(name=name, entity_type=entity_type, metadata=meta_dict)
             entity_id = kg.add_entity(entity)
-            return f"✅ 엔티티가 추가되었습니다 (ID: {entity_id}): {name} ({entity_type})"
+            saved = kg.get_entity(name, entity_type)
+            if not saved or saved.id != entity_id or saved.metadata != meta_dict:
+                return ToolRunResult.failed(tool_name="add_entity", error="엔티티 저장 후 재조회 검증에 실패했습니다.")
+            return ToolRunResult.successful(
+                tool_name="add_entity",
+                raw_output=f"엔티티가 추가되었습니다: {name} ({entity_type})",
+                evidence=[Evidence("knowledge_entity", "저장된 엔티티를 지식 그래프 DB에서 재조회했습니다.", {
+                    "id": saved.id, "name": saved.name, "entity_type": saved.entity_type,
+                    "metadata_sha256": hashlib.sha256(json.dumps(saved.metadata, sort_keys=True, ensure_ascii=False).encode()).hexdigest(),
+                })],
+                artifacts=[Artifact("knowledge_entity", str(saved.id), {"name": name, "entity_type": entity_type})],
+            )
         except Exception as e:
-            return f"엔티티 추가 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="add_entity", error=f"엔티티 추가 오류: {e}")
 
-    def get_entity(self, name: str, entity_type: Optional[str] = None) -> str:
+    def get_entity(self, name: str, entity_type: Optional[str] = None):
         """지식 그래프에서 엔티티 조회"""
         try:
             from core.knowledge_graph import get_knowledge_graph
             kg = get_knowledge_graph()
             entity = kg.get_entity(name, entity_type)
             if not entity:
-                return f"엔티티를 찾을 수 없습니다: {name}"
-            return json.dumps(entity.to_dict(), indent=2, ensure_ascii=False)
+                return ToolRunResult.failed(tool_name="get_entity", error=f"엔티티를 찾을 수 없습니다: {name}")
+            output = json.dumps(entity.to_dict(), indent=2, ensure_ascii=False)
+            return ToolRunResult.successful(
+                tool_name="get_entity", raw_output=output,
+                evidence=[Evidence("knowledge_entity", "지식 그래프 DB에서 엔티티를 조회했습니다.", {
+                    "id": entity.id, "name": entity.name, "entity_type": entity.entity_type,
+                })],
+                artifacts=[Artifact("knowledge_entity", str(entity.id), {"name": entity.name})],
+            )
         except Exception as e:
-            return f"엔티티 조회 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="get_entity", error=f"엔티티 조회 오류: {e}")
 
-    def search_entities(self, query: str, entity_type: Optional[str] = None, limit: int = 20) -> str:
+    def search_entities(self, query: str, entity_type: Optional[str] = None, limit: int = 20):
         """지식 그래프에서 엔티티 검색"""
         try:
             from core.knowledge_graph import get_knowledge_graph
             kg = get_knowledge_graph()
             entities = kg.search_entities(query, entity_type, limit)
-            if not entities:
-                return "검색 결과가 없습니다."
             result = [f"📋 검색 결과 ({len(entities)}건):"]
             for entity in entities:
                 result.append(f"\n- {entity.name} ({entity.entity_type})")
                 if entity.metadata:
                     result.append(f"  메타데이터: {json.dumps(entity.metadata, ensure_ascii=False)}")
-            return "\n".join(result)
+            output = "\n".join(result) if entities else "검색 결과가 없습니다."
+            return ToolRunResult.successful(
+                tool_name="search_entities", raw_output=output,
+                evidence=[Evidence("knowledge_query", f"지식 그래프에서 엔티티 {len(entities)}건을 조회했습니다.", {
+                    "query": query, "entity_type": entity_type, "limit": limit,
+                    "entity_ids": [entity.id for entity in entities],
+                })],
+                artifacts=[Artifact("knowledge_entity", str(entity.id), {"name": entity.name}) for entity in entities],
+            )
         except Exception as e:
-            return f"엔티티 검색 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="search_entities", error=f"엔티티 검색 오류: {e}")
 
-    def delete_entity(self, name: str, entity_type: Optional[str] = None) -> str:
+    def delete_entity(self, name: str, entity_type: Optional[str] = None):
         """지식 그래프에서 엔티티 삭제"""
         try:
             from core.knowledge_graph import get_knowledge_graph
             kg = get_knowledge_graph()
             deleted = kg.delete_entity(name, entity_type)
-            if deleted:
-                return f"✅ 엔티티가 삭제되었습니다: {name}"
-            else:
-                return f"엔티티를 찾을 수 없습니다: {name}"
+            if not deleted:
+                return ToolRunResult.failed(tool_name="delete_entity", error=f"엔티티를 찾을 수 없습니다: {name}")
+            if kg.get_entity(name, entity_type) is not None:
+                return ToolRunResult.failed(tool_name="delete_entity", error="엔티티 삭제 후에도 DB 레코드가 남아 있습니다.")
+            return ToolRunResult.successful(
+                tool_name="delete_entity", raw_output=f"엔티티가 삭제되었습니다: {name}",
+                evidence=[Evidence("knowledge_entity_absent", "삭제 후 엔티티가 조회되지 않음을 확인했습니다.", {
+                    "name": name, "entity_type": entity_type,
+                })],
+            )
         except Exception as e:
-            return f"엔티티 삭제 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="delete_entity", error=f"엔티티 삭제 오류: {e}")
 
     def add_triple(self, subject: str, predicate: str, object_: str,
                    subject_type: str = "thing", object_type: str = "thing",
@@ -817,18 +838,27 @@ class ToolExecutor:
             kg = get_knowledge_graph()
             meta_dict = json.loads(metadata) if metadata else {}
             relation_id = kg.add_triple(subject, predicate, object_, subject_type, object_type, meta_dict)
-            return f"✅ 트리플이 추가되었습니다 (ID: {relation_id}): ({subject}) -[{predicate}]-> ({object_})"
+            relation = next((
+                item for item in kg.get_relations(subject, "from")
+                if item.id == relation_id and item.relation_type == predicate and item.to_entity == object_
+            ), None)
+            if relation is None:
+                return ToolRunResult.failed(tool_name="add_triple", error="트리플 저장 후 관계 재조회 검증에 실패했습니다.")
+            return ToolRunResult.successful(
+                tool_name="add_triple",
+                raw_output=f"트리플이 추가되었습니다: ({subject}) -[{predicate}]-> ({object_})",
+                evidence=[Evidence("knowledge_relation", "저장된 관계를 지식 그래프 DB에서 재조회했습니다.", relation.to_dict())],
+                artifacts=[Artifact("knowledge_relation", str(relation.id))],
+            )
         except Exception as e:
-            return f"트리플 추가 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="add_triple", error=f"트리플 추가 오류: {e}")
 
-    def get_relations(self, entity_name: str, direction: str = "both") -> str:
+    def get_relations(self, entity_name: str, direction: str = "both"):
         """엔티티의 관계 조회"""
         try:
             from core.knowledge_graph import get_knowledge_graph
             kg = get_knowledge_graph()
             relations = kg.get_relations(entity_name, direction)
-            if not relations:
-                return f"엔티티 {entity_name}의 관계가 없습니다."
             result = [f"🔗 {entity_name}의 관계 ({len(relations)}건):"]
             for rel in relations:
                 if rel.from_entity == entity_name:
@@ -837,42 +867,88 @@ class ToolExecutor:
                     result.append(f"\n- ← {rel.relation_type} ← {rel.from_entity}")
                 if rel.metadata:
                     result.append(f"  메타데이터: {json.dumps(rel.metadata, ensure_ascii=False)}")
-            return "\n".join(result)
+            output = "\n".join(result) if relations else f"엔티티 {entity_name}의 관계가 없습니다."
+            return ToolRunResult.successful(
+                tool_name="get_relations", raw_output=output,
+                evidence=[Evidence("knowledge_relations", f"관계 {len(relations)}건을 DB에서 조회했습니다.", {
+                    "entity_name": entity_name, "direction": direction,
+                    "relation_ids": [relation.id for relation in relations],
+                })],
+                artifacts=[Artifact("knowledge_relation", str(relation.id)) for relation in relations],
+            )
         except Exception as e:
-            return f"관계 조회 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="get_relations", error=f"관계 조회 오류: {e}")
 
-    def get_subgraph(self, entity_name: str, depth: int = 2) -> str:
+    def get_subgraph(self, entity_name: str, depth: int = 2):
         """서브그래프 조회"""
         try:
             from core.knowledge_graph import get_knowledge_graph
             kg = get_knowledge_graph()
             subgraph = kg.get_subgraph(entity_name, depth)
-            return json.dumps(subgraph, indent=2, ensure_ascii=False)
+            output = json.dumps(subgraph, indent=2, ensure_ascii=False)
+            return ToolRunResult.successful(
+                tool_name="get_subgraph", raw_output=output,
+                evidence=[Evidence("knowledge_subgraph", "지식 그래프 DB에서 서브그래프를 구성했습니다.", {
+                    "entity_name": entity_name, "depth": depth,
+                    "entities": len(subgraph.get("entities", [])),
+                    "relations": len(subgraph.get("relations", [])),
+                })],
+            )
         except Exception as e:
-            return f"서브그래프 조회 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="get_subgraph", error=f"서브그래프 조회 오류: {e}")
 
     # ------------------------------
     # Multi-Agent 관련 도구 추가
     # ------------------------------
-    def execute_multi_agent(self, query: str) -> str:
+    def execute_multi_agent(self, query: str):
         """멀티 에이전트 파이프라인 실행 (계획 → 실행 → 반성)"""
         try:
             from core.multi_agent import get_multi_agent_orchestrator
             orchestrator = get_multi_agent_orchestrator()
+            before_count = len(orchestrator.tasks)
             result = orchestrator.execute_full_pipeline(query)
-            return result
+            new_tasks = orchestrator.tasks[before_count:]
+            failed = [task for task in new_tasks if task.status == "failed"]
+            evidence = [Evidence("multi_agent_tasks", "멀티 에이전트가 생성한 작업 상태를 확인했습니다.", {
+                "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+                "task_count": len(new_tasks),
+                "task_ids": [task.id for task in new_tasks],
+                "statuses": [task.status for task in new_tasks],
+            })]
+            if failed or not str(result).strip():
+                return ToolRunResult.failed(
+                    tool_name="execute_multi_agent",
+                    error=failed[0].error if failed else "멀티 에이전트가 빈 결과를 반환했습니다.",
+                    raw_output=str(result),
+                    evidence=evidence,
+                )
+            # 하위 작업 상태만으로 최종 LLM 답변의 사실성까지 검증할 수는 없습니다.
+            return ToolRunResult.unverified(
+                tool_name="execute_multi_agent",
+                raw_output=str(result),
+                evidence=evidence,
+                artifacts=[Artifact("agent_task", task.id, {"status": task.status}) for task in new_tasks],
+            )
         except Exception as e:
-            return f"멀티 에이전트 실행 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="execute_multi_agent", error=f"멀티 에이전트 실행 오류: {e}")
 
-    def get_task_history(self) -> str:
+    def get_task_history(self):
         """멀티 에이전트 작업 히스토리 조회"""
         try:
             from core.multi_agent import get_multi_agent_orchestrator
             orchestrator = get_multi_agent_orchestrator()
             tasks = [asdict(task) for task in orchestrator.tasks]
-            return json.dumps(tasks, indent=2, ensure_ascii=False)
+            return ToolRunResult.successful(
+                tool_name="get_task_history",
+                raw_output=json.dumps(tasks, indent=2, ensure_ascii=False),
+                evidence=[Evidence("agent_task_history", f"메모리의 멀티 에이전트 작업 {len(tasks)}건을 조회했습니다.", {
+                    "count": len(tasks),
+                    "task_ids": [task["id"] for task in tasks],
+                })],
+                artifacts=[Artifact("agent_task", task["id"], {"status": task["status"]}) for task in tasks],
+            )
         except Exception as e:
-            return f"작업 히스토리 조회 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="get_task_history", error=f"작업 히스토리 조회 오류: {e}")
 
     def run_command(self, command: str):
         is_valid, error_msg, args = self.safety.validate_command(command)
@@ -919,45 +995,91 @@ class ToolExecutor:
         except Exception as e:
             return ToolRunResult.failed(tool_name="run_command", error=f"명령어 실행 오류: {e}")
 
-    def web_search(self, query: str, num_results: int = 5) -> str:
+    def web_search(self, query: str, num_results: int = 5):
         if DDGS is None:
-            return "오류: duckduckgo-search가 설치되지 않았습니다. requirements.txt를 확인하세요."
+            return ToolRunResult.failed(tool_name="web_search", error="DDGS 검색 라이브러리가 설치되지 않았습니다.")
 
         try:
             results = []
             with DDGS() as ddgs:
                 for r in ddgs.text(query, max_results=num_results):
-                    results.append(f"제목: {r.get('title', '')}")
-                    results.append(f"링크: {r.get('href', '')}")
-                    results.append(f"요약: {r.get('body', '')}")
-                    results.append("-" * 50)
-            return "\n".join(results)
+                    results.append({
+                        "title": str(r.get("title", "")),
+                        "url": str(r.get("href", "")),
+                        "snippet": str(r.get("body", "")),
+                    })
+            valid_sources = [item for item in results if item["url"].startswith(("http://", "https://"))]
+            if not valid_sources:
+                return ToolRunResult.failed(tool_name="web_search", error="검색 결과에서 유효한 출처 URL을 찾지 못했습니다.")
+            output = "\n".join(
+                f"제목: {item['title']}\n링크: {item['url']}\n요약: {item['snippet']}\n{'-' * 50}"
+                for item in valid_sources
+            )
+            return ToolRunResult.successful(
+                tool_name="web_search", raw_output=output,
+                evidence=[Evidence("web_sources", f"DDGS에서 유효한 출처 {len(valid_sources)}건을 조회했습니다.", {
+                    "query": query, "requested_results": num_results,
+                    "source_count": len(valid_sources),
+                    "urls": [item["url"] for item in valid_sources],
+                })],
+                artifacts=[Artifact("url", item["url"], {"title": item["title"]}) for item in valid_sources],
+            )
         except Exception as e:
-            return f"웹 검색 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="web_search", error=f"웹 검색 오류: {e}")
 
-    def set_profile(self, key: str, value: str) -> str:
+    def set_profile(self, key: str, value: str):
         try:
             self.user_profile.set(key, value)
-            return f"프로필이 저장되었습니다: {key} = {value}"
+            saved = self.user_profile.get(key)
+            if saved != value:
+                return ToolRunResult.failed(tool_name="set_profile", error="프로필 저장 후 재조회 값이 일치하지 않습니다.")
+            return ToolRunResult.successful(
+                tool_name="set_profile", raw_output=f"프로필이 저장되었습니다: {key} = {value}",
+                evidence=[Evidence("profile_database", "프로필 저장 후 값을 다시 조회했습니다.", {
+                    "key": key,
+                    "value_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+                })],
+                artifacts=[Artifact("profile_entry", key)],
+            )
         except Exception as e:
-            return f"프로필 저장 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="set_profile", error=f"프로필 저장 오류: {e}")
 
-    def get_profile(self, key: str = "") -> str:
+    def get_profile(self, key: str = ""):
         try:
             if key:
-                value = self.user_profile.get(key)
-                return f"{key}: {value}" if value else f"{key}가 프로필에 없습니다."
+                all_profile = self.user_profile.get_all()
+                if key not in all_profile:
+                    return ToolRunResult.failed(tool_name="get_profile", error=f"{key}가 프로필에 없습니다.")
+                value = all_profile[key]
+                output = f"{key}: {value}"
+                evidence_data = {"key": key, "found": True}
             else:
-                return self.user_profile.get_profile_summary()
+                all_profile = self.user_profile.get_all()
+                output = self.user_profile.get_profile_summary()
+                evidence_data = {"keys": sorted(all_profile), "count": len(all_profile)}
+            return ToolRunResult.successful(
+                tool_name="get_profile", raw_output=output,
+                evidence=[Evidence("profile_database", "사용자 프로필 DB를 조회했습니다.", evidence_data)],
+            )
         except Exception as e:
-            return f"프로필 조회 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="get_profile", error=f"프로필 조회 오류: {e}")
 
-    def set_preference(self, pref_key: str, pref_value: str) -> str:
+    def set_preference(self, pref_key: str, pref_value: str):
         try:
             self.user_profile.set_preference(pref_key, pref_value)
-            return f"환경설정이 저장되었습니다: {pref_key} = {pref_value}"
+            saved = self.user_profile.get_preference(pref_key)
+            if saved != pref_value:
+                return ToolRunResult.failed(tool_name="set_preference", error="환경설정 저장 후 재조회 값이 일치하지 않습니다.")
+            return ToolRunResult.successful(
+                tool_name="set_preference", raw_output=f"환경설정이 저장되었습니다: {pref_key} = {pref_value}",
+                evidence=[Evidence("preference_database", "환경설정 저장 후 값을 다시 조회했습니다.", {
+                    "key": pref_key,
+                    "value_sha256": hashlib.sha256(pref_value.encode("utf-8")).hexdigest(),
+                })],
+                artifacts=[Artifact("preference_entry", pref_key)],
+            )
         except Exception as e:
-            return f"환경설정 저장 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="set_preference", error=f"환경설정 저장 오류: {e}")
 
     def speak_text(self, text: str, audio_processor=None) -> str:
         print(f"[DEBUG] ToolExecutor.speak_text 호출됨: {text}")
@@ -1188,14 +1310,14 @@ class ToolExecutor:
                 except OSError:
                     pass
 
-    def listen(self, duration: int = 3) -> str:
+    def listen(self, duration: int = 3):
         if not WHISPER_AVAILABLE:
-            return "오류: openai-whisper, sounddevice, scipy, numpy가 설치되지 않았습니다. requirements.txt를 확인하세요."
+            return ToolRunResult.failed(tool_name="listen", error="음성 인식 의존성이 설치되지 않았습니다.")
 
         try:
             print(f"[STT] {duration}초 동안 말씀하세요...")
             if self.hardware_manager is None:
-                return "STT 오류: 하드웨어 관리자를 초기화하지 못했습니다."
+                return ToolRunResult.failed(tool_name="listen", error="하드웨어 관리자를 초기화하지 못했습니다.")
             device_info, sample_rate = self.hardware_manager._select_microphone()
             recording = sd.rec(
                 int(duration * sample_rate),
@@ -1210,9 +1332,24 @@ class ToolExecutor:
             text = result["text"].strip()
 
             if text:
-                return f"음성 인식 결과: {text}"
-            else:
-                return "음성이 인식되지 않았습니다."
+                return ToolRunResult.successful(
+                    tool_name="listen", raw_output=f"음성 인식 결과: {text}",
+                    evidence=[Evidence("speech_transcription", "입력 장치 녹음을 STT 모델로 변환했습니다.", {
+                        "duration_seconds": duration,
+                        "device_index": device_info["index"],
+                        "device_name": device_info["name"],
+                        "native_sample_rate": sample_rate,
+                        "transcript_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    })],
+                )
+            return ToolRunResult.failed(
+                tool_name="listen", error="음성이 인식되지 않았습니다.",
+                evidence=[Evidence("speech_transcription", "녹음은 완료됐지만 전사 결과가 비어 있습니다.", {
+                    "duration_seconds": duration,
+                    "device_index": device_info["index"],
+                    "native_sample_rate": sample_rate,
+                })],
+            )
         except FileNotFoundError as e:
             # FFmpeg가 설치되지 않았는지 확인
             ffmpeg_available = True
@@ -1223,10 +1360,10 @@ class ToolExecutor:
                 ffmpeg_available = False
 
             if not ffmpeg_available:
-                return "STT 오류: FFmpeg가 설치되지 않았습니다. Windows에서는 https://ffmpeg.org/download.html에서 다운로드한 뒤 PATH에 추가해주세요. (또는 'winget install ffmpeg'로 설치)"
-            return f"STT 오류: {str(e)}"
+                return ToolRunResult.failed(tool_name="listen", error="FFmpeg가 설치되지 않았거나 PATH에 없습니다.")
+            return ToolRunResult.failed(tool_name="listen", error=f"STT 오류: {e}")
         except Exception as e:
-            return f"STT 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="listen", error=f"STT 오류: {e}")
 
     def list_audio_input_devices(self):
         if self.hardware_manager is None:
@@ -1333,62 +1470,184 @@ class ToolExecutor:
             evidence=[Evidence("rag_catalog",f"RAG 문서 {len(documents)}개를 조회했습니다.",{"documents":documents,"count":len(documents)})],
         )
 
-    def add_schedule_job(self, description: str, schedule_type: str, schedule_value: str, prompt: str) -> str:
+    def add_schedule_job(self, description: str, schedule_type: str, schedule_value: str, prompt: str):
         if self.scheduler_manager is None:
-            return "오류: 스케줄러 기능을 사용하려면 schedule를 설치하세요."
-        return self.scheduler_manager.add_job(description, schedule_type, schedule_value, prompt)
+            return ToolRunResult.failed(tool_name="add_schedule_job", error="스케줄러 기능을 초기화하지 못했습니다.")
+        engine = self.scheduler_manager.engine
+        before_ids = {item["id"] for item in engine.get_job_records()}
+        raw = self.scheduler_manager.add_job(description, schedule_type, schedule_value, prompt)
+        created = [item for item in engine.get_job_records() if item["id"] not in before_ids]
+        if not created:
+            return ToolRunResult.failed(tool_name="add_schedule_job", error=str(raw), raw_output=str(raw))
+        record = created[0]
+        return ToolRunResult.successful(
+            tool_name="add_schedule_job", raw_output=str(raw),
+            evidence=[Evidence("scheduler_database", "호환 Scheduler API 등록 결과를 DB에서 재조회했습니다.", record)],
+            artifacts=[Artifact("automation_job", str(record["id"]))],
+        )
 
-    def list_schedule_jobs(self) -> str:
+    def list_schedule_jobs(self):
         if self.scheduler_manager is None:
-            return "오류: 스케줄러 기능을 사용하려면 schedule를 설치하세요."
-        return self.scheduler_manager.list_jobs()
+            return ToolRunResult.failed(tool_name="list_schedule_jobs", error="스케줄러 기능을 초기화하지 못했습니다.")
+        records = self.scheduler_manager.engine.get_job_records()
+        return ToolRunResult.successful(
+            tool_name="list_schedule_jobs", raw_output=self.scheduler_manager.list_jobs(),
+            evidence=[Evidence("scheduler_database", f"호환 Scheduler API로 작업 {len(records)}건을 조회했습니다.", {
+                "count": len(records), "job_ids": [item["id"] for item in records],
+            })],
+            artifacts=[Artifact("automation_job", str(item["id"])) for item in records],
+        )
 
-    def delete_schedule_job(self, job_id: int) -> str:
+    def delete_schedule_job(self, job_id: int):
         if self.scheduler_manager is None:
-            return "오류: 스케줄러 기능을 사용하려면 schedule를 설치하세요."
-        return self.scheduler_manager.delete_job(job_id)
+            return ToolRunResult.failed(tool_name="delete_schedule_job", error="스케줄러 기능을 초기화하지 못했습니다.")
+        engine = self.scheduler_manager.engine
+        if engine.get_job_record(job_id) is None:
+            return ToolRunResult.failed(tool_name="delete_schedule_job", error=f"작업 ID {job_id}를 찾을 수 없습니다.")
+        raw = self.scheduler_manager.delete_job(job_id)
+        if engine.get_job_record(job_id) is not None:
+            return ToolRunResult.failed(tool_name="delete_schedule_job", error="삭제 후에도 작업이 DB에 남아 있습니다.", raw_output=str(raw))
+        return ToolRunResult.successful(
+            tool_name="delete_schedule_job", raw_output=str(raw),
+            evidence=[Evidence("scheduler_database", "호환 Scheduler API 삭제 후 작업 부재를 확인했습니다.", {"job_id": job_id})],
+        )
 
-    def start_scheduler(self) -> str:
+    def start_scheduler(self):
         if self.scheduler_manager is None:
-            return "오류: 스케줄러 기능을 사용하려면 schedule를 설치하세요."
-        return self.scheduler_manager.start_scheduler()
+            return ToolRunResult.failed(tool_name="start_scheduler", error="스케줄러 기능을 초기화하지 못했습니다.")
+        raw = self.scheduler_manager.start_scheduler()
+        engine = self.scheduler_manager.engine
+        alive = bool(engine.scheduler_thread and engine.scheduler_thread.is_alive())
+        if not engine.is_running() or not alive:
+            return ToolRunResult.failed(tool_name="start_scheduler", error=str(raw), raw_output=str(raw))
+        return ToolRunResult.successful(
+            tool_name="start_scheduler", raw_output=str(raw),
+            evidence=[Evidence("scheduler_thread", "호환 Scheduler 엔진과 실행 스레드를 확인했습니다.", {
+                "running": True, "thread_alive": True,
+            })],
+        )
 
-    def stop_scheduler(self) -> str:
+    def stop_scheduler(self):
         if self.scheduler_manager is None:
-            return "오류: 스케줄러 기능을 사용하려면 schedule를 설치하세요."
-        return self.scheduler_manager.stop_scheduler()
+            return ToolRunResult.failed(tool_name="stop_scheduler", error="스케줄러 기능을 초기화하지 못했습니다.")
+        raw = self.scheduler_manager.stop_scheduler()
+        engine = self.scheduler_manager.engine
+        alive = bool(engine.scheduler_thread and engine.scheduler_thread.is_alive())
+        if engine.is_running() or alive:
+            return ToolRunResult.failed(tool_name="stop_scheduler", error="Scheduler가 아직 실행 중입니다.", raw_output=str(raw))
+        return ToolRunResult.successful(
+            tool_name="stop_scheduler", raw_output=str(raw),
+            evidence=[Evidence("scheduler_thread", "호환 Scheduler 엔진과 실행 스레드 중지를 확인했습니다.", {
+                "running": False, "thread_alive": False,
+            })],
+        )
 
-    def start_wakeword_detection(self) -> str:
+    def start_wakeword_detection(self):
         if self.hardware_manager is None:
-            return "오류: 하드웨어 기능을 사용하려면 sounddevice, whisper, librosa를 설치하세요."
-        return self.hardware_manager.start_wakeword_detection()
+            return ToolRunResult.failed(tool_name="start_wakeword_detection", error="하드웨어 기능을 초기화하지 못했습니다.")
+        raw = self.hardware_manager.start_wakeword_detection()
+        thread = getattr(self.hardware_manager, "wakeword_thread", None)
+        running = bool(self.hardware_manager.running)
+        alive = bool(thread and thread.is_alive())
+        if not running or not alive:
+            return ToolRunResult.failed(tool_name="start_wakeword_detection", error=str(raw), raw_output=str(raw))
+        return ToolRunResult.unverified(
+            tool_name="start_wakeword_detection", raw_output=str(raw),
+            evidence=[Evidence("detector_thread", "감지 스레드는 시작됐지만 장치 스트림 개방은 아직 확인되지 않았습니다.", {
+                "detector": "wakeword", "running": running, "thread_alive": alive,
+            })],
+        )
 
-    def stop_wakeword_detection(self) -> str:
+    def stop_wakeword_detection(self):
         if self.hardware_manager is None:
-            return "오류: 하드웨어 기능을 사용하려면 sounddevice, whisper, librosa를 설치하세요."
-        return self.hardware_manager.stop_wakeword_detection()
+            return ToolRunResult.failed(tool_name="stop_wakeword_detection", error="하드웨어 기능을 초기화하지 못했습니다.")
+        raw = self.hardware_manager.stop_wakeword_detection()
+        thread = getattr(self.hardware_manager, "wakeword_thread", None)
+        if self.hardware_manager.running or (thread and thread.is_alive()):
+            return ToolRunResult.failed(tool_name="stop_wakeword_detection", error="웨이크워드 감지 스레드가 아직 실행 중입니다.", raw_output=str(raw))
+        return ToolRunResult.successful(
+            tool_name="stop_wakeword_detection", raw_output=str(raw),
+            evidence=[Evidence("detector_thread", "웨이크워드 감지 상태와 스레드 중지를 확인했습니다.", {
+                "detector": "wakeword", "running": False, "thread_alive": False,
+            })],
+        )
 
-    def start_clap_detection(self) -> str:
+    def start_clap_detection(self):
         if self.hardware_manager is None:
-            return "오류: 하드웨어 기능을 사용하려면 sounddevice, whisper, librosa를 설치하세요."
-        return self.hardware_manager.start_clap_detection()
+            return ToolRunResult.failed(tool_name="start_clap_detection", error="하드웨어 기능을 초기화하지 못했습니다.")
+        raw = self.hardware_manager.start_clap_detection()
+        thread = getattr(self.hardware_manager, "clap_thread", None)
+        running = bool(self.hardware_manager.running)
+        alive = bool(thread and thread.is_alive())
+        if not running or not alive:
+            return ToolRunResult.failed(tool_name="start_clap_detection", error=str(raw), raw_output=str(raw))
+        return ToolRunResult.unverified(
+            tool_name="start_clap_detection", raw_output=str(raw),
+            evidence=[Evidence("detector_thread", "감지 스레드는 시작됐지만 장치 스트림 개방은 아직 확인되지 않았습니다.", {
+                "detector": "clap", "running": running, "thread_alive": alive,
+            })],
+        )
 
-    def stop_clap_detection(self) -> str:
+    def stop_clap_detection(self):
         if self.hardware_manager is None:
-            return "오류: 하드웨어 기능을 사용하려면 sounddevice, whisper, librosa를 설치하세요."
-        return self.hardware_manager.stop_clap_detection()
+            return ToolRunResult.failed(tool_name="stop_clap_detection", error="하드웨어 기능을 초기화하지 못했습니다.")
+        raw = self.hardware_manager.stop_clap_detection()
+        thread = getattr(self.hardware_manager, "clap_thread", None)
+        if self.hardware_manager.running or (thread and thread.is_alive()):
+            return ToolRunResult.failed(tool_name="stop_clap_detection", error="박수 감지 스레드가 아직 실행 중입니다.", raw_output=str(raw))
+        return ToolRunResult.successful(
+            tool_name="stop_clap_detection", raw_output=str(raw),
+            evidence=[Evidence("detector_thread", "박수 감지 상태와 스레드 중지를 확인했습니다.", {
+                "detector": "clap", "running": False, "thread_alive": False,
+            })],
+        )
 
-    def analyze_image(self, image_path: str, prompt: str = "이 이미지에 무엇이 있나요?") -> str:
+    def analyze_image(self, image_path: str, prompt: str = "이 이미지에 무엇이 있나요?"):
         if self.multimodal_manager is None:
-            return "오류: 멀티모달 기능을 사용하려면 Pillow, PyMuPDF를 설치하세요."
-        return self.multimodal_manager.analyze_image(image_path, prompt)
+            return ToolRunResult.failed(tool_name="analyze_image", error="멀티모달 기능을 초기화하지 못했습니다.")
+        source = Path(image_path)
+        if not source.is_file():
+            return ToolRunResult.failed(tool_name="analyze_image", error=f"이미지 파일을 찾을 수 없습니다: {image_path}")
+        raw = self.multimodal_manager.analyze_image(image_path, prompt)
+        if str(raw).startswith(("오류:", "이미지 분석 오류:")) or not str(raw).strip():
+            return ToolRunResult.failed(tool_name="analyze_image", error=str(raw), raw_output=str(raw))
+        return ToolRunResult.unverified(
+            tool_name="analyze_image", raw_output=str(raw),
+            evidence=[Evidence("vision_input", "분석에 사용한 이미지 파일의 크기와 해시를 확인했습니다. 모델 해석 자체는 미검증입니다.", {
+                "path": str(source.resolve()), "size": source.stat().st_size,
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            })],
+            artifacts=[Artifact("image", str(source.resolve()))],
+        )
 
-    def extract_text_from_pdf(self, pdf_path: str, page_num: Optional[int] = None) -> str:
+    def extract_text_from_pdf(self, pdf_path: str, page_num: Optional[int] = None):
         if self.multimodal_manager is None:
-            return "오류: 멀티모달 기능을 사용하려면 Pillow, PyMuPDF를 설치하세요."
-        return self.multimodal_manager.extract_text_from_pdf(pdf_path, page_num)
+            return ToolRunResult.failed(tool_name="extract_text_from_pdf", error="멀티모달 기능을 초기화하지 못했습니다.")
+        source = Path(pdf_path)
+        if not source.is_file():
+            return ToolRunResult.failed(tool_name="extract_text_from_pdf", error=f"PDF 파일을 찾을 수 없습니다: {pdf_path}")
+        raw = self.multimodal_manager.extract_text_from_pdf(pdf_path, page_num)
+        if str(raw).startswith(("오류:", "PDF 분석 오류:")):
+            return ToolRunResult.failed(tool_name="extract_text_from_pdf", error=str(raw), raw_output=str(raw))
+        try:
+            from core.multimodal import fitz
+            with fitz.open(pdf_path) as document:
+                total_pages = document.page_count
+                selected_pages = 1 if page_num is not None else total_pages
+            return ToolRunResult.successful(
+                tool_name="extract_text_from_pdf", raw_output=str(raw),
+                evidence=[Evidence("pdf_text_extraction", "PDF를 다시 열어 페이지 구조와 출력 해시를 확인했습니다.", {
+                    "path": str(source.resolve()), "total_pages": total_pages,
+                    "selected_pages": selected_pages, "page_num": page_num,
+                    "output_sha256": hashlib.sha256(str(raw).encode("utf-8")).hexdigest(),
+                })],
+                artifacts=[Artifact("pdf", str(source.resolve()))],
+            )
+        except Exception as e:
+            return ToolRunResult.failed(tool_name="extract_text_from_pdf", error=f"PDF 추출 검증 오류: {e}", raw_output=str(raw))
 
-    def create_excel_file(self, file_path: str, data: Optional[list] = None) -> str:
+    def create_excel_file(self, file_path: str, data: Optional[list] = None):
         """
         엑셀 파일을 생성합니다.
         data: 2차원 리스트 (예: [["이름", "나이"], ["철수", 30], ["영희", 25]])
@@ -1398,7 +1657,7 @@ class ToolExecutor:
             try:
                 import openpyxl
             except ImportError:
-                return "오류: openpyxl 라이브러리가 설치되지 않았습니다. 'pip install openpyxl'로 설치하세요."
+                return ToolRunResult.failed(tool_name="create_excel_file", error="openpyxl 라이브러리가 설치되지 않았습니다.")
 
             # 새 워크북 생성
             wb = openpyxl.Workbook()
@@ -1412,12 +1671,25 @@ class ToolExecutor:
 
             # 파일 저장
             wb.save(file_path)
-            return f"사장님, 엑셀 파일이 성공적으로 생성되었습니다: {file_path}"
+            reopened = openpyxl.load_workbook(file_path, data_only=False)
+            rows = list(reopened["Sheet1"].iter_rows(values_only=True))
+            expected = [tuple(row) for row in (data or [])]
+            if rows != expected:
+                return ToolRunResult.failed(tool_name="create_excel_file", error="저장 후 Excel 데이터 검증에 실패했습니다.")
+            target = Path(file_path).resolve()
+            return ToolRunResult.successful(
+                tool_name="create_excel_file", raw_output=f"엑셀 파일이 생성되었습니다: {target}",
+                evidence=[Evidence("excel_workbook", "저장한 통합문서를 다시 열어 시트와 셀 값을 확인했습니다.", {
+                    "path": str(target), "sheet": "Sheet1", "row_count": len(rows),
+                    "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                })],
+                artifacts=[Artifact("spreadsheet", str(target))],
+            )
 
         except Exception as e:
-            return f"사장님, 엑셀 파일 생성 중 오류가 발생했습니다: {str(e)}"
+            return ToolRunResult.failed(tool_name="create_excel_file", error=f"엑셀 파일 생성 오류: {e}")
 
-    def write_excel_cell(self, file_path: str, sheet_name: str, cell: str, value: str) -> str:
+    def write_excel_cell(self, file_path: str, sheet_name: str, cell: str, value: str):
         """
         엑셀 파일의 특정 셀에 값을 씁니다.
         """
@@ -1425,10 +1697,10 @@ class ToolExecutor:
             try:
                 import openpyxl
             except ImportError:
-                return "오류: openpyxl 라이브러리가 설치되지 않았습니다."
+                return ToolRunResult.failed(tool_name="write_excel_cell", error="openpyxl 라이브러리가 설치되지 않았습니다.")
 
             if not os.path.exists(file_path):
-                return f"사장님, 파일을 찾을 수 없습니다: {file_path}"
+                return ToolRunResult.failed(tool_name="write_excel_cell", error=f"파일을 찾을 수 없습니다: {file_path}")
 
             wb = openpyxl.load_workbook(file_path)
 
@@ -1439,10 +1711,23 @@ class ToolExecutor:
 
             ws[cell] = value
             wb.save(file_path)
-            return f"사장님, 셀 {sheet_name}!{cell}에 값이 성공적으로 입력되었습니다."
+            reopened = openpyxl.load_workbook(file_path, data_only=False)
+            actual = reopened[sheet_name][cell].value
+            if actual != value:
+                return ToolRunResult.failed(tool_name="write_excel_cell", error="저장 후 셀 값 검증에 실패했습니다.")
+            target = Path(file_path).resolve()
+            return ToolRunResult.successful(
+                tool_name="write_excel_cell", raw_output=f"셀 {sheet_name}!{cell}에 값을 입력했습니다.",
+                evidence=[Evidence("excel_cell", "통합문서를 다시 열어 요청한 셀 값을 확인했습니다.", {
+                    "path": str(target), "sheet": sheet_name, "cell": cell,
+                    "value_sha256": hashlib.sha256(str(actual).encode("utf-8")).hexdigest(),
+                    "file_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                })],
+                artifacts=[Artifact("spreadsheet", str(target))],
+            )
 
         except Exception as e:
-            return f"사장님, 셀 쓰기 중 오류가 발생했습니다: {str(e)}"
+            return ToolRunResult.failed(tool_name="write_excel_cell", error=f"셀 쓰기 오류: {e}")
 
 
 
