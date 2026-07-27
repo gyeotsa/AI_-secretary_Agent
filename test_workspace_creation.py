@@ -69,7 +69,8 @@ def test_write_intent_uses_recent_file_and_saves_generated_content(tmp_path, mon
 
     class FakeCodingModel:
         def chat(self, messages):
-            assert "hello world" in messages[0]["content"]
+            assert messages[0]["role"] == "system"
+            assert "hello world" in messages[1]["content"]
             return '```python\nprint("hello world")\n```'
 
     monkeypatch.setattr("core.llm.get_llm_client", lambda role: FakeCodingModel())
@@ -91,3 +92,48 @@ def test_create_file_never_overwrites_existing_file(tmp_path):
     )
     assert result.startswith("오류:")
     assert target.read_text(encoding="utf-8") == "important"
+
+
+def test_write_follow_up_keeps_original_instruction(tmp_path):
+    workspace = get_workspace_manager()
+    workspace.set_workspace(str(tmp_path))
+    registry, router = _router()
+
+    first = router.resolve('"안녕"을 출력하는 소스코드를 작성해줘.')
+    assert first.question
+    assert "안녕" in first.slots["instruction"]
+    follow_up = router.resolve("test.py를 수정할거야", first.intent_name, first.slots)
+    assert follow_up.ready
+    assert follow_up.slots["filename"] == "test.py"
+    assert "안녕" in follow_up.slots["instruction"]
+
+
+def test_filename_without_extension_resolves_unique_workspace_file(tmp_path):
+    workspace = get_workspace_manager()
+    workspace.set_workspace(str(tmp_path))
+    (tmp_path / "test.py").write_text("", encoding="utf-8")
+    _registry, router = _router()
+
+    resolution = router.resolve('test파일에 "안녕"을 출력하는 코드를 작성해줘.')
+    assert resolution.ready
+    assert resolution.slots["filename"] == "test.py"
+
+
+def test_refusal_is_not_written_over_existing_source(tmp_path, monkeypatch):
+    workspace = get_workspace_manager()
+    workspace.set_workspace(str(tmp_path))
+    target = tmp_path / "test.py"
+    target.write_text("original\n", encoding="utf-8")
+    registry, _router_instance = _router()
+
+    class RefusingModel:
+        def chat(self, messages):
+            return "죄송합니다, 직접 파일을 수정하거나 코드를 작성하는 기능은 없습니다."
+
+    monkeypatch.setattr("core.llm.get_llm_client", lambda role: RefusingModel())
+    result = registry.execute_tool(
+        "filesystem_write_file",
+        {"filename": "test.py", "instruction": '"안녕"을 출력해줘'},
+    )
+    assert result.startswith("오류:")
+    assert target.read_text(encoding="utf-8") == "original\n"

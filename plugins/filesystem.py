@@ -1,6 +1,7 @@
 """Workspace-scoped filesystem tools and declarative creation intents."""
 import json
 import re
+import ast
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -121,12 +122,25 @@ class FilesystemPlugin(BasePlugin):
             )
             if match:
                 slots["filename"] = match.group("filename")
-            elif any(reference in normalized for reference in ("해당 파일", "그 파일")):
+            else:
+                stem_match = re.search(
+                    r"(?P<stem>[A-Za-z0-9가-힣_.-]+)\s*파일", normalized
+                )
+                if stem_match:
+                    matches = [
+                        path for path in self._workspace_root().rglob("*")
+                        if path.is_file() and path.stem.casefold()
+                        == stem_match.group("stem").casefold()
+                    ]
+                    if len(matches) == 1:
+                        slots["filename"] = str(matches[0].relative_to(self._workspace_root()))
+            if (not slots.get("filename")
+                    and any(reference in normalized for reference in ("해당 파일", "그 파일"))):
                 recent = self._most_recent_file()
                 if recent:
-                    slots["filename"] = recent.name
+                    slots["filename"] = str(recent.relative_to(self._workspace_root()))
             instruction = normalized
-            if instruction and not re.fullmatch(
+            if not slots.get("instruction") and instruction and not re.fullmatch(
                 r"[A-Za-z0-9가-힣_.-]+\.[A-Za-z0-9]{1,10}", instruction
             ):
                 slots["instruction"] = instruction
@@ -249,9 +263,30 @@ class FilesystemPlugin(BasePlugin):
             "요청을 반영한 파일의 전체 내용을 출력하세요. 설명이나 Markdown 코드 펜스 없이 "
             "저장할 원문만 반환하세요."
         )
-        result = get_llm_client("coding").chat([{"role": "user", "content": prompt}]).strip()
+        result = get_llm_client("coding").chat([
+            {
+                "role": "system",
+                "content": (
+                    "당신은 파일 내용을 생성하는 코딩 엔진입니다. 파일을 직접 수정할 수 없다는 "
+                    "설명이나 사과를 하지 마세요. 반드시 사용자 요청이 반영된 완성 파일 원문만 "
+                    "출력하세요."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]).strip()
         result = re.sub(r"^```[A-Za-z0-9_+-]*\s*", "", result)
         result = re.sub(r"\s*```$", "", result).strip()
         if not result or result.casefold().startswith(("오류:", "error:")):
             raise RuntimeError(result or "코드 모델이 빈 내용을 반환했습니다.")
+        refusal_terms = (
+            "직접 파일을 수정", "코드를 작성하는 기능은 없", "도와드릴 수 없습니다",
+            "죄송합니다", "i can't", "i cannot", "unable to",
+        )
+        if any(term in result.casefold() for term in refusal_terms):
+            raise RuntimeError("코드 모델이 파일 내용 대신 거절 문장을 반환했습니다.")
+        if target.suffix.casefold() == ".py":
+            try:
+                ast.parse(result)
+            except SyntaxError as exc:
+                raise RuntimeError(f"코드 모델이 유효하지 않은 Python 코드를 반환했습니다: {exc}")
         return result + "\n"
