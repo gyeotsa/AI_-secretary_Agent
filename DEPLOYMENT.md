@@ -1,11 +1,17 @@
 # JARVIS Windows 오프라인 배포
 
+> 현재 `release/installer`는 2026-07-26 당시 소스 상태의 오프라인 빌드입니다.
+> 이후 역할별 모델, GPT-SoVITS, 실제 웹 검색, 대화·파일·알람 개선이 추가되었으므로
+> 최신 소스를 배포하려면 설치본을 다시 빌드해야 합니다. 향후 기본 배포 방식은
+> 경량 Bootstrap 설치 후 첫 실행에서 선택한 모델을 체크섬 검증과 함께 내려받는
+> 구조로 전환할 예정입니다.
+
 `packaging/build_release.ps1`은 다음 항목을 완전한 오프라인 설치 묶음으로 조립한다.
 
 - PyInstaller로 고정한 Python 3.12 런타임과 프로젝트 라이브러리
 - BGE-M3 RAG 임베딩 모델
 - faster-whisper large-v3와 OpenAI Whisper medium fallback 모델
-- Ollama 실행 파일과 `qwen2.5-coder:7b-instruct` 모델
+- Ollama 실행 파일과 빌드 시점에 `packaging` 설정으로 선택된 로컬 모델
 - Playwright 브라우저 런타임
 - JARVIS 앱/작업 표시줄/바로가기 아이콘
 

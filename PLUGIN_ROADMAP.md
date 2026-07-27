@@ -17,13 +17,18 @@
 
 ## Sprint 2 — 웹·검색·미디어
 
-- 기존 Playwright 세션·다운로드·업로드·취소 고도화
-- DuckDuckGo 무료 검색, 선택적 Tavily 공급자
+- DDGS 무료 웹 검색·출처 URL 검증·후속 검색 문맥 — 1차 연결됨
+- Playwright 공개 페이지 본문·스크린샷·SSRF 방어 — 1차 연결됨
+- 검색 결과 페이지 실제 방문·게시일 확인·주장별 교차 인용 — 개선 필요
+- Playwright 세션·다운로드·업로드·취소 고도화
+- 선택적 Tavily 공급자
 - YouTube 자막 수집 및 요약
 - 브라우저 작업의 로그인 세션과 전송/구매 승인 분리
 
 ## Sprint 3 — 개발 자동화
 
+- Workspace 내 프로젝트·파일 생성, 단일 파일 코드 작성·문법·해시 검증 — 초기 연결
+- 저장소 분석·최소 patch·lint/test·diff·rollback Coding Agent — 최우선 개발
 - VS Code/PyCharm/Visual Studio CLI·진단 어댑터
 - GitHub CLI 기반 Issue·PR·CI 연결
 - 제한된 작업 디렉터리와 명령 allowlist 기반 코드 실행
@@ -54,3 +59,5 @@
 - Windows 앱은 제한된 자동 검색과 머신 로컬 카탈로그를 사용하며 WinError 740은 `runas` UAC 요청으로 전환한다. 경로 수동 등록은 자동 탐색이 실패하거나 동일 앱 후보가 여러 개일 때만 필요하다.
 - Windows 앱 검색 소스에는 사용자별 LOCALAPPDATA 설치, 사용자/공용 시작 메뉴 바로가기와 최종 C 드라이브 전체 검색 fallback도 포함한다.
 - 사용자 앱 별칭은 자연어로 추가·목록 조회·삭제할 수 있으며 머신 로컬 설정으로 기본 별칭과 분리해 보존한다.
+- Tool 등록만 된 상태, 실제 실행 가능 상태, 인증 완료 상태, E2E 검증 완료 상태를 구분한다.
+- 모든 실행 결과는 향후 공통 `ToolRunResult`의 Artifact와 Evidence로 보고하며 문자열의 성공 문구만으로 완료하지 않는다.

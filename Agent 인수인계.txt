@@ -7,6 +7,16 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-07-27 Codex급 Agent Runtime 개선 문서화 및 P0 착수
+
+- 초기 README가 2026-06 CLI·Anthropic 중심 상태에 머물러 있어 현재 PyQt6·Ollama·Plugin·RAG·STT/TTS·웹 검색·문서·Windows·알람 구현과 실제 미완료 범위를 기준으로 전면 갱신했다.
+- `AGENT_RUNTIME_ROADMAP.md`를 새 단일 개선 로드맵으로 추가했다. 진실한 실행, 통합 Task State, 의미 기반 Router, Coding Agent, Workspace Intelligence, Orchestrator, Plugin 단일화, RAG·웹·Office·Cloud·OS·Voice·Automation·보안·관측성·배포까지 P0~P12와 수락 기준을 기록했다.
+- `Javis 로드맵.txt`와 `Level2 리팩토링 10단계.txt`의 기존 완료 표기는 당시 구성 요소 구현 기록이며 제품 수준 E2E 완료가 아니라는 상태 정정 안내를 추가했다.
+- `PROJECT_REVIEW.md`, `PLUGIN_ROADMAP.md`, `MODEL_ROUTING.md`, `DEPLOYMENT.md`를 2026-07-27 실제 구현·기술 부채·배포본 시점에 맞게 갱신했다.
+- P0 첫 구현으로 `core/tool_result.py`에 `ToolRunStatus`, `ToolRunResult`, `Evidence`, `Artifact` 타입을 추가했다. 구조화 Plugin 결과에서 파일·URL Artifact를 추출하며 검증 결과와 실행 시간을 함께 보존한다.
+- Executor의 선언형 Intent 실행과 자율 Tool 실행 검증 경로가 bool만 받지 않고 `ToolRunResult.succeeded`를 기준으로 상태를 판정한다. `ExecutionOutcome`도 실제 Tool 결과 계약을 선택적으로 전달한다.
+- 이번 연결은 하위 호환 1차 단계다. 개별 Tool은 아직 문자열을 반환하며, 검증기 없는 Tool의 generic 성공 판정을 `unverified`로 바꾸는 후속 P0 작업이 남아 있다.
+
 ## 2026-07-27 웹 검색 답변 길이와 출처 표시 간소화
 
 - 검색 요약 LLM이 URL을 답변 본문에 직접 복사하지 않으면 기존 안전장치가 요약을 폐기하고 검색 결과 5건의 제목·URL·스니펫 전체를 사용자와 TTS에 노출했다. 단순히 제품명을 물은 질문에 지나치게 긴 답변이 나온 직접 원인이다.

@@ -1,5 +1,40 @@
 # Level 2 전수 검토 결과 (2026-07-22)
 
+## 2026-07-27 재평가
+
+실제 GUI 대화를 반복 검증한 결과, “Level 2 완료”는 구성 요소 존재 기준으로는
+맞지만 제품 수준 Agent Runtime 완료를 뜻하지 않습니다. 다음 문제가 실제로
+재현되고 일부는 이번 주기에 보완됐습니다.
+
+- Tool을 호출하지 않은 LLM이 파일·프로젝트·알람·검색 작업을 완료했다고 주장
+- 대기 작업의 대상·지시 Slot이 후속 발화에서 유실되거나 오래된 작업에 고착
+- 최신 정보 질문이 웹 검색 없이 로컬 모델 기억으로 답변
+- 파일 생성과 내용 수정을 같은 Intent로 처리해 기존 파일을 빈 내용으로 덮어쓸 위험
+- Workspace 선택이 자동 복원·Indexer·권한 범위와 완전히 연결되지 않음
+- Tool별 Verifier가 없는 경우 문자열 오류 탐지만으로 성공 판정
+- Coding 기능이 저장소 단위 patch·lint·test·diff 루프가 아닌 단일 파일 생성 중심
+
+최근 보완:
+
+- 프로젝트·파일 생성과 코드 수정 Intent 분리, 실제 파일·해시·Python 문법 검증
+- 상대 시간 알람을 실제 Scheduler와 UI/TTS callback에 연결
+- 실시간 날짜·시간·Open-Meteo 날씨 조회
+- DDGS 실제 웹 검색, 출처 URL 검증, 공식 출처 우선순위와 간결한 답변
+- 두 발화 이상으로 나뉜 대상·지시 Slot 누적
+- 역할별 conversation/reasoning/code/vision 모델 라우팅
+
+현재 최우선 기술 부채는 문자열 기반 Tool 결과를 타입 기반 결과·증거 계약으로
+교체하는 일입니다. 전체 개선 순서와 수락 기준은
+[`AGENT_RUNTIME_ROADMAP.md`](AGENT_RUNTIME_ROADMAP.md)를 따릅니다.
+
+첫 전환 작업으로 `core/tool_result.py`에 상태·검증 증거·Artifact·소요 시간을 담는
+공통 계약을 추가했고, Executor의 Plugin Intent 실행과 자율 Tool 검증 경로가
+`ToolRunResult.succeeded`를 기준으로 완료 여부를 판단하도록 연결했습니다. 다만
+개별 Tool 구현은 아직 문자열을 반환하므로 P0는 진행 중입니다.
+
+현재 기본 자동 회귀 테스트 기준선은 `140 passed, 4 deselected`입니다. 이는
+네트워크·OAuth·실제 장치·Office COM·장시간 자동화를 모두 보증하는 수치는 아닙니다.
+
 ## 판정
 
 기존 문서의 “Level 2 완료” 표기는 실제 동작 검증보다 앞서 있었습니다. 이번 검토에서 1–7단계의 핵심 연결 오류를 수정했고 8단계 플러그인과 Chromium 종단 검증, 9단계 RAG, 10단계 역할 기반 하이브리드 LLM 라우팅까지 구현했습니다. 실제 Anthropic 성공 경로 및 GUI·하드웨어 연동은 별도 실환경 검증이 남아 있습니다.
@@ -29,6 +64,9 @@
 
 ## 남은 우선순위
 
-1. 실제 Anthropic API 키로 Reasoner 성공 경로의 품질·비용·지연시간 비교.
-2. 실제 Ollama, GUI, 마이크·카메라·TTS 종단 검증.
-3. mail/calendar는 OAuth 토큰 저장·권한·계정 선택 정책을 먼저 확정한 뒤 확장.
+1. 타입 기반 ToolRunResult와 검증 증거 계약.
+2. Conversation/Pending/Intent/Artifact를 통합한 Task State.
+3. 저장소 단위 Coding Agent와 patch→test→diff 루프.
+4. Workspace 자동 복원·증분 Project Indexer.
+5. 실제 Ollama, GUI, 마이크·카메라·TTS·Scheduler 장시간 종단 검증.
+6. mail/calendar OAuth 토큰 저장·권한·계정 선택 정책.

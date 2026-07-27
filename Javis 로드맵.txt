@@ -2,6 +2,24 @@
 
 > Jarvis가 내 PC를 이해하고, 내 일을 대신하는 개인 AI OS로 만들기 위한 단계별 로드맵
 
+> 2026-07-27 상태 정정: 아래 12 STEP의 `완료`는 당시 파일·클래스 구현 여부를
+> 기록한 역사적 표기입니다. 최근 실제 사용 검토에서 Planner/Executor/Reflection/
+> Multi-Agent/Project Indexer/Observer가 존재하더라도 Codex 수준의 폐쇄 실행 루프와
+> 장시간 E2E가 완성된 것은 아님을 확인했습니다. 현행 우선순위와 수락 기준은
+> `AGENT_RUNTIME_ROADMAP.md`를 단일 진실 공급원으로 사용합니다.
+
+## 2026-07-27 현행 우선순위
+
+1. 모든 Tool 결과를 타입과 증거로 표현하고 허위 완료를 구조적으로 차단
+2. 대화·pending request·Intent Slot·Artifact를 하나의 Task State로 통합
+3. 키워드 중심 라우터를 의미 기반 Capability Router로 발전
+4. 저장소 분석→patch→lint/test→diff 검토를 수행하는 Coding Agent 구축
+5. Workspace 자동 복원·증분 인덱싱·프로젝트별 Memory/RAG 연결
+6. Planner·Executor·Verifier·Recovery를 분리한 재계획 가능 Orchestrator 구축
+
+완료 판정은 코드 존재가 아니라 자동 회귀 테스트와 실제 종단 실행을 모두 통과한
+경우에만 사용합니다.
+
 ---
 
 ## 최종 아키텍처
