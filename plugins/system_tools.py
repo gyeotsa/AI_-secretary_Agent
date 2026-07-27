@@ -3,7 +3,7 @@ System Tools Plugin for Jarvis
 - get_time: 현재 시간 가져오기
 - get_date: 현재 날짜 가져오기
 """
-from core.plugin import BasePlugin, ToolSchema
+from core.plugin import BasePlugin, ToolSchema, IntentSchema
 from datetime import datetime
 
 class SystemToolsPlugin(BasePlugin):
@@ -43,12 +43,26 @@ class SystemToolsPlugin(BasePlugin):
                 required_permissions=[]
             )
         ]
+
+    def get_intents(self) -> list[IntentSchema]:
+        return [
+            IntentSchema(
+                "system.current_time", "현재 로컬 시각 조회", "get_time",
+                ["현재 시각", "현재 시간", "지금 몇 시", "몇 시야", "몇시야"],
+                [], execution_hints=["시간", "시각", "몇 시", "몇시"],
+            ),
+            IntentSchema(
+                "system.current_date", "현재 로컬 날짜 조회", "get_date",
+                ["오늘 날짜", "현재 날짜", "오늘 며칠", "몇 일이야", "몇일이야"],
+                [], execution_hints=["날짜", "며칠", "몇 일", "몇일"],
+            ),
+        ]
     
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         if tool_name == "get_time":
-            return datetime.now().strftime("%H:%M:%S")
+            return datetime.now().astimezone().isoformat(timespec="seconds")
         elif tool_name == "get_date":
-            return datetime.now().strftime("%Y-%m-%d")
+            return datetime.now().astimezone().date().isoformat()
         elif tool_name == "list_plugins":
             from core.plugin import get_plugin_registry
             registry = get_plugin_registry()
@@ -57,3 +71,12 @@ class SystemToolsPlugin(BasePlugin):
                 for plugin in registry.plugins.values() if plugin.enabled
             )
         return f"오류: 알 수 없는 툴 '{tool_name}'"
+
+    def present_result(self, tool_name: str, result: str) -> str:
+        if tool_name == "get_time":
+            value = datetime.fromisoformat(result)
+            return f"현재 시간은 {value.strftime('%H:%M:%S')}입니다, 보스."
+        if tool_name == "get_date":
+            value = datetime.fromisoformat(result)
+            return f"오늘은 {value.year}년 {value.month}월 {value.day}일입니다, 보스."
+        return result

@@ -80,6 +80,10 @@ class BasePlugin(ABC):
         """플러그인 도메인에 맞게 새 발화의 slot을 누적한다."""
         return dict(current_slots)
 
+    def present_result(self, tool_name: str, result: str) -> str:
+        """검증된 원문 결과를 사용자용 문장으로 변환한다."""
+        return result
+
 class PluginRegistry:
     """플러그인 레지스트리"""
     
@@ -138,6 +142,12 @@ class PluginRegistry:
                     # 권한은 ToolExecutor가 내장/플러그인 도구 모두에 대해 한 번만 검사합니다.
                     return plugin.execute_tool(tool_name, tool_input)
         return f"오류: 툴 '{tool_name}'을 찾을 수 없습니다"
+
+    def present_result(self, tool_name: str, result: str) -> str:
+        for plugin in self.plugins.values():
+            if plugin.enabled and any(tool.name == tool_name for tool in plugin.get_tools()):
+                return plugin.present_result(tool_name, result)
+        return result
     
     def load_plugins_from_directory(self, directory: Optional[str] = None):
         """지정된 디렉토리에서 플러그인 로드"""

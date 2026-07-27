@@ -15,6 +15,7 @@ from core.workspace import get_workspace_manager
 from core.plugin import get_plugin_registry
 from core.tts_settings import get_tts_settings_manager
 from core.custom_tts import GPTSoVITSClient, load_custom_voice_profiles, split_tts_text
+from core.tts_normalizer import normalize_for_tts
 
 try:
     from duckduckgo_search import DDGS
@@ -674,6 +675,8 @@ class ToolExecutor:
             return self._speak_text_locked(text, audio_processor)
 
     def _speak_text_locked(self, text: str, audio_processor=None) -> str:
+        text = normalize_for_tts(text)
+        print(f"[TTS] 발음 정규화: {text}")
         if self.tts_settings.selected_custom_voice:
             custom_result = self._speak_with_custom_tts(text, audio_processor)
             # 사용자가 명시적으로 고른 커스텀 음성을 다른 사람의 목소리로

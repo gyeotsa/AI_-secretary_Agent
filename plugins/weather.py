@@ -1,9 +1,10 @@
 """Open-Meteo 기반 실제 현재 날씨 조회 플러그인."""
 from typing import Any, Dict, List
 import json
+import re
 import requests
 
-from core.plugin import BasePlugin, ToolSchema
+from core.plugin import BasePlugin, ToolSchema, IntentSchema, SlotSchema
 
 
 class WeatherPlugin(BasePlugin):
@@ -23,6 +24,33 @@ class WeatherPlugin(BasePlugin):
                 "location": {"type": "string", "description": "시·구·동을 포함한 장소 이름"},
             }, "required": ["location"],
         }, [])]
+
+    def get_intents(self) -> List[IntentSchema]:
+        return [IntentSchema(
+            "weather.current", "실시간 현재 날씨 조회", "get_weather",
+            ["날씨", "기온", "온도", "습도", "비 와", "비가 와"],
+            [SlotSchema("location", "조회할 장소", "어느 지역의 날씨를 확인할까요, 보스?")],
+            execution_hints=["날씨", "기온", "온도", "습도", "비"],
+            follow_up_hints=["거기는", "그곳은", "지금은", "오늘은"],
+        )]
+
+    def extract_slots(self, intent_name: str, text: str,
+                      current_slots: Dict[str, Any]) -> Dict[str, Any]:
+        slots = dict(current_slots)
+        if intent_name != "weather.current":
+            return slots
+        candidate = re.sub(
+            r"(오늘|지금|현재|실시간|날씨|기온|온도|습도|비가?|오는지|어때|어떻게|"
+            r"알려\s*줘|알려줘|말해\s*줘|말해줘|확인해\s*줘|확인해줘|몇\s*도|야|요)",
+            " ",
+            text,
+            flags=re.IGNORECASE,
+        )
+        candidate = re.sub(r"(?<!\S)(?:은|는|이|가|에서|의|와|과)(?!\S)", " ", candidate)
+        candidate = re.sub(r"\s+", " ", candidate).strip(" ?!.,")
+        if candidate and candidate not in {"여기", "이곳", "우리 동네"}:
+            slots["location"] = candidate
+        return slots
 
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
         if tool_name != "get_weather":
@@ -71,3 +99,30 @@ class WeatherPlugin(BasePlugin):
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:
             return f"오류: 날씨 조회 실패: {exc}"
+
+    def present_result(self, tool_name: str, result: str) -> str:
+        if tool_name != "get_weather" or result.startswith("오류:"):
+            return result
+        data = json.loads(result)
+        weather_labels = {
+            0: "맑음", 1: "대체로 맑음", 2: "부분적으로 흐림", 3: "흐림",
+            45: "안개", 48: "서리 안개", 51: "약한 이슬비", 53: "이슬비",
+            55: "강한 이슬비", 61: "약한 비", 63: "비", 65: "강한 비",
+            71: "약한 눈", 73: "눈", 75: "강한 눈", 80: "약한 소나기",
+            81: "소나기", 82: "강한 소나기", 95: "뇌우",
+        }
+        condition = weather_labels.get(data.get("weather_code"), "관측 정보 확인")
+        observed_at = str(data.get("observed_at") or "")
+        if "T" in observed_at:
+            observed_at = observed_at.rsplit("T", 1)[-1]
+        precision = (
+            " 정확한 동 단위 관측소 값이 아닌 도시 기준 근삿값입니다."
+            if data.get("location_precision") == "city" else ""
+        )
+        return (
+            f"{data.get('requested_location')}의 현재 날씨는 {condition}, "
+            f"기온 {data.get('temperature_c')}도, 체감 {data.get('apparent_temperature_c')}도, "
+            f"습도 {data.get('humidity_percent')}퍼센트입니다. "
+            f"오늘 최저 {data.get('today_min_c')}도, 최고 {data.get('today_max_c')}도이며 "
+            f"관측 시각은 {observed_at}입니다, 보스.{precision}"
+        )

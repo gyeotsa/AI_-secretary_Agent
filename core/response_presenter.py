@@ -13,6 +13,8 @@ _PROGRAM_LAUNCH_RESULT = re.compile(
     r"\s*.+?(?:\s*\(PID:\s*\d+\))?\s*$",
     re.IGNORECASE,
 )
+_CJK_OR_KANA = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_NON_KOREAN_REQUEST_TERMS = ("중국어", "일본어", "한자", "번역", "원문")
 
 
 def requests_technical_details(user_request: str) -> bool:
@@ -26,9 +28,19 @@ def present_response(response_text: str, user_request: str = "") -> str:
     if not text or requests_technical_details(user_request):
         return text
 
+    allow_cjk = any(term in (user_request or "").casefold() for term in _NON_KOREAN_REQUEST_TERMS)
     lines = []
     for line in text.splitlines():
         stripped = line.strip()
+        if not allow_cjk and _CJK_OR_KANA.search(stripped):
+            stripped = _CJK_OR_KANA.split(stripped, maxsplit=1)[0].rstrip(" :：,，")
+            completed_sentence = max(
+                stripped.rfind("."), stripped.rfind("!"), stripped.rfind("?")
+            )
+            if completed_sentence >= 0:
+                stripped = stripped[:completed_sentence + 1]
+            if not stripped:
+                continue
         if _PROGRAM_LAUNCH_RESULT.fullmatch(stripped):
             lines.append("프로그램을 실행했습니다, 보스.")
             continue

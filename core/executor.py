@@ -724,7 +724,10 @@ class Executor:
         result = self.execute_tool(resolution.tool_name, resolution.slots)
         verified = self.verify_execution(task, resolution.tool_name, resolution.slots, result)
         status = "completed" if verified else "failed"
-        response = result if verified else f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
+        response = (
+            self.intent_router.registry.present_result(resolution.tool_name, result)
+            if verified else f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
+        )
         self.dialogue_state.update_task(task_id, status=status, result=response)
         self.dialogue_state.delete_intent_state(task_id)
         if verified:
