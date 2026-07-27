@@ -276,22 +276,18 @@ class AutomationEngine:
     def list_jobs(self) -> str:
         """작업 목록 보기"""
         try:
-            conn = sqlite3.connect(self.scheduler_db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, description, schedule_type, schedule_value, enabled, last_run FROM jobs ORDER BY id DESC")
-            rows = cursor.fetchall()
-            conn.close()
+            rows = self.get_job_records()
             
             if not rows:
                 return "등록된 자동화 작업이 없습니다."
                 
             result = ["📋 자동화 작업 목록:"]
             for row in rows:
-                status = "✅ 활성" if row[4] else "❌ 비활성"
-                last_run = row[5] or "아직 실행되지 않음"
-                result.append(f"\nID: {row[0]}")
-                result.append(f"설명: {row[1]}")
-                result.append(f"스케줄: {row[2]} {row[3]}")
+                status = "✅ 활성" if row["enabled"] else "❌ 비활성"
+                last_run = row["last_run"] or "아직 실행되지 않음"
+                result.append(f"\nID: {row['id']}")
+                result.append(f"설명: {row['description']}")
+                result.append(f"스케줄: {row['schedule_type']} {row['schedule_value']}")
                 result.append(f"상태: {status}")
                 result.append(f"마지막 실행: {last_run}")
                 result.append("-" * 40)
@@ -300,42 +296,65 @@ class AutomationEngine:
             
         except Exception as e:
             return f"작업 목록 오류: {str(e)}"
+
+    def get_job_records(self) -> list[dict]:
+        """도구 계층이 메시지 파싱 없이 검증할 수 있는 작업 레코드를 반환한다."""
+        with sqlite3.connect(self.scheduler_db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, description, schedule_type, schedule_value, prompt, "
+                "action_type, enabled, last_run, created_at FROM jobs ORDER BY id DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_job_record(self, job_id: int) -> Optional[dict]:
+        with sqlite3.connect(self.scheduler_db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT id, description, schedule_type, schedule_value, prompt, "
+                "action_type, enabled, last_run, created_at FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+        return dict(row) if row else None
             
     def get_job_history(self, job_id: int, limit: int = 10) -> str:
         """작업 실행 기록 보기"""
         try:
-            conn = sqlite3.connect(self.scheduler_db_path)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT run_time, result, error 
-                FROM job_history 
-                WHERE job_id = ? 
-                ORDER BY run_time DESC 
-                LIMIT ?
-            """, (job_id, limit))
-            rows = cursor.fetchall()
-            conn.close()
+            rows = self.get_job_history_records(job_id, limit)
             
             if not rows:
                 return f"작업 ID {job_id}의 실행 기록이 없습니다."
                 
             result = [f"📊 작업 ID {job_id} 실행 기록:"]
             for row in rows:
-                result.append(f"\n시간: {row[0]}")
-                if row[1]:
-                    result.append(f"결과: {row[1][:200]}..." if len(row[1]) > 200 else f"결과: {row[1]}")
-                if row[2]:
-                    result.append(f"오류: {row[2]}")
+                result.append(f"\n시간: {row['run_time']}")
+                if row["result"]:
+                    value = row["result"]
+                    result.append(f"결과: {value[:200]}..." if len(value) > 200 else f"결과: {value}")
+                if row["error"]:
+                    result.append(f"오류: {row['error']}")
                 result.append("-" * 40)
                 
             return "\n".join(result)
             
         except Exception as e:
             return f"실행 기록 조회 오류: {str(e)}"
+
+    def get_job_history_records(self, job_id: int, limit: int = 10) -> list[dict]:
+        with sqlite3.connect(self.scheduler_db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT run_time, result, error FROM job_history "
+                "WHERE job_id = ? ORDER BY run_time DESC LIMIT ?",
+                (job_id, max(1, int(limit))),
+            ).fetchall()
+        return [dict(row) for row in rows]
             
     def toggle_job(self, job_id: int, enabled: bool) -> str:
         """작업 활성화/비활성화"""
         try:
+            if self.get_job_record(job_id) is None:
+                return f"작업 상태 변경 오류: 작업 ID {job_id}를 찾을 수 없습니다."
             conn = sqlite3.connect(self.scheduler_db_path)
             cursor = conn.cursor()
             cursor.execute("UPDATE jobs SET enabled = ? WHERE id = ?", (1 if enabled else 0, job_id))
@@ -364,6 +383,8 @@ class AutomationEngine:
     def delete_job(self, job_id: int) -> str:
         """작업 삭제"""
         try:
+            if self.get_job_record(job_id) is None:
+                return f"작업 삭제 오류: 작업 ID {job_id}를 찾을 수 없습니다."
             self.scheduler.clear(job_id)
             
             conn = sqlite3.connect(self.scheduler_db_path)

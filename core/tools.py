@@ -162,18 +162,47 @@ class ToolExecutor:
         except Exception as e:
             return ToolRunResult.failed(tool_name="read_file",error=f"파일 읽기 오류: {e}")
 
-    def write_file(self, path: str, content: str) -> str:
+    def write_file(self, path: str, content: str):
         is_valid, error_msg, resolved_path = self._resolve_and_validate_path(path)
         if not is_valid:
-            return error_msg
+            return ToolRunResult.failed(tool_name="write_file", error=error_msg)
 
         try:
-            os.makedirs(os.path.dirname(resolved_path), exist_ok=True)
-            with open(resolved_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            return f"파일이 성공적으로 저장되었습니다: {resolved_path}"
+            target = Path(resolved_path)
+            before_hash = (
+                hashlib.sha256(target.read_bytes()).hexdigest()
+                if target.is_file()
+                else None
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            saved_bytes = target.read_bytes()
+            expected_bytes = content.encode("utf-8")
+            if saved_bytes != expected_bytes:
+                return ToolRunResult.failed(
+                    tool_name="write_file",
+                    error="파일 저장 후 내용 검증에 실패했습니다.",
+                    evidence=[Evidence("file_content_mismatch", "저장된 바이트가 요청 내용과 다릅니다.", {
+                        "path": str(target),
+                        "expected_size": len(expected_bytes),
+                        "actual_size": len(saved_bytes),
+                    })],
+                )
+            after_hash = hashlib.sha256(saved_bytes).hexdigest()
+            return ToolRunResult.successful(
+                tool_name="write_file",
+                raw_output=f"파일이 성공적으로 저장되었습니다: {target}",
+                evidence=[Evidence("file_content", "저장 후 파일 내용과 해시를 확인했습니다.", {
+                    "path": str(target),
+                    "size": len(saved_bytes),
+                    "before_sha256": before_hash,
+                    "after_sha256": after_hash,
+                    "changed": before_hash != after_hash,
+                })],
+                artifacts=[Artifact("file", str(target), {"sha256": after_hash})],
+            )
         except Exception as e:
-            return f"파일 쓰기 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="write_file", error=f"파일 쓰기 오류: {e}")
 
     def list_directory(self, path: str = ""):
         target_path = path
@@ -211,31 +240,61 @@ class ToolExecutor:
         except Exception as e:
             return ToolRunResult.failed(tool_name="list_directory",error=f"디렉토리 목록 오류: {e}")
 
-    def create_directory(self, dir_path: str) -> str:
+    def create_directory(self, dir_path: str):
         is_valid, error_msg, resolved_path = self._resolve_and_validate_path(dir_path)
         if not is_valid:
-            return error_msg
+            return ToolRunResult.failed(tool_name="create_directory", error=error_msg)
 
         try:
-            os.makedirs(resolved_path, exist_ok=True)
-            return f"사장님, 폴더가 성공적으로 생성되었습니다: {resolved_path}"
+            target = Path(resolved_path)
+            existed = target.is_dir()
+            target.mkdir(parents=True, exist_ok=True)
+            if not target.is_dir():
+                return ToolRunResult.failed(
+                    tool_name="create_directory",
+                    error="폴더 생성 후 존재 여부를 확인하지 못했습니다.",
+                )
+            return ToolRunResult.successful(
+                tool_name="create_directory",
+                raw_output=f"폴더가 성공적으로 생성되었습니다: {target}",
+                evidence=[Evidence("directory_exists", "생성 후 폴더 존재를 확인했습니다.", {
+                    "path": str(target),
+                    "already_existed": existed,
+                })],
+                artifacts=[Artifact("directory", str(target))],
+            )
         except Exception as e:
-            return f"사장님, 폴더 생성 중 오류가 발생했습니다: {str(e)}"
+            return ToolRunResult.failed(tool_name="create_directory", error=f"폴더 생성 오류: {e}")
 
-    def delete_directory(self, dir_path: str) -> str:
+    def delete_directory(self, dir_path: str):
         is_valid, error_msg, resolved_path = self._resolve_and_validate_path(dir_path)
         if not is_valid:
-            return error_msg
+            return ToolRunResult.failed(tool_name="delete_directory", error=error_msg)
 
         try:
-            if not os.path.exists(resolved_path):
-                return f"사장님, 폴더를 찾을 수 없습니다: {resolved_path}"
+            target = Path(resolved_path)
+            if not target.is_dir():
+                return ToolRunResult.failed(
+                    tool_name="delete_directory",
+                    error=f"폴더를 찾을 수 없습니다: {target}",
+                )
 
             import shutil
-            shutil.rmtree(resolved_path)
-            return f"사장님, 폴더가 성공적으로 삭제되었습니다: {resolved_path}"
+            shutil.rmtree(target)
+            if target.exists():
+                return ToolRunResult.failed(
+                    tool_name="delete_directory",
+                    error="폴더 삭제 후에도 대상 경로가 남아 있습니다.",
+                )
+            return ToolRunResult.successful(
+                tool_name="delete_directory",
+                raw_output=f"폴더가 성공적으로 삭제되었습니다: {target}",
+                evidence=[Evidence("directory_absent", "삭제 후 대상 경로가 존재하지 않음을 확인했습니다.", {
+                    "path": str(target),
+                })],
+            )
         except Exception as e:
-            return f"사장님, 폴더 삭제 중 오류가 발생했습니다: {str(e)}"
+            return ToolRunResult.failed(tool_name="delete_directory", error=f"폴더 삭제 오류: {e}")
 
     def add_document(self, file_path: str) -> str:
         is_valid, error_msg, resolved_path = self._resolve_and_validate_path(file_path)
@@ -490,77 +549,207 @@ class ToolExecutor:
     # ------------------------------
     # Automation Engine 관련 도구 추가
     # ------------------------------
-    def add_automation_job(self, description: str, schedule_type: str, schedule_value: str, prompt: str) -> str:
+    def add_automation_job(self, description: str, schedule_type: str, schedule_value: str, prompt: str):
         """자동화 작업 추가"""
         try:
             from core.scheduler import get_automation_engine
             engine = get_automation_engine()
-            return engine.add_job(description, schedule_type, schedule_value, prompt)
+            before_ids = {item["id"] for item in engine.get_job_records()}
+            raw = engine.add_job(description, schedule_type, schedule_value, prompt)
+            created = [
+                item for item in engine.get_job_records()
+                if item["id"] not in before_ids
+                and item["description"] == description
+                and item["schedule_type"] == schedule_type
+                and str(item["schedule_value"]) == str(schedule_value)
+                and item["prompt"] == prompt
+            ]
+            if not created:
+                return ToolRunResult.failed(
+                    tool_name="add_automation_job",
+                    error=str(raw),
+                    raw_output=str(raw),
+                    evidence=[Evidence("scheduler_database", "등록 후 일치하는 작업 레코드를 찾지 못했습니다.")],
+                )
+            record = created[0]
+            return ToolRunResult.successful(
+                tool_name="add_automation_job",
+                raw_output=str(raw),
+                evidence=[Evidence("scheduler_database", "등록된 자동화 작업을 DB에서 다시 조회했습니다.", record)],
+                artifacts=[Artifact("automation_job", str(record["id"]))],
+            )
         except Exception as e:
-            return f"자동화 작업 추가 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="add_automation_job", error=f"자동화 작업 추가 오류: {e}")
 
-    def list_automation_jobs(self) -> str:
+    def list_automation_jobs(self):
         """자동화 작업 목록 보기"""
         try:
             from core.scheduler import get_automation_engine
             engine = get_automation_engine()
-            return engine.list_jobs()
+            records = engine.get_job_records()
+            return ToolRunResult.successful(
+                tool_name="list_automation_jobs",
+                raw_output=engine.list_jobs(),
+                evidence=[Evidence("scheduler_database", f"자동화 작업 {len(records)}건을 DB에서 조회했습니다.", {
+                    "count": len(records),
+                    "job_ids": [item["id"] for item in records],
+                })],
+                artifacts=[Artifact("automation_job", str(item["id"])) for item in records],
+            )
         except Exception as e:
-            return f"자동화 작업 목록 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="list_automation_jobs", error=f"자동화 작업 목록 오류: {e}")
 
-    def get_job_history(self, job_id: int, limit: int = 10) -> str:
+    def get_job_history(self, job_id: int, limit: int = 10):
         """자동화 작업 실행 기록 보기"""
         try:
             from core.scheduler import get_automation_engine
             engine = get_automation_engine()
-            return engine.get_job_history(job_id, limit)
+            if engine.get_job_record(job_id) is None:
+                return ToolRunResult.failed(
+                    tool_name="get_job_history",
+                    error=f"작업 ID {job_id}를 찾을 수 없습니다.",
+                )
+            records = engine.get_job_history_records(job_id, limit)
+            return ToolRunResult.successful(
+                tool_name="get_job_history",
+                raw_output=engine.get_job_history(job_id, limit),
+                evidence=[Evidence("scheduler_history", f"작업 실행 기록 {len(records)}건을 DB에서 조회했습니다.", {
+                    "job_id": job_id,
+                    "count": len(records),
+                    "limit": limit,
+                })],
+                artifacts=[Artifact("automation_job", str(job_id))],
+            )
         except Exception as e:
-            return f"실행 기록 조회 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="get_job_history", error=f"실행 기록 조회 오류: {e}")
 
-    def toggle_automation_job(self, job_id: int, enabled: bool) -> str:
+    def toggle_automation_job(self, job_id: int, enabled: bool):
         """자동화 작업 활성화/비활성화"""
         try:
             from core.scheduler import get_automation_engine
             engine = get_automation_engine()
-            return engine.toggle_job(job_id, enabled)
+            raw = engine.toggle_job(job_id, enabled)
+            record = engine.get_job_record(job_id)
+            if record is None or bool(record["enabled"]) != bool(enabled):
+                return ToolRunResult.failed(
+                    tool_name="toggle_automation_job",
+                    error=str(raw),
+                    raw_output=str(raw),
+                    evidence=[Evidence("scheduler_database", "요청한 활성 상태가 DB에 반영되지 않았습니다.", {
+                        "job_id": job_id,
+                        "requested_enabled": bool(enabled),
+                    })],
+                )
+            return ToolRunResult.successful(
+                tool_name="toggle_automation_job",
+                raw_output=str(raw),
+                evidence=[Evidence("scheduler_database", "변경된 활성 상태를 DB에서 확인했습니다.", {
+                    "job_id": job_id,
+                    "enabled": bool(record["enabled"]),
+                })],
+                artifacts=[Artifact("automation_job", str(job_id))],
+            )
         except Exception as e:
-            return f"작업 상태 변경 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="toggle_automation_job", error=f"작업 상태 변경 오류: {e}")
 
-    def delete_automation_job(self, job_id: int) -> str:
+    def delete_automation_job(self, job_id: int):
         """자동화 작업 삭제"""
         try:
             from core.scheduler import get_automation_engine
             engine = get_automation_engine()
-            return engine.delete_job(job_id)
+            if engine.get_job_record(job_id) is None:
+                return ToolRunResult.failed(
+                    tool_name="delete_automation_job",
+                    error=f"작업 ID {job_id}를 찾을 수 없습니다.",
+                )
+            raw = engine.delete_job(job_id)
+            if engine.get_job_record(job_id) is not None:
+                return ToolRunResult.failed(
+                    tool_name="delete_automation_job",
+                    error="작업 삭제 후에도 DB 레코드가 남아 있습니다.",
+                    raw_output=str(raw),
+                )
+            return ToolRunResult.successful(
+                tool_name="delete_automation_job",
+                raw_output=str(raw),
+                evidence=[Evidence("scheduler_database", "삭제 후 작업 레코드가 없음을 확인했습니다.", {
+                    "job_id": job_id,
+                })],
+            )
         except Exception as e:
-            return f"자동화 작업 삭제 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="delete_automation_job", error=f"자동화 작업 삭제 오류: {e}")
 
-    def start_automation_engine(self) -> str:
+    def start_automation_engine(self):
         """자동화 엔진 시작"""
         try:
             from core.scheduler import get_automation_engine
             engine = get_automation_engine()
-            return engine.start()
+            raw = engine.start()
+            running = engine.is_running()
+            thread_alive = bool(engine.scheduler_thread and engine.scheduler_thread.is_alive())
+            if not running or not thread_alive:
+                return ToolRunResult.failed(
+                    tool_name="start_automation_engine",
+                    error=str(raw),
+                    raw_output=str(raw),
+                    evidence=[Evidence("automation_engine", "엔진 상태 또는 스케줄러 스레드가 실행 상태가 아닙니다.", {
+                        "running": running,
+                        "thread_alive": thread_alive,
+                    })],
+                )
+            return ToolRunResult.successful(
+                tool_name="start_automation_engine",
+                raw_output=str(raw),
+                evidence=[Evidence("automation_engine", "엔진 상태와 스케줄러 스레드 실행을 확인했습니다.", {
+                    "running": True,
+                    "thread_alive": True,
+                })],
+            )
         except Exception as e:
-            return f"자동화 엔진 시작 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="start_automation_engine", error=f"자동화 엔진 시작 오류: {e}")
 
-    def stop_automation_engine(self) -> str:
+    def stop_automation_engine(self):
         """자동화 엔진 중지"""
         try:
             from core.scheduler import get_automation_engine
             engine = get_automation_engine()
-            return engine.stop()
+            raw = engine.stop()
+            running = engine.is_running()
+            thread_alive = bool(engine.scheduler_thread and engine.scheduler_thread.is_alive())
+            if running or thread_alive:
+                return ToolRunResult.failed(
+                    tool_name="stop_automation_engine",
+                    error="자동화 엔진 또는 스케줄러 스레드가 아직 실행 중입니다.",
+                    raw_output=str(raw),
+                )
+            return ToolRunResult.successful(
+                tool_name="stop_automation_engine",
+                raw_output=str(raw),
+                evidence=[Evidence("automation_engine", "엔진 상태와 스케줄러 스레드 중지를 확인했습니다.", {
+                    "running": False,
+                    "thread_alive": False,
+                })],
+            )
         except Exception as e:
-            return f"자동화 엔진 중지 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="stop_automation_engine", error=f"자동화 엔진 중지 오류: {e}")
 
-    def is_automation_engine_running(self) -> str:
+    def is_automation_engine_running(self):
         """자동화 엔진 실행 여부"""
         try:
             from core.scheduler import get_automation_engine
             engine = get_automation_engine()
-            return "실행 중" if engine.is_running() else "중지됨"
+            running = engine.is_running()
+            thread_alive = bool(engine.scheduler_thread and engine.scheduler_thread.is_alive())
+            return ToolRunResult.successful(
+                tool_name="is_automation_engine_running",
+                raw_output="실행 중" if running else "중지됨",
+                evidence=[Evidence("automation_engine", "엔진 상태와 스케줄러 스레드 상태를 조회했습니다.", {
+                    "running": running,
+                    "thread_alive": thread_alive,
+                })],
+            )
         except Exception as e:
-            return f"상태 확인 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="is_automation_engine_running", error=f"상태 확인 오류: {e}")
 
     # ------------------------------
     # Knowledge Graph 관련 도구 추가
@@ -685,10 +874,10 @@ class ToolExecutor:
         except Exception as e:
             return f"작업 히스토리 조회 오류: {str(e)}"
 
-    def run_command(self, command: str) -> str:
+    def run_command(self, command: str):
         is_valid, error_msg, args = self.safety.validate_command(command)
         if not is_valid:
-            return f"오류: {error_msg}"
+            return ToolRunResult.failed(tool_name="run_command", error=error_msg)
 
         try:
             # shell=True는 allowlist를 우회하는 연결 연산자 해석 위험이 있으므로 사용하지 않습니다.
@@ -706,9 +895,29 @@ class ToolExecutor:
             if result.stderr:
                 output.append(f"에러:\n{result.stderr}")
             output.append(f"종료 코드: {result.returncode}")
-            return "\n".join(output)
+            raw_output = "\n".join(output)
+            execution_evidence = Evidence("process_execution", "프로세스 종료 코드와 출력을 확인했습니다.", {
+                "argv": args,
+                "returncode": result.returncode,
+                "stdout_sha256": hashlib.sha256(result.stdout.encode("utf-8")).hexdigest(),
+                "stderr_sha256": hashlib.sha256(result.stderr.encode("utf-8")).hexdigest(),
+                "stdout_length": len(result.stdout),
+                "stderr_length": len(result.stderr),
+            })
+            if result.returncode != 0:
+                return ToolRunResult.failed(
+                    tool_name="run_command",
+                    error=f"명령이 종료 코드 {result.returncode}로 실패했습니다.",
+                    raw_output=raw_output,
+                    evidence=[execution_evidence],
+                )
+            return ToolRunResult.successful(
+                tool_name="run_command",
+                raw_output=raw_output,
+                evidence=[execution_evidence],
+            )
         except Exception as e:
-            return f"명령어 실행 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="run_command", error=f"명령어 실행 오류: {e}")
 
     def web_search(self, query: str, num_results: int = 5) -> str:
         if DDGS is None:
@@ -1019,30 +1228,62 @@ class ToolExecutor:
         except Exception as e:
             return f"STT 오류: {str(e)}"
 
-    def list_audio_input_devices(self) -> str:
+    def list_audio_input_devices(self):
         if self.hardware_manager is None:
-            return "오류: 마이크 기능을 초기화하지 못했습니다."
-        devices = self.hardware_manager.list_input_devices()
-        if not devices:
-            return "사용 가능한 마이크 입력 장치가 없습니다."
-        lines = ["사용 가능한 마이크 입력 장치:"]
-        for item in devices:
-            marker = " (기본)" if item["index"] == sd.default.device[0] else ""
-            lines.append(
-                f"- {item['index']}: {item['name']} / {int(item['default_samplerate'])}Hz{marker}"
+            return ToolRunResult.failed(tool_name="list_audio_input_devices", error="마이크 기능을 초기화하지 못했습니다.")
+        try:
+            devices = self.hardware_manager.list_input_devices()
+            default_index = sd.default.device[0] if WHISPER_AVAILABLE else None
+            lines = ["사용 가능한 마이크 입력 장치:"]
+            for item in devices:
+                marker = " (기본)" if item["index"] == default_index else ""
+                lines.append(
+                    f"- {item['index']}: {item['name']} / {int(item['default_samplerate'])}Hz{marker}"
+                )
+            if not devices:
+                lines = ["사용 가능한 마이크 입력 장치가 없습니다."]
+            return ToolRunResult.successful(
+                tool_name="list_audio_input_devices",
+                raw_output="\n".join(lines),
+                evidence=[Evidence("audio_devices", f"오디오 입력 장치 {len(devices)}개를 시스템에서 조회했습니다.", {
+                    "count": len(devices),
+                    "default_index": default_index,
+                    "devices": [
+                        {
+                            "index": item["index"],
+                            "name": item["name"],
+                            "default_samplerate": item["default_samplerate"],
+                            "max_input_channels": item.get("max_input_channels"),
+                        }
+                        for item in devices
+                    ],
+                })],
             )
-        return "\n".join(lines)
+        except Exception as e:
+            return ToolRunResult.failed(tool_name="list_audio_input_devices", error=f"마이크 장치 조회 오류: {e}")
 
-    def list_camera_devices(self) -> str:
+    def list_camera_devices(self):
         if self.multimodal_manager is None:
-            return "오류: 카메라 기능을 초기화하지 못했습니다."
-        devices = self.multimodal_manager.list_camera_devices()
-        if not devices:
-            return "프레임을 읽을 수 있는 카메라가 없습니다."
-        return "사용 가능한 카메라:\n" + "\n".join(
-            f"- {item['index']}: {item['backend']} / {item['width']}x{item['height']}"
-            for item in devices
-        )
+            return ToolRunResult.failed(tool_name="list_camera_devices", error="카메라 기능을 초기화하지 못했습니다.")
+        try:
+            devices = self.multimodal_manager.list_camera_devices()
+            output = (
+                "사용 가능한 카메라:\n" + "\n".join(
+                    f"- {item['index']}: {item['backend']} / {item['width']}x{item['height']}"
+                    for item in devices
+                )
+                if devices else "프레임을 읽을 수 있는 카메라가 없습니다."
+            )
+            return ToolRunResult.successful(
+                tool_name="list_camera_devices",
+                raw_output=output,
+                evidence=[Evidence("camera_devices", f"프레임 읽기 검사를 통과한 카메라 {len(devices)}개를 조회했습니다.", {
+                    "count": len(devices),
+                    "devices": devices,
+                })],
+            )
+        except Exception as e:
+            return ToolRunResult.failed(tool_name="list_camera_devices", error=f"카메라 장치 조회 오류: {e}")
 
     def add_document(self, file_path: str):
         if self.rag_manager is None:
@@ -1205,13 +1446,33 @@ class ToolExecutor:
 
 
 
-    def capture_camera(self, save_path: Optional[str] = None) -> str:
+    def capture_camera(self, save_path: Optional[str] = None):
         """카메라에서 프레임을 캡처합니다."""
+        if self.multimodal_manager is None:
+            return ToolRunResult.failed(tool_name="capture_camera", error="카메라 기능을 초기화하지 못했습니다.")
         try:
-            result = self.multimodal_manager.capture_camera_frame(save_path)
-            return result
+            result = self.multimodal_manager.capture_camera_frame_details(save_path)
+            captured = Path(result["path"])
+            image_hash = hashlib.sha256(captured.read_bytes()).hexdigest()
+            raw_output = (
+                f"카메라 {result['camera_index']}({result['backend']}, "
+                f"{result['width']}x{result['height']})의 프레임을 저장했습니다: {captured}"
+            )
+            return ToolRunResult.successful(
+                tool_name="capture_camera",
+                raw_output=raw_output,
+                evidence=[Evidence("camera_capture", "저장된 카메라 이미지 파일의 크기와 해시를 확인했습니다.", {
+                    **result,
+                    "sha256": image_hash,
+                })],
+                artifacts=[Artifact("image", str(captured), {
+                    "width": result["width"],
+                    "height": result["height"],
+                    "sha256": image_hash,
+                })],
+            )
         except Exception as e:
-            return f"카메라 캡처 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="capture_camera", error=f"카메라 캡처 오류: {e}")
 
     def _request_tool_permissions(self, tool_name: str) -> tuple[bool, str]:
         """모든 진입점에서 동일하게 적용되는 중앙 권한 검사."""

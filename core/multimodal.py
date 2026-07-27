@@ -158,50 +158,65 @@ class MultimodalManager:
         except Exception as e:
             return f"PDF 분석 오류: {str(e)}"
 
-    def capture_camera_frame(self, save_path: Optional[str] = None) -> str:
+    def capture_camera_frame_details(self, save_path: Optional[str] = None) -> dict:
         """
-        카메라에서 프레임을 캡처합니다.
+        카메라에서 프레임을 캡처하고 검증 가능한 구조화 결과를 반환합니다.
         save_path가 지정되면 해당 경로에 저장하고, 아니면 임시 파일에 저장합니다.
         """
         if not OPENCV_AVAILABLE:
-            return "오류: opencv-python이 설치되지 않았습니다. requirements.txt를 확인하세요."
+            raise RuntimeError("opencv-python이 설치되지 않았습니다. requirements.txt를 확인하세요.")
 
+        if save_path is not None:
+            is_valid, error_msg = self.safety.validate_path(save_path)
+            if not is_valid:
+                raise ValueError(error_msg)
+        else:
+            save_path = os.path.join(
+                tempfile.gettempdir(), f"camera_capture_{os.urandom(4).hex()}.jpg"
+            )
+
+        for index in self._configured_camera_indices():
+            for backend_name, backend in self._camera_backends():
+                cap = cv2.VideoCapture(index, backend)
+                try:
+                    if not cap.isOpened():
+                        continue
+                    frame = None
+                    for _ in range(5):
+                        ok, candidate = cap.read()
+                        if ok and candidate is not None:
+                            frame = candidate
+                        time.sleep(0.03)
+                    if frame is None:
+                        continue
+                    if not cv2.imwrite(save_path, frame):
+                        raise OSError(f"카메라 이미지를 저장하지 못했습니다: {save_path}")
+                    height, width = frame.shape[:2]
+                    if not os.path.isfile(save_path) or os.path.getsize(save_path) <= 0:
+                        raise OSError(f"저장된 카메라 이미지를 확인하지 못했습니다: {save_path}")
+                    return {
+                        "path": os.path.abspath(save_path),
+                        "camera_index": index,
+                        "backend": backend_name,
+                        "width": width,
+                        "height": height,
+                        "size": os.path.getsize(save_path),
+                    }
+                finally:
+                    cap.release()
+        raise RuntimeError("프레임을 읽을 수 있는 카메라를 찾지 못했습니다.")
+
+    def capture_camera_frame(self, save_path: Optional[str] = None) -> str:
+        """하위 호환 문자열 API."""
         try:
-            if save_path is not None:
-                is_valid, error_msg = self.safety.validate_path(save_path)
-                if not is_valid:
-                    return f"오류: {error_msg}"
-            else:
-                save_path = os.path.join(
-                    tempfile.gettempdir(), f"camera_capture_{os.urandom(4).hex()}.jpg"
-                )
-
-            for index in self._configured_camera_indices():
-                for backend_name, backend in self._camera_backends():
-                    cap = cv2.VideoCapture(index, backend)
-                    try:
-                        if not cap.isOpened():
-                            continue
-                        frame = None
-                        for _ in range(5):
-                            ok, candidate = cap.read()
-                            if ok and candidate is not None:
-                                frame = candidate
-                            time.sleep(0.03)
-                        if frame is None:
-                            continue
-                        if not cv2.imwrite(save_path, frame):
-                            return f"오류: 카메라 이미지를 저장하지 못했습니다: {save_path}"
-                        height, width = frame.shape[:2]
-                        return (
-                            f"성공: 카메라 {index}({backend_name}, {width}x{height})의 프레임을 "
-                            f"{save_path}에 저장했습니다."
-                        )
-                    finally:
-                        cap.release()
-            return "오류: 프레임을 읽을 수 있는 카메라를 찾지 못했습니다."
+            result = self.capture_camera_frame_details(save_path)
+            return (
+                f"성공: 카메라 {result['camera_index']}({result['backend']}, "
+                f"{result['width']}x{result['height']})의 프레임을 "
+                f"{result['path']}에 저장했습니다."
+            )
         except Exception as e:
-            return f"카메라 캡처 오류: {str(e)}"
+            return f"카메라 캡처 오류: {e}"
 
     def image_to_base64(self, image_path: str) -> str:
         """

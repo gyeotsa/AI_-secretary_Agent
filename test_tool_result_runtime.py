@@ -1,10 +1,14 @@
 import json
+import threading
+from types import SimpleNamespace
 import pytest
 
+import core.scheduler as scheduler_module
 from core.executor import Executor
 from core.scratchpad import Task
 from core.tool_result import Evidence
 from core.tool_result import ToolRunResult, ToolRunStatus
+from core.tools import ToolExecutor
 from core.verifier import ToolVerifier, VerificationResult
 
 
@@ -128,3 +132,133 @@ def test_executor_downgrades_direct_success_without_evidence():
     )
     assert result.status == ToolRunStatus.UNVERIFIED
     assert not result.succeeded
+
+
+def test_legacy_file_mutations_return_verified_typed_results(tmp_path):
+    executor = ToolExecutor.__new__(ToolExecutor)
+    executor._resolve_and_validate_path = lambda path: (True, "", str(path))
+
+    target = tmp_path / "nested" / "note.txt"
+    written = executor.write_file(str(target), "안녕")
+    assert written.status == ToolRunStatus.SUCCEEDED
+    assert written.evidence[0].kind == "file_content"
+    assert target.read_text(encoding="utf-8") == "안녕"
+
+    directory = tmp_path / "folder"
+    created = executor.create_directory(str(directory))
+    assert created.status == ToolRunStatus.SUCCEEDED
+    assert directory.is_dir()
+
+    deleted = executor.delete_directory(str(directory))
+    assert deleted.status == ToolRunStatus.SUCCEEDED
+    assert deleted.evidence[0].kind == "directory_absent"
+    assert not directory.exists()
+
+
+def test_run_command_uses_exit_code_as_success_boundary(monkeypatch):
+    executor = ToolExecutor.__new__(ToolExecutor)
+    executor.safety = SimpleNamespace(
+        validate_command=lambda command: (True, "", ["git", "--version"])
+    )
+
+    monkeypatch.setattr(
+        "core.tools.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout="git version 1.0\n", stderr="", returncode=0
+        ),
+    )
+    succeeded = executor.run_command("git --version")
+    assert succeeded.status == ToolRunStatus.SUCCEEDED
+    assert succeeded.evidence[0].data["returncode"] == 0
+
+    monkeypatch.setattr(
+        "core.tools.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout="", stderr="fatal", returncode=2
+        ),
+    )
+    failed = executor.run_command("git --version")
+    assert failed.status == ToolRunStatus.FAILED
+    assert failed.evidence[0].data["returncode"] == 2
+
+
+def test_device_queries_and_camera_capture_return_direct_evidence(tmp_path):
+    executor = ToolExecutor.__new__(ToolExecutor)
+    executor._hardware_manager = SimpleNamespace(
+        list_input_devices=lambda: [{
+            "index": 3,
+            "name": "Test microphone",
+            "default_samplerate": 48000.0,
+            "max_input_channels": 1,
+        }]
+    )
+    image_path = tmp_path / "capture.jpg"
+    image_path.write_bytes(b"jpeg-bytes")
+    executor._multimodal_manager = SimpleNamespace(
+        list_camera_devices=lambda: [{
+            "index": 1, "backend": "TEST", "width": 640, "height": 480,
+        }],
+        capture_camera_frame_details=lambda save_path: {
+            "path": str(image_path),
+            "camera_index": 1,
+            "backend": "TEST",
+            "width": 640,
+            "height": 480,
+            "size": image_path.stat().st_size,
+        },
+    )
+
+    microphones = executor.list_audio_input_devices()
+    cameras = executor.list_camera_devices()
+    capture = executor.capture_camera(str(image_path))
+
+    assert microphones.status == ToolRunStatus.SUCCEEDED
+    assert microphones.evidence[0].data["count"] == 1
+    assert cameras.status == ToolRunStatus.SUCCEEDED
+    assert cameras.evidence[0].data["count"] == 1
+    assert capture.status == ToolRunStatus.SUCCEEDED
+    assert capture.artifacts[0].uri == str(image_path)
+
+
+def test_automation_tools_verify_database_and_engine_state(monkeypatch, tmp_path):
+    engine = scheduler_module.AutomationEngine.__new__(scheduler_module.AutomationEngine)
+    engine.data_dir = str(tmp_path)
+    engine.scheduler_db_path = str(tmp_path / "scheduler.db")
+    engine.scheduled_jobs = []
+    engine.scheduler = scheduler_module.schedule.Scheduler()
+    engine.running = False
+    engine.scheduler_thread = None
+    engine.stop_event = threading.Event()
+    engine.job_results = {}
+    engine.result_callback = None
+    engine._init_db()
+    monkeypatch.setattr(scheduler_module, "get_automation_engine", lambda: engine)
+    executor = ToolExecutor.__new__(ToolExecutor)
+
+    added = executor.add_automation_job("테스트", "every_minutes", "5", "상태 확인")
+    assert added.status == ToolRunStatus.SUCCEEDED
+    job_id = added.evidence[0].data["id"]
+
+    listed = executor.list_automation_jobs()
+    assert listed.status == ToolRunStatus.SUCCEEDED
+    assert listed.evidence[0].data["job_ids"] == [job_id]
+
+    toggled = executor.toggle_automation_job(job_id, False)
+    assert toggled.status == ToolRunStatus.SUCCEEDED
+    assert toggled.evidence[0].data["enabled"] is False
+
+    missing = executor.toggle_automation_job(9999, True)
+    assert missing.status == ToolRunStatus.FAILED
+
+    history = executor.get_job_history(job_id)
+    assert history.status == ToolRunStatus.SUCCEEDED
+    assert history.evidence[0].data["count"] == 0
+
+    started = executor.start_automation_engine()
+    assert started.status == ToolRunStatus.SUCCEEDED
+    stopped = executor.stop_automation_engine()
+    assert stopped.status == ToolRunStatus.SUCCEEDED
+
+    deleted = executor.delete_automation_job(job_id)
+    assert deleted.status == ToolRunStatus.SUCCEEDED
+    assert engine.get_job_record(job_id) is None

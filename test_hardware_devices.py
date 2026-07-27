@@ -258,7 +258,12 @@ def test_camera_falls_back_to_working_device_and_backend(monkeypatch, tmp_path):
     monkeypatch.setattr(multimodal.Config, "CAMERA_INDEX", "auto")
     monkeypatch.setattr(manager, "_camera_backends", lambda: [("FIRST", 11), ("SECOND", 22)])
     monkeypatch.setattr(multimodal.cv2, "VideoCapture", fake_capture)
-    monkeypatch.setattr(multimodal.cv2, "imwrite", lambda path, image: True)
+    def fake_imwrite(path, image):
+        with open(path, "wb") as output:
+            output.write(b"fake-jpeg")
+        return True
+
+    monkeypatch.setattr(multimodal.cv2, "imwrite", fake_imwrite)
     monkeypatch.setattr(multimodal.time, "sleep", lambda _: None)
     monkeypatch.setattr(manager.safety, "validate_path", lambda path: (True, ""))
 
