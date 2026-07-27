@@ -31,8 +31,10 @@
 공통 계약을 추가했고, Executor의 Plugin Intent 실행과 자율 Tool 검증 경로가
 `ToolRunResult.succeeded`를 기준으로 완료 여부를 판단하도록 연결했습니다. 다만
 개별 Tool 구현은 아직 문자열을 반환하므로 P0는 진행 중입니다.
+전용 검증기가 없는 Tool을 일반 성공으로 처리하던 fallback은 제거했으며, 이제
+해당 실행은 `unverified` 상태로 남고 사용자에게도 완료로 보고되지 않습니다.
 
-현재 기본 자동 회귀 테스트 기준선은 `140 passed, 4 deselected`입니다. 이는
+현재 기본 자동 회귀 테스트 기준선은 `141 passed, 4 deselected`입니다. 이는
 네트워크·OAuth·실제 장치·Office COM·장시간 자동화를 모두 보증하는 수치는 아닙니다.
 
 ## 판정

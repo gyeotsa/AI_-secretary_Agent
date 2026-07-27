@@ -9,13 +9,23 @@
 ---
 ## 2026-07-27 Codex급 Agent Runtime 개선 문서화 및 P0 착수
 
+- 기존 대화에서 합의한 모델 외 27개 상위 개선 방향을 `AGENT_RUNTIME_ROADMAP.md`에
+  번호와 P0~P12 대응표로 명시했다. Phase는 27개 방향을 대체하지 않고 구현 순서를
+  나타낸다.
 - 초기 README가 2026-06 CLI·Anthropic 중심 상태에 머물러 있어 현재 PyQt6·Ollama·Plugin·RAG·STT/TTS·웹 검색·문서·Windows·알람 구현과 실제 미완료 범위를 기준으로 전면 갱신했다.
 - `AGENT_RUNTIME_ROADMAP.md`를 새 단일 개선 로드맵으로 추가했다. 진실한 실행, 통합 Task State, 의미 기반 Router, Coding Agent, Workspace Intelligence, Orchestrator, Plugin 단일화, RAG·웹·Office·Cloud·OS·Voice·Automation·보안·관측성·배포까지 P0~P12와 수락 기준을 기록했다.
 - `Javis 로드맵.txt`와 `Level2 리팩토링 10단계.txt`의 기존 완료 표기는 당시 구성 요소 구현 기록이며 제품 수준 E2E 완료가 아니라는 상태 정정 안내를 추가했다.
 - `PROJECT_REVIEW.md`, `PLUGIN_ROADMAP.md`, `MODEL_ROUTING.md`, `DEPLOYMENT.md`를 2026-07-27 실제 구현·기술 부채·배포본 시점에 맞게 갱신했다.
 - P0 첫 구현으로 `core/tool_result.py`에 `ToolRunStatus`, `ToolRunResult`, `Evidence`, `Artifact` 타입을 추가했다. 구조화 Plugin 결과에서 파일·URL Artifact를 추출하며 검증 결과와 실행 시간을 함께 보존한다.
 - Executor의 선언형 Intent 실행과 자율 Tool 실행 검증 경로가 bool만 받지 않고 `ToolRunResult.succeeded`를 기준으로 상태를 판정한다. `ExecutionOutcome`도 실제 Tool 결과 계약을 선택적으로 전달한다.
-- 이번 연결은 하위 호환 1차 단계다. 개별 Tool은 아직 문자열을 반환하며, 검증기 없는 Tool의 generic 성공 판정을 `unverified`로 바꾸는 후속 P0 작업이 남아 있다.
+- 전용 Verifier가 없는 Tool을 성공으로 간주하던 기본 분기를 제거했다.
+  `VerificationResult.verified=False`가 `ToolRunStatus.UNVERIFIED`로 변환되며,
+  Executor와 Recovery는 이를 성공이나 복구 성공으로 취급하지 않는다.
+- Windows 앱 실행은 PID 존재, 창 종료는 대상 창 부재, 별칭 추가는 실제 사용자
+  별칭 저장소를 각각 확인하는 전용 Verifier를 연결했다.
+- 회귀 테스트 기준선: `141 passed, 4 deselected`.
+- 이번 연결은 하위 호환 단계다. 개별 Tool은 아직 문자열을 반환하므로 Plugin
+  구현 자체가 `ToolRunResult`를 직접 반환하도록 순차 이전하는 P0 작업이 남아 있다.
 
 ## 2026-07-27 웹 검색 답변 길이와 출처 표시 간소화
 
