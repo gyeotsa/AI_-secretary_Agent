@@ -88,6 +88,11 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
   함께 지원하도록 반환 경계를 확장. 파일시스템의 프로젝트·파일 생성과 파일
   수정 Tool은 실제 경로·크기·해시 Evidence와 Artifact를 담은 `ToolRunResult`를
   직접 반환하는 첫 Plugin으로 이전했습니다.
+- 2026-07-27: Calendar와 Excel·Word·PowerPoint·PDF·HWPX 생성 Tool을 직접
+  typed 결과로 이전. 저장 직후 각 라이브러리로 파일을 다시 열어 ICS 이벤트,
+  XLSX 시트·셀, DOCX 문단, PPTX 슬라이드, PDF 페이지·텍스트, HWPX 텍스트
+  구조를 검증합니다. Evidence가 없는 직접 성공 결과는 Executor가
+  `unverified`로 강등합니다.
 
 - [ ] 모든 Tool 결과를 `ToolRunResult` 타입으로 통일
 - [ ] `status`, `output`, `error`, `artifacts`, `evidence`, `timing` 필수화

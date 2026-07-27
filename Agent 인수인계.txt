@@ -32,7 +32,14 @@
 - Executor는 직접 typed 결과를 재문자열 검증하지 않고 보존하되 Tool 이름 불일치는
   실패 처리한다. ReAct·Multi-Agent·Scratchpad는 typed/legacy 결과를 모두 안전하게
   소비하도록 호환 처리했다.
-- 회귀 테스트 기준선: `143 passed, 4 deselected`.
+- Calendar 생성은 저장된 ICS의 VCALENDAR·VEVENT·날짜 구조를 검증해 Evidence와
+  Calendar Artifact를 직접 반환한다.
+- Excel·Word·PowerPoint·PDF·HWPX 생성은 저장 후 각 라이브러리로 다시 열어
+  시트·셀, 문단, 슬라이드, 페이지·텍스트, HWPX 텍스트 구조를 검증한다.
+  Excel 셀 수정도 요청한 값의 실제 재로딩 일치를 확인한다.
+- 직접 `ToolRunResult` 성공을 반환하더라도 Evidence가 비어 있으면 Executor가
+  `UNVERIFIED`로 강등한다.
+- 회귀 테스트 기준선: `145 passed, 4 deselected`.
 - 이번 연결은 하위 호환 단계다. 개별 Tool은 아직 문자열을 반환하므로 Plugin
   구현 자체가 `ToolRunResult`를 직접 반환하도록 순차 이전하는 P0 작업이 남아 있다.
 

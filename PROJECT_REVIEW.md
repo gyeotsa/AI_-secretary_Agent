@@ -36,8 +36,11 @@
 Plugin SDK는 `str | ToolRunResult` 점진 이전을 지원하고, 파일시스템의 생성·수정
 Tool은 실제 경로·파일 크기·변경 전후 해시를 Evidence와 Artifact로 직접 반환합니다.
 ReAct·Multi-Agent·Scratchpad에는 이중 반환 형식의 호환 경계를 연결했습니다.
+Calendar와 Office 5종 생성 Tool도 typed 결과로 이전했으며, 저장 파일을 형식별
+라이브러리로 다시 열어 내부 구조를 확인합니다. typed 성공이라도 Evidence가 없으면
+Executor가 `unverified`로 강등합니다.
 
-현재 기본 자동 회귀 테스트 기준선은 `143 passed, 4 deselected`입니다. 이는
+현재 기본 자동 회귀 테스트 기준선은 `145 passed, 4 deselected`입니다. 이는
 네트워크·OAuth·실제 장치·Office COM·장시간 자동화를 모두 보증하는 수치는 아닙니다.
 
 ## 판정

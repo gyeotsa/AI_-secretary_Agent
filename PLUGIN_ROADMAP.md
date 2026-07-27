@@ -64,3 +64,5 @@
 - Plugin SDK와 Registry는 현재 `str | ToolRunResult` 점진 이전 경계를 지원한다.
   파일시스템 생성·수정 Tool은 첫 직접 반환 전환을 완료했으며, 나머지 Plugin은
   전용 검증기 추가와 함께 순차 이전한다.
+- Calendar와 Excel·Word·PowerPoint·PDF·HWPX 생성 Tool은 직접 typed 결과 전환을
+  완료했다. 각 생성 파일은 저장 후 동일 형식 라이브러리로 재열기 검증한다.
