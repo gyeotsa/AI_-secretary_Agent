@@ -45,8 +45,11 @@ Evidence로 남기며 불완전한 실시간 응답은 실패 처리합니다.
 Git·Windows Control·Mail·Alarm도 typed 결과로 이전했습니다. Git HEAD와 브랜치,
 Windows PID·창·별칭 상태, EML 구조·SMTP 접수, Scheduler 작업 ID를 검증하며
 UAC·바로가기처럼 완료 확인이 불가능한 요청은 `unverified`로 보고합니다.
+System Tools도 로컬 시계·타임존과 Plugin Registry 스냅샷 Evidence를 반환합니다.
+중앙 ToolExecutor는 이제 Plugin과 레거시 내장 Tool 모두를 `ToolRunResult`로
+정규화하며, 전용 검증기가 없는 레거시 결과를 자동 성공시키지 않습니다.
 
-현재 기본 자동 회귀 테스트 기준선은 `149 passed, 4 deselected`입니다. 이는
+현재 기본 자동 회귀 테스트 기준선은 `151 passed, 4 deselected`입니다. 이는
 네트워크·OAuth·실제 장치·Office COM·장시간 자동화를 모두 보증하는 수치는 아닙니다.
 
 ## 판정

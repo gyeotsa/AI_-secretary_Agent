@@ -54,7 +54,14 @@
   기록하지 않는다.
 - Alarm JSON에 `job_id`를 추가하고 Plugin이 Scheduler 메모리의 동일 ID·alarm
   action을 재확인한다.
-- 회귀 테스트 기준선: `149 passed, 4 deselected`.
+- System Tools 시간·날짜는 OS 로컬 시계·타임존·UTC offset, Plugin 목록은 실제
+  Registry 스냅샷, repeat_text는 입력·출력 동일성을 Evidence로 반환한다.
+- `ToolExecutor._adapt_tool_output()`을 추가했다. Plugin typed 결과는 보존하고,
+  레거시 문자열은 `ToolVerifier` 결과를 통해 `ToolRunResult`로 변환한다. 검증기가
+  없는 레거시 Tool은 `UNVERIFIED`, 권한 거부와 파라미터 오류는 typed failure다.
+- 중앙 ToolExecutor 반환 경계는 모두 typed지만 개별 레거시 함수 자체는 아직
+  문자열을 반환하므로 읽기·쓰기·장치·자동화 순서의 직접 이전은 계속 필요하다.
+- 회귀 테스트 기준선: `151 passed, 4 deselected`.
 - 이번 연결은 하위 호환 단계다. 개별 Tool은 아직 문자열을 반환하므로 Plugin
   구현 자체가 `ToolRunResult`를 직접 반환하도록 순차 이전하는 P0 작업이 남아 있다.
 

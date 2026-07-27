@@ -102,9 +102,14 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
   Mail은 RFC 822 재파싱 또는 SMTP 수신자 접수, Alarm은 DB 작업 ID와 Scheduler
   메모리 등록 상태를 Evidence로 보존합니다. UAC와 바로가기 실행처럼 실제 프로세스
   시작을 확인할 수 없는 요청은 `unverified`로 유지합니다.
+- 2026-07-27: System Tools의 시간·날짜·Plugin Registry·문자열 반복을 typed
+  결과로 이전. `ToolExecutor`에 공통 레거시 어댑터를 추가해 모든 중앙 실행 결과가
+  `ToolRunResult`로 나오도록 했습니다. 기존 Verifier가 실제 검증할 수 있는 결과만
+  성공하며 나머지 레거시 문자열은 `unverified`, 권한·파라미터 오류는 typed
+  failure로 변환됩니다.
 
 - [ ] 모든 Tool 결과를 `ToolRunResult` 타입으로 통일
-- [ ] `status`, `output`, `error`, `artifacts`, `evidence`, `timing` 필수화
+- [x] 중앙 ToolExecutor 반환 경계의 `status`, `output`, `error`, `artifacts`, `evidence`, `timing` 통일
 - [ ] 문자열의 `오류:` 포함 여부에 의존하는 성공 판정 제거
 - [x] 검증기가 없는 실행형 Tool은 `unverified` 처리
 - [ ] 일반 대화 경로의 실행 완료 주장 차단

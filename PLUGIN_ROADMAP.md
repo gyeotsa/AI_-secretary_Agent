@@ -72,3 +72,6 @@
 - Git·Windows Control·Mail·Alarm은 직접 typed 결과 전환을 완료했다. Git 저장소
   상태, Windows 프로세스·창·별칭, RFC 822/SMTP 접수, Scheduler 작업 등록을
   실제 상태에서 확인하며 확인 불가능한 실행 요청은 `unverified`로 구분한다.
+- System Tools는 로컬 시간·날짜·Plugin Registry 상태를 typed Evidence로 반환한다.
+  중앙 ToolExecutor의 레거시 어댑터는 아직 직접 이전되지 않은 내장 Tool 문자열을
+  검증 후 `succeeded`·`failed`·`unverified`로 정규화한다.
