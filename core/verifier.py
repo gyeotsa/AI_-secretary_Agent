@@ -40,7 +40,30 @@ class ToolVerifier:
             "powerpoint_create_presentation": self._verify_created_file,
             "pdf_create_document": self._verify_created_file,
             "hwpx_create_document": self._verify_created_file,
+            "browser_web_search": self._verify_web_search,
         }
+
+    def _verify_web_search(
+        self, tool_input: Dict[str, Any], result: str
+    ) -> VerificationResult:
+        """웹 검색이 실제 URL이 포함된 구조화 결과를 반환했는지 확인한다."""
+        try:
+            payload = json.loads(result)
+            results = payload.get("results", [])
+            if not results:
+                return VerificationResult(False, "웹 검색 결과가 비어 있습니다.")
+            valid = [
+                item for item in results
+                if str(item.get("url", "")).startswith(("https://", "http://"))
+                and item.get("title")
+            ]
+            if not valid:
+                return VerificationResult(False, "출처 URL이 있는 검색 결과가 없습니다.")
+            return VerificationResult(
+                True, f"실제 웹 검색 결과 {len(valid)}건과 출처 URL을 확인했습니다."
+            )
+        except (json.JSONDecodeError, TypeError, AttributeError) as exc:
+            return VerificationResult(False, f"웹 검색 결과 검증 오류: {exc}")
 
     def _verify_created_path_result(
         self, tool_input: Dict[str, Any], result: str

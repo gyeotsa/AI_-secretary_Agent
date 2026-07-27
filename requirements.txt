@@ -13,7 +13,7 @@ python-pptx>=1.0.2,<2
 python-hwpx>=4.2.0,<5
 
 # Phase 2: Core Features (enable later)
-duckduckgo-search>=6.0.0
+ddgs>=9.0.0,<10
 pygetwindow>=0.0.9
 
 # Phase 3: Extensions (enable later)

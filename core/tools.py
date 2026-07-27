@@ -18,9 +18,12 @@ from core.custom_tts import GPTSoVITSClient, load_custom_voice_profiles, split_t
 from core.tts_normalizer import normalize_for_tts
 
 try:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 except ImportError:
-    DDGS = None
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        DDGS = None
 
 try:
     import pyttsx3

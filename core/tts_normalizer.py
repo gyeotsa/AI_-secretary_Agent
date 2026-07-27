@@ -80,6 +80,16 @@ def normalize_for_tts(text: str) -> str:
     """Normalize clocks, units, numbers and English words without changing UI text."""
     value = str(text or "")
     value = re.sub(
+        r"\s*출처\s*:\s*https?://.*$",
+        "",
+        value,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    value = "\n".join(
+        line for line in value.splitlines()
+        if not re.match(r"^\s*(?:https?://|[-*]\s*https?://)", line, re.IGNORECASE)
+    )
+    value = re.sub(
         r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?(?!\d)",
         _clock,
         value,

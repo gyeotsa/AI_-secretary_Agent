@@ -1,10 +1,21 @@
 """Optional Playwright browser tools. Installation remains explicit."""
+import json
+import re
+from datetime import datetime
 from typing import Any, Dict, List
 from urllib.parse import urlparse
 import ipaddress
 import socket
 
-from core.plugin import BasePlugin, ToolSchema
+from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema
+
+try:
+    from ddgs import DDGS
+except ImportError:
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        DDGS = None
 
 
 class BrowserPlugin(BasePlugin):
@@ -20,7 +31,54 @@ class BrowserPlugin(BasePlugin):
             ToolSchema("browser_screenshot", "웹 페이지 스크린샷을 저장합니다", {
                 "type": "object", "properties": {"url": {"type": "string"}, "path": {"type": "string"}},
                 "required": ["url", "path"]}, ["browser", "filesystem_write"]),
+            ToolSchema("browser_web_search", "웹에서 최신 정보를 검색하고 출처와 함께 반환합니다", {
+                "type": "object", "properties": {
+                    "query": {"type": "string"},
+                    "max_results": {"type": "integer", "default": 5},
+                }, "required": ["query"]}, ["browser"]),
         ]
+
+    def get_intents(self) -> List[IntentSchema]:
+        return [
+            IntentSchema(
+                "web.search",
+                "최신·외부 정보를 실제 웹에서 검색",
+                "browser_web_search",
+                ["검색", "찾아봐", "알아봐", "확인해", "최신", "신형", "새로 나온", "출시"],
+                [SlotSchema("query", "검색할 전체 질문",
+                            "웹에서 무엇을 검색할지 알려주세요, 보스.")],
+                execution_hints=[
+                    "검색", "찾아", "알아봐", "확인", "알려", "무엇", "뭐",
+                ],
+                follow_up_hints=[
+                    "그럼", "그러면", "관련해서", "더 찾아", "다른", "맞아", "응", "어떤",
+                ],
+                utterance_patterns=[
+                    r"(?:20)?\d{2}년.*(?:최신|신형|새로|출시)",
+                    r"(?:최신|신형|최근|새로 나온).*(?:이름|무엇|뭐|알려|찾아)",
+                    r"(?:검색|찾아봐|알아봐|확인해)",
+                ],
+            )
+        ]
+
+    def extract_slots(self, intent_name: str, text: str,
+                      current_slots: Dict[str, Any]) -> Dict[str, Any]:
+        slots = dict(current_slots)
+        if intent_name != "web.search":
+            return slots
+        query = text.strip()
+        if query:
+            query = re.sub(
+                r"(?<!\d)(\d{2})년",
+                lambda match: f"{2000 + int(match.group(1))}년",
+                query,
+            )
+            # 후속 검색도 이전 문맥을 버리지 않고 새 질문과 결합한다.
+            previous = str(slots.get("query", "")).strip()
+            if previous and query != previous:
+                query = f"{previous}\n후속 질문: {query}"
+            slots["query"] = query
+        return slots
 
     @staticmethod
     def _validate_url(url: str) -> str:
@@ -66,6 +124,8 @@ class BrowserPlugin(BasePlugin):
             route.abort()
 
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
+        if tool_name == "browser_web_search":
+            return self._search_web(tool_input)
         if tool_name not in {"browser_get_text", "browser_screenshot"}:
             return f"오류: 알 수 없는 툴 '{tool_name}'"
         screenshot_path = None
@@ -100,3 +160,86 @@ class BrowserPlugin(BasePlugin):
                 return result
         except Exception as exc:
             return f"오류: 브라우저 실행 실패: {exc}"
+
+    @staticmethod
+    def _search_web(tool_input: Dict[str, Any]) -> str:
+        if DDGS is None:
+            return "오류: duckduckgo-search가 설치되지 않았습니다."
+        query = str(tool_input.get("query", "")).strip()
+        if not query:
+            return "오류: 검색어가 비어 있습니다."
+        limit = max(1, min(int(tool_input.get("max_results", 5)), 10))
+        try:
+            with DDGS() as ddgs:
+                rows = list(ddgs.text(query, max_results=limit))
+                rows.extend(ddgs.text(f"{query} official 공식", max_results=limit))
+            candidates = [
+                {
+                    "title": str(row.get("title", "")).strip(),
+                    "url": str(row.get("href", "")).strip(),
+                    "snippet": str(row.get("body", "")).strip(),
+                }
+                for row in rows if row.get("href")
+            ]
+            deduplicated = {item["url"]: item for item in candidates}
+            blocked_hosts = ("tiktok.com", "pinterest.", "facebook.com", "instagram.com")
+
+            def source_score(item):
+                host = (urlparse(item["url"]).hostname or "").casefold()
+                title = item["title"].casefold()
+                score = 0
+                if any(term in title for term in ("official", "공식", "newsroom", "media center")):
+                    score += 20
+                if any(term in host for term in ("newsroom", "media", "press")):
+                    score += 10
+                if any(term in host for term in blocked_hosts):
+                    score -= 100
+                if "forum" in host or "reddit.com" in host:
+                    score -= 20
+                return score
+
+            results = sorted(
+                deduplicated.values(), key=source_score, reverse=True
+            )[:limit]
+            if not results:
+                return "오류: 웹 검색 결과를 찾지 못했습니다."
+            return json.dumps({
+                "query": query,
+                "searched_at": datetime.now().astimezone().isoformat(),
+                "results": results,
+            }, ensure_ascii=False)
+        except Exception as exc:
+            return f"오류: 웹 검색 실패: {exc}"
+
+    def present_result(self, tool_name: str, result: str) -> str:
+        if tool_name != "browser_web_search":
+            return result
+        try:
+            payload = json.loads(result)
+            results = payload["results"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return result
+        from core.llm import get_llm_client
+
+        sources = "\n".join(
+            f"[{index}] {item['title']}\nURL: {item['url']}\n요약: {item['snippet']}"
+            for index, item in enumerate(results, 1)
+        )
+        prompt = (
+            f"현재 시각: {payload.get('searched_at', '')}\n"
+            f"사용자 검색 질문: {payload.get('query', '')}\n\n"
+            f"검색 결과:\n{sources}\n\n"
+            "검색 결과에 명시된 사실만 사용해 한국어로 답하세요. 결과가 질문의 연도나 대상을 "
+            "확실히 뒷받침하지 않으면 확인할 수 없다고 말하세요. 제품명·연도는 추측하지 마세요. "
+            "마지막에 근거로 사용한 URL을 '출처:' 아래에 그대로 적으세요."
+        )
+        answer = get_llm_client("reasoning").chat([
+            {"role": "system", "content": "당신은 검색 근거만 사용하는 사실 검증 담당자입니다."},
+            {"role": "user", "content": prompt},
+        ]).strip()
+        if not answer or answer.casefold().startswith(("오류:", "error:")):
+            return "웹 검색은 완료했지만 결과 요약에 실패했습니다.\n" + sources
+        cited_urls = [item["url"] for item in results if item["url"] in answer]
+        if not cited_urls:
+            return "웹 검색 결과의 출처를 검증하지 못해 답변을 생성하지 않았습니다.\n" + sources
+        return answer
