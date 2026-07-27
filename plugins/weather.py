@@ -1,10 +1,12 @@
 """Open-Meteo 기반 실제 현재 날씨 조회 플러그인."""
 from typing import Any, Dict, List
+from datetime import datetime
 import json
 import re
 import requests
 
 from core.plugin import BasePlugin, ToolSchema, IntentSchema, SlotSchema
+from core.tool_result import Artifact, Evidence, ToolRunResult
 
 
 class WeatherPlugin(BasePlugin):
@@ -63,12 +65,16 @@ class WeatherPlugin(BasePlugin):
             slots["location"] = candidate
         return slots
 
-    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
+    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
         if tool_name != "get_weather":
-            return f"오류: 알 수 없는 툴 '{tool_name}'"
+            return ToolRunResult.failed(
+                tool_name=tool_name, error=f"알 수 없는 툴 '{tool_name}'"
+            )
         location = str(tool_input.get("location", "")).strip()
         if not location:
-            return "오류: 날씨를 조회할 장소가 필요합니다."
+            return ToolRunResult.failed(
+                tool_name=tool_name, error="날씨를 조회할 장소가 필요합니다."
+            )
         try:
             queries = [location]
             queries.extend(english for korean, english in self.CITY_FALLBACKS.items() if korean in location)
@@ -83,7 +89,9 @@ class WeatherPlugin(BasePlugin):
                     geocoding_query = query
                     break
             if not matches:
-                return f"오류: 장소를 찾을 수 없습니다: {location}"
+                return ToolRunResult.failed(
+                    tool_name=tool_name, error=f"장소를 찾을 수 없습니다: {location}"
+                )
             place = matches[0]
             forecast = requests.get("https://api.open-meteo.com/v1/forecast", params={
                 "latitude": place["latitude"], "longitude": place["longitude"],
@@ -94,11 +102,17 @@ class WeatherPlugin(BasePlugin):
             forecast.raise_for_status()
             data = forecast.json()
             current, daily = data.get("current", {}), data.get("daily", {})
+            if not isinstance(current.get("temperature_2m"), (int, float)):
+                raise ValueError("현재 기온 관측값이 응답에 없습니다.")
+            if not current.get("time"):
+                raise ValueError("현재 날씨 관측 시각이 응답에 없습니다.")
             result = {
                 "source": "Open-Meteo", "requested_location": location,
+                "retrieved_at": datetime.now().astimezone().isoformat(),
                 "geocoding_query": geocoding_query,
                 "location_precision": "city" if geocoding_query != location else "exact",
                 "resolved_location": ", ".join(filter(None, [place.get("name"), place.get("admin2"), place.get("admin1"), place.get("country")])),
+                "latitude": place["latitude"], "longitude": place["longitude"],
                 "observed_at": current.get("time"), "temperature_c": current.get("temperature_2m"),
                 "apparent_temperature_c": current.get("apparent_temperature"),
                 "humidity_percent": current.get("relative_humidity_2m"), "weather_code": current.get("weather_code"),
@@ -107,9 +121,31 @@ class WeatherPlugin(BasePlugin):
                 "today_max_c": (daily.get("temperature_2m_max") or [None])[0],
                 "precipitation_probability_percent": (daily.get("precipitation_probability_max") or [None])[0],
             }
-            return json.dumps(result, ensure_ascii=False)
+            output = json.dumps(result, ensure_ascii=False)
+            return ToolRunResult.successful(
+                tool_name=tool_name,
+                raw_output=output,
+                evidence=[Evidence(
+                    "weather_observation",
+                    "Open-Meteo 위치 해석과 현재 날씨 응답을 확인했습니다.",
+                    {
+                        "provider": "Open-Meteo",
+                        "retrieved_at": result["retrieved_at"],
+                        "observed_at": result["observed_at"],
+                        "latitude": result["latitude"],
+                        "longitude": result["longitude"],
+                        "location_precision": result["location_precision"],
+                    },
+                )],
+                artifacts=[
+                    Artifact("url", "https://api.open-meteo.com/v1/forecast"),
+                    Artifact("url", "https://geocoding-api.open-meteo.com/v1/search"),
+                ],
+            )
         except Exception as exc:
-            return f"오류: 날씨 조회 실패: {exc}"
+            return ToolRunResult.failed(
+                tool_name=tool_name, error=f"날씨 조회 실패: {exc}"
+            )
 
     def present_result(self, tool_name: str, result: str) -> str:
         if tool_name != "get_weather" or result.startswith("오류:"):

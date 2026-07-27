@@ -1,13 +1,16 @@
 """Optional Playwright browser tools. Installation remains explicit."""
 import json
 import re
+import hashlib
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List
 from urllib.parse import urlparse
 import ipaddress
 import socket
 
 from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema
+from core.tool_result import Artifact, Evidence, ToolRunResult
 
 try:
     from ddgs import DDGS
@@ -123,22 +126,27 @@ class BrowserPlugin(BasePlugin):
         except ValueError:
             route.abort()
 
-    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
+    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
         if tool_name == "browser_web_search":
             return self._search_web(tool_input)
         if tool_name not in {"browser_get_text", "browser_screenshot"}:
-            return f"오류: 알 수 없는 툴 '{tool_name}'"
+            return ToolRunResult.failed(
+                tool_name=tool_name, error=f"알 수 없는 툴 '{tool_name}'"
+            )
         screenshot_path = None
         if tool_name == "browser_screenshot":
             from core.harness import SafetyLayer
             screenshot_path = str(tool_input.get("path", ""))
             ok, message = SafetyLayer.validate_path(screenshot_path)
             if not ok:
-                return f"오류: {message}"
+                return ToolRunResult.failed(tool_name=tool_name, error=message)
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            return "오류: playwright가 설치되지 않았습니다. requirements.txt와 브라우저 설치 단계를 확인하세요."
+            return ToolRunResult.failed(
+                tool_name=tool_name,
+                error="playwright가 설치되지 않았습니다. requirements.txt와 브라우저 설치 단계를 확인하세요.",
+            )
         try:
             url = self._validate_url(str(tool_input["url"]))
             with sync_playwright() as playwright:
@@ -150,24 +158,74 @@ class BrowserPlugin(BasePlugin):
                 if response is None or not response.ok:
                     status = response.status if response else "응답 없음"
                     browser.close()
-                    return f"오류: 페이지 응답 실패: {status}"
+                    return ToolRunResult.failed(
+                        tool_name=tool_name, error=f"페이지 응답 실패: {status}"
+                    )
+                retrieved_at = datetime.now().astimezone().isoformat()
+                final_url = page.url
+                status_code = response.status
                 if tool_name == "browser_get_text":
                     result = page.locator("body").inner_text()[:50000]
+                    tool_result = ToolRunResult.successful(
+                        tool_name=tool_name,
+                        raw_output=result,
+                        evidence=[Evidence(
+                            "http_page",
+                            "공개 웹 페이지의 HTTP 응답과 본문을 확인했습니다.",
+                            {
+                                "requested_url": url,
+                                "final_url": final_url,
+                                "status_code": status_code,
+                                "retrieved_at": retrieved_at,
+                                "characters": len(result),
+                                "sha256": hashlib.sha256(result.encode("utf-8")).hexdigest(),
+                            },
+                        )],
+                        artifacts=[Artifact("url", final_url)],
+                    )
                 else:
                     page.screenshot(path=screenshot_path, full_page=True)
-                    result = f"스크린샷 저장 성공: {screenshot_path}"
+                    screenshot = Path(screenshot_path).resolve()
+                    if not screenshot.is_file() or screenshot.stat().st_size <= 0:
+                        raise ValueError("스크린샷 파일이 생성되지 않았습니다.")
+                    tool_result = ToolRunResult.successful(
+                        tool_name=tool_name,
+                        raw_output=f"스크린샷 저장 성공: {screenshot}",
+                        evidence=[Evidence(
+                            "browser_screenshot",
+                            "페이지 응답과 저장된 스크린샷 파일을 확인했습니다.",
+                            {
+                                "requested_url": url,
+                                "final_url": final_url,
+                                "status_code": status_code,
+                                "retrieved_at": retrieved_at,
+                                "size": screenshot.stat().st_size,
+                            },
+                        )],
+                        artifacts=[
+                            Artifact("image", str(screenshot), {"format": "png"}),
+                            Artifact("url", final_url),
+                        ],
+                    )
                 browser.close()
-                return result
+                return tool_result
         except Exception as exc:
-            return f"오류: 브라우저 실행 실패: {exc}"
+            return ToolRunResult.failed(
+                tool_name=tool_name, error=f"브라우저 실행 실패: {exc}"
+            )
 
     @staticmethod
-    def _search_web(tool_input: Dict[str, Any]) -> str:
+    def _search_web(tool_input: Dict[str, Any]):
         if DDGS is None:
-            return "오류: duckduckgo-search가 설치되지 않았습니다."
+            return ToolRunResult.failed(
+                tool_name="browser_web_search",
+                error="duckduckgo-search가 설치되지 않았습니다.",
+            )
         query = str(tool_input.get("query", "")).strip()
         if not query:
-            return "오류: 검색어가 비어 있습니다."
+            return ToolRunResult.failed(
+                tool_name="browser_web_search", error="검색어가 비어 있습니다."
+            )
         limit = max(1, min(int(tool_input.get("max_results", 5)), 10))
         try:
             with DDGS() as ddgs:
@@ -179,7 +237,10 @@ class BrowserPlugin(BasePlugin):
                     "url": str(row.get("href", "")).strip(),
                     "snippet": str(row.get("body", "")).strip(),
                 }
-                for row in rows if row.get("href")
+                for row in rows
+                if row.get("href")
+                and urlparse(str(row.get("href"))).scheme in {"http", "https"}
+                and urlparse(str(row.get("href"))).netloc
             ]
             deduplicated = {item["url"]: item for item in candidates}
             blocked_hosts = ("tiktok.com", "pinterest.", "facebook.com", "instagram.com")
@@ -202,14 +263,38 @@ class BrowserPlugin(BasePlugin):
                 deduplicated.values(), key=source_score, reverse=True
             )[:limit]
             if not results:
-                return "오류: 웹 검색 결과를 찾지 못했습니다."
-            return json.dumps({
+                return ToolRunResult.failed(
+                    tool_name="browser_web_search",
+                    error="웹 검색 결과를 찾지 못했습니다.",
+                )
+            searched_at = datetime.now().astimezone().isoformat()
+            output = json.dumps({
                 "query": query,
-                "searched_at": datetime.now().astimezone().isoformat(),
+                "searched_at": searched_at,
                 "results": results,
             }, ensure_ascii=False)
+            return ToolRunResult.successful(
+                tool_name="browser_web_search",
+                raw_output=output,
+                evidence=[Evidence(
+                    "web_search_sources",
+                    f"웹 검색 결과 {len(results)}건의 출처 URL을 확인했습니다.",
+                    {
+                        "provider": "DDGS",
+                        "query": query,
+                        "searched_at": searched_at,
+                        "source_count": len(results),
+                    },
+                )],
+                artifacts=[
+                    Artifact("url", item["url"], {"title": item["title"]})
+                    for item in results
+                ],
+            )
         except Exception as exc:
-            return f"오류: 웹 검색 실패: {exc}"
+            return ToolRunResult.failed(
+                tool_name="browser_web_search", error=f"웹 검색 실패: {exc}"
+            )
 
     def present_result(self, tool_name: str, result: str) -> str:
         if tool_name != "browser_web_search":

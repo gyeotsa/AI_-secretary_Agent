@@ -5,6 +5,7 @@ from core.plugin import PluginRegistry
 from core.verifier import ToolVerifier
 from core.tts_normalizer import normalize_for_tts
 from plugins.browser import BrowserPlugin
+from core.tool_result import ToolRunResult
 
 
 def _router():
@@ -80,3 +81,29 @@ def test_tts_does_not_read_source_urls():
         "최신 제품은 GTS입니다.\n출처: https://example.com/product"
     )
     assert spoken == "최신 제품은 지티에스입니다."
+
+
+def test_web_search_returns_typed_source_evidence(monkeypatch):
+    class FakeDDGS:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def text(self, query, max_results):
+            return [{
+                "title": "Official Product",
+                "href": "https://example.com/product",
+                "body": f"{query} 결과",
+            }]
+
+    monkeypatch.setattr("plugins.browser.DDGS", FakeDDGS)
+    result = BrowserPlugin().execute_tool(
+        "browser_web_search", {"query": "최신 제품", "max_results": 3}
+    )
+    assert isinstance(result, ToolRunResult)
+    assert result.succeeded
+    assert result.evidence[0].kind == "web_search_sources"
+    assert result.evidence[0].data["provider"] == "DDGS"
+    assert result.artifacts[0].uri == "https://example.com/product"
