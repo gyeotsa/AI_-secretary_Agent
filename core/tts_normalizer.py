@@ -57,8 +57,6 @@ def _clock(match: re.Match) -> str:
 def _english_to_hangul(match: re.Match) -> str:
     global _G2P
     token = match.group(0)
-    if token.isupper() and len(token) <= 6:
-        return token
     if convert_eng is None or G2p is None:
         return token
     if _G2P is None:
@@ -102,5 +100,5 @@ def normalize_for_tts(text: str) -> str:
         value,
     )
     value = re.sub(r"\b[A-Za-z][A-Za-z'-]*\b", _english_to_hangul, value)
-    value = re.sub(r"\b\d+\b", lambda m: _sino_number(m.group(0)), value)
+    value = re.sub(r"(?<!\d)\d+(?!\d)", lambda m: _sino_number(m.group(0)), value)
     return re.sub(r"\s+", " ", value).strip()

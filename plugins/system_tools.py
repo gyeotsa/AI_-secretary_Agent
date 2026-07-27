@@ -5,6 +5,7 @@ System Tools Plugin for Jarvis
 """
 from core.plugin import BasePlugin, ToolSchema, IntentSchema
 from datetime import datetime
+import re
 
 class SystemToolsPlugin(BasePlugin):
     def __init__(self):
@@ -41,6 +42,16 @@ class SystemToolsPlugin(BasePlugin):
                 description="현재 실제로 등록된 플러그인과 제공 도구 목록을 조회합니다",
                 input_schema={"type": "object", "properties": {}, "required": []},
                 required_permissions=[]
+            ),
+            ToolSchema(
+                name="repeat_text",
+                description="사용자가 지정한 문자열을 변경하지 않고 그대로 반환해 읽습니다",
+                input_schema={
+                    "type": "object",
+                    "properties": {"text": {"type": "string", "description": "읽을 문자열"}},
+                    "required": ["text"],
+                },
+                required_permissions=[],
             )
         ]
 
@@ -56,7 +67,28 @@ class SystemToolsPlugin(BasePlugin):
                 ["오늘 날짜", "현재 날짜", "오늘 며칠", "몇 일이야", "몇일이야"],
                 [], execution_hints=["날짜", "며칠", "몇 일", "몇일"],
             ),
+            IntentSchema(
+                "speech.repeat_text", "지정 문자열 그대로 읽기", "repeat_text",
+                ["읽어봐", "읽어 줘", "읽어줘", "발음해", "말해봐"],
+                [],
+                execution_hints=["읽어", "발음", "말해"],
+            ),
         ]
+
+    def extract_slots(self, intent_name: str, text: str, current_slots: dict) -> dict:
+        slots = dict(current_slots)
+        if intent_name != "speech.repeat_text":
+            return slots
+        value = re.sub(
+            r"(?:을|를)?\s*(?:한번\s*)?(?:읽어\s*봐|읽어\s*줘|발음해\s*봐|"
+            r"발음해\s*줘|말해\s*봐|말해\s*줘)\s*[?!.]*$",
+            "",
+            text.strip(),
+            flags=re.IGNORECASE,
+        ).strip(" \"'“”‘’")
+        if value:
+            slots["text"] = value
+        return slots
     
     def execute_tool(self, tool_name: str, tool_input: dict) -> str:
         if tool_name == "get_time":
@@ -70,6 +102,8 @@ class SystemToolsPlugin(BasePlugin):
                 f"{plugin.name}: {', '.join(tool.name for tool in plugin.get_tools())}"
                 for plugin in registry.plugins.values() if plugin.enabled
             )
+        elif tool_name == "repeat_text":
+            return str(tool_input.get("text", "")).strip()
         return f"오류: 알 수 없는 툴 '{tool_name}'"
 
     def present_result(self, tool_name: str, result: str) -> str:

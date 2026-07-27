@@ -39,15 +39,26 @@ class WeatherPlugin(BasePlugin):
         slots = dict(current_slots)
         if intent_name != "weather.current":
             return slots
-        candidate = re.sub(
-            r"(오늘|지금|현재|실시간|날씨|기온|온도|습도|비가?|오는지|어때|어떻게|"
-            r"알려\s*줘|알려줘|말해\s*줘|말해줘|확인해\s*줘|확인해줘|몇\s*도|야|요)",
-            " ",
-            text,
-            flags=re.IGNORECASE,
-        )
-        candidate = re.sub(r"(?<!\S)(?:은|는|이|가|에서|의|와|과)(?!\S)", " ", candidate)
-        candidate = re.sub(r"\s+", " ", candidate).strip(" ?!.,")
+        domain_pattern = r"(?:날씨|기온|온도|습도|비가?\s*(?:오는지|와|오니)?)"
+        parts = re.split(domain_pattern, text, maxsplit=1, flags=re.IGNORECASE)
+
+        def clean(fragment: str) -> str:
+            fragment = fragment.strip(" ?!.,")
+            fragment = re.sub(r"^(?:오늘|지금|현재|실시간)\s*", "", fragment)
+            fragment = re.sub(r"\s*(?:오늘|지금|현재|실시간)$", "", fragment)
+            fragment = re.sub(
+                r"(?:을|를)?\s*(?:알려\s*줄래|알려\s*줘|말해\s*줄래|말해\s*줘|"
+                r"확인해\s*줄래|확인해\s*줘|어때|어떻게|몇\s*도|인가요|이야|야|요)\s*$",
+                "",
+                fragment,
+                flags=re.IGNORECASE,
+            )
+            fragment = re.sub(r"(?:에서|의|은|는|이|가|을|를|와|과)\s*$", "", fragment)
+            return re.sub(r"\s+", " ", fragment).strip(" ?!.,")
+
+        before = clean(parts[0]) if parts else ""
+        after = clean(parts[1]) if len(parts) > 1 else ""
+        candidate = before or after
         if candidate and candidate not in {"여기", "이곳", "우리 동네"}:
             slots["location"] = candidate
         return slots

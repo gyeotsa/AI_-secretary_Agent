@@ -63,6 +63,17 @@ def test_weather_without_location_asks_instead_of_guessing():
     assert "어느 지역" in resolution.question
 
 
+def test_weather_polite_request_is_not_mistaken_for_a_location():
+    router, _registry = _router(WeatherPlugin())
+
+    resolution = router.resolve("오늘 날씨 알려줄래?")
+    detailed = router.resolve("서울시 구로구 항동의 날씨를 알려줘")
+
+    assert not resolution.ready
+    assert "location" not in resolution.slots
+    assert detailed.slots["location"] == "서울시 구로구 항동"
+
+
 def test_tts_normalizer_reads_words_clocks_numbers_and_units_naturally():
     spoken = normalize_for_tts("wet, 현재 17:05이고 25.7C, 습도 70%입니다.")
 
@@ -71,6 +82,19 @@ def test_tts_normalizer_reads_words_clocks_numbers_and_units_naturally():
     assert "이십오 점 칠 도" in spoken
     assert "칠십 퍼센트" in spoken
     assert "더블유" not in spoken
+
+
+def test_uppercase_dictionary_word_is_pronounced_as_a_word_not_an_acronym():
+    assert normalize_for_tts("GAME API GPU") == "게임 API GPU"
+
+
+def test_read_aloud_intent_returns_literal_text_without_llm_generation():
+    router, registry = _router(SystemToolsPlugin())
+    resolution = router.resolve("hello를 읽어봐")
+
+    assert resolution.ready
+    assert resolution.tool_name == "repeat_text"
+    assert registry.execute_tool(resolution.tool_name, resolution.slots) == "hello"
 
 
 def test_unrequested_cjk_output_is_removed_but_korean_prefix_survives():

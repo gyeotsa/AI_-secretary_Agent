@@ -555,7 +555,7 @@ class JarvisApp:
             print(f"[DEBUG] tool_executor.speak_text 호출 전")
             result = self.tool_executor.speak_text(text, self.audio_processor)
             print(f"[DEBUG] tool_executor.speak_text 반환값: {result}")
-            if "오류:" in result:
+            if result.lstrip().startswith("TTS 오류:"):
                 print(f"⚠️ TTS 오류: {result}")
                 print("💡 pyttsx3를 설치하세요: pip install pyttsx3")
         except Exception as e:
