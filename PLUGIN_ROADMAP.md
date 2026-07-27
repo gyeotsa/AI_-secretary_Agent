@@ -81,3 +81,6 @@
 - 내장 파일 쓰기·폴더 생성/삭제·명령 실행, 마이크·카메라 조회/캡처, 자동화
   작업/엔진도 직접 typed 결과 전환을 완료했다. 저장 후 내용·프로세스 종료 코드·
   장치 열거·이미지 파일·Scheduler DB와 스레드 상태를 실제 Evidence로 사용한다.
+- 프로필·환경설정·Knowledge Graph·Multi-Agent·STT/감지·Scheduler 호환 API와
+  구형 웹 검색·Vision·PDF·Excel 내장 Tool도 직접 typed 결과 전환을 완료했다.
+  모델 출력이나 장치 스트림처럼 아직 완결 증거가 없는 결과는 `unverified`로 남긴다.

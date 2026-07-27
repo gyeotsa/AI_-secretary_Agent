@@ -117,6 +117,12 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
   종료 코드·장치 열거·캡처 이미지 해시·Scheduler DB 레코드·실행 스레드를 성공
   증거로 사용합니다. 존재하지 않는 자동화 작업 ID의 활성화·삭제가 성공으로
   표시되던 오류도 차단했습니다.
+- 2026-07-27: 프로필·환경설정·Knowledge Graph·Multi-Agent·STT·감지 제어·
+  Scheduler 호환 API와 구형 웹 검색·Vision·PDF 추출·Excel 내장 Tool을 직접
+  typed 결과로 이전. DB 재조회·관계/작업 상태·전사 해시·스레드·출처 URL·입력
+  이미지/PDF·통합문서 재열기를 Evidence로 사용합니다. 최종 답변 사실성을 검증할
+  수 없는 Multi-Agent와 실제 스트림 개방 신호가 없는 감지 시작은 `unverified`로
+  유지합니다. PDF 전체 페이지 추출이 같은 페이지를 잘못 참조하던 오류도 수정했습니다.
 
 - [ ] 모든 Tool 결과를 `ToolRunResult` 타입으로 통일
 - [x] 중앙 ToolExecutor 반환 경계의 `status`, `output`, `error`, `artifacts`, `evidence`, `timing` 통일
@@ -127,9 +133,9 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
 - [ ] UI 표시, TTS, 기술 로그 Presenter 분리
 - [ ] 취소·부분 완료·재시도 상태를 사용자에게 정확히 표시
 
-현재 남은 P0 핵심 범위는 `core/tools.py`의 나머지 메모리·프로필·Knowledge
-Graph·Multi-Agent·STT/감지 제어·일부 Scheduler 호환 API 직접 이전, 일반 대화의
-실행 완료 주장 차단, Action Journal과 Presenter 상태 연결입니다.
+현재 남은 P0 핵심 범위는 GUI 직접 호출 호환 때문에 문자열을 유지하는 TTS 재생
+결과의 별도 계약, 일반 대화의 실행 완료 주장 차단, Action Journal과 Presenter
+상태 연결, 취소·부분 완료·재시도 사용자 표시입니다.
 
 수락 기준:
 

@@ -57,8 +57,12 @@ Tool도 직접 typed 결과로 이전했습니다. 파일 해시, 프로젝트 �
 엔진 상태도 직접 typed 결과로 이전했습니다. 저장 바이트와 해시, 삭제 후 부재,
 프로세스 종료 코드, 실제 장치 목록과 캡처 이미지, Scheduler DB와 실행 스레드를
 재확인하며 존재하지 않는 자동화 작업 ID는 실패 처리합니다.
+프로필·Knowledge Graph·Multi-Agent·STT/감지·Scheduler 호환 API와 구형 웹 검색·
+Vision·PDF·Excel 내장 Tool도 직접 typed 결과로 이전했습니다. 검증할 수 없는
+모델 해석과 장치 스트림 준비 전 상태는 성공으로 승격하지 않습니다. PDF 전체 추출의
+페이지 인덱스 오류와 중복 `add_document` 정의도 제거했습니다.
 
-현재 기본 자동 회귀 테스트 기준선은 `159 passed, 4 deselected`입니다. 이는
+현재 기본 자동 회귀 테스트 기준선은 `167 passed, 4 deselected`입니다. 이는
 네트워크·OAuth·실제 장치·Office COM·장시간 자동화를 모두 보증하는 수치는 아닙니다.
 
 ## 판정
