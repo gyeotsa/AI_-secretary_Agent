@@ -112,6 +112,11 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
   루트와 검색 건수·Memory 저장 후 재조회·RAG Chunk와 출처를 Evidence로 보존합니다.
   ProjectIndexer가 참조하지만 WorkspaceManager에 없던 `current_workspace` 연결
   속성도 복구했습니다.
+- 2026-07-27: 내장 파일 쓰기·폴더 생성/삭제·명령 실행과 마이크/카메라 조회·캡처,
+  자동화 작업/엔진 Tool을 직접 typed 결과로 이전. 저장 바이트·삭제 후 부재·프로세스
+  종료 코드·장치 열거·캡처 이미지 해시·Scheduler DB 레코드·실행 스레드를 성공
+  증거로 사용합니다. 존재하지 않는 자동화 작업 ID의 활성화·삭제가 성공으로
+  표시되던 오류도 차단했습니다.
 
 - [ ] 모든 Tool 결과를 `ToolRunResult` 타입으로 통일
 - [x] 중앙 ToolExecutor 반환 경계의 `status`, `output`, `error`, `artifacts`, `evidence`, `timing` 통일
@@ -121,6 +126,10 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
 - [ ] Action Journal에 Tool 입력·결과·검증 증거·지연 시간 연결
 - [ ] UI 표시, TTS, 기술 로그 Presenter 분리
 - [ ] 취소·부분 완료·재시도 상태를 사용자에게 정확히 표시
+
+현재 남은 P0 핵심 범위는 `core/tools.py`의 나머지 메모리·프로필·Knowledge
+Graph·Multi-Agent·STT/감지 제어·일부 Scheduler 호환 API 직접 이전, 일반 대화의
+실행 완료 주장 차단, Action Journal과 Presenter 상태 연결입니다.
 
 수락 기준:
 

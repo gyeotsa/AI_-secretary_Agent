@@ -29,8 +29,9 @@
 
 첫 전환 작업으로 `core/tool_result.py`에 상태·검증 증거·Artifact·소요 시간을 담는
 공통 계약을 추가했고, Executor의 Plugin Intent 실행과 자율 Tool 검증 경로가
-`ToolRunResult.succeeded`를 기준으로 완료 여부를 판단하도록 연결했습니다. 다만
-개별 Tool 구현은 아직 문자열을 반환하므로 P0는 진행 중입니다.
+`ToolRunResult.succeeded`를 기준으로 완료 여부를 판단하도록 연결했습니다. 주요
+실행 Tool은 직접 typed 결과로 이전했지만 일부 레거시 내장 Tool이 남아 있어 P0는
+진행 중입니다.
 전용 검증기가 없는 Tool을 일반 성공으로 처리하던 fallback은 제거했으며, 이제
 해당 실행은 `unverified` 상태로 남고 사용자에게도 완료로 보고되지 않습니다.
 Plugin SDK는 `str | ToolRunResult` 점진 이전을 지원하고, 파일시스템의 생성·수정
@@ -52,8 +53,12 @@ System Tools도 로컬 시계·타임존과 Plugin Registry 스냅샷 Evidence�
 Tool도 직접 typed 결과로 이전했습니다. 파일 해시, 프로젝트 루트·검색 건수,
 메모리 영속성, RAG Chunk·출처를 확인하며 Workspace와 Indexer 사이의 누락된
 `current_workspace` 연결도 수정했습니다.
+파일 쓰기·폴더 생성/삭제·명령 실행, 마이크·카메라 목록과 캡처, 자동화 작업과
+엔진 상태도 직접 typed 결과로 이전했습니다. 저장 바이트와 해시, 삭제 후 부재,
+프로세스 종료 코드, 실제 장치 목록과 캡처 이미지, Scheduler DB와 실행 스레드를
+재확인하며 존재하지 않는 자동화 작업 ID는 실패 처리합니다.
 
-현재 기본 자동 회귀 테스트 기준선은 `155 passed, 4 deselected`입니다. 이는
+현재 기본 자동 회귀 테스트 기준선은 `159 passed, 4 deselected`입니다. 이는
 네트워크·OAuth·실제 장치·Office COM·장시간 자동화를 모두 보증하는 수치는 아닙니다.
 
 ## 판정

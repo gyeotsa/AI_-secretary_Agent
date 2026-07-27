@@ -71,9 +71,18 @@
 - Semantic Memory 추가는 저장 후 재조회, 삭제는 삭제 후 부재를 검증한다. RAG 추가는
   `documents` 저장소의 Chunk, 검색은 결과 source, 목록은 실제 catalog를 Evidence로
   반환한다.
-- 회귀 테스트 기준선: `155 passed, 4 deselected`.
-- 이번 연결은 하위 호환 단계다. 개별 Tool은 아직 문자열을 반환하므로 Plugin
-  구현 자체가 `ToolRunResult`를 직접 반환하도록 순차 이전하는 P0 작업이 남아 있다.
+- 내장 파일 쓰기·폴더 생성/삭제는 저장 바이트·해시와 삭제 후 부재를, 명령 실행은
+  실제 종료 코드와 stdout/stderr 해시를 Evidence로 직접 반환한다.
+- 마이크·카메라 목록은 시스템 장치 열거 결과를 반환하고, 카메라 캡처는 생성된
+  이미지의 크기·SHA-256을 확인한 경우에만 성공한다.
+- 자동화 작업은 Scheduler DB 재조회, 엔진 시작/중지는 실제 실행 상태와 스레드
+  생존 여부를 확인한다. 존재하지 않는 작업 ID의 활성화·삭제를 성공 처리하던
+  문제도 수정했다.
+- 코드 커밋: `efbc300` (`[Feat] 파일 장치 자동화 결과 직접 검증`)
+- 회귀 테스트 기준선: `159 passed, 4 deselected`.
+- 다음 해야 할 일: 남은 레거시 메모리·프로필·Knowledge Graph·Multi-Agent·STT/
+  감지 제어·Scheduler 호환 API를 직접 typed 결과로 이전한 뒤, 일반 대화의 실행
+  완료 주장 차단과 Action Journal·Presenter 상태 연결을 완료한다.
 
 ## 2026-07-27 웹 검색 답변 길이와 출처 표시 간소화
 
