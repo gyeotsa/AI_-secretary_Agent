@@ -7,6 +7,16 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-07-27 Workspace 실제 프로젝트·파일 생성 연결
+
+- 첨부 로그의 `launch_monitor 프로젝트가 생성되었습니다`와 `launch_monitor.py가 생성되었습니다`에는 Tool 호출·Verifier 로그가 없었다. Registry가 해당 실행 intent를 제공하지 않아 일반 대화 LLM이 성공 문장만 생성한 것이 원인이었다.
+- Filesystem Plugin에 범용 `filesystem.create_project`와 `filesystem.create_file` Intent/Slot 계약을 추가했다. 프로젝트명이나 확장자를 포함한 파일명이 없으면 추측해서 성공 처리하지 않고 사용자에게 필요한 이름을 질문한다.
+- 상단에서 명시적으로 선택한 Workspace를 생성 루트로 사용한다. 경로 정규화 후 Workspace 외부로 벗어나는 이름은 차단하며, 프로젝트 생성이 성공하면 이어지는 파일 작업이 프로젝트 내부에서 실행되도록 새 폴더를 현재 Workspace로 전환한다.
+- 생성 도구는 JSON으로 실제 절대 경로를 반환하고 `ToolVerifier`가 해당 디렉터리 또는 파일이 디스크에 존재하는지 확인한 경우에만 성공 문장을 표시한다.
+- 도구 실행으로 Workspace가 변경되면 응답 시 UI의 폴더명·경로도 새 Workspace로 갱신한다.
+- `get_workspace_info()`가 설정 여부를 반대로 판단하던 조건문 오류를 수정했다.
+- 프로젝트명 질문→후속 답변→실제 폴더 생성, 파일명 질문→후속 답변→실제 파일 생성 및 존재 검증 테스트를 추가했다.
+
 ## 2026-07-27 내부 작업 ID 숨김 및 실제 알람 실행 연결
 
 - Executor가 확인 질문 뒤에 붙이는 `대기 작업 ID: ...`는 내부 추적 정보이므로 일반 UI와 TTS 응답에서는 `ResponsePresenter`가 제거한다. 원본 Executor 응답은 디버그 로그에 유지되어 문제 추적에는 영향이 없다.

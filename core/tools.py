@@ -240,7 +240,7 @@ class ToolExecutor:
 
     def get_workspace_info(self) -> str:
         """현재 Workspace 정보를 반환합니다."""
-        if not self.workspace.is_set():
+        if self.workspace.is_set():
             info = self.workspace.get_info()
             return (f"Workspace: {info.name}\n"
                     f"경로: {info.path}\n"

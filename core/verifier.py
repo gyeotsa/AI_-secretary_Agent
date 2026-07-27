@@ -1,5 +1,7 @@
 
+import json
 import os
+from pathlib import Path
 from typing import Dict, Any, Optional, Callable
 from dataclasses import dataclass
 
@@ -23,6 +25,8 @@ class ToolVerifier:
             "write_file": self._verify_write_file,
             "read_file": self._verify_read_file,
             "create_directory": self._verify_create_directory,
+            "filesystem_create_project": self._verify_created_path_result,
+            "filesystem_create_file": self._verify_created_path_result,
             "delete_directory": self._verify_delete_directory,
             "create_excel_file": self._verify_create_excel_file,
             "write_excel_cell": self._verify_write_excel_cell,
@@ -36,6 +40,24 @@ class ToolVerifier:
             "pdf_create_document": self._verify_created_file,
             "hwpx_create_document": self._verify_created_file,
         }
+
+    def _verify_created_path_result(
+        self, tool_input: Dict[str, Any], result: str
+    ) -> VerificationResult:
+        """파일시스템 생성 도구의 구조화 결과와 실제 경로를 함께 검증한다."""
+        try:
+            payload = json.loads(result)
+            path = payload.get("path", "")
+            expected_type = payload.get("type")
+            if payload.get("status") != "created" or not path:
+                return VerificationResult(False, f"생성 성공 결과가 아닙니다: {result}")
+            target = Path(path)
+            exists = target.is_dir() if expected_type == "directory" else target.is_file()
+            if not exists:
+                return VerificationResult(False, f"생성 결과 경로가 존재하지 않습니다: {path}")
+            return VerificationResult(True, f"실제 생성 경로 확인 성공: {path}")
+        except (json.JSONDecodeError, TypeError, AttributeError) as exc:
+            return VerificationResult(False, f"생성 결과 검증 오류: {exc}")
 
     def verify(self, tool_name: str, tool_input: Dict[str, Any], result: str) -> VerificationResult:
         """

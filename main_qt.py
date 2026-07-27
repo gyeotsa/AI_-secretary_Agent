@@ -438,6 +438,10 @@ class JarvisApp:
         
         print("[DEBUG] Calling window.show_assistant_text")
         self.window.show_assistant_text(response_text)
+        workspace_manager = getattr(self, "workspace_manager", None)
+        if workspace_manager is not None and workspace_manager.is_set():
+            workspace_info = workspace_manager.get_info()
+            self.window.set_workspace_info(workspace_info.name, workspace_info.path)
         
         # [GAME] / [WORK] 모드 처리
         if response_text.startswith("[GAME]"):
