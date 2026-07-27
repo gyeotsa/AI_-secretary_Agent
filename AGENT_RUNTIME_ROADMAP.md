@@ -84,6 +84,10 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
 - 2026-07-27: 전용 검증기가 없는 Tool을 자동 성공시키던 기본 분기를 제거하고
   `unverified`로 판정하도록 변경. 미검증 실행은 사용자 응답과 Task 상태에서도
   완료로 확정하지 않습니다.
+- 2026-07-27: Plugin SDK와 Registry가 전환 기간 동안 `str | ToolRunResult`를
+  함께 지원하도록 반환 경계를 확장. 파일시스템의 프로젝트·파일 생성과 파일
+  수정 Tool은 실제 경로·크기·해시 Evidence와 Artifact를 담은 `ToolRunResult`를
+  직접 반환하는 첫 Plugin으로 이전했습니다.
 
 - [ ] 모든 Tool 결과를 `ToolRunResult` 타입으로 통일
 - [ ] `status`, `output`, `error`, `artifacts`, `evidence`, `timing` 필수화

@@ -23,7 +23,16 @@
   Executor와 Recovery는 이를 성공이나 복구 성공으로 취급하지 않는다.
 - Windows 앱 실행은 PID 존재, 창 종료는 대상 창 부재, 별칭 추가는 실제 사용자
   별칭 저장소를 각각 확인하는 전용 Verifier를 연결했다.
-- 회귀 테스트 기준선: `141 passed, 4 deselected`.
+- Plugin SDK·Registry·ToolExecutor가 `str | ToolRunResult`를 함께 처리하도록
+  점진 이전 경계를 추가했다. `ToolRunResult.__str__`은 전환 기간의 레거시
+  소비자에 원문 결과만 제공한다.
+- 파일시스템 프로젝트 생성·파일 생성·파일 수정 Tool은 `ToolRunResult`를 직접
+  반환한다. 실제 경로·크기·변경 전후 SHA-256을 Evidence로, 생성·수정 대상을
+  Artifact로 기록하며 오류도 typed failure로 반환한다.
+- Executor는 직접 typed 결과를 재문자열 검증하지 않고 보존하되 Tool 이름 불일치는
+  실패 처리한다. ReAct·Multi-Agent·Scratchpad는 typed/legacy 결과를 모두 안전하게
+  소비하도록 호환 처리했다.
+- 회귀 테스트 기준선: `143 passed, 4 deselected`.
 - 이번 연결은 하위 호환 단계다. 개별 Tool은 아직 문자열을 반환하므로 Plugin
   구현 자체가 `ToolRunResult`를 직접 반환하도록 순차 이전하는 P0 작업이 남아 있다.
 
