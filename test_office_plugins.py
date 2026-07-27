@@ -23,6 +23,10 @@ def _run(plugin, tool, data):
     return result
 
 
+def _raw(result):
+    return result.raw_output if isinstance(result, ToolRunResult) else result
+
+
 def test_office_plugins_create_and_read_real_files(tmp_path, monkeypatch):
     monkeypatch.setattr("config.Config.API_CONFIG.ALLOWED_PATHS", [str(tmp_path)])
     xlsx=tmp_path/"업무.xlsx"; excel=ExcelPlugin()
@@ -52,7 +56,7 @@ def test_registry_exposes_office_and_windows_tools(monkeypatch):
     names={tool.name for tool in registry.get_all_tools()}
     assert {"excel_create_workbook","word_create_document","powerpoint_create_presentation","pdf_create_document","hwpx_create_document","windows_launch_app"} <= names
     monkeypatch.setattr(WindowsControlPlugin,"_discover_executables",lambda *_args:[])
-    assert WindowsControlPlugin().execute_tool("windows_launch_app",{"target":"definitely-not-installed-jarvis-app"}).startswith("오류:")
+    assert _raw(WindowsControlPlugin().execute_tool("windows_launch_app",{"target":"definitely-not-installed-jarvis-app"})).startswith("오류:")
 
 
 def test_document_intents_resolve_desktop_paths_without_core_branches():
@@ -121,6 +125,25 @@ def test_windows_auto_elevates_once_on_winerror_740(tmp_path, monkeypatch):
     assert result==f"UAC:{target}"
 
 
+def test_windows_direct_launch_returns_verified_process(tmp_path, monkeypatch):
+    target=tmp_path/"app.exe"; target.write_bytes(b"MZ")
+    plugin=WindowsControlPlugin()
+    monkeypatch.setattr(plugin,"_resolve_target",lambda _target:str(target))
+
+    class Process:
+        pid=4321
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr("plugins.windows_control.subprocess.Popen",lambda *_a,**_k:Process())
+    result=plugin.execute_tool("windows_launch_app",{"target":"app"})
+    assert isinstance(result,ToolRunResult)
+    assert result.succeeded
+    assert result.evidence[0].kind=="process_state"
+    assert result.evidence[0].data["pid"]==4321
+
+
 def test_windows_discovers_per_user_electron_install(tmp_path, monkeypatch):
     local=tmp_path/"Local"; executable=local/"Discord"/"app-1.2.3"/"Discord.exe"
     executable.parent.mkdir(parents=True); executable.write_bytes(b"MZ")
@@ -152,7 +175,9 @@ def test_windows_resolves_and_launches_start_menu_shortcut(tmp_path, monkeypatch
     monkeypatch.setattr(WindowsControlPlugin,"_shortcut_apps",lambda:{"discord":str(shortcut)})
     launched=[]; monkeypatch.setattr("plugins.windows_control.os.startfile",lambda path:launched.append(path))
     result=plugin.execute_tool("windows_launch_app",{"target":"Discord"})
-    assert result.startswith("Windows 시작 메뉴 앱 실행 요청 성공:")
+    assert isinstance(result,ToolRunResult)
+    assert result.status==ToolRunStatus.UNVERIFIED
+    assert result.raw_output.startswith("Windows 시작 메뉴 앱 실행 요청 성공:")
     assert launched==[str(shortcut)]
 
 
@@ -166,11 +191,13 @@ def test_windows_alias_intent_and_crud_tools(tmp_path, monkeypatch):
     assert resolution.tool_name=="windows_add_app_aliases"
     assert resolution.slots=={"target":"Discord","aliases":["디스코드","디코"]}
     added=plugin.execute_tool(resolution.tool_name,resolution.slots)
-    assert added.startswith("앱 별칭 추가 성공:")
+    assert isinstance(added,ToolRunResult) and added.succeeded
+    assert added.raw_output.startswith("앱 별칭 추가 성공:")
     assert plugin._aliases()["디스코드"]==str(shortcut)
-    assert "디코" in plugin.execute_tool("windows_list_app_aliases",{})
+    assert "디코" in _raw(plugin.execute_tool("windows_list_app_aliases",{}))
     removed=plugin.execute_tool("windows_remove_app_aliases",{"aliases":["디코"]})
-    assert removed.startswith("앱 별칭 삭제 성공:")
+    assert isinstance(removed,ToolRunResult) and removed.succeeded
+    assert removed.raw_output.startswith("앱 별칭 삭제 성공:")
     assert "디코" not in plugin._user_aliases()
 
 
@@ -198,5 +225,7 @@ def test_windows_close_alias_resolves_window_and_requests_graceful_close(monkeyp
     assert resolution.ready
     assert resolution.tool_name == "windows_close_app"
     assert resolution.slots == {"target": "디코"}
-    assert result == "앱 종료 요청 성공: Discord"
+    assert isinstance(result,ToolRunResult)
+    assert result.succeeded
+    assert result.raw_output == "앱 종료 요청 성공: Discord"
     assert window.closed

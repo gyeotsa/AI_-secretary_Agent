@@ -12,6 +12,7 @@ import winreg
 import pygetwindow
 
 from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema
+from core.tool_result import Artifact, Evidence, ToolRunResult, ToolRunStatus
 
 
 class WindowsControlPlugin(BasePlugin):
@@ -298,47 +299,80 @@ class WindowsControlPlugin(BasePlugin):
         return str(resolved or "")
 
     @staticmethod
-    def _run_elevated(executable: str, arguments: List[str]) -> str:
+    def _run_elevated(executable: str, arguments: List[str]):
         parameters = subprocess.list2cmdline(arguments) if arguments else None
         code = ctypes.windll.shell32.ShellExecuteW(None, "runas", executable, parameters, str(Path(executable).parent), 1)
         if code <= 32:
-            return f"오류: Windows UAC 실행 요청 실패 (코드: {code})"
-        return f"Windows 관리자 권한 실행 요청 성공: {executable}. UAC 창에서 승인해 주세요."
+            return ToolRunResult.failed(
+                tool_name="windows_launch_app",
+                error=f"Windows UAC 실행 요청 실패 (코드: {code})",
+            )
+        return ToolRunResult(
+            tool_name="windows_launch_app",
+            status=ToolRunStatus.UNVERIFIED,
+            raw_output=f"Windows 관리자 권한 실행 요청 성공: {executable}. UAC 창에서 승인해 주세요.",
+            evidence=[Evidence(
+                "uac_request",
+                "Windows에 관리자 권한 실행 요청을 전달했지만 사용자 승인은 아직 확인되지 않았습니다.",
+                {"executable": executable, "shell_execute_code": code},
+            )],
+            artifacts=[Artifact("executable", executable)],
+        )
 
-    def execute_tool(self, name: str, data: Dict[str, Any]) -> str:
+    def execute_tool(self, name: str, data: Dict[str, Any]):
         try:
             if name == "windows_add_app_aliases":
                 target = str(data.get("target", "")).strip()
                 raw_aliases = data.get("aliases") or []
                 aliases = list(dict.fromkeys(str(item).strip() for item in raw_aliases if str(item).strip()))
                 if not target or not aliases:
-                    return "오류: 대상 프로그램과 하나 이상의 별칭이 필요합니다."
+                    return ToolRunResult.failed(tool_name=name,error="대상 프로그램과 하나 이상의 별칭이 필요합니다.")
                 if len(aliases) > 20 or any(len(alias) > 80 for alias in aliases):
-                    return "오류: 별칭 개수 또는 길이가 허용 범위를 초과했습니다."
+                    return ToolRunResult.failed(tool_name=name,error="별칭 개수 또는 길이가 허용 범위를 초과했습니다.")
                 resolved = self._resolve_target(target)
                 if not resolved:
-                    return f"오류: 별칭을 연결할 프로그램을 찾지 못했습니다: {target}"
+                    return ToolRunResult.failed(tool_name=name,error=f"별칭을 연결할 프로그램을 찾지 못했습니다: {target}")
                 user_aliases = self._user_aliases()
                 for alias in aliases:
                     user_aliases[alias.casefold()] = resolved
                 self._write_user_aliases(user_aliases)
-                return f"앱 별칭 추가 성공: {', '.join(aliases)} → {resolved}"
+                saved = self._user_aliases()
+                if any(saved.get(alias.casefold()) != resolved for alias in aliases):
+                    raise ValueError("사용자 별칭 저장 결과가 요청과 일치하지 않습니다.")
+                return ToolRunResult.successful(
+                    tool_name=name,
+                    raw_output=f"앱 별칭 추가 성공: {', '.join(aliases)} → {resolved}",
+                    evidence=[Evidence("app_alias_store","사용자 앱 별칭 저장을 확인했습니다.",{"aliases":aliases,"resolved":resolved})],
+                    artifacts=[Artifact("executable",resolved,{"aliases":aliases})],
+                )
             if name == "windows_list_app_aliases":
-                return json.dumps(self._user_aliases(), ensure_ascii=False, indent=2)
+                aliases = self._user_aliases()
+                return ToolRunResult.successful(
+                    tool_name=name,
+                    raw_output=json.dumps(aliases, ensure_ascii=False, indent=2),
+                    evidence=[Evidence("app_alias_store",f"사용자 앱 별칭 {len(aliases)}개를 조회했습니다.",{"count":len(aliases)})],
+                )
             if name == "windows_remove_app_aliases":
                 aliases = [str(item).strip() for item in data.get("aliases") or [] if str(item).strip()]
                 if not aliases:
-                    return "오류: 삭제할 별칭이 필요합니다."
+                    return ToolRunResult.failed(tool_name=name,error="삭제할 별칭이 필요합니다.")
                 user_aliases = self._user_aliases()
                 removed = [alias for alias in aliases if user_aliases.pop(alias.casefold(), None) is not None]
                 if not removed:
-                    return "오류: 삭제할 사용자 별칭을 찾지 못했습니다."
+                    return ToolRunResult.failed(tool_name=name,error="삭제할 사용자 별칭을 찾지 못했습니다.")
                 self._write_user_aliases(user_aliases)
-                return f"앱 별칭 삭제 성공: {', '.join(removed)}"
+                saved = self._user_aliases()
+                if any(alias.casefold() in saved for alias in removed):
+                    raise ValueError("삭제한 별칭이 저장소에 남아 있습니다.")
+                return ToolRunResult.successful(
+                    tool_name=name,
+                    raw_output=f"앱 별칭 삭제 성공: {', '.join(removed)}",
+                    evidence=[Evidence("app_alias_store","사용자 앱 별칭 삭제를 확인했습니다.",{"removed":removed})],
+                )
             if name == "windows_find_apps":
                 query = str(data.get("query", "")).strip()
                 if not query:
-                    return "오류: 검색할 프로그램 이름이 필요합니다."
+                    return ToolRunResult.failed(tool_name=name,error="검색할 프로그램 이름이 필요합니다.")
                 limit = max(1, min(int(data.get("max_results", 20)), 100))
                 sources = {**self._registered_apps(), **self._shortcut_apps(), **self._catalog()}
                 found = [(key, value) for key, value in sources.items()
@@ -349,20 +383,31 @@ class WindowsControlPlugin(BasePlugin):
                         pair = (path.name.casefold(), str(path))
                         if pair not in found:
                             found.append(pair)
-                return "\n".join(f"{key}: {value}" for key, value in found[:limit]) if found else "검색 결과가 없습니다."
+                output = "\n".join(f"{key}: {value}" for key, value in found[:limit]) if found else "검색 결과가 없습니다."
+                return ToolRunResult.successful(
+                    tool_name=name,
+                    raw_output=output,
+                    evidence=[Evidence("app_discovery",f"Windows 앱 검색 후보 {len(found[:limit])}개를 확인했습니다.",{"query":query,"count":len(found[:limit])})],
+                    artifacts=[Artifact("executable",value,{"name":key}) for key,value in found[:limit]],
+                )
             if name == "windows_focus_window":
                 wins = pygetwindow.getWindowsWithTitle(str(data["title"]))
                 if not wins:
-                    return "오류: 일치하는 창이 없습니다."
+                    return ToolRunResult.failed(tool_name=name,error="일치하는 창이 없습니다.")
                 win = wins[0]
                 if win.isMinimized:
                     win.restore()
                 win.activate()
-                return f"창 활성화 성공: {win.title}"
+                return ToolRunResult.successful(
+                    tool_name=name,
+                    raw_output=f"창 활성화 성공: {win.title}",
+                    evidence=[Evidence("window_state","대상 창 복원·활성화 요청을 적용했습니다.",{"title":win.title,"minimized":bool(win.isMinimized)})],
+                    artifacts=[Artifact("window",win.title)],
+                )
             if name == "windows_close_app":
                 target = str(data.get("target", "")).strip()
                 if not target:
-                    return "오류: 종료할 프로그램 이름이 필요합니다."
+                    return ToolRunResult.failed(tool_name=name,error="종료할 프로그램 이름이 필요합니다.")
                 resolved = self._resolve_target(target)
                 keywords = {target.casefold()}
                 if resolved:
@@ -374,30 +419,58 @@ class WindowsControlPlugin(BasePlugin):
                     if window.title and any(key in window.title.casefold() for key in keywords)
                 ]
                 if not windows:
-                    return f"오류: 종료할 앱 창을 찾지 못했습니다: {target}"
+                    return ToolRunResult.failed(tool_name=name,error=f"종료할 앱 창을 찾지 못했습니다: {target}")
                 title = windows[0].title
                 windows[0].close()
-                return f"앱 종료 요청 성공: {title}"
+                remaining = [
+                    window for window in pygetwindow.getAllWindows()
+                    if window.title and window.title.casefold() == title.casefold()
+                    and not bool(getattr(window, "closed", False))
+                ]
+                if remaining:
+                    return ToolRunResult(
+                        tool_name=name,status=ToolRunStatus.UNVERIFIED,
+                        raw_output=f"앱 종료 요청 성공: {title}",
+                        evidence=[Evidence("window_close_request","창 종료 요청은 전달했지만 창 소멸은 아직 확인되지 않았습니다.",{"title":title})],
+                        artifacts=[Artifact("window",title)],
+                    )
+                return ToolRunResult.successful(
+                    tool_name=name,
+                    raw_output=f"앱 종료 요청 성공: {title}",
+                    evidence=[Evidence("window_absent","종료 요청 후 대상 창이 사라진 것을 확인했습니다.",{"title":title})],
+                )
             if name == "windows_launch_app":
                 resolved = self._resolve_target(str(data["target"]))
                 if not resolved:
-                    return "오류: 실행 파일을 자동으로 찾지 못했습니다. 검색 위치를 추가하거나 설치 상태를 확인하세요."
+                    return ToolRunResult.failed(tool_name=name,error="실행 파일을 자동으로 찾지 못했습니다. 검색 위치를 추가하거나 설치 상태를 확인하세요.")
                 arguments = [str(item) for item in data.get("arguments") or []]
                 if len(arguments) > 32:
-                    return "오류: 인자가 너무 많습니다."
+                    return ToolRunResult.failed(tool_name=name,error="인자가 너무 많습니다.")
                 elevation = str(data.get("elevation", "auto")).casefold()
                 if elevation == "always":
                     return self._run_elevated(resolved, arguments)
                 try:
                     if Path(resolved).suffix.casefold() == ".lnk":
                         os.startfile(resolved)
-                        return f"Windows 시작 메뉴 앱 실행 요청 성공: {resolved}"
+                        return ToolRunResult(
+                            tool_name=name,status=ToolRunStatus.UNVERIFIED,
+                            raw_output=f"Windows 시작 메뉴 앱 실행 요청 성공: {resolved}",
+                            evidence=[Evidence("shortcut_launch_request","Windows 시작 메뉴 바로가기에 실행 요청을 전달했습니다.",{"shortcut":resolved})],
+                            artifacts=[Artifact("shortcut",resolved)],
+                        )
                     process = subprocess.Popen([resolved, *arguments], shell=False)
-                    return f"프로그램 실행 성공: {resolved} (PID: {process.pid})"
+                    if process.poll() is not None:
+                        raise RuntimeError(f"프로세스가 즉시 종료되었습니다: PID {process.pid}")
+                    return ToolRunResult.successful(
+                        tool_name=name,
+                        raw_output=f"프로그램 실행 성공: {resolved} (PID: {process.pid})",
+                        evidence=[Evidence("process_state","실행된 프로세스가 활성 상태임을 확인했습니다.",{"executable":resolved,"pid":process.pid})],
+                        artifacts=[Artifact("process",str(process.pid),{"executable":resolved})],
+                    )
                 except OSError as exc:
                     if getattr(exc, "winerror", None) == 740 and elevation == "auto":
                         return self._run_elevated(resolved, arguments)
                     raise
-            return f"오류: 알 수 없는 툴 '{name}'"
+            return ToolRunResult.failed(tool_name=name,error=f"알 수 없는 툴 '{name}'")
         except Exception as exc:
-            return f"오류: {exc}"
+            return ToolRunResult.failed(tool_name=name,error=str(exc))

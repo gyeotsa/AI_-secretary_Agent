@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema
 from core.scheduler import get_automation_engine
+from core.tool_result import Artifact, Evidence, ToolRunResult
 
 
 class AlarmPlugin(BasePlugin):
@@ -49,13 +50,44 @@ class AlarmPlugin(BasePlugin):
             slots["message"] = message_match.group(1).strip()
         return slots
 
-    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
+    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
         if tool_name != "set_alarm":
-            return f"오류: 알 수 없는 툴 '{tool_name}'"
-        return get_automation_engine().add_alarm(
+            return ToolRunResult.failed(
+                tool_name=tool_name, error=f"알 수 없는 툴 '{tool_name}'"
+            )
+        engine = get_automation_engine()
+        raw = engine.add_alarm(
             int(tool_input["delay_seconds"]),
             str(tool_input.get("message") or "알람 시간입니다."),
         )
+        if raw.startswith(("오류:", "알람 등록 오류:")):
+            return ToolRunResult.failed(tool_name=tool_name, error=raw)
+        try:
+            data = json.loads(raw)
+            job_id = int(data["job_id"])
+            scheduled = next(
+                (job for job in engine.scheduled_jobs if int(job["id"]) == job_id),
+                None,
+            )
+            if not scheduled or scheduled.get("action_type") != "alarm":
+                raise ValueError("Scheduler 메모리에서 등록된 알람을 확인하지 못했습니다.")
+            return ToolRunResult.successful(
+                tool_name=tool_name,
+                raw_output=raw,
+                evidence=[Evidence(
+                    "scheduler_job",
+                    "알람 작업의 DB ID와 Scheduler 등록 상태를 확인했습니다.",
+                    {
+                        "job_id": job_id,
+                        "delay_seconds": int(data["delay_seconds"]),
+                        "fire_at": data["fire_at"],
+                        "engine_running": engine.is_running(),
+                    },
+                )],
+                artifacts=[Artifact("scheduler_job", str(job_id), {"fire_at": data["fire_at"]})],
+            )
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            return ToolRunResult.failed(tool_name=tool_name, error=str(exc), raw_output=raw)
 
     def present_result(self, tool_name: str, result: str) -> str:
         if tool_name != "set_alarm" or result.startswith(("오류:", "알람 등록 오류:")):

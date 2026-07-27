@@ -1,10 +1,12 @@
 """Git tools using argument-list subprocess calls only."""
 import subprocess
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, List
 
 from core.harness import SafetyLayer
 from core.plugin import BasePlugin, ToolSchema
+from core.tool_result import Artifact, Evidence, ToolRunResult
 
 
 class GitPlugin(BasePlugin):
@@ -43,9 +45,11 @@ class GitPlugin(BasePlugin):
             return f"오류: git 종료 코드 {result.returncode}: {output}"
         return output or "성공"
 
-    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
+    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
         try:
             repo = self._repo(str(tool_input["repo_path"]))
+            before_head = self._run(repo, ["rev-parse", "HEAD"])
+            branch = self._run(repo, ["branch", "--show-current"])
             commands = {
                 "git_status": ["status", "--short", "--branch"],
                 "git_diff": ["diff", "--"],
@@ -55,9 +59,33 @@ class GitPlugin(BasePlugin):
             }
             if tool_name == "git_log":
                 limit = max(1, min(int(tool_input.get("limit", 10)), 100))
-                return self._run(repo, ["log", f"-{limit}", "--oneline", "--decorate"])
-            if tool_name not in commands:
-                return f"오류: 알 수 없는 툴 '{tool_name}'"
-            return self._run(repo, commands[tool_name])
+                output = self._run(repo, ["log", f"-{limit}", "--oneline", "--decorate"])
+            elif tool_name not in commands:
+                return ToolRunResult.failed(
+                    tool_name=tool_name, error=f"알 수 없는 툴 '{tool_name}'"
+                )
+            else:
+                output = self._run(repo, commands[tool_name])
+            if output.startswith("오류:"):
+                return ToolRunResult.failed(tool_name=tool_name, error=output[3:].strip())
+            after_head = self._run(repo, ["rev-parse", "HEAD"])
+            if after_head.startswith("오류:"):
+                return ToolRunResult.failed(tool_name=tool_name, error=after_head[3:].strip())
+            return ToolRunResult.successful(
+                tool_name=tool_name,
+                raw_output=output,
+                evidence=[Evidence(
+                    "git_repository",
+                    "Git 명령 종료 상태와 저장소 HEAD를 확인했습니다.",
+                    {
+                        "repo_path": str(repo),
+                        "branch": branch,
+                        "before_head": before_head,
+                        "after_head": after_head,
+                        "output_sha256": hashlib.sha256(output.encode("utf-8")).hexdigest(),
+                    },
+                )],
+                artifacts=[Artifact("git_repository", str(repo), {"branch": branch})],
+            )
         except Exception as exc:
-            return f"오류: {exc}"
+            return ToolRunResult.failed(tool_name=tool_name, error=str(exc))

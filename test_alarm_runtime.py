@@ -8,6 +8,7 @@ from core.response_presenter import present_response
 from core.scheduler import AutomationEngine
 from core.tts_normalizer import normalize_for_tts
 from plugins.alarm import AlarmPlugin
+from core.tool_result import ToolRunResult
 
 
 def test_pending_task_id_is_hidden_from_normal_user_response():
@@ -50,10 +51,32 @@ def test_one_shot_alarm_fires_and_disables_itself(tmp_path):
         result = json.loads(engine.add_alarm(1, "테스트 알람 시간입니다."))
 
         assert result["status"] == "scheduled"
+        assert isinstance(result["job_id"], int)
         assert engine.is_running()
         assert fired.wait(3)
         assert received[0]["action_type"] == "alarm"
         assert received[0]["result"] == "테스트 알람 시간입니다."
+    finally:
+        if engine is not None:
+            engine.stop()
+        Config.API_CONFIG.DB_PATH = original_db_path
+
+
+def test_alarm_plugin_returns_verified_scheduler_job(tmp_path, monkeypatch):
+    original_db_path = Config.API_CONFIG.DB_PATH
+    engine = None
+    try:
+        Config.API_CONFIG.DB_PATH = str(tmp_path / "assistant.db")
+        engine = AutomationEngine()
+        monkeypatch.setattr("plugins.alarm.get_automation_engine", lambda: engine)
+        result = AlarmPlugin().execute_tool(
+            "set_alarm", {"delay_seconds": 60, "message": "회의 준비"}
+        )
+        assert isinstance(result, ToolRunResult)
+        assert result.succeeded
+        assert result.evidence[0].kind == "scheduler_job"
+        payload = json.loads(result.raw_output)
+        assert payload["job_id"] == int(result.artifacts[0].uri)
     finally:
         if engine is not None:
             engine.stop()

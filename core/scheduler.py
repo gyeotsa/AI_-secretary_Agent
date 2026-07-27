@@ -247,7 +247,7 @@ class AutomationEngine:
                 job_id, description, "once_at", target.isoformat(), message, "alarm"
             )
             return json.dumps({
-                "status": "scheduled", "delay_seconds": delay_seconds,
+                "status": "scheduled", "job_id": job_id, "delay_seconds": delay_seconds,
                 "fire_at": target.isoformat(), "message": message,
             }, ensure_ascii=False)
         except Exception as exc:
