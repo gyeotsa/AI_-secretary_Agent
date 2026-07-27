@@ -39,7 +39,12 @@
   Excel 셀 수정도 요청한 값의 실제 재로딩 일치를 확인한다.
 - 직접 `ToolRunResult` 성공을 반환하더라도 Evidence가 비어 있으면 Executor가
   `UNVERIFIED`로 강등한다.
-- 회귀 테스트 기준선: `145 passed, 4 deselected`.
+- Browser 웹 검색은 DDGS 공급자·질문·검색 시각·출처 수와 URL Artifact를,
+  페이지 조회는 요청/최종 URL·HTTP 상태·조회 시각·본문 SHA-256을 Evidence로
+  반환한다. 스크린샷은 실제 PNG 크기와 이미지 Artifact도 확인한다.
+- Weather는 Open-Meteo 공급자·조회/관측 시각·좌표·위치 정밀도와 API URL을
+  Evidence/Artifact로 반환한다. 현재 기온 또는 관측 시각이 없으면 typed failure다.
+- 회귀 테스트 기준선: `147 passed, 4 deselected`.
 - 이번 연결은 하위 호환 단계다. 개별 Tool은 아직 문자열을 반환하므로 Plugin
   구현 자체가 `ToolRunResult`를 직접 반환하도록 순차 이전하는 P0 작업이 남아 있다.
 

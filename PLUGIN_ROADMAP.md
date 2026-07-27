@@ -66,3 +66,6 @@
   전용 검증기 추가와 함께 순차 이전한다.
 - Calendar와 Excel·Word·PowerPoint·PDF·HWPX 생성 Tool은 직접 typed 결과 전환을
   완료했다. 각 생성 파일은 저장 후 동일 형식 라이브러리로 재열기 검증한다.
+- Browser 검색·페이지·스크린샷과 Open-Meteo Weather 조회는 직접 typed 결과
+  전환을 완료했다. 검색 출처, HTTP 응답, 조회·관측 시각과 위치 좌표를 Evidence로
+  보존한다.

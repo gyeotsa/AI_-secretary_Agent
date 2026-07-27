@@ -93,6 +93,10 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
   XLSX 시트·셀, DOCX 문단, PPTX 슬라이드, PDF 페이지·텍스트, HWPX 텍스트
   구조를 검증합니다. Evidence가 없는 직접 성공 결과는 Executor가
   `unverified`로 강등합니다.
+- 2026-07-27: Browser 검색·페이지·스크린샷과 Weather 조회를 typed 결과로 이전.
+  웹 검색은 공급자·검색 시각·출처 URL, 페이지는 최종 URL·HTTP 상태·본문 해시,
+  날씨는 Open-Meteo 조회 시각·관측 시각·좌표·위치 정밀도를 Evidence로 보존합니다.
+  관측 시각이나 현재 기온이 없는 날씨 응답은 성공으로 보고하지 않습니다.
 
 - [ ] 모든 Tool 결과를 `ToolRunResult` 타입으로 통일
 - [ ] `status`, `output`, `error`, `artifacts`, `evidence`, `timing` 필수화
