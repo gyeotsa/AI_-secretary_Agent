@@ -48,8 +48,12 @@ UAC·바로가기처럼 완료 확인이 불가능한 요청은 `unverified`로 
 System Tools도 로컬 시계·타임존과 Plugin Registry 스냅샷 Evidence를 반환합니다.
 중앙 ToolExecutor는 이제 Plugin과 레거시 내장 Tool 모두를 `ToolRunResult`로
 정규화하며, 전용 검증기가 없는 레거시 결과를 자동 성공시키지 않습니다.
+파일 읽기·디렉터리 목록·Workspace·Project Indexer·Semantic Memory·RAG 내장
+Tool도 직접 typed 결과로 이전했습니다. 파일 해시, 프로젝트 루트·검색 건수,
+메모리 영속성, RAG Chunk·출처를 확인하며 Workspace와 Indexer 사이의 누락된
+`current_workspace` 연결도 수정했습니다.
 
-현재 기본 자동 회귀 테스트 기준선은 `151 passed, 4 deselected`입니다. 이는
+현재 기본 자동 회귀 테스트 기준선은 `155 passed, 4 deselected`입니다. 이는
 네트워크·OAuth·실제 장치·Office COM·장시간 자동화를 모두 보증하는 수치는 아닙니다.
 
 ## 판정

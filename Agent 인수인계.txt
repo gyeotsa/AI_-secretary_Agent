@@ -61,7 +61,17 @@
   없는 레거시 Tool은 `UNVERIFIED`, 권한 거부와 파라미터 오류는 typed failure다.
 - 중앙 ToolExecutor 반환 경계는 모두 typed지만 개별 레거시 함수 자체는 아직
   문자열을 반환하므로 읽기·쓰기·장치·자동화 순서의 직접 이전은 계속 필요하다.
-- 회귀 테스트 기준선: `151 passed, 4 deselected`.
+- 내장 `read_file`은 실제 파일 크기·SHA-256, `list_directory`는 절대 경로·항목
+  수를 Evidence로 직접 반환한다.
+- Workspace 설정·정보·트리는 실제 경로·파일 수와 Directory Artifact를 반환한다.
+  `ProjectIndexer.__init__()`가 사용하던 `WorkspaceManager.current_workspace`가
+  정의되어 있지 않던 런타임 버그를 호환 property 추가로 수정했다.
+- Project Indexer 인덱싱·파일/심볼 검색·파일 정보·트리는 프로젝트 루트·검색 건수와
+  대상 파일 Artifact를 직접 반환한다.
+- Semantic Memory 추가는 저장 후 재조회, 삭제는 삭제 후 부재를 검증한다. RAG 추가는
+  `documents` 저장소의 Chunk, 검색은 결과 source, 목록은 실제 catalog를 Evidence로
+  반환한다.
+- 회귀 테스트 기준선: `155 passed, 4 deselected`.
 - 이번 연결은 하위 호환 단계다. 개별 Tool은 아직 문자열을 반환하므로 Plugin
   구현 자체가 `ToolRunResult`를 직접 반환하도록 순차 이전하는 P0 작업이 남아 있다.
 

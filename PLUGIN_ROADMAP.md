@@ -75,3 +75,6 @@
 - System Tools는 로컬 시간·날짜·Plugin Registry 상태를 typed Evidence로 반환한다.
   중앙 ToolExecutor의 레거시 어댑터는 아직 직접 이전되지 않은 내장 Tool 문자열을
   검증 후 `succeeded`·`failed`·`unverified`로 정규화한다.
+- 내장 파일 읽기·목록, Workspace·Project Indexer, Semantic Memory·RAG Tool은
+  직접 typed 결과 전환을 완료했다. 실제 경로·해시·인덱스·영속 저장·검색 출처를
+  Evidence와 Artifact로 보존한다.

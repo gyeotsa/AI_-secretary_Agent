@@ -107,6 +107,11 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
   `ToolRunResult`로 나오도록 했습니다. 기존 Verifier가 실제 검증할 수 있는 결과만
   성공하며 나머지 레거시 문자열은 `unverified`, 권한·파라미터 오류는 typed
   failure로 변환됩니다.
+- 2026-07-27: 내장 파일 읽기·디렉터리 목록·Workspace·Project Indexer·Semantic
+  Memory·RAG Tool을 직접 typed 결과로 이전. 파일 해시·Workspace 파일 수·인덱스
+  루트와 검색 건수·Memory 저장 후 재조회·RAG Chunk와 출처를 Evidence로 보존합니다.
+  ProjectIndexer가 참조하지만 WorkspaceManager에 없던 `current_workspace` 연결
+  속성도 복구했습니다.
 
 - [ ] 모든 Tool 결과를 `ToolRunResult` 타입으로 통일
 - [x] 중앙 ToolExecutor 반환 경계의 `status`, `output`, `error`, `artifacts`, `evidence`, `timing` 통일
