@@ -2,6 +2,7 @@ import ctypes
 import json
 
 from core.plugin import PluginRegistry
+from core.tool_result import ToolRunResult, ToolRunStatus
 from core.verifier import ToolVerifier
 from plugins.excel import ExcelPlugin
 from plugins.word import WordPlugin
@@ -14,6 +15,10 @@ from core.intent_router import IntentRouter
 
 def _run(plugin, tool, data):
     result = plugin.execute_tool(tool, data)
+    if isinstance(result, ToolRunResult):
+        assert result.status == ToolRunStatus.SUCCEEDED, result.raw_output
+        assert result.evidence and result.artifacts
+        return result.raw_output
     assert not result.startswith("오류:"), result
     return result
 
@@ -65,6 +70,23 @@ def test_document_intents_resolve_desktop_paths_without_core_branches():
 def test_new_file_verifier_checks_real_output(tmp_path):
     path=tmp_path/"result.docx"; path.write_bytes(b"content")
     assert ToolVerifier().verify("word_create_document",{"path":str(path)},"성공").success
+
+
+def test_office_create_tools_return_typed_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.Config.API_CONFIG.ALLOWED_PATHS", [str(tmp_path)])
+    cases = [
+        (ExcelPlugin(), "excel_create_workbook", {"path": str(tmp_path/"a.xlsx")}, "xlsx_structure"),
+        (WordPlugin(), "word_create_document", {"path": str(tmp_path/"a.docx")}, "docx_structure"),
+        (PowerPointPlugin(), "powerpoint_create_presentation", {"path": str(tmp_path/"a.pptx")}, "pptx_structure"),
+        (PdfPlugin(), "pdf_create_document", {"path": str(tmp_path/"a.pdf"), "paragraphs": ["본문"]}, "pdf_structure"),
+        (HwpxPlugin(), "hwpx_create_document", {"path": str(tmp_path/"a.hwpx")}, "hwpx_structure"),
+    ]
+    for plugin, tool_name, data, evidence_kind in cases:
+        result = plugin.execute_tool(tool_name, data)
+        assert isinstance(result, ToolRunResult)
+        assert result.succeeded
+        assert result.evidence[0].kind == evidence_kind
+        assert result.artifacts[0].uri == data["path"]
 
 
 def test_windows_launch_intent_bypasses_planner_and_resolves_configured_alias():

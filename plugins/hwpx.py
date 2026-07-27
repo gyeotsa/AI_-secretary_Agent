@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 from hwpx import HwpxDocument
 from core.harness import SafetyLayer
 from core.plugin import BasePlugin, ToolSchema, IntentSchema, SlotSchema
+from core.tool_result import Artifact, Evidence, ToolRunResult
 from plugins._document_slots import extract_document_slots
 
 
@@ -24,15 +25,27 @@ class HwpxPlugin(BasePlugin):
         if not ok: raise ValueError(error)
         if path.suffix.casefold() != ".hwpx": raise ValueError(".hwpx 파일만 지원합니다")
         return path
-    def execute_tool(self,name:str,data:Dict[str,Any])->str:
+    def execute_tool(self,name:str,data:Dict[str,Any]):
         try:
             path=self._path(data["path"])
             if name=="hwpx_create_document":
                 doc=HwpxDocument.new()
                 if data.get("title"): doc.add_paragraph(str(data["title"]))
                 for text in data.get("paragraphs") or []: doc.add_paragraph(str(text))
-                path.parent.mkdir(parents=True,exist_ok=True); doc.save_to_path(path); return f"HWPX 생성 성공: {path}"
+                path.parent.mkdir(parents=True,exist_ok=True); doc.save_to_path(path)
+                saved=HwpxDocument.open(path); exported=saved.export_text()
+                return ToolRunResult.successful(
+                    tool_name=name,
+                    raw_output=f"HWPX 생성 성공: {path}",
+                    evidence=[Evidence(
+                        "hwpx_structure", "저장된 HWPX를 다시 열어 문서 텍스트 구조를 확인했습니다.",
+                        {"path":str(path),"text_chars":len(exported),"size":path.stat().st_size},
+                    )],
+                    artifacts=[Artifact("document",str(path),{"format":"hwpx"})],
+                )
             if name=="hwpx_read_document":
                 doc=HwpxDocument.open(path); return doc.export_text()
             return f"오류: 알 수 없는 툴 '{name}'"
-        except Exception as exc:return f"오류: {exc}"
+        except Exception as exc:
+            if name=="hwpx_create_document": return ToolRunResult.failed(tool_name=name,error=str(exc))
+            return f"오류: {exc}"

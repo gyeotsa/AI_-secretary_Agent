@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 from docx import Document
 from core.harness import SafetyLayer
 from core.plugin import BasePlugin, ToolSchema, IntentSchema, SlotSchema
+from core.tool_result import Artifact, Evidence, ToolRunResult
 from plugins._document_slots import extract_document_slots
 
 
@@ -24,14 +25,26 @@ class WordPlugin(BasePlugin):
         if not ok: raise ValueError(error)
         if path.suffix.casefold() != ".docx": raise ValueError(".docx 파일만 지원합니다")
         return path
-    def execute_tool(self,name:str,data:Dict[str,Any])->str:
+    def execute_tool(self,name:str,data:Dict[str,Any]):
         try:
             path=self._path(data["path"])
             if name=="word_create_document":
                 doc=Document()
                 if data.get("title"): doc.add_heading(str(data["title"]),0)
                 for text in data.get("paragraphs") or []: doc.add_paragraph(str(text))
-                path.parent.mkdir(parents=True,exist_ok=True); doc.save(path); return f"Word 문서 생성 성공: {path}"
+                path.parent.mkdir(parents=True,exist_ok=True); doc.save(path)
+                saved=Document(path)
+                return ToolRunResult.successful(
+                    tool_name=name,
+                    raw_output=f"Word 문서 생성 성공: {path}",
+                    evidence=[Evidence(
+                        "docx_structure", "저장된 Word 문서를 다시 열어 문단 구조를 확인했습니다.",
+                        {"path":str(path),"paragraphs":len(saved.paragraphs),"size":path.stat().st_size},
+                    )],
+                    artifacts=[Artifact("document",str(path),{"format":"docx"})],
+                )
             if name=="word_read_document": return "\n".join(p.text for p in Document(path).paragraphs)
             return f"오류: 알 수 없는 툴 '{name}'"
-        except Exception as exc: return f"오류: {exc}"
+        except Exception as exc:
+            if name=="word_create_document": return ToolRunResult.failed(tool_name=name,error=str(exc))
+            return f"오류: {exc}"

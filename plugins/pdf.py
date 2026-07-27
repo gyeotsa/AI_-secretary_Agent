@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 import fitz
 from core.harness import SafetyLayer
 from core.plugin import BasePlugin, ToolSchema, IntentSchema, SlotSchema
+from core.tool_result import Artifact, Evidence, ToolRunResult
 from plugins._document_slots import extract_document_slots
 
 
@@ -24,7 +25,7 @@ class PdfPlugin(BasePlugin):
         if not ok: raise ValueError(error)
         if path.suffix.casefold() != ".pdf": raise ValueError(".pdf 파일만 지원합니다")
         return path
-    def execute_tool(self,name:str,data:Dict[str,Any])->str:
+    def execute_tool(self,name:str,data:Dict[str,Any]):
         try:
             path=self._path(data["path"])
             if name=="pdf_create_document":
@@ -37,8 +38,24 @@ class PdfPlugin(BasePlugin):
                         count=page.insert_textbox(fitz.Rect(72,y,523,y+80),rest,fontsize=11,fontname="korea")
                         if count>=0: rest=""; y+=90
                         else: rest=rest[:max(1,len(rest)//2)]; y+=90
-                path.parent.mkdir(parents=True,exist_ok=True); doc.save(path); doc.close(); return f"PDF 생성 성공: {path}"
+                path.parent.mkdir(parents=True,exist_ok=True); doc.save(path); doc.close()
+                with fitz.open(path) as saved:
+                    page_count=saved.page_count
+                    text_chars=sum(len(page.get_text()) for page in saved)
+                if page_count < 1:
+                    raise ValueError("저장된 PDF에 페이지가 없습니다.")
+                return ToolRunResult.successful(
+                    tool_name=name,
+                    raw_output=f"PDF 생성 성공: {path}",
+                    evidence=[Evidence(
+                        "pdf_structure", "저장된 PDF를 다시 열어 페이지와 텍스트를 확인했습니다.",
+                        {"path":str(path),"pages":page_count,"text_chars":text_chars,"size":path.stat().st_size},
+                    )],
+                    artifacts=[Artifact("document",str(path),{"format":"pdf"})],
+                )
             if name=="pdf_extract_text":
                 with fitz.open(path) as doc: return "\n".join(page.get_text() for page in list(doc)[:max(1,min(int(data.get("max_pages",100)),1000))])
             return f"오류: 알 수 없는 툴 '{name}'"
-        except Exception as exc:return f"오류: {exc}"
+        except Exception as exc:
+            if name=="pdf_create_document": return ToolRunResult.failed(tool_name=name,error=str(exc))
+            return f"오류: {exc}"

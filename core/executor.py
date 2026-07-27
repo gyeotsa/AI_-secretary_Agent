@@ -839,6 +839,9 @@ class Executor:
                     raw_output=result.raw_output,
                     duration_ms=duration_ms,
                 )
+            if result.succeeded and not result.evidence:
+                result.status = ToolRunStatus.UNVERIFIED
+                result.error = None
             if result.duration_ms <= 0:
                 result.duration_ms = max(0.0, float(duration_ms))
             print(

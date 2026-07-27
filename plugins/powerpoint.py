@@ -5,6 +5,7 @@ import json
 from pptx import Presentation
 from core.harness import SafetyLayer
 from core.plugin import BasePlugin, ToolSchema, IntentSchema, SlotSchema
+from core.tool_result import Artifact, Evidence, ToolRunResult
 from plugins._document_slots import extract_document_slots
 
 
@@ -25,7 +26,7 @@ class PowerPointPlugin(BasePlugin):
         if not ok: raise ValueError(error)
         if path.suffix.casefold() != ".pptx": raise ValueError(".pptx 파일만 지원합니다")
         return path
-    def execute_tool(self,name:str,data:Dict[str,Any])->str:
+    def execute_tool(self,name:str,data:Dict[str,Any]):
         try:
             path=self._path(data["path"])
             if name=="powerpoint_create_presentation":
@@ -35,10 +36,22 @@ class PowerPointPlugin(BasePlugin):
                 for item in data.get("slides") or []:
                     slide=prs.slides.add_slide(prs.slide_layouts[1]); slide.shapes.title.text=str(item.get("title", "")); frame=slide.placeholders[1].text_frame; frame.clear()
                     for i,bullet in enumerate(item.get("bullets") or []): (frame.paragraphs[0] if i==0 else frame.add_paragraph()).text=str(bullet)
-                path.parent.mkdir(parents=True,exist_ok=True); prs.save(path); return f"PowerPoint 생성 성공: {path}"
+                path.parent.mkdir(parents=True,exist_ok=True); prs.save(path)
+                saved=Presentation(path)
+                return ToolRunResult.successful(
+                    tool_name=name,
+                    raw_output=f"PowerPoint 생성 성공: {path}",
+                    evidence=[Evidence(
+                        "pptx_structure", "저장된 PowerPoint를 다시 열어 슬라이드 구조를 확인했습니다.",
+                        {"path":str(path),"slides":len(saved.slides),"size":path.stat().st_size},
+                    )],
+                    artifacts=[Artifact("presentation",str(path),{"format":"pptx"})],
+                )
             if name=="powerpoint_read_presentation":
                 slides=[]
                 for slide in Presentation(path).slides: slides.append([shape.text for shape in slide.shapes if hasattr(shape,"text") and shape.text])
                 return json.dumps(slides,ensure_ascii=False)
             return f"오류: 알 수 없는 툴 '{name}'"
-        except Exception as exc:return f"오류: {exc}"
+        except Exception as exc:
+            if name=="powerpoint_create_presentation": return ToolRunResult.failed(tool_name=name,error=str(exc))
+            return f"오류: {exc}"

@@ -8,6 +8,7 @@ from dateparser.search import search_dates
 
 from core.harness import SafetyLayer
 from core.plugin import BasePlugin, ToolSchema, IntentSchema, SlotSchema
+from core.tool_result import Artifact, Evidence, ToolRunResult
 
 
 def _escape(value: str) -> str:
@@ -149,9 +150,11 @@ class CalendarPlugin(BasePlugin):
                 slots["end"] = f"{slots['end']}T{converted[1]}"
         return slots
 
-    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
+    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
         if tool_name != "calendar_create_event":
-            return f"오류: 알 수 없는 툴 '{tool_name}'"
+            return ToolRunResult.failed(
+                tool_name=tool_name, error=f"알 수 없는 툴 '{tool_name}'"
+            )
         try:
             path = Path(str(tool_input["path"])).expanduser().resolve()
             ok, error = SafetyLayer.validate_path(str(path))
@@ -175,6 +178,25 @@ class CalendarPlugin(BasePlugin):
             ])
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8", newline="")
-            return f"캘린더 이벤트 생성 성공: {path}"
+            saved = path.read_text(encoding="utf-8")
+            required = ("BEGIN:VCALENDAR", "BEGIN:VEVENT", "END:VEVENT", "END:VCALENDAR")
+            if not all(marker in saved for marker in required):
+                raise ValueError("저장된 파일의 iCalendar 구조 검증에 실패했습니다.")
+            return ToolRunResult.successful(
+                tool_name=tool_name,
+                raw_output=f"캘린더 이벤트 생성 성공: {path}",
+                evidence=[Evidence(
+                    "icalendar_structure",
+                    "저장된 iCalendar 이벤트 구조와 날짜를 확인했습니다.",
+                    {
+                        "path": str(path),
+                        "title": str(tool_input["title"]),
+                        "start": start_text,
+                        "end": end_text,
+                        "size": path.stat().st_size,
+                    },
+                )],
+                artifacts=[Artifact("calendar", str(path), {"format": "ics"})],
+            )
         except Exception as exc:
-            return f"오류: {exc}"
+            return ToolRunResult.failed(tool_name=tool_name, error=str(exc))

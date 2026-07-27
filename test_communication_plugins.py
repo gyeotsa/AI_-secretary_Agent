@@ -1,6 +1,7 @@
 from plugins.calendar import CalendarPlugin
 from plugins.mail import MailPlugin
 from core.verifier import ToolVerifier
+from core.tool_result import ToolRunResult
 
 
 def test_calendar_creates_standard_ics(tmp_path, monkeypatch):
@@ -10,7 +11,10 @@ def test_calendar_creates_standard_ics(tmp_path, monkeypatch):
         "path": str(target), "title": "주간 회의", "start": "2026-07-23T10:00:00",
         "end": "2026-07-23T11:00:00", "description": "진행 상황 검토",
     })
-    assert result.startswith("캘린더 이벤트 생성 성공:")
+    assert isinstance(result, ToolRunResult)
+    assert result.succeeded
+    assert result.evidence[0].kind == "icalendar_structure"
+    assert result.raw_output.startswith("캘린더 이벤트 생성 성공:")
     content = target.read_text(encoding="utf-8")
     assert "BEGIN:VCALENDAR" in content and "SUMMARY:주간 회의" in content
     verification = ToolVerifier().verify("calendar_create_event", {"path": str(target)}, result)

@@ -6,6 +6,7 @@ import json
 from openpyxl import Workbook, load_workbook
 from core.harness import SafetyLayer
 from core.plugin import BasePlugin, ToolSchema, IntentSchema, SlotSchema
+from core.tool_result import Artifact, Evidence, ToolRunResult
 from plugins._document_slots import extract_document_slots
 
 
@@ -32,13 +33,32 @@ class ExcelPlugin(BasePlugin):
         if path.suffix.casefold() != suffix: raise ValueError(f"{suffix} 파일만 지원합니다: {path}")
         return path
 
-    def execute_tool(self, tool_name: str, data: Dict[str, Any]) -> str:
+    def execute_tool(self, tool_name: str, data: Dict[str, Any]):
         try:
             path = self._path(data["path"])
             if tool_name == "excel_create_workbook":
                 wb=Workbook(); ws=wb.active; ws.title=str(data.get("sheet") or "Sheet1")
                 for row in data.get("rows") or []: ws.append(list(row))
-                path.parent.mkdir(parents=True,exist_ok=True); wb.save(path); return f"Excel 파일 생성 성공: {path}"
+                path.parent.mkdir(parents=True,exist_ok=True); wb.save(path)
+                saved = load_workbook(path, read_only=True)
+                try:
+                    saved_sheet = saved[str(data.get("sheet") or "Sheet1")]
+                    dimensions = {
+                        "sheet": saved_sheet.title,
+                        "rows": saved_sheet.max_row,
+                        "columns": saved_sheet.max_column,
+                    }
+                finally:
+                    saved.close()
+                return ToolRunResult.successful(
+                    tool_name=tool_name,
+                    raw_output=f"Excel 파일 생성 성공: {path}",
+                    evidence=[Evidence(
+                        "xlsx_structure", "저장된 Excel 통합 문서와 시트를 다시 열어 확인했습니다.",
+                        {"path": str(path), **dimensions, "size": path.stat().st_size},
+                    )],
+                    artifacts=[Artifact("spreadsheet", str(path), {"format": "xlsx"})],
+                )
             wb=load_workbook(path)
             ws=wb[str(data.get("sheet"))] if data.get("sheet") else wb.active
             if tool_name == "excel_read_workbook":
@@ -46,6 +66,30 @@ class ExcelPlugin(BasePlugin):
                 return json.dumps({"path":str(path),"sheet":ws.title,"rows":rows},ensure_ascii=False,default=str)
             if tool_name == "excel_write_cells":
                 for address,value in dict(data["cells"]).items(): ws[str(address)]=value
-                wb.save(path); return f"Excel 셀 수정 성공: {path}"
+                wb.save(path)
+                saved = load_workbook(path, read_only=True, data_only=False)
+                try:
+                    checked = saved[str(data.get("sheet") or "Sheet1")]
+                    mismatches = {
+                        address: checked[str(address)].value
+                        for address, value in dict(data["cells"]).items()
+                        if checked[str(address)].value != value
+                    }
+                finally:
+                    saved.close()
+                if mismatches:
+                    raise ValueError(f"저장 후 셀 값 검증에 실패했습니다: {mismatches}")
+                return ToolRunResult.successful(
+                    tool_name=tool_name,
+                    raw_output=f"Excel 셀 수정 성공: {path}",
+                    evidence=[Evidence(
+                        "xlsx_cells", "요청한 Excel 셀 값이 저장된 것을 확인했습니다.",
+                        {"path": str(path), "cells": dict(data["cells"])},
+                    )],
+                    artifacts=[Artifact("spreadsheet", str(path), {"changed": True})],
+                )
             return f"오류: 알 수 없는 툴 '{tool_name}'"
-        except Exception as exc: return f"오류: {exc}"
+        except Exception as exc:
+            if tool_name in {"excel_create_workbook", "excel_write_cells"}:
+                return ToolRunResult.failed(tool_name=tool_name, error=str(exc))
+            return f"오류: {exc}"

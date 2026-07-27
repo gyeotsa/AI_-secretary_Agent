@@ -111,3 +111,20 @@ def test_executor_preserves_direct_typed_result_and_rejects_name_mismatch():
     )
     assert mismatch.status == ToolRunStatus.FAILED
     assert "일치하지 않습니다" in mismatch.error
+
+
+def test_executor_downgrades_direct_success_without_evidence():
+    executor = Executor.__new__(Executor)
+    unsupported = ToolRunResult(
+        tool_name="unsafe_plugin",
+        status=ToolRunStatus.SUCCEEDED,
+        raw_output="완료",
+    )
+    result = executor.build_tool_run_result(
+        Task("task-3", "미검증 작업"),
+        "unsafe_plugin",
+        {},
+        unsupported,
+    )
+    assert result.status == ToolRunStatus.UNVERIFIED
+    assert not result.succeeded
