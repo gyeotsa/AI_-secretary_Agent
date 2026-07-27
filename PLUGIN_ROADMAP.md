@@ -87,3 +87,6 @@
 - TTS는 GUI 문자열 호환과 Registry typed 결과를 분리했다. 중앙 Tool 실행은
   Action Journal에 상태·Evidence·Artifact·지연 시간을 기록하고, 일반 대화가
   Tool 없이 외부 작업 완료를 주장하는 응답은 사용자 경계에서 차단한다.
+- Recovery는 typed Tool 상태만 신뢰하며 미검증 결과를 성공으로 승격하지 않는다.
+  전체 실행 종료는 완료·부분 완료·실패·취소로 구분되고 재시도 정보까지 사용자에게
+  전달된다. 이 계약으로 P0를 완료했으며 Plugin 내부 문자열 API 제거는 P6에서 잇는다.

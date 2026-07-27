@@ -99,9 +99,21 @@
 - `PresentedResponse`를 추가해 원문 기술 로그와 화면·음성용 본문을 분리하고
   `main_qt.py`가 이 채널 계약을 사용하도록 연결했다.
 - 코드 커밋: `6d090e6` (`[Feat] 실행 증거 Journal과 응답 경계 연결`)
-- 회귀 테스트 기준선: `170 passed, 4 deselected`.
-- 다음 해야 할 일: 레거시 하위 계층의 문자열 오류 판정을 제거하고, 취소·부분 완료·
-  재시도 상태를 Tool 결과와 최종 사용자 응답까지 일관되게 전달해 P0를 마무리한다.
+- Recovery가 typed 결과를 다시 문자열 Verifier에 넣던 이중 판정을 제거했다.
+  재시도·파라미터 수정·대체 Tool 모두 `ToolRunResult.succeeded`만 성공으로
+  인정하며 미검증 결과를 복구 성공으로 승격하지 않는다.
+- `ToolRunStatus.PARTIAL`을 추가하고 전체 실행 종료를 `completed/partial/failed/
+  cancelled`로 구분한다. 부분 완료는 완료·실패 단계 수, 재시도 성공은 횟수를
+  `ExecutionOutcome`과 사용자 응답에 함께 표시한다.
+- Multi-Agent는 중앙 Tool Runtime이 문자열을 반환하면 계약 위반으로 차단한다.
+  PDF 텍스트 추출은 문자열 오류 메시지를 해석하지 않고 PDF를 직접 열어 페이지
+  범위와 추출 결과를 검증한다.
+- 코드 커밋: `fdfcef2` (`[Feat] P0 실행 상태 계약 완성`)
+- 회귀 테스트 기준선: `175 passed, 4 deselected`.
+- P0 진실한 실행 시스템: **완료**.
+- 다음 해야 할 일: `AGENT_RUNTIME_ROADMAP.md` 순서에 따라 P1 대화와 Task State
+  통합을 시작한다. Conversation·pending request·recent intent·Scratchpad를 하나의
+  Task 상태로 합치고 세션/Workspace 격리와 재시작 복구 정책을 구현한다.
 
 ## 2026-07-27 웹 검색 답변 길이와 출처 표시 간소화
 

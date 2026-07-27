@@ -65,8 +65,12 @@ TTS는 GUI 문자열 호환 API와 Registry typed API를 분리했습니다. 중
 권한 거부까지 Action Journal에 입력·상태·Evidence·Artifact·지연 시간으로 기록되고
 자격 증명은 마스킹됩니다. 일반 대화의 실행하지 않은 완료 주장도 차단하며,
 Presenter는 기술 로그와 화면·음성 본문을 별도 채널로 제공합니다.
+Recovery도 typed 상태만 직접 사용하도록 전환해 정상 결과 본문의 “오류” 단어 때문에
+실패하는 문제와 미검증 복구 결과의 성공 승격을 제거했습니다. 전체 실행은
+`completed`, `partial`, `failed`, `cancelled`를 구분하고 재시도 횟수와 단계 수를
+최종 응답에 표시합니다. 이에 따라 P0 진실한 실행 시스템은 완료로 판정합니다.
 
-현재 기본 자동 회귀 테스트 기준선은 `170 passed, 4 deselected`입니다. 이는
+현재 기본 자동 회귀 테스트 기준선은 `175 passed, 4 deselected`입니다. 이는
 네트워크·OAuth·실제 장치·Office COM·장시간 자동화를 모두 보증하는 수치는 아닙니다.
 
 ## 판정

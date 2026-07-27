@@ -129,18 +129,25 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
   Journal에 기록하며 비밀번호·토큰·API 키는 마스킹합니다. 일반 대화 LLM이
   실행하지 않은 외부 작업을 완료형으로 주장하면 출력 경계에서 차단합니다.
   `PresentedResponse`로 원문 기술 로그와 화면·음성 본문도 명시적으로 분리했습니다.
+- 2026-07-27: Recovery가 typed 결과를 문자열 Verifier로 다시 판정하고 복구
+  결과를 무조건 성공으로 승격하던 경로를 제거했습니다. 재시도도
+  `ToolRunResult.succeeded`만 신뢰합니다. `partial`을 1급 상태로 추가하고 전체
+  실행 종료를 `completed/partial/failed/cancelled`로 분류해 재시도 횟수와
+  완료·실패 단계 수를 `ExecutionOutcome`과 사용자 응답에 전달합니다.
+  전체 회귀 `175 passed, 4 deselected`로 P0 수락 기준을 완료했습니다.
 
 - [x] 모든 중앙 Tool 결과를 `ToolRunResult` 타입으로 통일
 - [x] 중앙 ToolExecutor 반환 경계의 `status`, `output`, `error`, `artifacts`, `evidence`, `timing` 통일
-- [ ] 문자열의 `오류:` 포함 여부에 의존하는 성공 판정 제거
+- [x] 문자열의 `오류:` 포함 여부에 의존하는 성공 판정 제거
 - [x] 검증기가 없는 실행형 Tool은 `unverified` 처리
 - [x] 일반 대화 경로의 실행 완료 주장 차단
 - [x] Action Journal에 Tool 입력·결과·검증 증거·지연 시간 연결
 - [x] UI 표시, TTS, 기술 로그 Presenter 분리
-- [ ] 취소·부분 완료·재시도 상태를 사용자에게 정확히 표시
+- [x] 취소·부분 완료·재시도 상태를 사용자에게 정확히 표시
 
-현재 남은 P0 핵심 범위는 레거시 하위 계층의 문자열 오류 판정 제거와 취소·부분
-완료·재시도 상태를 최종 사용자 응답에 일관되게 표시하는 일입니다.
+P0 상태: **완료**. 레거시 문자열은 직접 성공 근거로 사용하지 않으며, 전용 검증기가
+없는 결과는 `unverified`입니다. 이후 하위 서비스와 Plugin을 완전 typed API로
+정리하는 작업은 P6의 Tool Runtime 단일화에서 계속합니다.
 
 수락 기준:
 
