@@ -1,5 +1,5 @@
 from typing import List, Optional, Dict, Any, Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import json
 import re
 import threading
@@ -120,6 +120,7 @@ class Executor:
                      existing_task_id: Optional[str] = None) -> ExecutionOutcome:
         """질문 대기와 재개를 지원하는 한 번의 대화 턴을 실행한다."""
         session_key = session_id or "default"
+        workspace_scope = self._workspace_scope()
         history = list(conversation_history or [])
         normalized = goal.strip().lower()
 
@@ -127,7 +128,7 @@ class Executor:
             return self.handle_control_command(goal, session_key)
 
         if normalized in {"대기 작업", "대기 작업 목록"}:
-            items = self.dialogue_state.list(session_key)
+            items = self.dialogue_state.list(session_key, workspace_scope)
             if not items:
                 return ExecutionOutcome("현재 답변을 기다리는 작업이 없습니다, 보스.", "completed")
             lines = [f"- {item.task_id}: {item.original_goal} (질문: {item.question})" for item in items]
@@ -140,7 +141,10 @@ class Executor:
         if is_new_request:
             goal = re.sub(r"^새 작업\s*[:：]\s*", "", goal, flags=re.I)
         direct_resolution = self.intent_router.resolve(goal)
-        pending = None if is_new_request else self.dialogue_state.get(session_key, selected_task_id)
+        pending = (
+            None if is_new_request
+            else self.dialogue_state.get(session_key, selected_task_id, workspace_scope)
+        )
         # An independently recognisable execution request starts a new task instead
         # of being consumed as an answer to an unrelated/stale pending question.
         if (pending and not selected_task_id and direct_resolution.explicit
@@ -185,7 +189,7 @@ class Executor:
                     )
                     next_pending = self.dialogue_state.create(
                         session_key, intent_state["original_request"], intent_resolution.question,
-                        pending.conversation_history, pending.task_id,
+                        pending.conversation_history, pending.task_id, workspace_scope,
                     )
                     return ExecutionOutcome(
                         f"{intent_resolution.question}\n대기 작업 ID: {next_pending.task_id}",
@@ -211,7 +215,7 @@ class Executor:
         if not pending:
             intent_resolution = direct_resolution
             if intent_resolution.matched:
-                recent_intent = self.dialogue_state.get_recent_intent(session_key)
+                recent_intent = self.dialogue_state.get_recent_intent(session_key, workspace_scope)
                 if (
                     recent_intent
                     and recent_intent["intent_name"] == intent_resolution.intent_name
@@ -233,7 +237,7 @@ class Executor:
                     "completed", goal,
                 )
             if not intent_resolution.matched:
-                recent_intent = self.dialogue_state.get_recent_intent(session_key)
+                recent_intent = self.dialogue_state.get_recent_intent(session_key, workspace_scope)
                 if (recent_intent and self.intent_router.is_contextual_follow_up(
                         goal, recent_intent["intent_name"]
                 )):
@@ -245,13 +249,19 @@ class Executor:
             if intent_resolution.capability_response:
                 return ExecutionOutcome(intent_resolution.capability_response, "completed", goal)
             if intent_resolution.matched and intent_resolution.question:
-                task = self.dialogue_state.create_task(session_key, goal)
+                task = self.dialogue_state.create_task(
+                    session_key, goal, workspace_path=workspace_scope
+                )
                 self.dialogue_state.save_intent_state(
                     task.task_id, session_key, intent_resolution.intent_name,
                     intent_resolution.slots, goal,
                 )
+                self.dialogue_state.update_task(
+                    task.task_id, context_confidence=intent_resolution.confidence
+                )
                 pending = self.dialogue_state.create(
                     session_key, goal, intent_resolution.question, history, task.task_id,
+                    workspace_scope,
                 )
                 self.dialogue_state.update_task(task.task_id, status="awaiting_user")
                 return ExecutionOutcome(
@@ -279,13 +289,17 @@ class Executor:
         resolved = self.context_resolver.resolve(goal, history, session_key)
         if resolved.needs_clarification:
             question = resolved.clarification_question or "어떤 대상을 말씀하시는지 조금 더 구체적으로 알려주세요, 보스."
-            task = (self.dialogue_state.get_task(session_key, agent_task_id)
+            task = (self.dialogue_state.get_task(session_key, agent_task_id, workspace_scope)
                     if agent_task_id else None)
             if task:
                 self.dialogue_state.update_task(task.task_id, status="awaiting_user")
             else:
-                task = self.dialogue_state.create_task(session_key, goal)
-            pending = self.dialogue_state.create(session_key, goal, question, history, task.task_id)
+                task = self.dialogue_state.create_task(
+                    session_key, goal, workspace_path=workspace_scope
+                )
+            pending = self.dialogue_state.create(
+                session_key, goal, question, history, task.task_id, workspace_scope
+            )
             self.dialogue_state.update_task(task.task_id, status="awaiting_user")
             response = f"{question}\n대기 작업 ID: {pending.task_id}"
             return ExecutionOutcome(response, "awaiting_user", goal, question, pending.task_id)
@@ -296,7 +310,9 @@ class Executor:
         if unsupported:
             return ExecutionOutcome(unsupported, "completed", goal)
         if not agent_task_id:
-            agent_task_id = self.dialogue_state.create_task(session_key, goal).task_id
+            agent_task_id = self.dialogue_state.create_task(
+                session_key, goal, workspace_path=workspace_scope
+            ).task_id
         self.current_agent_task_id = agent_task_id
         self.dialogue_state.update_task(agent_task_id, status="running")
         with self._control_condition:
@@ -309,6 +325,18 @@ class Executor:
         initial_context = self.build_context()
         allowed_tools = self._allowed_tools_for_goal(goal)
         planned_tasks = self.planner.decompose_goal(goal, initial_context, allowed_tools)
+        self.dialogue_state.update_task(
+            agent_task_id,
+            plan=[
+                {
+                    "id": task.id,
+                    "description": task.description,
+                    "status": task.status,
+                    "required_tools": list(getattr(task, "required_tools", []) or []),
+                }
+                for task in planned_tasks
+            ],
+        )
         model_role_router = getattr(self, "model_role_router", None)
         if model_role_router is not None:
             planned_tools = [
@@ -356,7 +384,19 @@ class Executor:
             failed_steps=failed_steps,
             retry_count=retry_count,
         )
-        self.dialogue_state.update_task(agent_task_id, status=status, result=response)
+        self.dialogue_state.update_task(
+            agent_task_id, status=status, result=response,
+            retry_count=retry_count,
+            plan=[
+                {
+                    "id": task.id,
+                    "description": task.description,
+                    "status": task.status,
+                    "required_tools": list(getattr(task, "required_tools", []) or []),
+                }
+                for task in (scratchpad.tasks if scratchpad is not None else [])
+            ],
+        )
         with self._control_condition:
             self._task_controls.pop(agent_task_id, None)
         self.current_agent_task_id = ""
@@ -401,11 +441,22 @@ class Executor:
         return "completed", response
 
     def has_pending_request(self, session_id: Optional[str] = None) -> bool:
-        return bool(self.dialogue_state.list(session_id or "default"))
+        return bool(self.dialogue_state.list(
+            session_id or "default", self._workspace_scope()
+        ))
 
     def enqueue_goal(self, goal: str, session_id: Optional[str] = None, priority: int = 0):
         """현재 실행과 분리해 새 목표를 영속 대기열에 등록한다."""
-        return self.dialogue_state.create_task(session_id or "default", goal, priority)
+        return self.dialogue_state.create_task(
+            session_id or "default", goal, priority,
+            workspace_path=self._workspace_scope(),
+        )
+
+    def _workspace_scope(self) -> str:
+        manager = getattr(self, "workspace_manager", None)
+        if manager is None or not manager.is_set():
+            return ""
+        return manager.get_workspace_path() or ""
 
     def _emit_progress(self, message: str):
         if self._progress_callback:
@@ -428,7 +479,9 @@ class Executor:
         session_key = session_id or "default"
         normalized = text.strip().lower()
         if normalized in {"작업 목록", "전체 작업 목록"}:
-            tasks = self.dialogue_state.list_tasks(session_key)
+            tasks = self.dialogue_state.list_tasks(
+                session_key, workspace_path=self._workspace_scope()
+            )
             if not tasks:
                 return ExecutionOutcome("등록된 작업이 없습니다, 보스.")
             lines = [f"- {t.task_id} [{t.status}] 우선순위 {t.priority}: {t.goal[:60]}" for t in tasks[:20]]
@@ -438,7 +491,9 @@ class Executor:
         if not match:
             return ExecutionOutcome("작업 제어 명령을 이해하지 못했습니다, 보스.", "failed")
         task_id, command = match.group(1), match.group(2).strip()
-        task = self.dialogue_state.get_task(session_key, task_id)
+        task = self.dialogue_state.get_task(
+            session_key, task_id, self._workspace_scope()
+        )
         if not task:
             return ExecutionOutcome(f"작업 {task_id}을 찾지 못했습니다, 보스.", "failed", task_id=task_id)
         if command == "상태":
@@ -575,6 +630,14 @@ class Executor:
                     result,
                     (time.perf_counter() - started_at) * 1000,
                 )
+                if self.current_agent_task_id:
+                    self.dialogue_state.update_task(
+                        self.current_agent_task_id,
+                        artifacts=[asdict(item) for item in tool_run.artifacts],
+                        evidence=[asdict(item) for item in tool_run.evidence],
+                        last_tool=tool_name,
+                        retry_count=self._retry_count,
+                    )
                 result = tool_run.raw_output
                 verified = tool_run.succeeded
                 if tool_run.status == ToolRunStatus.UNVERIFIED:
@@ -597,6 +660,14 @@ class Executor:
                         tool_run = recovered_tool_run
                         result = recovered_tool_run.raw_output
                         verified = recovered_tool_run.succeeded
+                        if self.current_agent_task_id:
+                            self.dialogue_state.update_task(
+                                self.current_agent_task_id,
+                                artifacts=[asdict(item) for item in recovered_tool_run.artifacts],
+                                evidence=[asdict(item) for item in recovered_tool_run.evidence],
+                                last_tool=recovered_tool_run.tool_name,
+                                retry_count=self._retry_count,
+                            )
                         self._consecutive_failures = 0  # 복구 성공하면 초기화
                         print("[Executor] 복구 성공!")
                     else:
@@ -815,8 +886,21 @@ class Executor:
     def _execute_resolved_intent(self, resolution: IntentResolution, goal: str,
                                  session_id: str, task_id: str = "",
                                  progress_callback: Optional[Callable[[str], None]] = None) -> ExecutionOutcome:
-        task_id = task_id or self.dialogue_state.create_task(session_id, goal).task_id
-        self.dialogue_state.update_task(task_id, status="running")
+        workspace_scope = self._workspace_scope()
+        task_id = task_id or self.dialogue_state.create_task(
+            session_id, goal, workspace_path=workspace_scope
+        ).task_id
+        self.dialogue_state.update_task(
+            task_id, status="running", workspace_path=workspace_scope,
+            intent_name=resolution.intent_name, slots=resolution.slots,
+            context_confidence=resolution.confidence,
+            plan=[{
+                "id": task_id,
+                "description": resolution.intent_name,
+                "status": "running",
+                "required_tools": [resolution.tool_name],
+            }],
+        )
         if progress_callback:
             progress_callback(f"작업 {task_id}: {resolution.tool_name} 실행을 시작합니다.")
         task = Task(task_id, resolution.intent_name, status="in_progress")
@@ -843,11 +927,19 @@ class Executor:
         else:
             status = "failed"
             response = f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
-        self.dialogue_state.update_task(task_id, status=status, result=response)
+        self.dialogue_state.update_task(
+            task_id, status=status, result=response,
+            artifacts=[asdict(item) for item in tool_run.artifacts],
+            evidence=[asdict(item) for item in tool_run.evidence],
+            last_tool=resolution.tool_name,
+            retry_count=0,
+            verification_status=tool_run.status.value,
+        )
         self.dialogue_state.delete_intent_state(task_id)
         if tool_run.succeeded:
             self.dialogue_state.save_recent_intent(
-                session_id, resolution.intent_name, resolution.slots, goal
+                session_id, resolution.intent_name, resolution.slots, goal,
+                task_id=task_id, workspace_path=workspace_scope,
             )
         return ExecutionOutcome(
             response, status, goal, task_id=task_id, tool_result=tool_run

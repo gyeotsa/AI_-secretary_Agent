@@ -8,6 +8,7 @@ from plugins.calendar import CalendarPlugin
 from plugins.windows_control import WindowsControlPlugin
 from plugins.word import WordPlugin
 from core.verifier import ToolVerifier, VerificationResult
+from datetime import datetime, timedelta, timezone
 
 
 class _Resolver:
@@ -392,3 +393,99 @@ def test_windows_alias_request_bypasses_planner_and_llm(tmp_path):
     assert outcome.status == "completed"
     assert "디스코드" in outcome.response and "디코" in outcome.response
     assert executor.context_resolver.requests == []
+
+
+def test_unified_task_state_persists_intent_plan_artifacts_and_evidence(tmp_path):
+    db_path = str(tmp_path / "unified.db")
+    store = DialogueStateStore(db_path)
+    task = store.create_task("session", "보고서 생성", workspace_path="C:/work/a")
+    store.save_intent_state(
+        task.task_id, "session", "word.create",
+        {"path": "report.docx"}, "보고서 생성",
+    )
+    store.update_task(
+        task.task_id,
+        status="completed",
+        plan=[{"id": "step-1", "status": "completed"}],
+        artifacts=[{"kind": "file", "uri": "report.docx"}],
+        evidence=[{"kind": "document", "summary": "재열기 확인"}],
+        last_tool="word_create_document",
+        verification_status="succeeded",
+    )
+
+    restored = DialogueStateStore(db_path).get_task("session", task.task_id)
+
+    assert restored.workspace_path == "C:/work/a"
+    assert restored.intent_name == "word.create"
+    assert restored.slots["path"] == "report.docx"
+    assert restored.plan[0]["status"] == "completed"
+    assert restored.artifacts[0]["uri"] == "report.docx"
+    assert restored.evidence[0]["kind"] == "document"
+    assert restored.verification_status == "succeeded"
+
+
+def test_pending_and_recent_intent_are_isolated_by_workspace(tmp_path):
+    store = DialogueStateStore(str(tmp_path / "scoped.db"))
+    first = store.create_task("session", "A 작업", workspace_path="C:/work/a")
+    second = store.create_task("session", "B 작업", workspace_path="C:/work/b")
+    store.create("session", "A 작업", "A 질문", [], first.task_id, "C:/work/a")
+    store.create("session", "B 작업", "B 질문", [], second.task_id, "C:/work/b")
+    store.save_recent_intent(
+        "session", "intent.a", {"target": "a"}, "A 작업",
+        task_id=first.task_id, workspace_path="C:/work/a",
+    )
+    store.save_recent_intent(
+        "session", "intent.b", {"target": "b"}, "B 작업",
+        task_id=second.task_id, workspace_path="C:/work/b",
+    )
+
+    assert store.get("session", workspace_path="C:/work/a").task_id == first.task_id
+    assert store.get("session", workspace_path="C:/work/b").task_id == second.task_id
+    assert store.get_recent_intent("session", "C:/work/a")["intent_name"] == "intent.a"
+    assert store.get_recent_intent("session", "C:/work/b")["intent_name"] == "intent.b"
+
+
+def test_interrupted_restore_and_pending_expiry_policy(tmp_path):
+    db_path = str(tmp_path / "restore.db")
+    store = DialogueStateStore(db_path)
+    running = store.create_task("session", "실행 중 작업")
+    store.update_task(running.task_id, status="running")
+    pending = store.create_task("session", "오래된 질문")
+    store.create("session", "오래된 질문", "답변?", [], pending.task_id)
+    store.update_task(
+        pending.task_id,
+        expires_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+    )
+
+    restarted = DialogueStateStore(db_path)
+    restored_ids = {task.task_id for task in restarted.restore_interrupted("session")}
+
+    assert running.task_id in restored_ids
+    assert restarted.expire_stale_pending() == 1
+    assert restarted.get_task("session", pending.task_id).status == "expired"
+    assert restarted.get("session", pending.task_id) is None
+
+
+def test_task_state_rejects_invalid_transition_and_isolates_workspace(tmp_path):
+    store = DialogueStateStore(str(tmp_path / "transition.db"))
+    task = store.create_task("session", "작업", workspace_path="C:/one")
+
+    assert store.transition_task(task.task_id, "running")
+    assert store.transition_task(task.task_id, "completed", result="완료")
+    assert not store.transition_task(task.task_id, "running")
+    assert store.get_task("session", task.task_id, "C:/one") is not None
+    assert store.get_task("session", task.task_id, "C:/two") is None
+
+
+def test_intent_resolution_exposes_follow_up_confidence():
+    registry = PluginRegistry()
+    registry.register_plugin(CalendarPlugin())
+    router = IntentRouter(registry)
+    direct = router.resolve("캘린더 파일 생성해줘")
+
+    assert direct.matched
+    assert direct.confidence > 0
+
+    follow_up = router.resolve("2026년 8월 1일", direct.intent_name, direct.slots)
+    assert follow_up.matched
+    assert follow_up.confidence >= direct.confidence

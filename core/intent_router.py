@@ -16,6 +16,7 @@ class IntentResolution:
     capability_response: str = ""
     explicit: bool = False
     execution_requested: bool = False
+    confidence: float = 0.0
 
     @property
     def ready(self) -> bool:
@@ -28,7 +29,7 @@ class IntentRouter:
     def __init__(self, registry: PluginRegistry):
         self.registry = registry
 
-    def _find(self, text: str) -> Optional[tuple[BasePlugin, IntentSchema]]:
+    def _find(self, text: str) -> Optional[tuple[BasePlugin, IntentSchema, float]]:
         normalized = text.casefold()
         candidates = []
         for plugin, intent in self.registry.get_all_intents():
@@ -42,15 +43,16 @@ class IntentRouter:
                 candidates.append((score, plugin, intent))
         if not candidates:
             return None
-        _, plugin, intent = max(candidates, key=lambda item: item[0])
-        return plugin, intent
+        score, plugin, intent = max(candidates, key=lambda item: item[0])
+        confidence = min(1.0, 0.55 + min(score, 100) / 250)
+        return plugin, intent, confidence
 
     def resolve(self, text: str, intent_name: str = "",
                 current_slots: Optional[Dict[str, Any]] = None) -> IntentResolution:
         selected = None
         if intent_name:
             selected = next(
-                ((plugin, intent) for plugin, intent in self.registry.get_all_intents()
+                ((plugin, intent, 0.9) for plugin, intent in self.registry.get_all_intents()
                  if intent.name == intent_name), None,
             )
         else:
@@ -58,7 +60,7 @@ class IntentRouter:
         if not selected:
             return IntentResolution()
 
-        plugin, intent = selected
+        plugin, intent, confidence = selected
         normalized = text.casefold()
         is_execution = any(hint.casefold() in normalized for hint in intent.execution_hints)
         is_capability = any(hint in normalized for hint in self.CAPABILITY_HINTS)
@@ -66,6 +68,7 @@ class IntentRouter:
             return IntentResolution(
                 True, intent.name, capability_response=intent.capability_response,
                 explicit=not bool(intent_name), execution_requested=False,
+                confidence=confidence,
             )
 
         slots = plugin.extract_slots(intent.name, text, current_slots or {})
@@ -74,6 +77,7 @@ class IntentRouter:
         return IntentResolution(
             True, intent.name, intent.tool_name, slots, question,
             explicit=not bool(intent_name), execution_requested=is_execution,
+            confidence=confidence,
         )
 
     def resolve_from_history(self, text: str, history: List[Dict[str, str]]) -> IntentResolution:
@@ -87,7 +91,7 @@ class IntentRouter:
                 break
         if not selected:
             return IntentResolution()
-        plugin, intent = selected
+        plugin, intent, _confidence = selected
         slots: Dict[str, Any] = {}
         for message in history[selected_index:]:
             slots = plugin.extract_slots(intent.name, str(message.get("content", "")), slots)
