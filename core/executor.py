@@ -33,6 +33,9 @@ class ExecutionOutcome:
     task_id: str = ""
     next_goal: str = ""
     tool_result: Optional[ToolRunResult] = None
+    retry_count: int = 0
+    completed_steps: int = 0
+    failed_steps: int = 0
 
 
 class Executor:
@@ -336,18 +339,66 @@ class Executor:
         # 3. 최종 종료 처리
         response = self.finalize()
         control = self._task_controls.get(agent_task_id, {})
-        if control.get("cancel"):
-            status = "cancelled"
-        elif self.terminal_error:
-            status = "failed"
-        else:
-            status = "completed"
+        scratchpad = getattr(self, "scratchpad", None)
+        completed_steps = (
+            len(scratchpad.get_completed_tasks()) if scratchpad is not None else 0
+        )
+        failed_steps = (
+            len([task for task in scratchpad.tasks if task.status == "failed"])
+            if scratchpad is not None else 0
+        )
+        retry_count = getattr(self, "_retry_count", 0)
+        status, response = self._present_terminal_state(
+            response=response,
+            cancelled=bool(control.get("cancel")),
+            terminal_error=self.terminal_error,
+            completed_steps=completed_steps,
+            failed_steps=failed_steps,
+            retry_count=retry_count,
+        )
         self.dialogue_state.update_task(agent_task_id, status=status, result=response)
         with self._control_condition:
             self._task_controls.pop(agent_task_id, None)
         self.current_agent_task_id = ""
         self._progress_callback = None
-        return ExecutionOutcome(response, status, goal, task_id=agent_task_id)
+        return ExecutionOutcome(
+            response, status, goal, task_id=agent_task_id,
+            retry_count=retry_count,
+            completed_steps=completed_steps,
+            failed_steps=failed_steps,
+        )
+
+    @staticmethod
+    def _present_terminal_state(
+        *,
+        response: str,
+        cancelled: bool,
+        terminal_error: Optional[str],
+        completed_steps: int,
+        failed_steps: int,
+        retry_count: int,
+    ) -> tuple[str, str]:
+        """실행 종료 상태를 사용자 문구와 동일한 단일 계약으로 변환한다."""
+        if cancelled:
+            return (
+                "cancelled",
+                terminal_error or "사용자 요청으로 작업을 취소했습니다.",
+            )
+        if terminal_error:
+            if completed_steps:
+                return (
+                    "partial",
+                    f"일부 작업만 완료되었습니다({completed_steps}단계 완료, "
+                    f"{failed_steps or 1}단계 실패). {terminal_error}",
+                )
+            retry_note = f" 재시도 {retry_count}회 후에도" if retry_count else ""
+            return "failed", f"{retry_note.strip()} {terminal_error}".strip()
+        if retry_count:
+            return (
+                "completed",
+                f"재시도 {retry_count}회 후 완료했습니다.\n{response}",
+            )
+        return "completed", response
 
     def has_pending_request(self, session_id: Optional[str] = None) -> bool:
         return bool(self.dialogue_state.list(session_id or "default"))
@@ -541,10 +592,11 @@ class Executor:
                     self._total_failures += 1
                     print(f"[Executor] 실행 결과 검증 실패! 복구 시도... (연속 실패: {self._consecutive_failures})")
                     self._emit_progress(f"{tool_name} 실행 결과를 확인하지 못해 복구를 시도하고 있습니다.")
-                    recover_result = self.recover(task, tool_name, tool_input, result)
-                    if recover_result is not None:
-                        result = recover_result
-                        verified = True
+                    recovered_tool_run = self.recover(task, tool_name, tool_input, result)
+                    if recovered_tool_run is not None:
+                        tool_run = recovered_tool_run
+                        result = recovered_tool_run.raw_output
+                        verified = recovered_tool_run.succeeded
                         self._consecutive_failures = 0  # 복구 성공하면 초기화
                         print("[Executor] 복구 성공!")
                     else:
@@ -966,7 +1018,8 @@ class Executor:
         tasks = self.scratchpad.tasks
         return bool(tasks) and all(task.status == "completed" for task in tasks)
 
-    def recover(self, task: Task, tool_name: str, tool_input: Dict[str, Any], last_result: str) -> Optional[str]:
+    def recover(self, task: Task, tool_name: str, tool_input: Dict[str, Any],
+                last_result: str) -> Optional[ToolRunResult]:
         """실패 복구: RecoveryManager를 사용해 단계별로 시도"""
         print(f"[Executor] 복구 시도... (재시도 횟수: {self._retry_count})")
         

@@ -8,6 +8,7 @@ import core.knowledge_graph as knowledge_graph_module
 import core.multi_agent as multi_agent_module
 import core.multimodal as multimodal_module
 import core.tools as tools_module
+import core.recovery as recovery_module
 from core.executor import Executor
 from core.scratchpad import Task
 from core.tool_result import Evidence
@@ -527,3 +528,71 @@ def test_permission_denial_is_also_written_to_action_journal():
 
     assert result.status == ToolRunStatus.FAILED
     assert recorded == [result]
+
+
+def test_recovery_uses_typed_status_without_reparsing_output():
+    manager = recovery_module.RecoveryManager.__new__(recovery_module.RecoveryManager)
+    manager.max_retries = 2
+    manager._alternative_tools = {}
+    direct = ToolRunResult.successful(
+        tool_name="write_file",
+        raw_output="오류라는 단어가 포함된 정상 파일 내용",
+        evidence=[Evidence("file_content", "실제 파일 내용을 확인했습니다.")],
+    )
+    manager.tool_executor = SimpleNamespace(
+        execute_tool=lambda tool_name, tool_input: direct
+    )
+
+    recovered = manager._try_retry("write_file", {"path": "x"})
+
+    assert recovered.success is True
+    assert recovered.result is direct
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_status", "expected_text"),
+    [
+        (
+            {
+                "response": "원래 응답", "cancelled": True,
+                "terminal_error": "사용자가 작업을 취소했습니다.",
+                "completed_steps": 0, "failed_steps": 0, "retry_count": 0,
+            },
+            "cancelled",
+            "취소",
+        ),
+        (
+            {
+                "response": "원래 응답", "cancelled": False,
+                "terminal_error": "두 번째 작업이 실패했습니다.",
+                "completed_steps": 1, "failed_steps": 1, "retry_count": 1,
+            },
+            "partial",
+            "1단계 완료",
+        ),
+        (
+            {
+                "response": "작업 결과", "cancelled": False,
+                "terminal_error": None,
+                "completed_steps": 2, "failed_steps": 0, "retry_count": 2,
+            },
+            "completed",
+            "재시도 2회 후 완료",
+        ),
+    ],
+)
+def test_terminal_state_is_visible_in_user_response(arguments, expected_status, expected_text):
+    status, response = Executor._present_terminal_state(**arguments)
+    assert status == expected_status
+    assert expected_text in response
+
+
+def test_partial_is_a_first_class_tool_status():
+    result = ToolRunResult(
+        tool_name="multi_step",
+        status=ToolRunStatus.PARTIAL,
+        raw_output="일부 완료",
+        evidence=[Evidence("partial_execution", "한 단계만 완료했습니다.")],
+    )
+    assert result.to_dict()["status"] == "partial"
+    assert result.succeeded is False

@@ -151,9 +151,10 @@ class MultiAgentOrchestrator:
                                 raise RuntimeError(result.raw_output)
                             result_text = result.raw_output
                         else:
-                            result_text = str(result)
-                            if result_text.startswith("오류:"):
-                                raise RuntimeError(result_text)
+                            raise TypeError(
+                                f"Tool Runtime 계약 위반: {tool_name}이 "
+                                "ToolRunResult가 아닌 값을 반환했습니다."
+                            )
                         results.append(f"단계 {step['id']}: {result_text}")
                         
                         # 스크래치패드에 관찰 기록

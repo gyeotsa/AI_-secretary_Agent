@@ -1458,8 +1458,6 @@ class ToolExecutor:
         if not is_valid:
             return ToolRunResult.failed(tool_name="add_document",error=error_msg)
         raw = self.rag_manager.add_document(file_path)
-        if str(raw).startswith(("오류:", "문서 추가 오류:")):
-            return ToolRunResult.failed(tool_name="add_document",error=str(raw),raw_output=str(raw))
         doc_id = os.path.basename(file_path)
         saved = self.rag_manager.documents.get(doc_id)
         if not saved:
@@ -1638,7 +1636,7 @@ class ToolExecutor:
         if not source.is_file():
             return ToolRunResult.failed(tool_name="analyze_image", error=f"이미지 파일을 찾을 수 없습니다: {image_path}")
         raw = self.multimodal_manager.analyze_image(image_path, prompt)
-        if str(raw).startswith(("오류:", "이미지 분석 오류:")) or not str(raw).strip():
+        if not str(raw).strip():
             return ToolRunResult.failed(tool_name="analyze_image", error=str(raw), raw_output=str(raw))
         return ToolRunResult.unverified(
             tool_name="analyze_image", raw_output=str(raw),
@@ -1656,14 +1654,22 @@ class ToolExecutor:
         source = Path(pdf_path)
         if not source.is_file():
             return ToolRunResult.failed(tool_name="extract_text_from_pdf", error=f"PDF 파일을 찾을 수 없습니다: {pdf_path}")
-        raw = self.multimodal_manager.extract_text_from_pdf(pdf_path, page_num)
-        if str(raw).startswith(("오류:", "PDF 분석 오류:")):
-            return ToolRunResult.failed(tool_name="extract_text_from_pdf", error=str(raw), raw_output=str(raw))
         try:
             from core.multimodal import fitz
             with fitz.open(pdf_path) as document:
                 total_pages = document.page_count
-                selected_pages = 1 if page_num is not None else total_pages
+                if page_num is not None and not 1 <= page_num <= total_pages:
+                    return ToolRunResult.failed(
+                        tool_name="extract_text_from_pdf",
+                        error=f"페이지 번호는 1~{total_pages} 사이여야 합니다.",
+                    )
+                page_indices = [page_num - 1] if page_num is not None else list(range(total_pages))
+                extracted = [
+                    document[index].get_text()
+                    for index in page_indices
+                ]
+            selected_pages = len(page_indices)
+            raw = "\n".join(extracted)
             return ToolRunResult.successful(
                 tool_name="extract_text_from_pdf", raw_output=str(raw),
                 evidence=[Evidence("pdf_text_extraction", "PDF를 다시 열어 페이지 구조와 출력 해시를 확인했습니다.", {

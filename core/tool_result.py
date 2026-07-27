@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 class ToolRunStatus(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    PARTIAL = "partial"
     UNVERIFIED = "unverified"
     CANCELLED = "cancelled"
 
