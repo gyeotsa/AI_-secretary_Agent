@@ -70,6 +70,11 @@ class WorkspaceManager:
     def is_set(self) -> bool:
         """Workspace가 설정되어 있는지 확인"""
         return self._workspace is not None
+
+    @property
+    def current_workspace(self) -> Optional[str]:
+        """ProjectIndexer 등 기존 소비자가 사용하는 현재 Workspace 절대 경로."""
+        return self.get_workspace_path()
         
     def get_workspace_path(self) -> Optional[str]:
         """설정된 Workspace 경로 반환"""
@@ -157,4 +162,3 @@ def get_workspace_manager() -> WorkspaceManager:
     if _workspace_manager is None:
         _workspace_manager = WorkspaceManager()
     return _workspace_manager
-

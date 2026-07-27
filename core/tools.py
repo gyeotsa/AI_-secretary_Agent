@@ -6,9 +6,11 @@ import queue
 import threading
 import asyncio
 import time
+import hashlib
 from typing import Optional
 from datetime import datetime
 from dataclasses import asdict
+from pathlib import Path
 from config import Config
 from core.harness import SafetyLayer
 from core.user_profile import get_user_profile
@@ -17,7 +19,7 @@ from core.plugin import get_plugin_registry
 from core.tts_settings import get_tts_settings_manager
 from core.custom_tts import GPTSoVITSClient, load_custom_voice_profiles, split_tts_text
 from core.tts_normalizer import normalize_for_tts
-from core.tool_result import ToolRunResult
+from core.tool_result import Artifact, Evidence, ToolRunResult
 from core.verifier import ToolVerifier
 
 try:
@@ -142,16 +144,23 @@ class ToolExecutor:
         
         return True, "", resolved_path
 
-    def read_file(self, path: str) -> str:
+    def read_file(self, path: str):
         is_valid, error_msg, resolved_path = self._resolve_and_validate_path(path)
         if not is_valid:
-            return error_msg
+            return ToolRunResult.failed(tool_name="read_file",error=error_msg,raw_output=error_msg)
 
         try:
-            with open(resolved_path, "r", encoding="utf-8") as f:
-                return f.read()
+            content = Path(resolved_path).read_text(encoding="utf-8")
+            return ToolRunResult.successful(
+                tool_name="read_file",raw_output=content,
+                evidence=[Evidence("file_content","파일 내용·크기·해시를 확인했습니다.",{
+                    "path":resolved_path,"size":Path(resolved_path).stat().st_size,
+                    "sha256":hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                })],
+                artifacts=[Artifact("file",resolved_path)],
+            )
         except Exception as e:
-            return f"파일 읽기 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="read_file",error=f"파일 읽기 오류: {e}")
 
     def write_file(self, path: str, content: str) -> str:
         is_valid, error_msg, resolved_path = self._resolve_and_validate_path(path)
@@ -166,7 +175,7 @@ class ToolExecutor:
         except Exception as e:
             return f"파일 쓰기 오류: {str(e)}"
 
-    def list_directory(self, path: str = "") -> str:
+    def list_directory(self, path: str = ""):
         target_path = path
         try:
             if not path and self.workspace.is_set():
@@ -177,11 +186,11 @@ class ToolExecutor:
                 real_path = self.workspace.resolve(path)
                 target_path = str(real_path)
         except Exception as e:
-            return f"오류: {e}"
+            return ToolRunResult.failed(tool_name="list_directory",error=str(e))
 
         is_valid, error_msg = self.safety.validate_path(target_path)
         if not is_valid:
-            return f"오류: {error_msg}"
+            return ToolRunResult.failed(tool_name="list_directory",error=error_msg)
 
         try:
             items = os.listdir(target_path)
@@ -191,9 +200,16 @@ class ToolExecutor:
                 is_dir = os.path.isdir(item_path)
                 prefix = "[폴더] " if is_dir else "[파일] "
                 result.append(prefix + item)
-            return "\n".join(result)
+            output = "\n".join(result)
+            return ToolRunResult.successful(
+                tool_name="list_directory",raw_output=output,
+                evidence=[Evidence("directory_listing",f"디렉터리 항목 {len(items)}개를 조회했습니다.",{
+                    "path":str(Path(target_path).resolve()),"count":len(items),
+                })],
+                artifacts=[Artifact("directory",str(Path(target_path).resolve()))],
+            )
         except Exception as e:
-            return f"디렉토리 목록 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="list_directory",error=f"디렉토리 목록 오류: {e}")
 
     def create_directory(self, dir_path: str) -> str:
         is_valid, error_msg, resolved_path = self._resolve_and_validate_path(dir_path)
@@ -233,102 +249,132 @@ class ToolExecutor:
     # ------------------------------
     # Workspace 관련 도구 추가
     # ------------------------------
-    def set_workspace(self, path: str) -> str:
+    def set_workspace(self, path: str):
         """작업 공간을 설정합니다."""
         try:
             success = self.workspace.set_workspace(path)
             if success:
                 info = self.workspace.get_info()
-                return f"Workspace가 설정되었습니다: {info.name} (파일: {info.file_count}개)"
+                return ToolRunResult.successful(
+                    tool_name="set_workspace",
+                    raw_output=f"Workspace가 설정되었습니다: {info.name} (파일: {info.file_count}개)",
+                    evidence=[Evidence("workspace_state","Workspace 설정과 실제 디렉터리를 확인했습니다.",{
+                        "path":info.path,"name":info.name,"file_count":info.file_count,
+                    })],
+                    artifacts=[Artifact("directory",info.path,{"workspace":True})],
+                )
             else:
-                return f"Workspace 설정 실패: 유효하지 않은 경로입니다: {path}"
+                return ToolRunResult.failed(tool_name="set_workspace",error=f"유효하지 않은 경로입니다: {path}")
         except Exception as e:
-            return f"Workspace 설정 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="set_workspace",error=f"Workspace 설정 오류: {e}")
 
-    def get_workspace_info(self) -> str:
+    def get_workspace_info(self):
         """현재 Workspace 정보를 반환합니다."""
         if self.workspace.is_set():
             info = self.workspace.get_info()
-            return (f"Workspace: {info.name}\n"
+            output = (f"Workspace: {info.name}\n"
                     f"경로: {info.path}\n"
                     f"파일 개수: {info.file_count}")
+            return ToolRunResult.successful(
+                tool_name="get_workspace_info",raw_output=output,
+                evidence=[Evidence("workspace_state","현재 Workspace 정보를 확인했습니다.",asdict(info))],
+                artifacts=[Artifact("directory",info.path,{"workspace":True})],
+            )
         else:
-            return "Workspace가 설정되지 않았습니다."
+            return ToolRunResult.failed(tool_name="get_workspace_info",error="Workspace가 설정되지 않았습니다.")
 
-    def get_workspace_tree(self) -> str:
+    def get_workspace_tree(self):
         """Workspace의 파일 트리를 반환합니다."""
         if not self.workspace.is_set():
-            return "Workspace가 설정되지 않았습니다."
+            return ToolRunResult.failed(tool_name="get_workspace_tree",error="Workspace가 설정되지 않았습니다.")
 
         try:
             import json
             tree = self.workspace.get_file_tree()
-            return json.dumps(tree, indent=2, ensure_ascii=False)
+            output = json.dumps(tree, indent=2, ensure_ascii=False)
+            path = str(self.workspace.get_workspace_path())
+            return ToolRunResult.successful(
+                tool_name="get_workspace_tree",raw_output=output,
+                evidence=[Evidence("workspace_tree","Workspace 파일 트리 생성을 확인했습니다.",{"path":path,"root":tree.get("name")})],
+                artifacts=[Artifact("directory",path,{"workspace":True})],
+            )
         except Exception as e:
-            return f"트리 가져오기 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="get_workspace_tree",error=f"트리 가져오기 오류: {e}")
 
     # ------------------------------
     # Project Indexer 관련 도구 추가
     # ------------------------------
-    def index_project(self) -> str:
+    def index_project(self):
         """현재 Workspace나 프로젝트 루트를 인덱싱합니다."""
         if self.project_indexer is None:
-            return "오류: Project Indexer를 초기화할 수 없습니다."
+            return ToolRunResult.failed(tool_name="index_project",error="Project Indexer를 초기화할 수 없습니다.")
 
         try:
             if not self.project_indexer.project_root and self.workspace.is_set():
                 self.project_indexer.set_project_root(self.workspace.current_workspace)
 
             if not self.project_indexer.project_root:
-                return "오류: 프로젝트 루트가 설정되지 않았습니다. 먼저 Workspace를 설정하세요."
+                return ToolRunResult.failed(tool_name="index_project",error="프로젝트 루트가 설정되지 않았습니다. 먼저 Workspace를 설정하세요.")
 
             count = self.project_indexer.index_project()
-            return f"프로젝트 인덱싱 완료: {count}개 파일"
+            return ToolRunResult.successful(
+                tool_name="index_project",raw_output=f"프로젝트 인덱싱 완료: {count}개 파일",
+                evidence=[Evidence("project_index","프로젝트 인덱스 파일 수를 확인했습니다.",{"project_root":self.project_indexer.project_root,"file_count":count})],
+                artifacts=[Artifact("project_index",self.project_indexer.db_path,{"project_root":self.project_indexer.project_root})],
+            )
         except Exception as e:
-            return f"프로젝트 인덱싱 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="index_project",error=f"프로젝트 인덱싱 오류: {e}")
 
-    def search_files(self, query: str, search_type: str = "name") -> str:
+    def search_files(self, query: str, search_type: str = "name"):
         """파일을 검색합니다 (이름, 내용, 확장자)."""
         if self.project_indexer is None:
-            return "오류: Project Indexer를 초기화할 수 없습니다."
+            return ToolRunResult.failed(tool_name="search_files",error="Project Indexer를 초기화할 수 없습니다.")
 
         try:
             results = self.project_indexer.search_files(query, search_type)
-            if not results:
-                return "검색 결과가 없습니다."
-
-            import json
-            return json.dumps(results, indent=2, ensure_ascii=False)
+            output = json.dumps(results, indent=2, ensure_ascii=False) if results else "검색 결과가 없습니다."
+            return ToolRunResult.successful(
+                tool_name="search_files",raw_output=output,
+                evidence=[Evidence("project_index_query",f"인덱스에서 파일 {len(results)}건을 조회했습니다.",{
+                    "query":query,"search_type":search_type,"count":len(results),
+                    "project_root":self.project_indexer.project_root,
+                })],
+                artifacts=[Artifact("file",str(item["path"])) for item in results if item.get("path")],
+            )
         except Exception as e:
-            return f"파일 검색 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="search_files",error=f"파일 검색 오류: {e}")
 
-    def search_symbols(self, query: str, symbol_type: Optional[str] = None) -> str:
+    def search_symbols(self, query: str, symbol_type: Optional[str] = None):
         """코드 심볼을 검색합니다 (함수, 클래스, 변수)."""
         if self.project_indexer is None:
-            return "오류: Project Indexer를 초기화할 수 없습니다."
+            return ToolRunResult.failed(tool_name="search_symbols",error="Project Indexer를 초기화할 수 없습니다.")
 
         try:
             results = self.project_indexer.search_symbols(query, symbol_type)
-            if not results:
-                return "검색 결과가 없습니다."
-
-            import json
-            return json.dumps(results, indent=2, ensure_ascii=False)
+            output = json.dumps(results, indent=2, ensure_ascii=False) if results else "검색 결과가 없습니다."
+            return ToolRunResult.successful(
+                tool_name="search_symbols",raw_output=output,
+                evidence=[Evidence("project_symbol_query",f"인덱스에서 코드 심볼 {len(results)}건을 조회했습니다.",{
+                    "query":query,"symbol_type":symbol_type,"count":len(results),
+                    "project_root":self.project_indexer.project_root,
+                })],
+                artifacts=[Artifact("file",str(item["file_path"])) for item in results if item.get("file_path")],
+            )
         except Exception as e:
-            return f"심볼 검색 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="search_symbols",error=f"심볼 검색 오류: {e}")
 
-    def get_file_info(self, path: str) -> str:
+    def get_file_info(self, path: str):
         """파일의 상세 정보를 반환합니다."""
         if self.project_indexer is None:
-            return "오류: Project Indexer를 초기화할 수 없습니다."
+            return ToolRunResult.failed(tool_name="get_file_info",error="Project Indexer를 초기화할 수 없습니다.")
 
         try:
             file_info = self.project_indexer.get_file_info(path)
             if not file_info:
-                return f"파일 정보를 찾을 수 없습니다: {path}"
+                return ToolRunResult.failed(tool_name="get_file_info",error=f"파일 정보를 찾을 수 없습니다: {path}")
 
             import json
-            return json.dumps({
+            output = json.dumps({
                 "path": file_info.path,
                 "name": file_info.name,
                 "extension": file_info.extension,
@@ -339,25 +385,37 @@ class ToolExecutor:
                 "content_preview": file_info.content_preview,
                 "symbols": file_info.symbols
             }, indent=2, ensure_ascii=False)
+            return ToolRunResult.successful(
+                tool_name="get_file_info",raw_output=output,
+                evidence=[Evidence("project_file_info","인덱스 파일 메타데이터를 확인했습니다.",{
+                    "path":file_info.path,"size":file_info.size,"modified_at":file_info.modified_at,
+                })],
+                artifacts=[Artifact("file",file_info.path)],
+            )
         except Exception as e:
-            return f"파일 정보 가져오기 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="get_file_info",error=f"파일 정보 가져오기 오류: {e}")
 
-    def get_project_tree(self) -> str:
+    def get_project_tree(self):
         """프로젝트의 파일 트리 구조를 반환합니다."""
         if self.project_indexer is None:
-            return "오류: Project Indexer를 초기화할 수 없습니다."
+            return ToolRunResult.failed(tool_name="get_project_tree",error="Project Indexer를 초기화할 수 없습니다.")
 
         try:
             tree = self.project_indexer.get_file_tree()
             import json
-            return json.dumps(tree, indent=2, ensure_ascii=False)
+            output = json.dumps(tree, indent=2, ensure_ascii=False)
+            return ToolRunResult.successful(
+                tool_name="get_project_tree",raw_output=output,
+                evidence=[Evidence("project_tree","프로젝트 루트에서 파일 트리를 생성했습니다.",{"project_root":self.project_indexer.project_root})],
+                artifacts=[Artifact("directory",str(self.project_indexer.project_root))],
+            )
         except Exception as e:
-            return f"프로젝트 트리 가져오기 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="get_project_tree",error=f"프로젝트 트리 가져오기 오류: {e}")
 
     # ------------------------------
     # Memory 관련 도구 추가
     # ------------------------------
-    def add_semantic_memory(self, key: str, content: str, category: str = "기타") -> str:
+    def add_semantic_memory(self, key: str, content: str, category: str = "기타"):
         """시맨틱 메모리 추가"""
         try:
             from core.memory import get_semantic_memory, SemanticMemory
@@ -368,50 +426,66 @@ class ToolExecutor:
                 category=category
             )
             semantic_manager.add_memory(memory)
-            return f"시맨틱 메모리가 추가되었습니다: {key}"
+            saved = semantic_manager.get_memory(key)
+            if not saved or saved.content != content or saved.category != category:
+                raise ValueError("시맨틱 메모리 저장 후 재조회 검증에 실패했습니다.")
+            return ToolRunResult.successful(
+                tool_name="add_semantic_memory",raw_output=f"시맨틱 메모리가 추가되었습니다: {key}",
+                evidence=[Evidence("semantic_memory","시맨틱 메모리 저장 후 키·카테고리·내용을 재확인했습니다.",{"key":key,"category":category,"content_sha256":hashlib.sha256(content.encode("utf-8")).hexdigest()})],
+                artifacts=[Artifact("semantic_memory",key,{"category":category})],
+            )
         except Exception as e:
-            return f"시맨틱 메모리 추가 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="add_semantic_memory",error=f"시맨틱 메모리 추가 오류: {e}")
 
-    def get_semantic_memory(self, key: str) -> str:
+    def get_semantic_memory(self, key: str):
         """시맨틱 메모리 조회"""
         try:
             from core.memory import get_semantic_memory
             semantic_manager = get_semantic_memory()
             memory = semantic_manager.get_memory(key)
             if memory:
-                return f"{memory.key} ({memory.category}): {memory.content}"
+                return ToolRunResult.successful(
+                    tool_name="get_semantic_memory",raw_output=f"{memory.key} ({memory.category}): {memory.content}",
+                    evidence=[Evidence("semantic_memory","키로 시맨틱 메모리를 조회했습니다.",{"key":memory.key,"category":memory.category,"timestamp":memory.timestamp})],
+                    artifacts=[Artifact("semantic_memory",memory.key,{"category":memory.category})],
+                )
             else:
-                return f"메모리를 찾을 수 없습니다: {key}"
+                return ToolRunResult.failed(tool_name="get_semantic_memory",error=f"메모리를 찾을 수 없습니다: {key}")
         except Exception as e:
-            return f"시맨틱 메모리 조회 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="get_semantic_memory",error=f"시맨틱 메모리 조회 오류: {e}")
 
-    def search_semantic_memory(self, query: str, category: Optional[str] = None) -> str:
+    def search_semantic_memory(self, query: str, category: Optional[str] = None):
         """시맨틱 메모리 검색"""
         try:
             from core.memory import get_semantic_memory
             semantic_manager = get_semantic_memory()
             memories = semantic_manager.search_memories(query, category=category)
-            if not memories:
-                return "검색 결과가 없습니다."
             result = []
             for mem in memories:
                 result.append(f"- [{mem.category}] {mem.key}: {mem.content}")
-            return "\n".join(result)
+            output = "\n".join(result) if result else "검색 결과가 없습니다."
+            return ToolRunResult.successful(
+                tool_name="search_semantic_memory",raw_output=output,
+                evidence=[Evidence("semantic_memory_query",f"시맨틱 메모리 {len(memories)}건을 조회했습니다.",{"query":query,"category":category,"count":len(memories)})],
+                artifacts=[Artifact("semantic_memory",mem.key,{"category":mem.category}) for mem in memories],
+            )
         except Exception as e:
-            return f"시맨틱 메모리 검색 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="search_semantic_memory",error=f"시맨틱 메모리 검색 오류: {e}")
 
-    def delete_semantic_memory(self, key: str) -> str:
+    def delete_semantic_memory(self, key: str):
         """시맨틱 메모리 삭제"""
         try:
             from core.memory import get_semantic_memory
             semantic_manager = get_semantic_memory()
             deleted = semantic_manager.delete_memory(key)
-            if deleted:
-                return f"메모리가 삭제되었습니다: {key}"
-            else:
-                return f"메모리를 찾을 수 없습니다: {key}"
+            if deleted and semantic_manager.get_memory(key) is None:
+                return ToolRunResult.successful(
+                    tool_name="delete_semantic_memory",raw_output=f"메모리가 삭제되었습니다: {key}",
+                    evidence=[Evidence("semantic_memory_absent","삭제 후 시맨틱 메모리가 존재하지 않음을 확인했습니다.",{"key":key})],
+                )
+            return ToolRunResult.failed(tool_name="delete_semantic_memory",error=f"메모리를 찾을 수 없습니다: {key}")
         except Exception as e:
-            return f"시맨틱 메모리 삭제 오류: {str(e)}"
+            return ToolRunResult.failed(tool_name="delete_semantic_memory",error=f"시맨틱 메모리 삭제 오류: {e}")
 
     # ------------------------------
     # Automation Engine 관련 도구 추가
@@ -970,23 +1044,53 @@ class ToolExecutor:
             for item in devices
         )
 
-    def add_document(self, file_path: str) -> str:
+    def add_document(self, file_path: str):
         if self.rag_manager is None:
-            return "오류: RAG 기능을 초기화할 수 없습니다."
+            return ToolRunResult.failed(tool_name="add_document",error="RAG 기능을 초기화할 수 없습니다.")
         is_valid, error_msg = self.safety.validate_path(file_path)
         if not is_valid:
-            return f"오류: {error_msg}"
-        return self.rag_manager.add_document(file_path)
+            return ToolRunResult.failed(tool_name="add_document",error=error_msg)
+        raw = self.rag_manager.add_document(file_path)
+        if str(raw).startswith(("오류:", "문서 추가 오류:")):
+            return ToolRunResult.failed(tool_name="add_document",error=str(raw),raw_output=str(raw))
+        doc_id = os.path.basename(file_path)
+        saved = self.rag_manager.documents.get(doc_id)
+        if not saved:
+            return ToolRunResult.failed(tool_name="add_document",error="RAG 저장소에서 추가한 문서를 확인하지 못했습니다.",raw_output=str(raw))
+        return ToolRunResult.successful(
+            tool_name="add_document",raw_output=str(raw),
+            evidence=[Evidence("rag_document","RAG 문서 저장소에서 문서와 Chunk를 확인했습니다.",{
+                "doc_id":doc_id,"source":saved.get("source"),"chunks":len(saved.get("chunks") or []),
+            })],
+            artifacts=[Artifact("document",str(Path(file_path).resolve()),{"rag_doc_id":doc_id})],
+        )
 
-    def search_docs(self, query: str, top_k: int = 3) -> str:
+    def search_docs(self, query: str, top_k: int = 3):
         if self.rag_manager is None:
-            return "오류: RAG 기능을 초기화할 수 없습니다."
-        return self.rag_manager.search_docs(query, top_k)
+            return ToolRunResult.failed(tool_name="search_docs",error="RAG 기능을 초기화할 수 없습니다.")
+        results = self.rag_manager.search_docs(query, top_k)
+        output = json.dumps(results, ensure_ascii=False, indent=2)
+        return ToolRunResult.successful(
+            tool_name="search_docs",raw_output=output,
+            evidence=[Evidence("rag_query",f"RAG에서 근거 Chunk {len(results)}건을 조회했습니다.",{
+                "query":query,"top_k":top_k,"count":len(results),
+                "sources":list(dict.fromkeys(str(item.get("source","")) for item in results)),
+            })],
+            artifacts=[
+                Artifact("document",str(item["source"]))
+                for item in results if item.get("source")
+            ],
+        )
 
-    def list_documents(self) -> str:
+    def list_documents(self):
         if self.rag_manager is None:
-            return "오류: RAG 기능을 초기화할 수 없습니다."
-        return self.rag_manager.list_documents()
+            return ToolRunResult.failed(tool_name="list_documents",error="RAG 기능을 초기화할 수 없습니다.")
+        output = self.rag_manager.list_documents()
+        documents = list(self.rag_manager.documents)
+        return ToolRunResult.successful(
+            tool_name="list_documents",raw_output=str(output),
+            evidence=[Evidence("rag_catalog",f"RAG 문서 {len(documents)}개를 조회했습니다.",{"documents":documents,"count":len(documents)})],
+        )
 
     def add_schedule_job(self, description: str, schedule_type: str, schedule_value: str, prompt: str) -> str:
         if self.scheduler_manager is None:
