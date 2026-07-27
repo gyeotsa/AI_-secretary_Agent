@@ -97,6 +97,11 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
   웹 검색은 공급자·검색 시각·출처 URL, 페이지는 최종 URL·HTTP 상태·본문 해시,
   날씨는 Open-Meteo 조회 시각·관측 시각·좌표·위치 정밀도를 Evidence로 보존합니다.
   관측 시각이나 현재 기온이 없는 날씨 응답은 성공으로 보고하지 않습니다.
+- 2026-07-27: Git·Windows Control·Mail·Alarm을 typed 결과로 이전. Git은
+  저장소·브랜치·명령 전후 HEAD와 출력 해시, Windows는 프로세스·창·별칭 상태,
+  Mail은 RFC 822 재파싱 또는 SMTP 수신자 접수, Alarm은 DB 작업 ID와 Scheduler
+  메모리 등록 상태를 Evidence로 보존합니다. UAC와 바로가기 실행처럼 실제 프로세스
+  시작을 확인할 수 없는 요청은 `unverified`로 유지합니다.
 
 - [ ] 모든 Tool 결과를 `ToolRunResult` 타입으로 통일
 - [ ] `status`, `output`, `error`, `artifacts`, `evidence`, `timing` 필수화

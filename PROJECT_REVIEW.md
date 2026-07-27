@@ -42,8 +42,11 @@ Executor가 `unverified`로 강등합니다.
 Browser 검색·페이지·스크린샷과 Weather 조회도 typed 결과로 이전했습니다. 검색
 출처 URL·조회 시각, HTTP 최종 URL·상태·본문 해시, 날씨 공급자·좌표·관측 시각을
 Evidence로 남기며 불완전한 실시간 응답은 실패 처리합니다.
+Git·Windows Control·Mail·Alarm도 typed 결과로 이전했습니다. Git HEAD와 브랜치,
+Windows PID·창·별칭 상태, EML 구조·SMTP 접수, Scheduler 작업 ID를 검증하며
+UAC·바로가기처럼 완료 확인이 불가능한 요청은 `unverified`로 보고합니다.
 
-현재 기본 자동 회귀 테스트 기준선은 `147 passed, 4 deselected`입니다. 이는
+현재 기본 자동 회귀 테스트 기준선은 `149 passed, 4 deselected`입니다. 이는
 네트워크·OAuth·실제 장치·Office COM·장시간 자동화를 모두 보증하는 수치는 아닙니다.
 
 ## 판정

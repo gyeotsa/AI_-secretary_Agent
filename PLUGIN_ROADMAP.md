@@ -69,3 +69,6 @@
 - Browser 검색·페이지·스크린샷과 Open-Meteo Weather 조회는 직접 typed 결과
   전환을 완료했다. 검색 출처, HTTP 응답, 조회·관측 시각과 위치 좌표를 Evidence로
   보존한다.
+- Git·Windows Control·Mail·Alarm은 직접 typed 결과 전환을 완료했다. Git 저장소
+  상태, Windows 프로세스·창·별칭, RFC 822/SMTP 접수, Scheduler 작업 등록을
+  실제 상태에서 확인하며 확인 불가능한 실행 요청은 `unverified`로 구분한다.

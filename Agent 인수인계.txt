@@ -44,7 +44,17 @@
   반환한다. 스크린샷은 실제 PNG 크기와 이미지 Artifact도 확인한다.
 - Weather는 Open-Meteo 공급자·조회/관측 시각·좌표·위치 정밀도와 API URL을
   Evidence/Artifact로 반환한다. 현재 기온 또는 관측 시각이 없으면 typed failure다.
-- 회귀 테스트 기준선: `147 passed, 4 deselected`.
+- Git Tool은 저장소 경로·브랜치·명령 전후 HEAD와 출력 SHA-256을 Evidence로
+  반환한다. Git 명령 비정상 종료는 typed failure다.
+- Windows Tool은 직접 실행 프로세스의 `poll()` 상태와 PID, 창 활성화·종료 후
+  상태, 사용자 별칭 저장소를 검증한다. UAC와 `.lnk` 실행 요청은 실제 프로세스를
+  확인할 수 없어 `UNVERIFIED`로 반환한다.
+- Mail 초안은 저장된 EML을 RFC 822로 재파싱해 수신자·제목을 확인한다. SMTP는
+  `send_message()`의 수신자 거부 결과가 비었을 때만 성공하며 비밀번호는 Evidence에
+  기록하지 않는다.
+- Alarm JSON에 `job_id`를 추가하고 Plugin이 Scheduler 메모리의 동일 ID·alarm
+  action을 재확인한다.
+- 회귀 테스트 기준선: `149 passed, 4 deselected`.
 - 이번 연결은 하위 호환 단계다. 개별 Tool은 아직 문자열을 반환하므로 Plugin
   구현 자체가 `ToolRunResult`를 직접 반환하도록 순차 이전하는 P0 작업이 남아 있다.
 
