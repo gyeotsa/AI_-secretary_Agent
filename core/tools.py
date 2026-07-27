@@ -5,6 +5,7 @@ import json
 import queue
 import threading
 import asyncio
+import time
 from typing import Optional
 from datetime import datetime
 from dataclasses import asdict
@@ -16,6 +17,8 @@ from core.plugin import get_plugin_registry
 from core.tts_settings import get_tts_settings_manager
 from core.custom_tts import GPTSoVITSClient, load_custom_voice_profiles, split_tts_text
 from core.tts_normalizer import normalize_for_tts
+from core.tool_result import ToolRunResult
+from core.verifier import ToolVerifier
 
 try:
     from ddgs import DDGS
@@ -52,6 +55,7 @@ class ToolExecutor:
         self.user_profile = get_user_profile()
         self.workspace = get_workspace_manager()
         self.plugin_registry = get_plugin_registry()
+        self.verifier = ToolVerifier()
 
         # Lazy initialization for optional modules
         self._rag_manager = None
@@ -1126,9 +1130,15 @@ class ToolExecutor:
             return False, f"오류: 권한 확인에 실패했습니다: {exc}"
 
     def execute_tool(self, tool_name: str, tool_input: dict):
+        started_at = time.perf_counter()
         granted, error = self._request_tool_permissions(tool_name)
         if not granted:
-            return error
+            return ToolRunResult.failed(
+                tool_name=tool_name,
+                error=error.removeprefix("오류: ").strip(),
+                raw_output=error,
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+            )
         tool_functions = {
             "read_file": self.read_file,
             "write_file": self.write_file,
@@ -1196,15 +1206,41 @@ class ToolExecutor:
 
         if tool_name in tool_functions:
             try:
-                return tool_functions[tool_name](**tool_input)
+                raw_result = tool_functions[tool_name](**tool_input)
             except TypeError as e:
-                return f"툴 파라미터 오류: {str(e)}"
+                raw_result = f"툴 파라미터 오류: {str(e)}"
         else:
             # Try plugin tools
             try:
-                return self.plugin_registry.execute_tool(tool_name, tool_input)
+                raw_result = self.plugin_registry.execute_tool(tool_name, tool_input)
             except Exception as e:
-                return f"오류: 알 수 없는 툴 '{tool_name}' (플러그인 오류: {str(e)})"
+                raw_result = f"오류: 알 수 없는 툴 '{tool_name}' (플러그인 오류: {str(e)})"
+        return self._adapt_tool_output(
+            tool_name,
+            tool_input,
+            raw_result,
+            (time.perf_counter() - started_at) * 1000,
+        )
+
+    def _adapt_tool_output(
+        self,
+        tool_name: str,
+        tool_input: dict,
+        result,
+        duration_ms: float,
+    ) -> ToolRunResult:
+        """Plugin typed 결과는 보존하고 레거시 문자열은 공통 검증 계약으로 변환한다."""
+        if isinstance(result, ToolRunResult):
+            if result.duration_ms <= 0:
+                result.duration_ms = max(0.0, float(duration_ms))
+            return result
+        verification = self.verifier.verify(tool_name, tool_input, str(result))
+        return ToolRunResult.from_verification(
+            tool_name=tool_name,
+            raw_output=str(result),
+            verification=verification,
+            duration_ms=duration_ms,
+        )
 
 
 def get_tools_schema() -> list[dict]:

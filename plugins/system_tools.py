@@ -4,6 +4,7 @@ System Tools Plugin for Jarvis
 - get_date: 현재 날짜 가져오기
 """
 from core.plugin import BasePlugin, ToolSchema, IntentSchema
+from core.tool_result import Evidence, ToolRunResult
 from datetime import datetime
 import re
 
@@ -90,21 +91,74 @@ class SystemToolsPlugin(BasePlugin):
             slots["text"] = value
         return slots
     
-    def execute_tool(self, tool_name: str, tool_input: dict) -> str:
+    def execute_tool(self, tool_name: str, tool_input: dict):
         if tool_name == "get_time":
-            return datetime.now().astimezone().isoformat(timespec="seconds")
+            now = datetime.now().astimezone()
+            return ToolRunResult.successful(
+                tool_name=tool_name,
+                raw_output=now.isoformat(timespec="seconds"),
+                evidence=[Evidence(
+                    "system_clock",
+                    "운영체제 로컬 시계와 타임존을 조회했습니다.",
+                    {
+                        "timezone": str(now.tzinfo),
+                        "utc_offset": now.strftime("%z"),
+                        "captured_at": now.isoformat(timespec="seconds"),
+                    },
+                )],
+            )
         elif tool_name == "get_date":
-            return datetime.now().astimezone().date().isoformat()
+            now = datetime.now().astimezone()
+            return ToolRunResult.successful(
+                tool_name=tool_name,
+                raw_output=now.date().isoformat(),
+                evidence=[Evidence(
+                    "system_clock",
+                    "운영체제 로컬 날짜와 타임존을 조회했습니다.",
+                    {
+                        "timezone": str(now.tzinfo),
+                        "utc_offset": now.strftime("%z"),
+                        "captured_at": now.isoformat(timespec="seconds"),
+                    },
+                )],
+            )
         elif tool_name == "list_plugins":
             from core.plugin import get_plugin_registry
             registry = get_plugin_registry()
-            return "\n".join(
+            enabled = [
+                {
+                    "name": plugin.name,
+                    "tools": [tool.name for tool in plugin.get_tools()],
+                }
+                for plugin in registry.plugins.values() if plugin.enabled
+            ]
+            output = "\n".join(
                 f"{plugin.name}: {', '.join(tool.name for tool in plugin.get_tools())}"
                 for plugin in registry.plugins.values() if plugin.enabled
             )
+            return ToolRunResult.successful(
+                tool_name=tool_name,
+                raw_output=output,
+                evidence=[Evidence(
+                    "plugin_registry",
+                    f"활성 Plugin {len(enabled)}개의 Registry 상태를 조회했습니다.",
+                    {"plugins": enabled, "count": len(enabled)},
+                )],
+            )
         elif tool_name == "repeat_text":
-            return str(tool_input.get("text", "")).strip()
-        return f"오류: 알 수 없는 툴 '{tool_name}'"
+            value = str(tool_input.get("text", "")).strip()
+            return ToolRunResult.successful(
+                tool_name=tool_name,
+                raw_output=value,
+                evidence=[Evidence(
+                    "input_echo",
+                    "사용자가 지정한 문자열과 반환 문자열의 동일성을 확인했습니다.",
+                    {"characters": len(value)},
+                )],
+            )
+        return ToolRunResult.failed(
+            tool_name=tool_name, error=f"알 수 없는 툴 '{tool_name}'"
+        )
 
     def present_result(self, tool_name: str, result: str) -> str:
         if tool_name == "get_time":

@@ -10,6 +10,8 @@ from core.plugin import get_plugin_registry
 from core.executor import Executor
 from core.permission import PermissionManager
 from core.tools import AUTO_LOOP_EXCLUDED_TOOLS, get_tool_executor, get_tools_schema
+from core.tool_result import ToolRunResult
+from core.tool_result import ToolRunStatus
 
 
 class SafetyLayerTests(unittest.TestCase):
@@ -38,8 +40,29 @@ class ToolRegistryTests(unittest.TestCase):
             manager = PermissionManager(str(Path(directory) / "permissions.json"))
             with patch("core.permission.get_permission_manager", return_value=manager):
                 result = get_tool_executor().execute_tool("write_file", {"path": str(target), "content": "x"})
-            self.assertTrue(result.startswith("오류: 권한이 거부되었습니다:"))
+            self.assertIsInstance(result, ToolRunResult)
+            self.assertFalse(result.succeeded)
+            self.assertTrue(result.raw_output.startswith("오류: 권한이 거부되었습니다:"))
             self.assertFalse(target.exists())
+
+    def test_legacy_read_file_is_adapted_to_verified_tool_result(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            target = Path(directory) / "sample.txt"
+            target.write_text("hello", encoding="utf-8")
+            result = get_tool_executor().execute_tool("read_file", {"path": str(target)})
+            self.assertIsInstance(result, ToolRunResult)
+            self.assertTrue(result.succeeded)
+            self.assertEqual(result.raw_output, "hello")
+            self.assertTrue(result.evidence)
+
+    def test_legacy_tool_without_verifier_is_unverified(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            result = get_tool_executor().execute_tool(
+                "list_directory", {"path": directory}
+            )
+            self.assertIsInstance(result, ToolRunResult)
+            self.assertEqual(result.status, ToolRunStatus.UNVERIFIED)
+            self.assertFalse(result.succeeded)
 
     def test_nested_multi_agent_tools_are_not_offered_to_reasoner(self):
         self.assertIn("execute_multi_agent", AUTO_LOOP_EXCLUDED_TOOLS)

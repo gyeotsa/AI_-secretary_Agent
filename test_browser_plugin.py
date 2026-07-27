@@ -68,7 +68,9 @@ def test_tool_executor_checks_browser_and_file_write_permissions(monkeypatch):
     result = ToolExecutor().execute_tool(
         "browser_screenshot", {"url": "https://example.com/", "path": str(Path.cwd() / "denied.png")}
     )
-    assert result == "오류: 권한이 거부되었습니다: filesystem_write"
+    assert isinstance(result, ToolRunResult)
+    assert not result.succeeded
+    assert result.raw_output == "오류: 권한이 거부되었습니다: filesystem_write"
     assert manager.requested == ["browser", "filesystem_write"]
 
 

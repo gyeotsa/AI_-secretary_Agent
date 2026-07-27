@@ -7,6 +7,7 @@ from core.response_presenter import present_response
 from core.tts_normalizer import normalize_for_tts
 from plugins.system_tools import SystemToolsPlugin
 from plugins.weather import WeatherPlugin
+from core.tool_result import ToolRunResult
 
 
 def _router(*plugins):
@@ -23,7 +24,9 @@ def test_current_time_question_routes_to_system_clock():
     assert resolution.ready
     assert resolution.tool_name == "get_time"
     raw = registry.execute_tool(resolution.tool_name, resolution.slots)
-    parsed = datetime.fromisoformat(raw)
+    assert isinstance(raw, ToolRunResult)
+    assert raw.evidence[0].kind == "system_clock"
+    parsed = datetime.fromisoformat(raw.raw_output)
     assert parsed.tzinfo is not None
     assert abs((datetime.now().astimezone() - parsed).total_seconds()) < 2
     assert "현재 시간은" in registry.present_result("get_time", raw)
@@ -94,7 +97,9 @@ def test_read_aloud_intent_returns_literal_text_without_llm_generation():
 
     assert resolution.ready
     assert resolution.tool_name == "repeat_text"
-    assert registry.execute_tool(resolution.tool_name, resolution.slots) == "hello"
+    result = registry.execute_tool(resolution.tool_name, resolution.slots)
+    assert isinstance(result, ToolRunResult)
+    assert result.raw_output == "hello"
 
 
 def test_unrequested_cjk_output_is_removed_but_korean_prefix_survives():

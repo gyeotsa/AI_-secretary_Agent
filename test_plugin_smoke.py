@@ -32,9 +32,10 @@ def test_git_read_tools_execute_against_current_repository(monkeypatch):
 
 def test_system_tools_execute_directly():
     plugin = SystemToolsPlugin()
-    assert plugin.execute_tool("get_time", {})
-    assert plugin.execute_tool("get_date", {})
-    assert isinstance(plugin.execute_tool("list_plugins", {}), str)
+    for tool in ("get_time", "get_date", "list_plugins"):
+        result = plugin.execute_tool(tool, {})
+        assert isinstance(result, ToolRunResult)
+        assert result.succeeded and result.evidence
 
 
 def test_windows_discovery_and_safe_failure_execute_directly(monkeypatch):
