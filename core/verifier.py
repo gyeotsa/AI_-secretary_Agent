@@ -56,6 +56,13 @@ class ToolVerifier:
             exists = target.is_dir() if expected_type == "directory" else target.is_file()
             if not exists:
                 return VerificationResult(False, f"생성 결과 경로가 존재하지 않습니다: {path}")
+            if payload.get("status") == "written":
+                if not payload.get("changed"):
+                    return VerificationResult(False, "파일 내용이 실제로 변경되지 않았습니다.")
+                before = payload.get("before_sha256")
+                after = payload.get("after_sha256")
+                if not before or not after or before == after:
+                    return VerificationResult(False, "파일 변경 해시 검증에 실패했습니다.")
             return VerificationResult(True, f"실제 생성 경로 확인 성공: {path}")
         except (json.JSONDecodeError, TypeError, AttributeError) as exc:
             return VerificationResult(False, f"생성 결과 검증 오류: {exc}")

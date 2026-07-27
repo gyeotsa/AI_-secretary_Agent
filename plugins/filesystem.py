@@ -2,6 +2,7 @@
 import json
 import re
 import ast
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -79,6 +80,10 @@ class FilesystemPlugin(BasePlugin):
                 ],
                 execution_hints=["작성", "수정", "고쳐", "코딩", "입력", "써줘"],
                 follow_up_hints=["해당 파일", "그 파일", "내용을", "코드를"],
+                utterance_patterns=[
+                    r"[A-Za-z0-9가-힣_.-]+\.[A-Za-z0-9]{1,10}.*(?:수정|작성|고쳐|바꿔|변경)",
+                    r"(?:해당|그)\s*파일.*(?:수정|작성|고쳐|바꿔|변경|코드|코딩)",
+                ],
             ),
         ]
 
@@ -127,11 +132,7 @@ class FilesystemPlugin(BasePlugin):
                     r"(?P<stem>[A-Za-z0-9가-힣_.-]+)\s*파일", normalized
                 )
                 if stem_match:
-                    matches = [
-                        path for path in self._workspace_root().rglob("*")
-                        if path.is_file() and path.stem.casefold()
-                        == stem_match.group("stem").casefold()
-                    ]
+                    matches = self._files_with_stem(stem_match.group("stem"))
                     if len(matches) == 1:
                         slots["filename"] = str(matches[0].relative_to(self._workspace_root()))
             if (not slots.get("filename")
@@ -158,6 +159,16 @@ class FilesystemPlugin(BasePlugin):
             return max(files, key=lambda path: path.stat().st_mtime) if files else None
         except (OSError, ValueError):
             return None
+
+    def _files_with_stem(self, stem: str) -> List[Path]:
+        try:
+            root = self._workspace_root()
+            return [
+                path for path in root.rglob("*")
+                if path.is_file() and path.stem.casefold() == stem.casefold()
+            ]
+        except (OSError, ValueError):
+            return []
 
     @staticmethod
     def _safe_child(root: Path, name: str) -> Path:
@@ -203,13 +214,19 @@ class FilesystemPlugin(BasePlugin):
                 target = self._safe_child(root, str(tool_input["filename"]))
                 if not target.is_file():
                     raise ValueError(f"수정할 파일이 존재하지 않습니다: {target.name}")
+                previous = target.read_bytes()
                 content = self._generate_file_content(
                     target, str(tool_input.get("instruction", ""))
                 )
-                target.write_text(content, encoding="utf-8")
+                updated = content.encode("utf-8")
+                if updated == previous:
+                    raise ValueError("생성된 내용이 기존 파일과 같아 실제 변경이 없습니다.")
+                target.write_bytes(updated)
                 return json.dumps({
                     "status": "written", "type": "file", "path": str(target),
-                    "size": len(content.encode("utf-8")),
+                    "size": len(updated), "changed": True,
+                    "before_sha256": hashlib.sha256(previous).hexdigest(),
+                    "after_sha256": hashlib.sha256(updated).hexdigest(),
                 }, ensure_ascii=False)
             root = self._safe_root(str(tool_input["path"]))
             if tool_name == "filesystem_search":

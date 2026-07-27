@@ -38,6 +38,7 @@ class IntentSchema:
     execution_hints: List[str] = field(default_factory=lambda: ["생성", "만들", "작성", "저장", "실행"])
     follow_up_hints: List[str] = field(default_factory=list)
     capability_response: str = ""
+    utterance_patterns: List[str] = field(default_factory=list)
 
 class BasePlugin(ABC):
     """플러그인 기본 클래스"""

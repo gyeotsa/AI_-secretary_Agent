@@ -3,7 +3,7 @@ from pathlib import Path
 from core.intent_router import IntentRouter
 from core.plugin import PluginRegistry
 from core.verifier import ToolVerifier
-from core.workspace import get_workspace_manager
+from core.workspace import WorkspaceManager, get_workspace_manager
 from plugins.filesystem import FilesystemPlugin
 
 
@@ -137,3 +137,29 @@ def test_refusal_is_not_written_over_existing_source(tmp_path, monkeypatch):
     )
     assert result.startswith("오류:")
     assert target.read_text(encoding="utf-8") == "original\n"
+
+
+def test_extension_and_modify_verb_route_to_write_intent(tmp_path):
+    workspace = get_workspace_manager()
+    workspace.set_workspace(str(tmp_path))
+    (tmp_path / "test.py").write_text("old\n", encoding="utf-8")
+    _registry, router = _router()
+
+    resolution = router.resolve(
+        'test.py를 수정해줘. "안녕"이라고 출력이 가능하게 수정해줘.'
+    )
+    assert resolution.ready
+    assert resolution.intent_name == "filesystem.write_file"
+    assert resolution.tool_name == "filesystem_write_file"
+
+
+def test_intent_resolution_without_workspace_does_not_raise():
+    registry = PluginRegistry()
+    plugin = FilesystemPlugin()
+    plugin.workspace = WorkspaceManager()
+    registry.register_plugin(plugin)
+    router = IntentRouter(registry)
+
+    resolution = router.resolve('test파일에 "안녕"을 출력하게 수정해줘.')
+    assert resolution.matched
+    assert resolution.question

@@ -103,6 +103,13 @@ class OllamaClient(BaseLLMClient):
         self.role = role
         self.profile = get_model_registry().resolve(role)
         self.model = self.profile.model
+        if self.profile.role == "code":
+            self.system_prompt = (
+                "당신은 로컬 파일 작업을 위한 코딩 엔진입니다. 제공된 파일 내용과 수정 요청을 "
+                "바탕으로 실행 가능한 완성 파일 원문을 생성하세요. 파일을 직접 수정할 수 없다는 "
+                "말, 사과, 설명, 작업 예정 문장, Markdown 코드 펜스를 출력하지 마세요. "
+                "항상 저장할 파일의 전체 내용만 반환하세요."
+            )
         # 과거에는 여기서 self.tools = [] 로 Ollama의 tool calling을 통째로 꺼놨습니다.
         # (사유: 소형 instruct 모델이 일반 대화도 tool 호출로 착각해서 무한 루프에 빠지는 문제,
         #  특히 speak_text/listen 관련.)

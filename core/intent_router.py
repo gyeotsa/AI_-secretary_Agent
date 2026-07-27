@@ -1,4 +1,5 @@
 """Plugin Registry의 선언형 intent/slot 계약을 실행하는 범용 라우터."""
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +33,11 @@ class IntentRouter:
         candidates = []
         for plugin, intent in self.registry.get_all_intents():
             score = sum(len(hint) for hint in intent.utterance_hints if hint.casefold() in normalized)
+            score += sum(
+                100 + len(match.group(0))
+                for pattern in intent.utterance_patterns
+                if (match := re.search(pattern, text, re.IGNORECASE))
+            )
             if score:
                 candidates.append((score, plugin, intent))
         if not candidates:
