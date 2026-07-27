@@ -14,5 +14,5 @@
   "sample_steps": 16,
   "speed_factor": 1.0,
   "chunk_chars": 72,
-  "streaming_mode": 0
+  "streaming_mode": 2
 }
