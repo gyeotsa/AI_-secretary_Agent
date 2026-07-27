@@ -1125,7 +1125,7 @@ class ToolExecutor:
         except Exception as exc:
             return False, f"오류: 권한 확인에 실패했습니다: {exc}"
 
-    def execute_tool(self, tool_name: str, tool_input: dict) -> str:
+    def execute_tool(self, tool_name: str, tool_input: dict):
         granted, error = self._request_tool_permissions(tool_name)
         if not granted:
             return error

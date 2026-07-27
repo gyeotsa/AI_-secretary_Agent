@@ -103,7 +103,7 @@ class Scratchpad:
         self.observations.append(Observation(
             tool_name=tool_name,
             input_data=input_data,
-            result=result,
+            result=str(result),
             success=success
         ))
 

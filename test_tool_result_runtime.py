@@ -1,5 +1,9 @@
 import json
+import pytest
 
+from core.executor import Executor
+from core.scratchpad import Task
+from core.tool_result import Evidence
 from core.tool_result import ToolRunResult, ToolRunStatus
 from core.verifier import ToolVerifier, VerificationResult
 
@@ -71,3 +75,39 @@ def test_unknown_tool_is_unverified_instead_of_success():
     assert result.status == ToolRunStatus.UNVERIFIED
     assert not result.succeeded
     assert result.error is None
+
+
+def test_successful_result_requires_evidence():
+    with pytest.raises(ValueError, match="검증 증거"):
+        ToolRunResult.successful(
+            tool_name="filesystem_create_file",
+            raw_output="{}",
+            evidence=[],
+        )
+
+
+def test_executor_preserves_direct_typed_result_and_rejects_name_mismatch():
+    executor = Executor.__new__(Executor)
+    direct = ToolRunResult.successful(
+        tool_name="filesystem_create_file",
+        raw_output='{"status":"created"}',
+        evidence=[Evidence("filesystem_state", "파일 확인")],
+    )
+    preserved = executor.build_tool_run_result(
+        Task("task-1", "파일 생성"),
+        "filesystem_create_file",
+        {},
+        direct,
+        9.5,
+    )
+    assert preserved is direct
+    assert preserved.duration_ms == 9.5
+
+    mismatch = executor.build_tool_run_result(
+        Task("task-2", "파일 생성"),
+        "filesystem_write_file",
+        {},
+        direct,
+    )
+    assert mismatch.status == ToolRunStatus.FAILED
+    assert "일치하지 않습니다" in mismatch.error

@@ -513,6 +513,7 @@ class Executor:
                     result,
                     (time.perf_counter() - started_at) * 1000,
                 )
+                result = tool_run.raw_output
                 verified = tool_run.succeeded
                 if tool_run.status == ToolRunStatus.UNVERIFIED:
                     self.terminal_error = (
@@ -810,7 +811,7 @@ class Executor:
         print(f"[Executor] Permission 체크: {tool_name} → {permission_id} = {'허용' if granted else '거부'}")
         return granted
 
-    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
+    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
         """Tool 실행"""
         return self.tool_executor.execute_tool(tool_name, tool_input)
 
@@ -823,10 +824,29 @@ class Executor:
         task: Task,
         tool_name: str,
         tool_input: Dict[str, Any],
-        result: str,
+        result,
         duration_ms: float = 0.0,
     ) -> ToolRunResult:
-        """Legacy 문자열 Tool 출력을 공통 상태·증거 계약으로 변환한다."""
+        """직접 타입 결과는 보존하고 Legacy 문자열만 검증기로 변환한다."""
+        if isinstance(result, ToolRunResult):
+            if result.tool_name != tool_name:
+                return ToolRunResult.failed(
+                    tool_name=tool_name,
+                    error=(
+                        f"Tool 결과 이름이 요청과 일치하지 않습니다: "
+                        f"{result.tool_name}"
+                    ),
+                    raw_output=result.raw_output,
+                    duration_ms=duration_ms,
+                )
+            if result.duration_ms <= 0:
+                result.duration_ms = max(0.0, float(duration_ms))
+            print(
+                f"[Executor] 구조화 결과: {result.status.value} "
+                f"(evidence={len(result.evidence)}, artifacts={len(result.artifacts)}, "
+                f"duration_ms={result.duration_ms:.1f})"
+            )
+            return result
         verification = self.verifier.verify(tool_name, tool_input, result)
         tool_run = ToolRunResult.from_verification(
             tool_name=tool_name,

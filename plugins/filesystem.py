@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 from core.harness import SafetyLayer
 from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema
+from core.tool_result import Artifact, Evidence, ToolRunResult
 from core.workspace import get_workspace_manager
 
 
@@ -210,7 +211,7 @@ class FilesystemPlugin(BasePlugin):
             raise ValueError(f"디렉터리가 아닙니다: {path}")
         return root
 
-    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
+    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
         try:
             if tool_name == "filesystem_create_project":
                 root = self._workspace_root()
@@ -218,18 +219,42 @@ class FilesystemPlugin(BasePlugin):
                 target.mkdir(parents=False, exist_ok=False)
                 # 이어지는 “파일을 만들어줘”가 새 프로젝트 내부에서 실행되도록 한다.
                 self.workspace.set_workspace(str(target))
-                return json.dumps({
+                output = json.dumps({
                     "status": "created", "type": "directory", "path": str(target),
                 }, ensure_ascii=False)
+                return ToolRunResult.successful(
+                    tool_name=tool_name,
+                    raw_output=output,
+                    evidence=[Evidence(
+                        "filesystem_state",
+                        "프로젝트 디렉터리 생성을 확인했습니다.",
+                        {"path": str(target), "is_directory": target.is_dir()},
+                    )],
+                    artifacts=[Artifact("directory", str(target))],
+                )
             if tool_name == "filesystem_create_file":
                 root = self._workspace_root()
                 target = self._safe_child(root, str(tool_input["filename"]))
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with target.open("x", encoding="utf-8") as stream:
                     stream.write(str(tool_input.get("content", "")))
-                return json.dumps({
+                output = json.dumps({
                     "status": "created", "type": "file", "path": str(target),
                 }, ensure_ascii=False)
+                return ToolRunResult.successful(
+                    tool_name=tool_name,
+                    raw_output=output,
+                    evidence=[Evidence(
+                        "filesystem_state",
+                        "파일 생성을 확인했습니다.",
+                        {
+                            "path": str(target),
+                            "is_file": target.is_file(),
+                            "size": target.stat().st_size,
+                        },
+                    )],
+                    artifacts=[Artifact("file", str(target))],
+                )
             if tool_name == "filesystem_write_file":
                 root = self._workspace_root()
                 target = self._safe_child(root, str(tool_input["filename"]))
@@ -243,12 +268,27 @@ class FilesystemPlugin(BasePlugin):
                 if updated == previous:
                     raise ValueError("생성된 내용이 기존 파일과 같아 실제 변경이 없습니다.")
                 target.write_bytes(updated)
-                return json.dumps({
+                output = json.dumps({
                     "status": "written", "type": "file", "path": str(target),
                     "size": len(updated), "changed": True,
                     "before_sha256": hashlib.sha256(previous).hexdigest(),
                     "after_sha256": hashlib.sha256(updated).hexdigest(),
                 }, ensure_ascii=False)
+                return ToolRunResult.successful(
+                    tool_name=tool_name,
+                    raw_output=output,
+                    evidence=[Evidence(
+                        "content_hash",
+                        "파일 내용 변경과 저장을 확인했습니다.",
+                        {
+                            "path": str(target),
+                            "before_sha256": hashlib.sha256(previous).hexdigest(),
+                            "after_sha256": hashlib.sha256(updated).hexdigest(),
+                            "size": len(updated),
+                        },
+                    )],
+                    artifacts=[Artifact("file", str(target), {"changed": True})],
+                )
             root = self._safe_root(str(tool_input["path"]))
             if tool_name == "filesystem_search":
                 limit = max(1, min(int(tool_input.get("max_results", 100)), 1000))
@@ -268,9 +308,12 @@ class FilesystemPlugin(BasePlugin):
                         continue
                     lines.append("  " * len(relative.parts) + item.name + ("/" if item.is_dir() else ""))
                 return "\n".join(lines)
-            return f"오류: 알 수 없는 툴 '{tool_name}'"
+            return ToolRunResult.failed(
+                tool_name=tool_name,
+                error=f"알 수 없는 툴 '{tool_name}'",
+            )
         except Exception as exc:
-            return f"오류: {exc}"
+            return ToolRunResult.failed(tool_name=tool_name, error=str(exc))
 
     def present_result(self, tool_name: str, result: str) -> str:
         if tool_name not in {

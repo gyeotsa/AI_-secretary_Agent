@@ -181,7 +181,7 @@ class ToolVerifier:
         except (json.JSONDecodeError, TypeError, AttributeError) as exc:
             return VerificationResult(False, f"생성 결과 검증 오류: {exc}")
 
-    def verify(self, tool_name: str, tool_input: Dict[str, Any], result: str) -> VerificationResult:
+    def verify(self, tool_name: str, tool_input: Dict[str, Any], result) -> VerificationResult:
         """
         도구 실행 결과를 검증합니다!
         
@@ -193,6 +193,8 @@ class ToolVerifier:
         Returns:
             VerificationResult: 검증 결과
         """
+        # 전환 기간에는 Plugin이 ToolRunResult 또는 문자열을 반환할 수 있습니다.
+        result = str(result)
         # 구조화된 오류 접두사만 공통 실패로 봅니다. 정상 출력에 포함된 'error' 단어는 허용합니다.
         normalized = str(result).lstrip().casefold()
         if (normalized.startswith(("오류:", "error:", "툴 파라미터 오류:", "명령어 실행 오류:"))

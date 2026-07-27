@@ -5,12 +5,15 @@ Plugin SDK for Jarvis
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Union
 import importlib
 import inspect
 from pathlib import Path
 import json
 from core.runtime.event_bus import get_event_bus, Event
+from core.tool_result import ToolRunResult
+
+PluginToolOutput = Union[str, ToolRunResult]
 
 @dataclass
 class ToolSchema:
@@ -56,7 +59,7 @@ class BasePlugin(ABC):
         pass
     
     @abstractmethod
-    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
+    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> PluginToolOutput:
         """툴 실행"""
         pass
     
@@ -81,9 +84,9 @@ class BasePlugin(ABC):
         """플러그인 도메인에 맞게 새 발화의 slot을 누적한다."""
         return dict(current_slots)
 
-    def present_result(self, tool_name: str, result: str) -> str:
+    def present_result(self, tool_name: str, result: PluginToolOutput) -> str:
         """검증된 원문 결과를 사용자용 문장으로 변환한다."""
-        return result
+        return str(result)
 
 class PluginRegistry:
     """플러그인 레지스트리"""
@@ -133,7 +136,7 @@ class PluginRegistry:
                 intents.extend((plugin, intent) for intent in plugin.get_intents())
         return intents
     
-    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
+    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> PluginToolOutput:
         """툴 실행 (어떤 플러그인의 툴인지 찾아서 실행)"""
         for plugin in self.plugins.values():
             if not plugin.enabled:
@@ -144,11 +147,11 @@ class PluginRegistry:
                     return plugin.execute_tool(tool_name, tool_input)
         return f"오류: 툴 '{tool_name}'을 찾을 수 없습니다"
 
-    def present_result(self, tool_name: str, result: str) -> str:
+    def present_result(self, tool_name: str, result: PluginToolOutput) -> str:
         for plugin in self.plugins.values():
             if plugin.enabled and any(tool.name == tool_name for tool in plugin.get_tools()):
-                return plugin.present_result(tool_name, result)
-        return result
+                return plugin.present_result(tool_name, str(result))
+        return str(result)
     
     def load_plugins_from_directory(self, directory: Optional[str] = None):
         """지정된 디렉토리에서 플러그인 로드"""

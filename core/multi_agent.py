@@ -7,6 +7,7 @@ from core.scratchpad import get_scratchpad, Scratchpad
 from core.context import get_context_manager
 from core.llm import get_llm_client
 from core.tools import get_tool_executor, get_tool_names
+from core.tool_result import ToolRunResult
 from core.memory import build_memory_context
 
 
@@ -145,15 +146,21 @@ class MultiAgentOrchestrator:
                         if not isinstance(tool_input, dict):
                             raise ValueError("tool_input은 JSON 객체여야 합니다.")
                         result = self.tool_executor.execute_tool(tool_name, tool_input)
-                        if result.startswith("오류:"):
-                            raise RuntimeError(result)
-                        results.append(f"단계 {step['id']}: {result}")
+                        if isinstance(result, ToolRunResult):
+                            if not result.succeeded:
+                                raise RuntimeError(result.raw_output)
+                            result_text = result.raw_output
+                        else:
+                            result_text = str(result)
+                            if result_text.startswith("오류:"):
+                                raise RuntimeError(result_text)
+                        results.append(f"단계 {step['id']}: {result_text}")
                         
                         # 스크래치패드에 관찰 기록
                         self.scratchpad.add_observation(
                             tool_name=tool_name,
                             input_data=tool_input,
-                            result=result,
+                            result=result_text,
                             success=True
                         )
                     else:

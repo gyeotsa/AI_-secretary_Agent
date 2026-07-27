@@ -2,6 +2,7 @@ from pathlib import Path
 
 from core.intent_router import IntentRouter
 from core.plugin import PluginRegistry
+from core.tool_result import ToolRunResult, ToolRunStatus
 from core.verifier import ToolVerifier
 from core.workspace import WorkspaceManager, get_workspace_manager
 from plugins.filesystem import FilesystemPlugin
@@ -24,6 +25,9 @@ def test_project_creation_collects_name_then_creates_real_directory(tmp_path):
     assert follow_up.ready
 
     result = registry.execute_tool(follow_up.tool_name, follow_up.slots)
+    assert isinstance(result, ToolRunResult)
+    assert result.status == ToolRunStatus.SUCCEEDED
+    assert result.evidence and result.artifacts[0].kind == "directory"
     verification = ToolVerifier().verify(follow_up.tool_name, follow_up.slots, result)
     assert verification.success
     assert (tmp_path / "launch_monitor").is_dir()
@@ -42,6 +46,9 @@ def test_file_creation_requires_name_and_verifies_real_file(tmp_path):
     resolved = router.resolve("launch_monitor.py로 해줘", incomplete.intent_name, incomplete.slots)
     assert resolved.ready
     result = registry.execute_tool(resolved.tool_name, resolved.slots)
+    assert isinstance(result, ToolRunResult)
+    assert result.status == ToolRunStatus.SUCCEEDED
+    assert result.evidence and result.artifacts[0].kind == "file"
     verification = ToolVerifier().verify(resolved.tool_name, resolved.slots, result)
     assert verification.success
     assert (tmp_path / "launch_monitor.py").is_file()
@@ -90,7 +97,7 @@ def test_create_file_never_overwrites_existing_file(tmp_path):
     result = registry.execute_tool(
         "filesystem_create_file", {"filename": "keep.py", "content": ""}
     )
-    assert result.startswith("오류:")
+    assert result.raw_output.startswith("오류:")
     assert target.read_text(encoding="utf-8") == "important"
 
 
@@ -135,7 +142,7 @@ def test_refusal_is_not_written_over_existing_source(tmp_path, monkeypatch):
         "filesystem_write_file",
         {"filename": "test.py", "instruction": '"안녕"을 출력해줘'},
     )
-    assert result.startswith("오류:")
+    assert result.raw_output.startswith("오류:")
     assert target.read_text(encoding="utf-8") == "original\n"
 
 
@@ -202,5 +209,5 @@ def test_missing_requested_literal_is_not_saved(tmp_path, monkeypatch):
         "filesystem_write_file",
         {"filename": "test.py", "instruction": '"안녕"을 출력해줘'},
     )
-    assert result.startswith("오류:")
+    assert result.raw_output.startswith("오류:")
     assert target.read_text(encoding="utf-8") == "original\n"
