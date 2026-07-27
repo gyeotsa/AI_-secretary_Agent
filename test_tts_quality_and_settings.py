@@ -127,7 +127,7 @@ def test_tts_playback_uses_nonblocking_continuous_player(monkeypatch, tmp_path):
     assert calls[-1] == "wait"
 
 
-def test_streaming_tts_writes_pcm_as_fragments_arrive(monkeypatch):
+def test_streaming_tts_prebuffers_and_preserves_all_pcm(monkeypatch):
     calls = []
 
     class FakeRawStream:
@@ -151,10 +151,9 @@ def test_streaming_tts_writes_pcm_as_fragments_arrive(monkeypatch):
     processor.play_streaming_tts(iter([
         (32000, 1, 2, b"\x01\x00" * 20),
         (32000, 1, 2, b"\x02\x00" * 20),
-    ]))
+    ]), prebuffer_seconds=0.001)
     assert calls[0] == ("init", {"samplerate": 32000, "channels": 1, "dtype": "int16"})
     assert [item for item in calls if isinstance(item, tuple) and item[0] == "write"] == [
-        ("write", b"\x01\x00" * 20),
-        ("write", b"\x02\x00" * 20),
+        ("write", b"\x01\x00" * 20 + b"\x02\x00" * 20),
     ]
     assert calls[-2:] == ["stop", "close"]

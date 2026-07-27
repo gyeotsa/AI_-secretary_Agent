@@ -1,6 +1,7 @@
 {
   "id": "Anis",
   "name": "Anis",
+  "assistant_name": "아니스",
   "provider": "gpt-sovits",
   "language": "ko",
   "default_address": "지휘관님",
@@ -14,5 +15,6 @@
   "sample_steps": 16,
   "speed_factor": 1.0,
   "chunk_chars": 72,
-  "streaming_mode": 2
+  "streaming_mode": 2,
+  "prebuffer_seconds": 1.0
 }

@@ -992,3 +992,15 @@ AI_-secretary_Agent/
 - AnisBright에서 GPT-SoVITS mode 1을 단독 검증했으나 첫 PCM이 88.53초 후 도착해 폐기했다.
 - 복원된 AnisBright 가중치와 기존 기준 음성은 그대로 유지하고 mode 2만 단독 검증했다. 동일 문장의 첫 PCM은 1.42초, 전체 생성은 4.75초였으며 5.83초짜리 연속 WAV로 생성됐다.
 - 활성 Anis 설정은 `AnisBright + streaming mode 2`다. 이전에 평가가 나빴던 `AnisQuality + mode 2`와 달리 모델·기준 음성은 직전 검증본이고, 한 번의 API 요청과 하나의 연속 PCM 출력으로 문장 사이 합성 공백이 없다.
+
+## 2026-07-27 역할별 모델 Router와 멀티모달 Vision 연결
+
+- NVIDIA 공개 모델과 Qwen/Gemma 후보를 현재 RTX 4060 Laptop 8GB 조건에서 비교했다. Nemotron 3 Nano Omni 30B-A3B는 전체 가중치 규모가 현재 장비에 크고, Nemotron Mini 4B는 공식적으로 영어 중심·4K 문맥이라 한국어 주 모델에서 제외했다.
+- `qwen3:4b`를 설치해 실제 검증했으나 현재 Ollama가 thinking 비활성 옵션을 적용하지 않아 짧은 요청에서도 내부 사고가 출력 한도를 소진했다. 활성 역할에는 사용하지 않고 향후 런타임 업데이트 후 재평가 대상으로 남겼다.
+- `qwen2.5:7b-instruct`와 `gemma3:4b`를 Ollama에 설치했다. 일반 대화·계획·추론·도구 선택은 Qwen 2.5 일반 Instruct, 코드·문서는 기존 Qwen 2.5 Coder, 이미지·화면은 Gemma 3 Vision으로 배정했다.
+- `core/model_registry.py`를 역할별 모델·temperature·출력 길이·`keep_alive`의 단일 진실 공급원으로 추가했다. `ModelRoleRouter`는 하드코딩된 사용자 문장 대신 Planner의 실제 도구 계약과 입력 modality로 전문 역할을 고른다.
+- Ollama 일반 대화는 `/api/generate` 문자열 평탄화 대신 `/api/chat` 역할 메시지를 사용한다. 과거 assistant 답변과 최신 user 발화를 구분하며 이미지 메시지의 base64 입력도 보존한다.
+- 기존 `analyze_image`의 메타데이터 출력만 하던 임시 구현을 실제 Gemma 3 이미지 분석으로 교체했다. Jarvis 아이콘을 넣은 실호출에서 이미지 내용에 대한 응답을 확인했다.
+- Anis 프로필에 범용 `assistant_name`을 추가했다. 선택 음성 이름만 부르면 이전 이름 변경 답변을 반복하지 않고 호출에 짧게 응답한다.
+- GPT-SoVITS 스트림은 첫 조각 즉시 재생 대신 프로필별 1초 PCM 선행 버퍼를 둔다. 실측에서 첫 생성 batch가 약 1.71초 음성을 포함했고 다음 batch까지 약 1.59초였으므로 재생 중 underflow 없이 이어질 여유를 확인했다.
+- 전체 테스트 결과는 `119 passed, 4 deselected`다. 상세 역할 구성과 모델 비교 근거는 `MODEL_ROUTING.md`에 기록했다.

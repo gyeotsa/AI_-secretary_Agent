@@ -6,7 +6,7 @@ class _Response:
         pass
 
     def json(self):
-        return {"response": "ok"}
+        return {"message": {"role": "assistant", "content": "ok"}}
 
 
 def test_ollama_chat_preserves_per_call_system_messages(monkeypatch):
@@ -25,6 +25,8 @@ def test_ollama_chat_preserves_per_call_system_messages(monkeypatch):
         {"role": "system", "content": "planner instruction"},
         {"role": "user", "content": "make a plan"},
     ]) == "ok"
-    assert "global instruction" in captured["prompt"]
-    assert "System: planner instruction" in captured["prompt"]
-    assert "User: make a plan" in captured["prompt"]
+    assert captured["messages"] == [
+        {"role": "system", "content": "global instruction"},
+        {"role": "system", "content": "planner instruction"},
+        {"role": "user", "content": "make a plan"},
+    ]

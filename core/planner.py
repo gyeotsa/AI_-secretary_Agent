@@ -27,7 +27,7 @@ class Planner:
     """
 
     def __init__(self):
-        self.llm = get_llm_client()
+        self.llm = get_llm_client("planning")
         self.scratchpad = get_scratchpad()
         self.context_manager = get_context_manager()
 

@@ -6,6 +6,7 @@ import time
 from typing import Tuple, List, Dict, Any, Optional
 from config import Config
 from core.tools import get_tools_schema, AUTO_LOOP_EXCLUDED_TOOLS
+from core.model_registry import get_model_registry
 
 
 def has_configured_anthropic_key() -> bool:
@@ -96,10 +97,12 @@ class AnthropicClient(BaseLLMClient):
 
 
 class OllamaClient(BaseLLMClient):
-    def __init__(self):
+    def __init__(self, role: str = "default"):
         super().__init__()
         self.base_url = Config.OLLAMA_BASE_URL
-        self.model = Config.OLLAMA_MODEL
+        self.role = role
+        self.profile = get_model_registry().resolve(role)
+        self.model = self.profile.model
         # 과거에는 여기서 self.tools = [] 로 Ollama의 tool calling을 통째로 꺼놨습니다.
         # (사유: 소형 instruct 모델이 일반 대화도 tool 호출로 착각해서 무한 루프에 빠지는 문제,
         #  특히 speak_text/listen 관련.)
@@ -199,9 +202,10 @@ class OllamaClient(BaseLLMClient):
                 "model": self.model,
                 "messages": ollama_messages,
                 "stream": False,
+                "keep_alive": self.profile.keep_alive,
                 "options": {
-                    "temperature": Config.TEMPERATURE,
-                    "num_predict": Config.MAX_TOKENS
+                    "temperature": self.profile.temperature,
+                    "num_predict": self.profile.max_tokens
                 },
                 "tools": ollama_tools
             }
@@ -268,40 +272,45 @@ class OllamaClient(BaseLLMClient):
 
     def chat(self, messages: List[Dict]) -> str:
         try:
-            # 시스템 프롬프트와 사용자 메시지 결합
-            full_prompt = self.system_prompt + "\n\n"
-            for msg in messages:
-                role = msg["role"]
-                content = msg["content"]
-                if role == "system":
-                    full_prompt += f"System: {content}\n"
-                elif role == "user":
-                    full_prompt += f"User: {content}\n"
-                elif role == "assistant":
-                    full_prompt += f"Assistant: {content}\n"
-            full_prompt += "Assistant: "
+            # 역할을 하나의 문자열로 평탄화하면 작은 로컬 모델이 최근 사용자
+            # 발화와 과거 assistant 응답을 혼동하기 쉽다. Ollama의 chat
+            # endpoint에 역할 구조를 그대로 전달한다.
+            ollama_messages = []
+            if self.system_prompt:
+                ollama_messages.append({"role": "system", "content": self.system_prompt})
+            for message in messages:
+                if message.get("content") is None:
+                    continue
+                converted = {
+                    "role": str(message.get("role", "user")),
+                    "content": str(message.get("content", "")),
+                }
+                if message.get("images"):
+                    converted["images"] = list(message["images"])
+                ollama_messages.append(converted)
 
             payload = {
                 "model": self.model,
-                "prompt": full_prompt,
+                "messages": ollama_messages,
                 "stream": False,
+                "keep_alive": self.profile.keep_alive,
                 "options": {
-                    "temperature": Config.TEMPERATURE,
-                    "num_predict": Config.MAX_TOKENS
+                    "temperature": self.profile.temperature,
+                    "num_predict": self.profile.max_tokens
                 }
             }
 
             response = requests.post(
-                f"{self.base_url}/api/generate",
+                f"{self.base_url}/api/chat",
                 json=payload,
                 timeout=120
             )
             response.raise_for_status()
             result = response.json()
 
-            if "response" in result:
+            if isinstance(result.get("message"), dict):
                 # 이모지 필터링 (Windows cp949 문제 해결)
-                text = result["response"]
+                text = str(result["message"].get("content", ""))
                 # 간단한 이모지 제거: 이모지 범위의 문자 제거
                 import re
                 text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
@@ -426,12 +435,12 @@ def get_llm_client(role: str = "default") -> BaseLLMClient:
         if Config.LLM_PROVIDER == "anthropic":
             client = AnthropicClient()
         elif Config.LLM_PROVIDER == "ollama":
-            client = OllamaClient()
+            client = OllamaClient(normalized_role)
         elif Config.LLM_PROVIDER == "hybrid":
             if normalized_role in Config.HYBRID_CLAUDE_ROLES:
                 client = HybridLLMClient()
             else:
-                client = OllamaClient()
+                client = OllamaClient(normalized_role)
         else:
             raise ValueError(f"지원되지 않는 LLM 제공자: {Config.LLM_PROVIDER}")
         _llm_clients[cache_key] = client

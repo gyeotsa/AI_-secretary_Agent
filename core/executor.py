@@ -19,6 +19,7 @@ from core.conversation_context import ConversationContextResolver
 from core.dialogue_state import get_dialogue_state_store
 from core.intent_router import IntentRouter, IntentResolution
 from core.custom_tts import load_custom_voice_profiles
+from core.model_registry import get_model_role_router
 
 
 @dataclass
@@ -41,7 +42,7 @@ class Executor:
     """
 
     def __init__(self):
-        self.llm = get_llm_client()
+        self.llm = get_llm_client("conversation")
         self.reasoning_llm = get_llm_client("reasoning")
         self.scratchpad = get_scratchpad()
         self.planner = get_planner()
@@ -70,6 +71,7 @@ class Executor:
         self.terminal_error = None
         self.dialogue_state = get_dialogue_state_store()
         self.intent_router = IntentRouter(self.tool_executor.plugin_registry)
+        self.model_role_router = get_model_role_router()
         self._progress_callback: Optional[Callable[[str], None]] = None
         self.current_agent_task_id = ""
         self._task_controls: Dict[str, Dict[str, bool]] = {}
@@ -275,7 +277,23 @@ class Executor:
         # 1. 초기 Planning
         initial_context = self.build_context()
         allowed_tools = self._allowed_tools_for_goal(goal)
-        _ = self.planner.decompose_goal(goal, initial_context, allowed_tools)
+        planned_tasks = self.planner.decompose_goal(goal, initial_context, allowed_tools)
+        model_role_router = getattr(self, "model_role_router", None)
+        if model_role_router is not None:
+            planned_tools = [
+                tool_name
+                for task in planned_tasks
+                for tool_name in getattr(task, "required_tools", [])
+            ]
+            specialist_role = model_role_router.route(
+                allowed_tools=allowed_tools or planned_tools
+            )
+            self.reasoning_llm = get_llm_client(specialist_role)
+            self._default_reasoning_prompt = self.reasoning_llm.system_prompt
+            print(
+                f"[ModelRouter] role={specialist_role}, "
+                f"model={getattr(self.reasoning_llm, 'model', 'external')}"
+            )
         self._emit_progress("작업 계획을 세웠습니다. 실행을 시작하겠습니다.")
 
         # 2. 메인 반복 루프
@@ -880,6 +898,16 @@ class Executor:
     ) -> str:
         """Answer ordinary conversation without exposing or invoking tools."""
         custom_voice, address, conversation_style = self._selected_voice_preferences()
+        selected_profile = next(
+            (
+                item for item in load_custom_voice_profiles()
+                if str(item.get("id")) == custom_voice
+            ),
+            {},
+        )
+        assistant_name = str(selected_profile.get("assistant_name", "")).strip()
+        if assistant_name and message.strip().casefold() == assistant_name.casefold():
+            return f"응, 듣고 있어. {address}."
         style_prompt = ""
         if conversation_style:
             style_prompt = (
@@ -899,6 +927,11 @@ class Executor:
             "'무엇을 도와드릴까요' 같은 상투적인 접수 문장만 답하지 마세요. "
             "모르는 현재 정보가 필요할 때만 확인이 필요하다고 설명하세요. "
             "자연스럽고 간결한 한국어로 답하세요."
+            + (
+                f"\n현재 이름은 '{assistant_name}'입니다. 사용자가 이름만 부르면 "
+                "새로운 이름 변경 요청으로 해석하지 말고 짧게 응답하세요."
+                if assistant_name else ""
+            )
             + address_prompt
             + style_prompt
         )

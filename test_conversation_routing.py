@@ -59,3 +59,20 @@ def test_custom_voice_profile_enables_contextual_conversation_style(tmp_path, mo
     assert "밝고 장난스럽게" in system_prompt
     assert "중요한 상황에서는 진지하게" in system_prompt
     assert "호칭은 반드시 '지휘관님'" in system_prompt
+
+
+def test_profile_assistant_name_is_treated_as_a_call_not_a_rename(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "core.executor.load_custom_voice_profiles",
+        lambda: [{"id": "Anis", "assistant_name": "아니스"}],
+    )
+    executor = make_executor(tmp_path, voice="Anis", address="지휘관님")
+
+    outcome = executor.execute_turn(
+        "아니스",
+        "anis-call",
+        [{"role": "assistant", "content": "이제 아니스로 불러줘."}],
+    )
+
+    assert outcome.response == "응, 듣고 있어. 지휘관님."
+    assert executor.llm.messages is None

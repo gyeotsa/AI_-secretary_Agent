@@ -6,7 +6,7 @@ from core.tools import get_tool_executor, get_tools_description_text
 
 class ReActAgent:
     def __init__(self):
-        self.llm = get_llm_client()
+        self.llm = get_llm_client("reasoning")
         self.tool_executor = get_tool_executor()
         self.max_steps = 10
 

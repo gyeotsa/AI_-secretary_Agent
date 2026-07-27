@@ -70,6 +70,10 @@ class APIConfig:
     ])
     OLLAMA_BASE_URL: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
     OLLAMA_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b-instruct"))
+    OLLAMA_CONVERSATION_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_CONVERSATION_MODEL", "qwen2.5:7b-instruct"))
+    OLLAMA_REASONING_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_REASONING_MODEL", "qwen2.5:7b-instruct"))
+    OLLAMA_CODE_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_CODE_MODEL", "qwen2.5-coder:7b-instruct"))
+    OLLAMA_VISION_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_VISION_MODEL", "gemma3:4b"))
     MODEL_NAME: str = field(default_factory=lambda: os.getenv("MODEL_NAME", "qwen2.5-coder:7b-instruct"))
     MAX_TOKENS: int = field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "4096")))
     TEMPERATURE: float = field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0.7")))
@@ -157,6 +161,26 @@ class Config:
     @property
     def OLLAMA_MODEL(cls):
         return cls.API_CONFIG.OLLAMA_MODEL
+
+    @classmethod
+    @property
+    def OLLAMA_CONVERSATION_MODEL(cls):
+        return cls.API_CONFIG.OLLAMA_CONVERSATION_MODEL
+
+    @classmethod
+    @property
+    def OLLAMA_REASONING_MODEL(cls):
+        return cls.API_CONFIG.OLLAMA_REASONING_MODEL
+
+    @classmethod
+    @property
+    def OLLAMA_CODE_MODEL(cls):
+        return cls.API_CONFIG.OLLAMA_CODE_MODEL
+
+    @classmethod
+    @property
+    def OLLAMA_VISION_MODEL(cls):
+        return cls.API_CONFIG.OLLAMA_VISION_MODEL
     
     @classmethod
     @property

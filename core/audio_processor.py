@@ -68,32 +68,46 @@ class AudioProcessor(QObject):
             # 마지막으로 0 레벨 신호 보내기
             self.audio_update.emit(0.0, [], False)
 
-    def play_streaming_tts(self, pcm_chunks):
-        """Play local GPT-SoVITS PCM fragments as soon as they arrive."""
+    def play_streaming_tts(self, pcm_chunks, prebuffer_seconds: float = 1.0):
+        """Play GPT-SoVITS PCM with enough initial audio to prevent underflow."""
         stream = None
         pending = b""
+        buffered = bytearray()
+        stream_format = None
         try:
             self._is_speaking = True
             self._is_running = True
             for sample_rate, channels, sample_width, chunk in pcm_chunks:
                 if sample_width != 2:
                     raise ValueError(f"지원하지 않는 스트림 샘플 폭: {sample_width}")
-                if stream is None:
-                    self._sample_rate = sample_rate
+                current_format = (sample_rate, channels, sample_width)
+                if stream_format is None:
+                    stream_format = current_format
+                elif current_format != stream_format:
+                    raise ValueError("TTS 스트림 도중 오디오 형식이 변경되었습니다.")
+                self._sample_rate = sample_rate
+                frame_bytes = sample_width * channels
+                data = pending + chunk
+                complete = len(data) - (len(data) % frame_bytes)
+                pending = data[complete:]
+                if complete:
+                    buffered.extend(data[:complete])
+
+                prebuffer_bytes = max(
+                    frame_bytes,
+                    int(max(0.0, prebuffer_seconds) * sample_rate) * frame_bytes,
+                )
+                if stream is None and len(buffered) >= prebuffer_bytes:
                     stream = sd.RawOutputStream(
                         samplerate=sample_rate,
                         channels=channels,
                         dtype="int16",
                     )
                     stream.start()
-                frame_bytes = sample_width * channels
-                data = pending + chunk
-                complete = len(data) - (len(data) % frame_bytes)
-                if not complete:
-                    pending = data
+                if stream is None:
                     continue
-                pcm = data[:complete]
-                pending = data[complete:]
+                pcm = bytes(buffered)
+                buffered.clear()
                 stream.write(pcm)
                 samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
                 if channels > 1:
@@ -101,6 +115,17 @@ class AudioProcessor(QObject):
                 if len(samples):
                     amplitude, freq_bands = self._analyze_audio(samples, sample_rate)
                     self.audio_update.emit(amplitude, freq_bands, True)
+            if stream is None and buffered and stream_format is not None:
+                sample_rate, channels, _sample_width = stream_format
+                stream = sd.RawOutputStream(
+                    samplerate=sample_rate,
+                    channels=channels,
+                    dtype="int16",
+                )
+                stream.start()
+                pcm = bytes(buffered)
+                buffered.clear()
+                stream.write(pcm)
             if stream is None:
                 raise ValueError("GPT-SoVITS가 빈 음성 스트림을 반환했습니다.")
         except Exception as exc:

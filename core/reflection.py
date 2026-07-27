@@ -12,7 +12,7 @@ class Reflection:
     """
 
     def __init__(self):
-        self.llm = get_llm_client()
+        self.llm = get_llm_client("reasoning")
         self.scratchpad = get_scratchpad()
 
     def analyze_failure(self, error: str, task_description: str) -> Dict[str, Any]:

@@ -758,7 +758,8 @@ class ToolExecutor:
             client = self._get_custom_tts_client(voice_id, profile)
             if profile.get("streaming_mode") and hasattr(audio_processor, "play_streaming_tts"):
                 audio_processor.play_streaming_tts(
-                    client.stream_pcm(text or f"네, {self.tts_settings.selected_address}.")
+                    client.stream_pcm(text or f"네, {self.tts_settings.selected_address}."),
+                    prebuffer_seconds=float(profile.get("prebuffer_seconds", 1.0)),
                 )
                 return f"음성으로 읽어드렸습니다: {text}"
             chunks = split_tts_text(

@@ -29,6 +29,8 @@ except ImportError:
 class MultimodalManager:
     def __init__(self):
         self.safety = SafetyLayer()
+        from core.llm import get_llm_client
+        self.vision_llm = get_llm_client("vision")
 
     @staticmethod
     def _camera_backends():
@@ -79,10 +81,7 @@ class MultimodalManager:
         return devices
 
     def analyze_image(self, image_path: str, prompt: str = "이 이미지에 무엇이 있나요?") -> str:
-        """
-        이미지를 분석합니다.
-        현재는 로컬 이미지 정보만 제공하고, 향후 Vision API와 연동할 수 있습니다.
-        """
+        """이미지를 역할 전용 로컬 Vision 모델로 분석합니다."""
         if not PIL_AVAILABLE:
             return "오류: Pillow가 설치되지 않았습니다. requirements.txt를 확인하세요."
 
@@ -91,29 +90,19 @@ class MultimodalManager:
             return error_msg
 
         try:
-            with Image.open(image_path) as img:
-                info = {
-                    "파일명": os.path.basename(image_path),
-                    "크기": f"{img.width}x{img.height}",
-                    "포맷": img.format,
-                    "모드": img.mode,
-                    "프롬프트": prompt
-                }
-
-                result = [
-                    f"🖼️ 이미지 분석 결과:",
-                    f"",
-                    f"📁 파일명: {info['파일명']}",
-                    f"📐 크기: {info['크기']}",
-                    f"🎨 포맷: {info['포맷']}",
-                    f"🌈 모드: {info['모드']}",
-                    f"",
-                    f"💡 질문: {prompt}",
-                    f"",
-                    f"참고: 현재 이미지의 메타데이터만 분석합니다. 더 자세한 분석을 위해 Vision API를 추가로 연동할 수 있습니다."
-                ]
-
-                return "\n".join(result)
+            with open(image_path, "rb") as image_file:
+                encoded = base64.b64encode(image_file.read()).decode("ascii")
+            response = self.vision_llm.chat([
+                {
+                    "role": "system",
+                    "content": (
+                        "당신은 Jarvis의 이미지 분석 담당 모델입니다. 이미지에서 실제로 "
+                        "관찰되는 내용만 한국어로 답하고 불확실한 내용은 추측이라고 명시하세요."
+                    ),
+                },
+                {"role": "user", "content": prompt, "images": [encoded]},
+            ]).strip()
+            return response or "이미지 분석 모델이 빈 응답을 반환했습니다."
 
         except Exception as e:
             return f"이미지 분석 오류: {str(e)}"
