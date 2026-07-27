@@ -1,4 +1,4 @@
-from core.response_presenter import present_response, requests_technical_details
+from core.response_presenter import present_channels, present_response, requests_technical_details
 
 
 RAW_LAUNCH = (
@@ -21,3 +21,10 @@ def test_pid_is_removed_from_other_conversational_results():
 
 def test_detail_intent_is_case_insensitive():
     assert requests_technical_details("PID 포함해서 자세히 알려줘") is True
+
+
+def test_presenter_keeps_technical_log_separate_from_screen_and_speech():
+    channels = present_channels(RAW_LAUNCH, "메모장 실행해줘")
+    assert channels.technical_text == RAW_LAUNCH
+    assert channels.screen_text == "프로그램을 실행했습니다, 보스."
+    assert channels.speech_text == channels.screen_text

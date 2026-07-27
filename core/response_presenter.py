@@ -1,6 +1,7 @@
 """내부 도구 결과를 화면·음성에 적합한 사용자 응답으로 변환한다."""
 
 import re
+from dataclasses import dataclass
 
 
 _DETAIL_REQUEST_TERMS = (
@@ -16,6 +17,13 @@ _PROGRAM_LAUNCH_RESULT = re.compile(
 _CJK_OR_KANA = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _NON_KOREAN_REQUEST_TERMS = ("중국어", "일본어", "한자", "번역", "원문")
 _INTERNAL_PENDING_ID = re.compile(r"^대기\s*작업\s*ID\s*:\s*[0-9a-f]+$", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class PresentedResponse:
+    technical_text: str
+    screen_text: str
+    speech_text: str
 
 
 def requests_technical_details(user_request: str) -> bool:
@@ -51,3 +59,14 @@ def present_response(response_text: str, user_request: str = "") -> str:
         stripped = re.sub(r"\s*\(PID:\s*\d+\)", "", stripped, flags=re.IGNORECASE)
         lines.append(stripped)
     return "\n".join(lines).strip()
+
+
+def present_channels(response_text: str, user_request: str = "") -> PresentedResponse:
+    """원문 기술 로그와 화면/TTS용 본문을 명시적으로 분리한다."""
+    technical = (response_text or "").strip()
+    screen = present_response(technical, user_request)
+    return PresentedResponse(
+        technical_text=technical,
+        screen_text=screen,
+        speech_text=screen,
+    )

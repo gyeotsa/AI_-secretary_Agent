@@ -76,3 +76,25 @@ def test_profile_assistant_name_is_treated_as_a_call_not_a_rename(tmp_path, monk
 
     assert outcome.response == "응, 듣고 있어. 지휘관님."
     assert executor.llm.messages is None
+
+
+def test_conversation_path_blocks_unexecuted_completion_claim(tmp_path):
+    executor = make_executor(tmp_path)
+    executor.llm.response = "요청하신 파일을 생성했습니다."
+
+    outcome = executor.execute_turn("새 형식의 파일을 만들어줘", "claim-guard")
+
+    assert "실제 작업을 실행하지 않았습니다" in outcome.response
+    assert "완료로 보고하지 않겠습니다" in outcome.response
+    assert "외부 작업을 완료했다고 절대 주장하지 마세요" in (
+        executor.llm.messages[0]["content"]
+    )
+
+
+def test_conversation_guard_does_not_rewrite_ordinary_chat(tmp_path):
+    executor = make_executor(tmp_path)
+    executor.llm.response = "정말 잘 마무리했네. 고생했어!"
+
+    outcome = executor.execute_turn("오늘 숙제를 다 끝냈어", "ordinary-chat")
+
+    assert outcome.response == "정말 잘 마무리했네. 고생했어!"

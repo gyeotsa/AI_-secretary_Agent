@@ -22,7 +22,7 @@ from core.permission import get_permission_manager
 from core.executor import get_executor
 from core.scheduler import get_automation_engine
 from core.proactive import ProactiveNotificationPolicy
-from core.response_presenter import present_response
+from core.response_presenter import present_channels
 from core.runtime_services import get_runtime_service_manager
 from ui.main_window import JarvisMainWindow
 
@@ -423,8 +423,9 @@ class JarvisApp:
             ).start()
     
     def _on_ai_response(self, response_text: str):
-        print("[DEBUG] _on_ai_response called with:", response_text)
-        response_text = present_response(response_text, self._response_user_request)
+        channels = present_channels(response_text, self._response_user_request)
+        print("[DEBUG] _on_ai_response technical result:", channels.technical_text)
+        response_text = channels.screen_text
         response_text = self._personalize_address(response_text)
         print("[DEBUG] User-facing response:", response_text)
         # 이모지는 제거하되 상세정보 요청 시 경로와 PID 문법은 보존한다.

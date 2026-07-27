@@ -43,6 +43,17 @@ class Executor:
     실패를 복구하고, Memory와 Scratchpad를 갱신하며,
     목표 달성 여부를 계속 판단합니다!
     """
+    _EXECUTION_REQUEST_PATTERN = re.compile(
+        r"(?:생성|작성|수정|변경|삭제|저장|전송|발송|실행|설치|등록|예약|열기|닫기|"
+        r"켜기|끄기|다운로드|업로드).{0,20}(?:해\s*줘|해주세요|해줄래|부탁|실행|처리)"
+        r"|(?:만들어|고쳐|지워|보내|실행해|설치해|등록해|예약해|열어|닫아|켜|꺼)\s*(?:줘|주세요|줄래)?",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _UNVERIFIED_COMPLETION_CLAIM_PATTERN = re.compile(
+        r"(?:생성|작성|수정|변경|삭제|저장|전송|발송|실행|설치|등록|예약|다운로드|업로드)"
+        r"(?:을|를|이|가|은|는)?\s*(?:완료(?:했|됐)|성공(?:했|했습)|했습|됐습|되었습니다|했습니다)",
+        re.IGNORECASE,
+    )
 
     def __init__(self):
         self.llm = get_llm_client("conversation")
@@ -1022,6 +1033,9 @@ class Executor:
         system_prompt = (
             "당신은 로컬 개인 비서 Jarvis입니다. 지금은 도구 실행이 아니라 일반 대화입니다. "
             "도구를 찾거나 호출하거나, 등록되지 않은 도구를 언급하지 마세요. "
+            "실제로 도구를 실행하지 않았으므로 파일 생성·수정·삭제, 프로그램 실행, "
+            "전송·예약·등록 같은 외부 작업을 완료했다고 절대 주장하지 마세요. "
+            "그런 요청이라면 실행하지 못했다는 사실을 분명히 말하세요. "
             "사용자의 가장 최근 발화에 먼저 직접 답하세요. 이전 대화는 대명사나 생략된 "
             "문맥을 이해할 때만 참고하고, 과거 주제를 임의로 이어가지 마세요. "
             "감정이나 경험을 말한 경우 먼저 그 내용과 감정에 구체적으로 반응하고, "
@@ -1047,6 +1061,14 @@ class Executor:
         response = self.llm.chat(messages).strip()
         if not response:
             return "응, 듣고 있어. 무슨 이야기부터 해볼까?"
+        if (
+            self._EXECUTION_REQUEST_PATTERN.search(message)
+            and self._UNVERIFIED_COMPLETION_CLAIM_PATTERN.search(response)
+        ):
+            return (
+                "아직 실제 작업을 실행하지 않았습니다. 이 요청은 현재 실행 가능한 "
+                "도구 계약으로 연결되지 않았으므로 완료로 보고하지 않겠습니다."
+            )
         return response
 
     def _selected_voice_preferences(self) -> tuple[str, str, str]:

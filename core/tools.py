@@ -1086,6 +1086,35 @@ class ToolExecutor:
         with self._tts_lock:
             return self._speak_text_locked(text, audio_processor)
 
+    def speak_text_result(self, text: str, audio_processor=None):
+        """GUI 문자열 API를 보존하면서 Tool Runtime에는 typed 재생 결과를 제공한다."""
+        raw = self.speak_text(text, audio_processor)
+        if raw.lstrip().startswith("TTS 오류:"):
+            return ToolRunResult.failed(
+                tool_name="speak_text",
+                error=raw.removeprefix("TTS 오류:").strip(),
+                raw_output=raw,
+            )
+        if self.tts_settings.selected_custom_voice:
+            provider = "gpt-sovits"
+            voice = self.tts_settings.selected_custom_voice
+        elif self.tts_settings.selected_edge_voice:
+            provider = "edge"
+            voice = self.tts_settings.selected_edge_voice
+        else:
+            provider = "windows"
+            voice = self.tts_settings.selected_voice_name
+        return ToolRunResult.successful(
+            tool_name="speak_text",
+            raw_output=raw,
+            evidence=[Evidence("tts_playback", "선택된 TTS backend의 동기 재생 호출이 오류 없이 반환됐습니다.", {
+                "provider": provider,
+                "voice": voice,
+                "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "text_length": len(text),
+            })],
+        )
+
     def _speak_text_locked(self, text: str, audio_processor=None) -> str:
         text = normalize_for_tts(text)
         print(f"[TTS] 발음 정규화: {text}")
@@ -1783,12 +1812,14 @@ class ToolExecutor:
         started_at = time.perf_counter()
         granted, error = self._request_tool_permissions(tool_name)
         if not granted:
-            return ToolRunResult.failed(
+            denied = ToolRunResult.failed(
                 tool_name=tool_name,
                 error=error.removeprefix("오류: ").strip(),
                 raw_output=error,
                 duration_ms=(time.perf_counter() - started_at) * 1000,
             )
+            self._record_tool_run(tool_input, denied)
+            return denied
         tool_functions = {
             "read_file": self.read_file,
             "write_file": self.write_file,
@@ -1798,7 +1829,7 @@ class ToolExecutor:
             "set_profile": self.set_profile,
             "get_profile": self.get_profile,
             "set_preference": self.set_preference,
-            "speak_text": self.speak_text,
+            "speak_text": self.speak_text_result,
             "listen": self.listen,
             "add_document": self.add_document,
             "search_docs": self.search_docs,
@@ -1865,12 +1896,68 @@ class ToolExecutor:
                 raw_result = self.plugin_registry.execute_tool(tool_name, tool_input)
             except Exception as e:
                 raw_result = f"오류: 알 수 없는 툴 '{tool_name}' (플러그인 오류: {str(e)})"
-        return self._adapt_tool_output(
+        tool_run = self._adapt_tool_output(
             tool_name,
             tool_input,
             raw_result,
             (time.perf_counter() - started_at) * 1000,
         )
+        self._record_tool_run(tool_input, tool_run)
+        return tool_run
+
+    @staticmethod
+    def _journal_safe_value(value, key: str = ""):
+        """Journal에는 실행 재현 정보는 남기되 자격 증명과 긴 원문은 기록하지 않는다."""
+        sensitive = ("password", "passwd", "token", "secret", "api_key", "apikey", "credential")
+        if any(term in key.casefold() for term in sensitive):
+            return "[REDACTED]"
+        if isinstance(value, dict):
+            return {
+                str(item_key): ToolExecutor._journal_safe_value(item_value, str(item_key))
+                for item_key, item_value in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [ToolExecutor._journal_safe_value(item, key) for item in value]
+        if isinstance(value, str) and len(value) > 1000:
+            return {
+                "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+                "length": len(value),
+            }
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        return str(value)
+
+    def _record_tool_run(self, tool_input: dict, result: ToolRunResult) -> None:
+        """중앙 Tool 경계의 입력·결과·Evidence·지연 시간을 Action Journal에 기록한다."""
+        try:
+            journal = getattr(self, "_action_journal", None)
+            if journal is None:
+                from core.runtime.action_journal import get_action_journal
+                journal = get_action_journal()
+                self._action_journal = journal
+            journal.record(
+                action_type="tool_execution",
+                description=f"{result.tool_name}: {result.status.value}",
+                source="tool_executor",
+                data={
+                    "tool_name": result.tool_name,
+                    "status": result.status.value,
+                    "input": self._journal_safe_value(tool_input),
+                    "duration_ms": result.duration_ms,
+                    "evidence": self._journal_safe_value(
+                        [asdict(item) for item in result.evidence]
+                    ),
+                    "artifacts": self._journal_safe_value(
+                        [asdict(item) for item in result.artifacts]
+                    ),
+                    "raw_output_sha256": hashlib.sha256(result.raw_output.encode("utf-8")).hexdigest(),
+                },
+                success=result.succeeded,
+                error=result.error,
+            )
+        except Exception as exc:
+            # 감사 로그 저장 실패가 실제 Tool 결과를 바꾸면 안 된다.
+            print(f"[ActionJournal] Tool 실행 기록 실패: {exc}")
 
     def _adapt_tool_output(
         self,

@@ -14,6 +14,7 @@ from core.tool_result import Evidence
 from core.tool_result import ToolRunResult, ToolRunStatus
 from core.tools import ToolExecutor
 from core.user_profile import UserProfile
+from core.runtime.action_journal import ActionJournal
 from core.verifier import ToolVerifier, VerificationResult
 
 
@@ -473,3 +474,56 @@ def test_pdf_all_page_extraction_and_excel_tools_are_verified(tmp_path):
     assert created.status == ToolRunStatus.SUCCEEDED
     assert updated.status == ToolRunStatus.SUCCEEDED
     assert updated.evidence[0].data["cell"] == "B2"
+
+
+def test_tts_tool_has_typed_result_without_breaking_string_api():
+    executor = ToolExecutor.__new__(ToolExecutor)
+    executor.tts_settings = SimpleNamespace(
+        selected_custom_voice="",
+        selected_edge_voice="",
+        selected_voice_name="Heami",
+    )
+    executor.speak_text = lambda text, audio_processor=None: f"음성으로 읽어드렸습니다: {text}"
+
+    result = executor.speak_text_result("안녕하세요")
+
+    assert result.status == ToolRunStatus.SUCCEEDED
+    assert result.evidence[0].kind == "tts_playback"
+    assert result.evidence[0].data["provider"] == "windows"
+
+
+def test_action_journal_records_typed_tool_result_and_redacts_secrets(tmp_path):
+    executor = ToolExecutor.__new__(ToolExecutor)
+    executor._action_journal = ActionJournal(str(tmp_path / "actions.db"))
+    result = ToolRunResult.successful(
+        tool_name="mail_send",
+        raw_output="전송됨",
+        evidence=[Evidence("smtp_acceptance", "SMTP 서버가 수신자를 접수했습니다.")],
+        duration_ms=12.5,
+    )
+
+    executor._record_tool_run(
+        {"recipient": "user@example.com", "password": "do-not-store"},
+        result,
+    )
+    record = executor._action_journal.get_recent(1)[0]
+
+    assert record.action_type == "tool_execution"
+    assert record.data["status"] == "succeeded"
+    assert record.data["duration_ms"] == 12.5
+    assert record.data["input"]["password"] == "[REDACTED]"
+    assert record.data["evidence"][0]["kind"] == "smtp_acceptance"
+
+
+def test_permission_denial_is_also_written_to_action_journal():
+    executor = ToolExecutor.__new__(ToolExecutor)
+    executor._request_tool_permissions = lambda tool_name: (
+        False, "오류: 권한이 거부되었습니다: filesystem.write"
+    )
+    recorded = []
+    executor._record_tool_run = lambda tool_input, result: recorded.append(result)
+
+    result = executor.execute_tool("write_file", {"path": "x", "content": "secret"})
+
+    assert result.status == ToolRunStatus.FAILED
+    assert recorded == [result]
