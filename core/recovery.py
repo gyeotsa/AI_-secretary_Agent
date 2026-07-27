@@ -105,7 +105,8 @@ class RecoveryManager:
         try:
             result = self.tool_executor.execute_tool(tool_name, tool_input)
             # 성공 여부 간단 확인
-            if self.verifier.verify(tool_name, tool_input, result).success:
+            verification = self.verifier.verify(tool_name, tool_input, result)
+            if verification.verified and verification.success:
                 return RecoveryResult(success=True, result=result)
             return RecoveryResult(success=False, message=f"Retry 실패: {result}")
         except Exception as e:
@@ -132,7 +133,8 @@ class RecoveryManager:
 
             # 수정된 파라미터로 재시도
             result = self.tool_executor.execute_tool(tool_name, modified_input)
-            if self.verifier.verify(tool_name, modified_input, result).success:
+            verification = self.verifier.verify(tool_name, modified_input, result)
+            if verification.verified and verification.success:
                 return RecoveryResult(success=True, result=result)
             return RecoveryResult(success=False, message=f"파라미터 수정 실패: {result}")
 
@@ -159,7 +161,8 @@ class RecoveryManager:
 
                 # 실제로 대체 도구 실행
                 result = self.tool_executor.execute_tool(alt_tool, alt_input)
-                if self.verifier.verify(alt_tool, alt_input, result).success:
+                verification = self.verifier.verify(alt_tool, alt_input, result)
+                if verification.verified and verification.success:
                     return RecoveryResult(success=True, result=result)
 
             return RecoveryResult(success=False, message="적합한 대체 도구가 없습니다.")

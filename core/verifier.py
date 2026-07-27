@@ -1,10 +1,12 @@
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable
 from dataclasses import dataclass
 
+import pygetwindow
 
 
 @dataclass
@@ -12,6 +14,7 @@ class VerificationResult:
     success: bool
     message: str
     details: Optional[Dict[str, Any]] = None
+    verified: bool = True
 
 
 class ToolVerifier:
@@ -41,7 +44,95 @@ class ToolVerifier:
             "pdf_create_document": self._verify_created_file,
             "hwpx_create_document": self._verify_created_file,
             "browser_web_search": self._verify_web_search,
+            "windows_launch_app": self._verify_windows_launch_app,
+            "windows_close_app": self._verify_windows_close_app,
+            "windows_add_app_aliases": self._verify_windows_add_app_aliases,
         }
+
+    def _verify_windows_launch_app(
+        self, tool_input: Dict[str, Any], result: str
+    ) -> VerificationResult:
+        """PID가 있는 직접 실행만 실제 프로세스 존재 여부로 검증한다."""
+        match = re.search(r"\bPID:\s*(\d+)", str(result))
+        if not match:
+            return VerificationResult(
+                False,
+                "실행 요청은 반환됐지만 확인 가능한 프로세스 ID가 없습니다.",
+                {"result": str(result)[:200]},
+                verified=False,
+            )
+        pid = int(match.group(1))
+        try:
+            os.kill(pid, 0)
+        except OSError as exc:
+            return VerificationResult(
+                False,
+                f"실행된 프로세스를 확인하지 못했습니다: PID {pid}",
+                {"pid": pid, "error": str(exc)},
+            )
+        return VerificationResult(
+            True,
+            f"실행된 프로세스를 확인했습니다: PID {pid}",
+            {"pid": pid, "method": "process_exists"},
+        )
+
+    def _verify_windows_close_app(
+        self, tool_input: Dict[str, Any], result: str
+    ) -> VerificationResult:
+        """종료를 요청한 창이 현재 창 목록에서 사라졌는지 확인한다."""
+        prefix = "앱 종료 요청 성공:"
+        title = str(result).split(prefix, 1)[1].strip() if prefix in str(result) else ""
+        if not title:
+            return VerificationResult(
+                False,
+                "종료 결과에서 대상 창 제목을 확인할 수 없습니다.",
+                verified=False,
+            )
+        remaining = [
+            window.title for window in pygetwindow.getAllWindows()
+            if window.title and window.title.casefold() == title.casefold()
+        ]
+        if remaining:
+            return VerificationResult(
+                False,
+                f"종료 요청 후에도 창이 남아 있습니다: {title}",
+                {"window_title": title},
+            )
+        return VerificationResult(
+            True,
+            f"대상 창이 닫힌 것을 확인했습니다: {title}",
+            {"window_title": title, "method": "window_absent"},
+        )
+
+    def _verify_windows_add_app_aliases(
+        self, tool_input: Dict[str, Any], result: str
+    ) -> VerificationResult:
+        """요청한 별칭이 사용자 별칭 저장소에 실제 보존됐는지 확인한다."""
+        aliases = [
+            str(item).strip().casefold()
+            for item in tool_input.get("aliases") or []
+            if str(item).strip()
+        ]
+        alias_path = Path(__file__).resolve().parent.parent / "data" / "user_app_aliases.json"
+        try:
+            saved = json.loads(alias_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            return VerificationResult(
+                False,
+                f"사용자 별칭 저장소를 확인하지 못했습니다: {exc}",
+            )
+        missing = [alias for alias in aliases if not str(saved.get(alias, "")).strip()]
+        if missing:
+            return VerificationResult(
+                False,
+                f"저장되지 않은 앱 별칭이 있습니다: {', '.join(missing)}",
+                {"missing_aliases": missing},
+            )
+        return VerificationResult(
+            True,
+            f"앱 별칭 {len(aliases)}개 저장을 확인했습니다.",
+            {"aliases": aliases, "method": "alias_store"},
+        )
 
     def _verify_web_search(
         self, tool_input: Dict[str, Any], result: str
@@ -117,11 +208,12 @@ class ToolVerifier:
         if tool_name in self._verifiers:
             return self._verifiers[tool_name](tool_input, result)
 
-        # 3. 기본 검증 통과
+        # 3. 전용 검증기가 없는 실행은 성공으로 추정하지 않는다.
         return VerificationResult(
-            success=True,
-            message=f"도구 {tool_name} 실행 결과 검증 성공!",
-            details={"result": result[:100]}
+            success=False,
+            message=f"도구 {tool_name}에는 실행 결과 검증기가 등록되지 않았습니다.",
+            details={"result": result[:100], "tool_name": tool_name},
+            verified=False,
         )
 
     def _verify_write_file(self, tool_input: Dict[str, Any], result: str) -> VerificationResult:

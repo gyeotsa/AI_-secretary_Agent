@@ -1,7 +1,7 @@
 import json
 
 from core.tool_result import ToolRunResult, ToolRunStatus
-from core.verifier import VerificationResult
+from core.verifier import ToolVerifier, VerificationResult
 
 
 def test_verified_file_result_contains_evidence_and_artifact():
@@ -53,3 +53,21 @@ def test_web_search_result_exposes_source_artifacts():
     )
     assert [artifact.kind for artifact in result.artifacts] == ["url", "url"]
     assert result.to_dict()["status"] == "succeeded"
+
+
+def test_unknown_tool_is_unverified_instead_of_success():
+    verification = ToolVerifier().verify(
+        "plugin_without_verifier",
+        {},
+        "작업을 완료했습니다.",
+    )
+    result = ToolRunResult.from_verification(
+        tool_name="plugin_without_verifier",
+        raw_output="작업을 완료했습니다.",
+        verification=verification,
+    )
+    assert not verification.verified
+    assert not verification.success
+    assert result.status == ToolRunStatus.UNVERIFIED
+    assert not result.succeeded
+    assert result.error is None

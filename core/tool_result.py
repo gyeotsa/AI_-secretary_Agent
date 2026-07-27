@@ -58,15 +58,22 @@ class ToolRunResult:
     ) -> "ToolRunResult":
         details = dict(getattr(verification, "details", None) or {})
         success = bool(getattr(verification, "success", False))
+        verified = bool(getattr(verification, "verified", True))
         message = str(getattr(verification, "message", "검증 결과 없음"))
         evidence = [Evidence("tool_verification", message, details)]
         artifacts = _extract_artifacts(raw_output)
+        if not verified:
+            status = ToolRunStatus.UNVERIFIED
+        elif success:
+            status = ToolRunStatus.SUCCEEDED
+        else:
+            status = ToolRunStatus.FAILED
         return cls(
             tool_name=tool_name,
-            status=ToolRunStatus.SUCCEEDED if success else ToolRunStatus.FAILED,
+            status=status,
             raw_output=str(raw_output),
             duration_ms=max(0.0, float(duration_ms)),
-            error=None if success else message,
+            error=message if status == ToolRunStatus.FAILED else None,
             evidence=evidence,
             artifacts=artifacts,
         )

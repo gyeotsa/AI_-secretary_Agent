@@ -21,7 +21,7 @@ from core.dialogue_state import get_dialogue_state_store
 from core.intent_router import IntentRouter, IntentResolution
 from core.custom_tts import load_custom_voice_profiles
 from core.model_registry import get_model_role_router
-from core.tool_result import ToolRunResult
+from core.tool_result import ToolRunResult, ToolRunStatus
 
 
 @dataclass
@@ -514,6 +514,16 @@ class Executor:
                     (time.perf_counter() - started_at) * 1000,
                 )
                 verified = tool_run.succeeded
+                if tool_run.status == ToolRunStatus.UNVERIFIED:
+                    self.terminal_error = (
+                        f"{tool_name} 도구는 실행됐지만 결과를 검증할 방법이 없어 "
+                        "완료로 확정하지 않았습니다."
+                    )
+                    self.scratchpad.add_observation(
+                        tool_name, tool_input, result, False
+                    )
+                    self.scratchpad.fail_task(task.id, self.terminal_error)
+                    return False
                 if not verified:
                     self._consecutive_failures += 1
                     self._total_failures += 1
@@ -755,11 +765,20 @@ class Executor:
             result,
             (time.perf_counter() - started_at) * 1000,
         )
-        status = "completed" if tool_run.succeeded else "failed"
-        response = (
-            self.intent_router.registry.present_result(resolution.tool_name, result)
-            if tool_run.succeeded else f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
-        )
+        if tool_run.succeeded:
+            status = "completed"
+            response = self.intent_router.registry.present_result(
+                resolution.tool_name, result
+            )
+        elif tool_run.status == ToolRunStatus.UNVERIFIED:
+            status = "unverified"
+            response = (
+                f"{resolution.tool_name} 도구는 실행됐지만 결과를 검증할 방법이 없어 "
+                "완료로 확정하지 않았습니다."
+            )
+        else:
+            status = "failed"
+            response = f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
         self.dialogue_state.update_task(task_id, status=status, result=response)
         self.dialogue_state.delete_intent_state(task_id)
         if tool_run.succeeded:
@@ -817,7 +836,7 @@ class Executor:
         )
         print(
             f"[Executor] 검증 결과: "
-            f"{'성공' if tool_run.succeeded else '실패'} - {verification.message} "
+            f"{tool_run.status.value} - {verification.message} "
             f"(evidence={len(tool_run.evidence)}, artifacts={len(tool_run.artifacts)}, "
             f"duration_ms={tool_run.duration_ms:.1f})"
         )

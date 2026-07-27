@@ -7,7 +7,7 @@ from core.plugin import PluginRegistry
 from plugins.calendar import CalendarPlugin
 from plugins.windows_control import WindowsControlPlugin
 from plugins.word import WordPlugin
-from core.verifier import ToolVerifier
+from core.verifier import ToolVerifier, VerificationResult
 
 
 class _Resolver:
@@ -331,6 +331,9 @@ def test_windows_launch_request_bypasses_planner_and_llm(tmp_path):
         "Tools", (), {"execute_tool": lambda _self, name, data: f"프로그램 실행 성공: {data['target']}"}
     )()
     executor.verifier = ToolVerifier()
+    executor.verifier._verifiers["windows_launch_app"] = (
+        lambda _data, _result: VerificationResult(True, "테스트 실행 확인")
+    )
 
     outcome = executor.execute_turn("메모장 실행해줄래?", "windows-launch")
 
@@ -358,6 +361,9 @@ def test_explicit_new_windows_command_replaces_word_pending_request(tmp_path):
         "Tools", (), {"execute_tool": lambda _self, name, data: f"앱 종료 요청 성공: {data['target']}"}
     )()
     executor.verifier = ToolVerifier()
+    executor.verifier._verifiers["windows_close_app"] = (
+        lambda _data, _result: VerificationResult(True, "테스트 종료 확인")
+    )
 
     first = executor.execute_turn("워드 생성해줘", "replace-word-pending")
     second = executor.execute_turn("디코 종료해", "replace-word-pending")
@@ -375,6 +381,9 @@ def test_windows_alias_request_bypasses_planner_and_llm(tmp_path):
         "Tools", (), {"execute_tool": lambda _self, name, data: f"앱 별칭 추가 성공: {', '.join(data['aliases'])}"}
     )()
     executor.verifier = ToolVerifier()
+    executor.verifier._verifiers["windows_add_app_aliases"] = (
+        lambda _data, _result: VerificationResult(True, "테스트 별칭 저장 확인")
+    )
 
     outcome = executor.execute_turn(
         "Discord 앱의 별칭에 디스코드와 디코를 추가해줘", "windows-alias"
