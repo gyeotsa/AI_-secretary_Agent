@@ -231,15 +231,16 @@ class BrowserPlugin(BasePlugin):
             f"검색 결과:\n{sources}\n\n"
             "검색 결과에 명시된 사실만 사용해 한국어로 답하세요. 결과가 질문의 연도나 대상을 "
             "확실히 뒷받침하지 않으면 확인할 수 없다고 말하세요. 제품명·연도는 추측하지 마세요. "
-            "마지막에 근거로 사용한 URL을 '출처:' 아래에 그대로 적으세요."
+            "사용자가 단순히 이름이나 정답을 물으면 핵심 답만 한 문장으로 말하세요. 상세 설명·"
+            "비교·이유를 요청한 경우에도 최대 세 문장으로 답하세요. URL이나 출처 목록은 출력하지 "
+            "마세요."
         )
         answer = get_llm_client("reasoning").chat([
             {"role": "system", "content": "당신은 검색 근거만 사용하는 사실 검증 담당자입니다."},
             {"role": "user", "content": prompt},
         ]).strip()
         if not answer or answer.casefold().startswith(("오류:", "error:")):
-            return "웹 검색은 완료했지만 결과 요약에 실패했습니다.\n" + sources
-        cited_urls = [item["url"] for item in results if item["url"] in answer]
-        if not cited_urls:
-            return "웹 검색 결과의 출처를 검증하지 못해 답변을 생성하지 않았습니다.\n" + sources
-        return answer
+            return "웹 검색은 완료했지만 결과를 요약하지 못했습니다."
+        answer = re.sub(r"\s*(?:출처|Sources?)\s*:.*$", "", answer, flags=re.I | re.S).strip()
+        source_urls = [item["url"] for item in results[:2]]
+        return answer + "\n출처: " + " | ".join(source_urls)

@@ -49,7 +49,7 @@ def test_web_search_verifier_requires_source_urls():
     assert not verifier.verify("browser_web_search", {"query": "test"}, invalid).success
 
 
-def test_search_presenter_rejects_uncited_summary(monkeypatch):
+def test_search_presenter_keeps_answer_compact_and_appends_sources(monkeypatch):
     _registry, plugin, _router_instance = _router()
     payload = json.dumps({
         "query": "최신 제품",
@@ -63,7 +63,10 @@ def test_search_presenter_rejects_uncited_summary(monkeypatch):
 
     monkeypatch.setattr("core.llm.get_llm_client", lambda role: UncitedModel())
     answer = plugin.present_result("browser_web_search", payload)
-    assert "출처를 검증하지 못해" in answer
+    assert answer == (
+        "최신 제품은 ABC입니다.\n"
+        "출처: https://example.com/product"
+    )
 
 
 def test_two_digit_year_is_normalized_for_search():
