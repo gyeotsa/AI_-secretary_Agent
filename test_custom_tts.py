@@ -4,8 +4,9 @@ from urllib.error import HTTPError
 import io
 
 import pytest
+import wave
 
-from core.custom_tts import GPTSoVITSClient, load_custom_voice_profiles
+from core.custom_tts import GPTSoVITSClient, load_custom_voice_profiles, split_tts_text
 from core.tools import ToolExecutor
 from core.tts_settings import TTSSettingsManager
 
@@ -63,6 +64,53 @@ def test_gpt_sovits_process_uses_bundled_nltk_data(tmp_path, monkeypatch):
         previous,
     ]
     assert (runtime / "nltk_data").is_dir()
+
+
+def test_tts_text_is_split_at_sentence_boundaries():
+    assert split_tts_text("첫 문장입니다. 두 번째예요! 마지막 질문인가요?") == [
+        "첫 문장입니다.",
+        "두 번째예요!",
+        "마지막 질문인가요?",
+    ]
+
+
+def test_gpt_sovits_stream_exposes_pcm_before_full_response(tmp_path, monkeypatch):
+    profile_path = tmp_path / "Anis" / "profile.json"
+    profile_path.parent.mkdir()
+    reference = tmp_path / "reference.wav"
+    reference.write_bytes(b"wav")
+    client = GPTSoVITSClient(
+        {
+            "_profile_path": str(profile_path),
+            "port": 9988,
+            "language": "ko",
+            "reference_audio": "../reference.wav",
+            "reference_text": "참조 문장",
+            "streaming_mode": 2,
+        }
+    )
+    monkeypatch.setattr(client, "ensure_running", lambda: None)
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(32000)
+        output.writeframes(b"\x01\x00" * 100)
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    monkeypatch.setattr(
+        "core.custom_tts.urlopen", lambda *_args, **_kwargs: Response(wav_buffer.getvalue())
+    )
+    chunks = list(client.stream_pcm("안녕"))
+    assert chunks
+    assert chunks[0][:3] == (32000, 1, 2)
+    assert b"".join(item[3] for item in chunks) == b"\x01\x00" * 100
 
 
 def test_gpt_sovits_http_error_includes_server_detail(tmp_path, monkeypatch):

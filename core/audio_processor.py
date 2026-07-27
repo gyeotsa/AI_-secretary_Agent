@@ -68,6 +68,54 @@ class AudioProcessor(QObject):
             # 마지막으로 0 레벨 신호 보내기
             self.audio_update.emit(0.0, [], False)
 
+    def play_streaming_tts(self, pcm_chunks):
+        """Play local GPT-SoVITS PCM fragments as soon as they arrive."""
+        stream = None
+        pending = b""
+        try:
+            self._is_speaking = True
+            self._is_running = True
+            for sample_rate, channels, sample_width, chunk in pcm_chunks:
+                if sample_width != 2:
+                    raise ValueError(f"지원하지 않는 스트림 샘플 폭: {sample_width}")
+                if stream is None:
+                    self._sample_rate = sample_rate
+                    stream = sd.RawOutputStream(
+                        samplerate=sample_rate,
+                        channels=channels,
+                        dtype="int16",
+                    )
+                    stream.start()
+                frame_bytes = sample_width * channels
+                data = pending + chunk
+                complete = len(data) - (len(data) % frame_bytes)
+                if not complete:
+                    pending = data
+                    continue
+                pcm = data[:complete]
+                pending = data[complete:]
+                stream.write(pcm)
+                samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+                if channels > 1:
+                    samples = samples.reshape(-1, channels).mean(axis=1)
+                if len(samples):
+                    amplitude, freq_bands = self._analyze_audio(samples, sample_rate)
+                    self.audio_update.emit(amplitude, freq_bands, True)
+            if stream is None:
+                raise ValueError("GPT-SoVITS가 빈 음성 스트림을 반환했습니다.")
+        except Exception as exc:
+            print(f"[AudioProcessor] 스트리밍 TTS 오류: {exc}")
+            raise
+        finally:
+            if stream is not None:
+                try:
+                    stream.stop()
+                finally:
+                    stream.close()
+            self._is_speaking = False
+            self._is_running = False
+            self.audio_update.emit(0.0, [], False)
+
     @staticmethod
     def _read_tts_audio(media_path: str):
         """로컬 WAV와 온라인 Neural TTS MP3를 공통 배열로 읽는다."""

@@ -18,6 +18,7 @@ from core.recovery import get_recovery_manager
 from core.conversation_context import ConversationContextResolver
 from core.dialogue_state import get_dialogue_state_store
 from core.intent_router import IntentRouter, IntentResolution
+from core.custom_tts import load_custom_voice_profiles
 
 
 @dataclass
@@ -878,25 +879,24 @@ class Executor:
         self, message: str, history: List[Dict[str, str]]
     ) -> str:
         """Answer ordinary conversation without exposing or invoking tools."""
-        tts_settings = self.tool_executor.tts_settings
-        custom_voice = tts_settings.selected_custom_voice
-        address = getattr(tts_settings, "selected_address", "보스")
+        custom_voice, address, conversation_style = self._selected_voice_preferences()
         style_prompt = ""
-        if custom_voice == "Anis":
+        if conversation_style:
             style_prompt = (
-                "\n현재 선택된 음성 이름은 Anis입니다. 답변은 밝고 활기차며 솔직하고 "
-                "장난기 있는 친근한 말투로 하되, 과장된 연기나 특정 작품의 대사·유행어를 "
-                "복제하지 마세요. 사용자를 자연스럽게 챙기는 느낌을 유지하세요."
+                f"\n현재 선택된 음성은 '{custom_voice}'입니다. 다음 음성별 대화 스타일을 "
+                f"상황에 맞게 적용하세요: {conversation_style}"
             )
         address_prompt = (
             f"\n사용자 호칭은 반드시 '{address}'로 사용하세요. "
-            "'보스' 등 다른 호칭으로 바꾸지 마세요."
+            "'보스' 등 다른 호칭으로 바꾸지 말고, 한 답변에서 호칭은 최대 한 번만 쓰세요."
         )
         system_prompt = (
             "당신은 로컬 개인 비서 Jarvis입니다. 지금은 도구 실행이 아니라 일반 대화입니다. "
             "도구를 찾거나 호출하거나, 등록되지 않은 도구를 언급하지 마세요. "
             "사용자의 가장 최근 발화에 먼저 직접 답하세요. 이전 대화는 대명사나 생략된 "
             "문맥을 이해할 때만 참고하고, 과거 주제를 임의로 이어가지 마세요. "
+            "감정이나 경험을 말한 경우 먼저 그 내용과 감정에 구체적으로 반응하고, "
+            "'무엇을 도와드릴까요' 같은 상투적인 접수 문장만 답하지 마세요. "
             "모르는 현재 정보가 필요할 때만 확인이 필요하다고 설명하세요. "
             "자연스럽고 간결한 한국어로 답하세요."
             + address_prompt
@@ -915,10 +915,23 @@ class Executor:
             return "응, 듣고 있어. 무슨 이야기부터 해볼까?"
         return response
 
+    def _selected_voice_preferences(self) -> tuple[str, str, str]:
+        settings = getattr(getattr(self, "tool_executor", None), "tts_settings", None)
+        voice_id = getattr(settings, "selected_custom_voice", "")
+        address = getattr(settings, "selected_address", "보스")
+        profile = next(
+            (
+                item for item in load_custom_voice_profiles()
+                if str(item.get("id")) == voice_id
+            ),
+            None,
+        )
+        style = str((profile or {}).get("conversation_style", "")).strip()
+        return voice_id, address, style
+
     def generate_response(self) -> str:
         """최종 답변 생성"""
-        tts_settings = getattr(getattr(self, "tool_executor", None), "tts_settings", None)
-        address = getattr(tts_settings, "selected_address", "보스")
+        voice_id, address, conversation_style = self._selected_voice_preferences()
         context = self.build_context()
         successful_observations = [
             {
@@ -949,6 +962,11 @@ class Executor:
                 )
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
+        style_instruction = (
+            f"\n현재 선택된 음성은 '{voice_id}'입니다. 다음 음성별 대화 스타일을 "
+            f"상황에 맞게 적용하세요: {conversation_style}"
+            if conversation_style else ""
+        )
         system_prompt = f"""당신은 Jarvis입니다.
 전체 Context를 보고, 최종 답변을 한국어로 작성하세요!
 사용자 호칭은 반드시 '{address}'로 사용하고 다른 호칭으로 바꾸지 마세요.
@@ -956,7 +974,7 @@ class Executor:
 Tool이 실패했거나 관측값이 없으면 절대 수치를 추측하지 말고 확인하지 못했다고 답하세요.
 location_precision이 city이면 동 단위 관측이 아니라 도시 기준 근사값임을 명시하세요.
 최종 Goal에 적힌 '후속 질문의 핵심 요구'에 먼저 직접 답하고, Tool 수치와 이름을 바꾸거나 생략하지 마세요.
-"""
+{style_instruction}"""
         verified_results = json.dumps(successful_observations, ensure_ascii=False, indent=2)
         user_prompt = (
             f"Context:\n{context}\n\n"

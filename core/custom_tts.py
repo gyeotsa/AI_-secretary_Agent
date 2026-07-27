@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import time
@@ -14,6 +15,25 @@ from urllib.request import Request, urlopen
 
 
 VOICE_ROOT = Path("data/voices")
+
+
+def split_tts_text(text: str, max_chars: int = 90) -> list[str]:
+    """Split speech at natural boundaries so playback can begin early."""
+    normalized = " ".join(str(text or "").split())
+    if not normalized:
+        return []
+    sentences = re.findall(r".+?(?:[.!?。！？]+(?=\s|$)|$)", normalized)
+    chunks: list[str] = []
+    for sentence in (item.strip() for item in sentences if item.strip()):
+        while len(sentence) > max_chars:
+            boundary = sentence.rfind(" ", 0, max_chars + 1)
+            if boundary < max_chars // 2:
+                boundary = max_chars
+            chunks.append(sentence[:boundary].strip())
+            sentence = sentence[boundary:].strip()
+        if sentence:
+            chunks.append(sentence)
+    return chunks or [normalized]
 
 
 def load_custom_voice_profiles(root: Path = VOICE_ROOT) -> list[dict]:
@@ -97,26 +117,7 @@ class GPTSoVITSClient:
 
     def synthesize(self, text: str) -> str:
         self.ensure_running()
-        clean_text = unicodedata.normalize("NFC", str(text))
-        clean_text = "".join(
-            character for character in clean_text
-            if character in "\n\t" or unicodedata.category(character)[0] != "C"
-        ).strip()
-        if not clean_text:
-            clean_text = "네, 듣고 있어요."
-        payload = {
-            "text": clean_text,
-            "text_lang": self.profile.get("language", "ko"),
-            "ref_audio_path": str(self._resolve(self.profile["reference_audio"])),
-            "prompt_text": self.profile["reference_text"],
-            "prompt_lang": self.profile.get("language", "ko"),
-            "text_split_method": "cut5",
-            "batch_size": 1,
-            "media_type": "wav",
-            "streaming_mode": False,
-            "sample_steps": int(self.profile.get("sample_steps", 32)),
-            "speed_factor": float(self.profile.get("speed_factor", 1.0)),
-        }
+        payload = self._build_payload(text)
         request = Request(
             f"{self.base_url}/tts",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -139,3 +140,53 @@ class GPTSoVITSClient:
         except Exception:
             Path(output).unlink(missing_ok=True)
             raise
+
+    def _build_payload(self, text: str) -> dict:
+        clean_text = unicodedata.normalize("NFC", str(text))
+        clean_text = "".join(
+            character for character in clean_text
+            if character in "\n\t" or unicodedata.category(character)[0] != "C"
+        ).strip()
+        if not clean_text:
+            clean_text = "네, 듣고 있어요."
+        return {
+            "text": clean_text,
+            "text_lang": self.profile.get("language", "ko"),
+            "ref_audio_path": str(self._resolve(self.profile["reference_audio"])),
+            "prompt_text": self.profile["reference_text"],
+            "prompt_lang": self.profile.get("language", "ko"),
+            "text_split_method": "cut5",
+            "batch_size": 1,
+            "media_type": "wav",
+            "streaming_mode": False,
+            "sample_steps": int(self.profile.get("sample_steps", 32)),
+            "speed_factor": float(self.profile.get("speed_factor", 1.0)),
+        }
+
+    def stream_pcm(self, text: str):
+        """Yield streamed PCM as (sample_rate, channels, sample_width, bytes)."""
+        self.ensure_running()
+        payload = self._build_payload(text)
+        payload["streaming_mode"] = int(self.profile.get("streaming_mode", 2))
+        request = Request(
+            f"{self.base_url}/tts",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=180) as response:
+                header = response.read(44)
+                if len(header) < 44 or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+                    raise RuntimeError("GPT-SoVITS 스트림의 WAV 헤더가 올바르지 않습니다.")
+                channels = int.from_bytes(header[22:24], "little")
+                sample_rate = int.from_bytes(header[24:28], "little")
+                sample_width = int.from_bytes(header[34:36], "little") // 8
+                while True:
+                    chunk = response.read(8192)
+                    if not chunk:
+                        break
+                    yield sample_rate, channels, sample_width, chunk
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"GPT-SoVITS HTTP {exc.code}: {detail}") from exc

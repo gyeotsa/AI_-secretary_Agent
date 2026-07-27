@@ -180,6 +180,7 @@ class JarvisApp:
         self.heartbeat_timer.start(3000)
         
         self._init_ui()
+        threading.Thread(target=self.tool_executor.prepare_selected_tts, daemon=True).start()
         QTimer.singleShot(0, self._run_next_queued_task)
     
     def _init_ui(self):

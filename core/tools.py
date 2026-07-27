@@ -2,6 +2,7 @@ import os
 import subprocess
 import tempfile
 import json
+import queue
 import threading
 import asyncio
 from typing import Optional
@@ -13,7 +14,7 @@ from core.user_profile import get_user_profile
 from core.workspace import get_workspace_manager
 from core.plugin import get_plugin_registry
 from core.tts_settings import get_tts_settings_manager
-from core.custom_tts import GPTSoVITSClient, load_custom_voice_profiles
+from core.custom_tts import GPTSoVITSClient, load_custom_voice_profiles, split_tts_text
 
 try:
     from duckduckgo_search import DDGS
@@ -750,25 +751,77 @@ class ToolExecutor:
         )
         if profile is None:
             return f"TTS 오류: 커스텀 음성 프로필을 찾을 수 없습니다: {voice_id}"
-        media_path = None
+        media_paths = []
         try:
-            client = self._custom_tts_clients.get(voice_id)
-            if client is None:
-                client = GPTSoVITSClient(profile)
-                self._custom_tts_clients[voice_id] = client
-            media_path = client.synthesize(text or "네, 보스.")
             if audio_processor is None:
                 return "TTS 오류: 커스텀 음성을 재생할 오디오 처리기가 없습니다."
-            audio_processor.play_and_analyze_tts(media_path)
+            client = self._get_custom_tts_client(voice_id, profile)
+            if profile.get("streaming_mode") and hasattr(audio_processor, "play_streaming_tts"):
+                audio_processor.play_streaming_tts(
+                    client.stream_pcm(text or f"네, {self.tts_settings.selected_address}.")
+                )
+                return f"음성으로 읽어드렸습니다: {text}"
+            chunks = split_tts_text(
+                text or f"네, {self.tts_settings.selected_address}.",
+                int(profile.get("chunk_chars", 90)),
+            )
+            audio_queue: queue.Queue = queue.Queue(maxsize=2)
+            finished = object()
+
+            def produce_audio():
+                try:
+                    for chunk in chunks:
+                        audio_queue.put(("audio", client.synthesize(chunk)))
+                except Exception as exc:
+                    audio_queue.put(("error", exc))
+                finally:
+                    audio_queue.put(("finished", finished))
+
+            producer = threading.Thread(target=produce_audio, daemon=True)
+            producer.start()
+            while True:
+                kind, value = audio_queue.get()
+                if kind == "finished":
+                    break
+                if kind == "error":
+                    raise value
+                media_paths.append(value)
+                # The producer synthesizes the next sentence while this one plays.
+                audio_processor.play_and_analyze_tts(value)
             return f"음성으로 읽어드렸습니다: {text}"
         except Exception as exc:
             return f"TTS 오류: GPT-SoVITS 합성 실패: {exc}"
         finally:
-            if media_path and os.path.exists(media_path):
-                try:
-                    os.unlink(media_path)
-                except OSError:
-                    pass
+            for media_path in media_paths:
+                if media_path and os.path.exists(media_path):
+                    try:
+                        os.unlink(media_path)
+                    except OSError:
+                        pass
+
+    def _get_custom_tts_client(self, voice_id: str, profile: dict) -> GPTSoVITSClient:
+        client = self._custom_tts_clients.get(voice_id)
+        if client is None:
+            client = GPTSoVITSClient(profile)
+            self._custom_tts_clients[voice_id] = client
+        return client
+
+    def prepare_selected_tts(self):
+        """Load the selected custom voice before the first assistant response."""
+        voice_id = self.tts_settings.selected_custom_voice
+        if not voice_id:
+            return
+        profile = next(
+            (item for item in load_custom_voice_profiles() if str(item.get("id")) == voice_id),
+            None,
+        )
+        if profile is None:
+            return
+        try:
+            self._get_custom_tts_client(voice_id, profile).ensure_running()
+            print(f"[TTS] 커스텀 음성 사전 로딩 완료: {voice_id}")
+        except Exception as exc:
+            print(f"[TTS] 커스텀 음성 사전 로딩 실패: {voice_id}: {exc}")
 
     def _speak_with_edge_tts(self, text: str, audio_processor=None) -> str:
         if edge_tts is None:
