@@ -82,6 +82,7 @@ class FilesystemPlugin(BasePlugin):
                 follow_up_hints=["해당 파일", "그 파일", "내용을", "코드를"],
                 utterance_patterns=[
                     r"[A-Za-z0-9가-힣_.-]+\.[A-Za-z0-9]{1,10}.*(?:수정|작성|고쳐|바꿔|변경)",
+                    r"[A-Za-z0-9가-힣_.-]+\s*파일.*(?:수정|작성|고쳐|바꿔|변경)",
                     r"(?:해당|그)\s*파일.*(?:수정|작성|고쳐|바꿔|변경|코드|코딩)",
                 ],
             ),
@@ -140,12 +141,32 @@ class FilesystemPlugin(BasePlugin):
                 recent = self._most_recent_file()
                 if recent:
                     slots["filename"] = str(recent.relative_to(self._workspace_root()))
-            instruction = normalized
-            if not slots.get("instruction") and instruction and not re.fullmatch(
-                r"[A-Za-z0-9가-힣_.-]+\.[A-Za-z0-9]{1,10}", instruction
-            ):
-                slots["instruction"] = instruction
+            if not slots.get("instruction"):
+                instruction = self._extract_write_instruction(normalized)
+                if instruction:
+                    slots["instruction"] = normalized
         return slots
+
+    @staticmethod
+    def _extract_write_instruction(text: str) -> str:
+        """대상 선택·일반 수정 동작을 제외한 실제 변경 요구가 있는지 판별한다."""
+        value = text.strip()
+        value = re.sub(
+            r"(?:[A-Za-z0-9가-힣_.-]+\.[A-Za-z0-9]{1,10}|"
+            r"[A-Za-z0-9가-힣_.-]+\s*파일|(?:해당|그)\s*파일)(?:의|을|를|에|에서)?",
+            " ",
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = re.sub(
+            r"(?:코드|소스코드|내용)?(?:을|를)?\s*"
+            r"(?:수정|작성|고쳐|바꿔|변경)(?:해\s*줘|해주세요|할\s*거야|해줘)?",
+            " ",
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = re.sub(r"[\s.,!?\"'“”‘’]+", "", value)
+        return value
 
     def _workspace_root(self) -> Path:
         path = self.workspace.get_workspace_path()
@@ -277,8 +298,11 @@ class FilesystemPlugin(BasePlugin):
             f"파일명: {target.name}\n"
             f"현재 내용:\n{existing}\n\n"
             f"사용자 요청:\n{instruction}\n\n"
-            "요청을 반영한 파일의 전체 내용을 출력하세요. 설명이나 Markdown 코드 펜스 없이 "
-            "저장할 원문만 반환하세요."
+            "시니어 개발자 관점에서 요청을 정확히 충족하고 실제 실행 가능한 완성 파일을 "
+            "작성하세요. 기존의 유효한 구조와 동작은 요청상 필요하지 않으면 보존하고, 오류 처리·"
+            "가독성·유지보수성을 작업 규모에 맞게 적용하세요. 단순한 요구에는 불필요한 추상화나 "
+            "상용구를 추가하지 마세요. 설명이나 Markdown 코드 펜스 없이 저장할 전체 원문만 "
+            "반환하세요."
         )
         result = get_llm_client("coding").chat([
             {
@@ -306,4 +330,14 @@ class FilesystemPlugin(BasePlugin):
                 ast.parse(result)
             except SyntaxError as exc:
                 raise RuntimeError(f"코드 모델이 유효하지 않은 Python 코드를 반환했습니다: {exc}")
+        requested_literals = [
+            left or right
+            for left, right in re.findall(r'"([^"]+)"|\'([^\']+)\'', instruction)
+        ]
+        missing_literals = [literal for literal in requested_literals if literal not in result]
+        if missing_literals:
+            raise RuntimeError(
+                "코드 모델 결과에 사용자가 지정한 값이 반영되지 않았습니다: "
+                + ", ".join(missing_literals)
+            )
         return result + "\n"

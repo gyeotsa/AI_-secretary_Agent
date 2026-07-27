@@ -163,3 +163,44 @@ def test_intent_resolution_without_workspace_does_not_raise():
     resolution = router.resolve('test파일에 "안녕"을 출력하게 수정해줘.')
     assert resolution.matched
     assert resolution.question
+
+
+def test_target_first_then_instruction_continues_same_write_task(tmp_path):
+    workspace = get_workspace_manager()
+    workspace.set_workspace(str(tmp_path))
+    (tmp_path / "test.py").write_text("old\n", encoding="utf-8")
+    _registry, router = _router()
+
+    first = router.resolve("test파일을 수정해줘")
+    assert first.intent_name == "filesystem.write_file"
+    assert first.slots["filename"] == "test.py"
+    assert "어떤 내용" in first.question
+
+    follow_up = router.resolve(
+        '"안녕"이라는 출력을 하도록 소스코드를 작성해줘',
+        first.intent_name,
+        first.slots,
+    )
+    assert follow_up.ready
+    assert follow_up.slots["filename"] == "test.py"
+    assert "안녕" in follow_up.slots["instruction"]
+
+
+def test_missing_requested_literal_is_not_saved(tmp_path, monkeypatch):
+    workspace = get_workspace_manager()
+    workspace.set_workspace(str(tmp_path))
+    target = tmp_path / "test.py"
+    target.write_text("original\n", encoding="utf-8")
+    registry, _router_instance = _router()
+
+    class WrongModel:
+        def chat(self, messages):
+            return 'print("다른 내용")'
+
+    monkeypatch.setattr("core.llm.get_llm_client", lambda role: WrongModel())
+    result = registry.execute_tool(
+        "filesystem_write_file",
+        {"filename": "test.py", "instruction": '"안녕"을 출력해줘'},
+    )
+    assert result.startswith("오류:")
+    assert target.read_text(encoding="utf-8") == "original\n"
