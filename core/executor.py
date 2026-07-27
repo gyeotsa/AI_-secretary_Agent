@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import json
 import re
 import threading
+import time
 
 from core.llm import get_llm_client
 from core.scratchpad import get_scratchpad, Task
@@ -20,6 +21,7 @@ from core.dialogue_state import get_dialogue_state_store
 from core.intent_router import IntentRouter, IntentResolution
 from core.custom_tts import load_custom_voice_profiles
 from core.model_registry import get_model_role_router
+from core.tool_result import ToolRunResult
 
 
 @dataclass
@@ -30,6 +32,7 @@ class ExecutionOutcome:
     question: str = ""
     task_id: str = ""
     next_goal: str = ""
+    tool_result: Optional[ToolRunResult] = None
 
 
 class Executor:
@@ -498,11 +501,19 @@ class Executor:
                     return False
 
                 # 5~6. ToolExecutor가 중앙 권한 검사 후 실행
+                started_at = time.perf_counter()
                 result = self.execute_tool(tool_name, tool_input)
                 print(f"[Executor] Tool 실행 결과: {result}")
 
                 # 7. 실행 결과 검증
-                verified = self.verify_execution(task, tool_name, tool_input, result)
+                tool_run = self.build_tool_run_result(
+                    task,
+                    tool_name,
+                    tool_input,
+                    result,
+                    (time.perf_counter() - started_at) * 1000,
+                )
+                verified = tool_run.succeeded
                 if not verified:
                     self._consecutive_failures += 1
                     self._total_failures += 1
@@ -735,20 +746,29 @@ class Executor:
         if progress_callback:
             progress_callback(f"작업 {task_id}: {resolution.tool_name} 실행을 시작합니다.")
         task = Task(task_id, resolution.intent_name, status="in_progress")
+        started_at = time.perf_counter()
         result = self.execute_tool(resolution.tool_name, resolution.slots)
-        verified = self.verify_execution(task, resolution.tool_name, resolution.slots, result)
-        status = "completed" if verified else "failed"
+        tool_run = self.build_tool_run_result(
+            task,
+            resolution.tool_name,
+            resolution.slots,
+            result,
+            (time.perf_counter() - started_at) * 1000,
+        )
+        status = "completed" if tool_run.succeeded else "failed"
         response = (
             self.intent_router.registry.present_result(resolution.tool_name, result)
-            if verified else f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
+            if tool_run.succeeded else f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
         )
         self.dialogue_state.update_task(task_id, status=status, result=response)
         self.dialogue_state.delete_intent_state(task_id)
-        if verified:
+        if tool_run.succeeded:
             self.dialogue_state.save_recent_intent(
                 session_id, resolution.intent_name, resolution.slots, goal
             )
-        return ExecutionOutcome(response, status, goal, task_id=task_id)
+        return ExecutionOutcome(
+            response, status, goal, task_id=task_id, tool_result=tool_run
+        )
 
     def request_permission(self, tool_name: str) -> bool:
         """
@@ -777,9 +797,31 @@ class Executor:
 
     def verify_execution(self, task: Task, tool_name: str, tool_input: Dict[str, Any], result: str) -> bool:
         """실행 결과 검증: ToolVerifier를 사용해 정교하게 확인"""
-        verification_result = self.verifier.verify(tool_name, tool_input, result)
-        print(f"[Executor] 검증 결과: {'성공' if verification_result.success else '실패'} - {verification_result.message}")
-        return verification_result.success
+        return self.build_tool_run_result(task, tool_name, tool_input, result).succeeded
+
+    def build_tool_run_result(
+        self,
+        task: Task,
+        tool_name: str,
+        tool_input: Dict[str, Any],
+        result: str,
+        duration_ms: float = 0.0,
+    ) -> ToolRunResult:
+        """Legacy 문자열 Tool 출력을 공통 상태·증거 계약으로 변환한다."""
+        verification = self.verifier.verify(tool_name, tool_input, result)
+        tool_run = ToolRunResult.from_verification(
+            tool_name=tool_name,
+            raw_output=result,
+            verification=verification,
+            duration_ms=duration_ms,
+        )
+        print(
+            f"[Executor] 검증 결과: "
+            f"{'성공' if tool_run.succeeded else '실패'} - {verification.message} "
+            f"(evidence={len(tool_run.evidence)}, artifacts={len(tool_run.artifacts)}, "
+            f"duration_ms={tool_run.duration_ms:.1f})"
+        )
+        return tool_run
 
     def process_observation(self, task: Task, tool_name: str, tool_input: Dict[str, Any], result: str):
         """Observation 처리: Scratchpad에 기록"""

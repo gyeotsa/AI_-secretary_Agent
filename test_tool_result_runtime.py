@@ -1,0 +1,55 @@
+import json
+
+from core.tool_result import ToolRunResult, ToolRunStatus
+from core.verifier import VerificationResult
+
+
+def test_verified_file_result_contains_evidence_and_artifact():
+    raw = json.dumps({
+        "status": "created",
+        "type": "file",
+        "path": r"C:\workspace\report.txt",
+    })
+    result = ToolRunResult.from_verification(
+        tool_name="filesystem_create_file",
+        raw_output=raw,
+        verification=VerificationResult(
+            True,
+            "실제 파일 확인",
+            {"method": "path_exists"},
+        ),
+        duration_ms=12.5,
+    )
+    assert result.status == ToolRunStatus.SUCCEEDED
+    assert result.succeeded
+    assert result.evidence[0].data["method"] == "path_exists"
+    assert result.artifacts[0].uri == r"C:\workspace\report.txt"
+    assert result.duration_ms == 12.5
+
+
+def test_failed_verification_cannot_claim_success():
+    result = ToolRunResult.from_verification(
+        tool_name="filesystem_write_file",
+        raw_output="오류: 저장 실패",
+        verification=VerificationResult(False, "파일이 변경되지 않았습니다."),
+    )
+    assert result.status == ToolRunStatus.FAILED
+    assert not result.succeeded
+    assert result.error == "파일이 변경되지 않았습니다."
+
+
+def test_web_search_result_exposes_source_artifacts():
+    raw = json.dumps({
+        "query": "latest",
+        "results": [
+            {"title": "Official", "url": "https://example.com/product"},
+            {"title": "News", "url": "https://example.org/news"},
+        ],
+    })
+    result = ToolRunResult.from_verification(
+        tool_name="browser_web_search",
+        raw_output=raw,
+        verification=VerificationResult(True, "출처 2건 확인"),
+    )
+    assert [artifact.kind for artifact in result.artifacts] == ["url", "url"]
+    assert result.to_dict()["status"] == "succeeded"
