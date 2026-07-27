@@ -36,6 +36,11 @@ class FilesystemPlugin(BasePlugin):
                     "filename": {"type": "string"},
                     "content": {"type": "string", "default": ""},
                 }, "required": ["filename"]}, ["filesystem_write"]),
+            ToolSchema("filesystem_write_file", "기존 파일에 요청한 내용을 작성하거나 수정합니다", {
+                "type": "object", "properties": {
+                    "filename": {"type": "string"},
+                    "instruction": {"type": "string"},
+                }, "required": ["filename", "instruction"]}, ["filesystem_write"]),
         ]
 
     def get_intents(self) -> List[IntentSchema]:
@@ -60,6 +65,20 @@ class FilesystemPlugin(BasePlugin):
                 execution_hints=["생성", "만들", "추가", "작성"],
                 follow_up_hints=["이름으로", "로 해줘", "라고 해줘"],
             ),
+            IntentSchema(
+                "filesystem.write_file",
+                "기존 파일의 내용 또는 소스코드 작성·수정",
+                "filesystem_write_file",
+                ["파일", "코드", "소스코드", "코딩"],
+                [
+                    SlotSchema("filename", "수정할 파일 이름",
+                               "어떤 파일을 수정할지 파일명을 알려주세요, 보스."),
+                    SlotSchema("instruction", "파일에 반영할 내용",
+                               "파일에 어떤 내용을 작성할지 알려주세요, 보스."),
+                ],
+                execution_hints=["작성", "수정", "고쳐", "코딩", "입력", "써줘"],
+                follow_up_hints=["해당 파일", "그 파일", "내용을", "코드를"],
+            ),
         ]
 
     @staticmethod
@@ -83,6 +102,8 @@ class FilesystemPlugin(BasePlugin):
                 if match:
                     slots["name"] = self._clean_name(match.group("name"))
                     break
+            if not slots.get("name") and re.fullmatch(r"[A-Za-z0-9가-힣_.-]+", normalized):
+                slots["name"] = normalized
         elif intent_name == "filesystem.create_file":
             match = re.search(
                 r"(?P<filename>[A-Za-z0-9가-힣_.-]+\.[A-Za-z0-9]{1,10})",
@@ -93,6 +114,22 @@ class FilesystemPlugin(BasePlugin):
             elif "파이썬" in normalized:
                 # 파일명은 추측하지 않고 확장자 정보만 질문에 활용한다.
                 slots.pop("filename", None)
+        elif intent_name == "filesystem.write_file":
+            match = re.search(
+                r"(?P<filename>[A-Za-z0-9가-힣_.-]+\.[A-Za-z0-9]{1,10})",
+                normalized,
+            )
+            if match:
+                slots["filename"] = match.group("filename")
+            elif any(reference in normalized for reference in ("해당 파일", "그 파일")):
+                recent = self._most_recent_file()
+                if recent:
+                    slots["filename"] = recent.name
+            instruction = normalized
+            if instruction and not re.fullmatch(
+                r"[A-Za-z0-9가-힣_.-]+\.[A-Za-z0-9]{1,10}", instruction
+            ):
+                slots["instruction"] = instruction
         return slots
 
     def _workspace_root(self) -> Path:
@@ -100,6 +137,13 @@ class FilesystemPlugin(BasePlugin):
         if not path:
             raise ValueError("먼저 상단의 폴더 선택 버튼에서 작업 폴더를 선택해 주세요.")
         return Path(path).resolve()
+
+    def _most_recent_file(self) -> Path | None:
+        try:
+            files = [path for path in self._workspace_root().rglob("*") if path.is_file()]
+            return max(files, key=lambda path: path.stat().st_mtime) if files else None
+        except (OSError, ValueError):
+            return None
 
     @staticmethod
     def _safe_child(root: Path, name: str) -> Path:
@@ -135,9 +179,23 @@ class FilesystemPlugin(BasePlugin):
                 root = self._workspace_root()
                 target = self._safe_child(root, str(tool_input["filename"]))
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(str(tool_input.get("content", "")), encoding="utf-8")
+                with target.open("x", encoding="utf-8") as stream:
+                    stream.write(str(tool_input.get("content", "")))
                 return json.dumps({
                     "status": "created", "type": "file", "path": str(target),
+                }, ensure_ascii=False)
+            if tool_name == "filesystem_write_file":
+                root = self._workspace_root()
+                target = self._safe_child(root, str(tool_input["filename"]))
+                if not target.is_file():
+                    raise ValueError(f"수정할 파일이 존재하지 않습니다: {target.name}")
+                content = self._generate_file_content(
+                    target, str(tool_input.get("instruction", ""))
+                )
+                target.write_text(content, encoding="utf-8")
+                return json.dumps({
+                    "status": "written", "type": "file", "path": str(target),
+                    "size": len(content.encode("utf-8")),
                 }, ensure_ascii=False)
             root = self._safe_root(str(tool_input["path"]))
             if tool_name == "filesystem_search":
@@ -163,13 +221,37 @@ class FilesystemPlugin(BasePlugin):
             return f"오류: {exc}"
 
     def present_result(self, tool_name: str, result: str) -> str:
-        if tool_name not in {"filesystem_create_project", "filesystem_create_file"}:
+        if tool_name not in {
+            "filesystem_create_project", "filesystem_create_file", "filesystem_write_file"
+        }:
             return result
         try:
             payload = json.loads(result)
             path = Path(payload["path"])
             if tool_name == "filesystem_create_project":
-                return f"프로젝트 폴더를 실제로 생성했습니다: {path}"
-            return f"파일을 실제로 생성했습니다: {path}"
+                return f"{path.name} 프로젝트 폴더를 실제로 생성했습니다."
+            if tool_name == "filesystem_write_file":
+                return f"{path.name} 파일 내용을 작성하고 실제 저장을 확인했습니다."
+            return f"{path.name} 파일을 실제로 생성했습니다."
         except (json.JSONDecodeError, KeyError, TypeError):
             return result
+
+    @staticmethod
+    def _generate_file_content(target: Path, instruction: str) -> str:
+        """코딩 전용 모델로 완성 파일 내용을 만들며 실패 응답은 저장하지 않는다."""
+        from core.llm import get_llm_client
+
+        existing = target.read_text(encoding="utf-8", errors="replace")
+        prompt = (
+            f"파일명: {target.name}\n"
+            f"현재 내용:\n{existing}\n\n"
+            f"사용자 요청:\n{instruction}\n\n"
+            "요청을 반영한 파일의 전체 내용을 출력하세요. 설명이나 Markdown 코드 펜스 없이 "
+            "저장할 원문만 반환하세요."
+        )
+        result = get_llm_client("coding").chat([{"role": "user", "content": prompt}]).strip()
+        result = re.sub(r"^```[A-Za-z0-9_+-]*\s*", "", result)
+        result = re.sub(r"\s*```$", "", result).strip()
+        if not result or result.casefold().startswith(("오류:", "error:")):
+            raise RuntimeError(result or "코드 모델이 빈 내용을 반환했습니다.")
+        return result + "\n"

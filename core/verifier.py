@@ -27,6 +27,7 @@ class ToolVerifier:
             "create_directory": self._verify_create_directory,
             "filesystem_create_project": self._verify_created_path_result,
             "filesystem_create_file": self._verify_created_path_result,
+            "filesystem_write_file": self._verify_created_path_result,
             "delete_directory": self._verify_delete_directory,
             "create_excel_file": self._verify_create_excel_file,
             "write_excel_cell": self._verify_write_excel_cell,
@@ -49,7 +50,7 @@ class ToolVerifier:
             payload = json.loads(result)
             path = payload.get("path", "")
             expected_type = payload.get("type")
-            if payload.get("status") != "created" or not path:
+            if payload.get("status") not in {"created", "written"} or not path:
                 return VerificationResult(False, f"생성 성공 결과가 아닙니다: {result}")
             target = Path(path)
             exists = target.is_dir() if expected_type == "directory" else target.is_file()
