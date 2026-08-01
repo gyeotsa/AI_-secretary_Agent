@@ -70,7 +70,17 @@ Recovery도 typed 상태만 직접 사용하도록 전환해 정상 결과 본�
 `completed`, `partial`, `failed`, `cancelled`를 구분하고 재시도 횟수와 단계 수를
 최종 응답에 표시합니다. 이에 따라 P0 진실한 실행 시스템은 완료로 판정합니다.
 
-현재 기본 자동 회귀 테스트 기준선은 `175 passed, 4 deselected`입니다. 이는
+P1 첫 구현으로 대화·pending·recent intent·Scratchpad 실행 결과를 SQLite의
+통합 `agent_tasks` 상태에 연결했습니다. Task별 Workspace, Intent/Slot, 확인 질문,
+대화 문맥, 계획, Artifact/Evidence, 마지막 Tool, 재시도와 검증 상태가 재시작 후에도
+복구됩니다. Workspace·세션 간 pending/recent intent/작업 제어가 격리되고, 7일이
+지난 확인 대기는 만료됩니다. 상태 전이 검증 API와 문맥 신뢰도도 추가했습니다.
+Executor의 수정·취소·정지·재개 경로도 허용 상태 전이 API를 강제 사용합니다.
+재시작 작업은 동일 Task ID로 대기열에 복구되며, 상단 Task 관리 UI에서 현재
+세션·Workspace 작업의 상세 상태를 확인하고 재개·취소·종료 기록 삭제를 수행할 수
+있습니다. 이에 따라 P1 대화와 Task State 통합은 완료로 판정합니다.
+
+현재 기본 자동 회귀 테스트 기준선은 `181 passed, 4 deselected`입니다. 이는
 네트워크·OAuth·실제 장치·Office COM·장시간 자동화를 모두 보증하는 수치는 아닙니다.
 
 ## 판정

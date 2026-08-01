@@ -158,18 +158,44 @@ P0 상태: **완료**. 레거시 문자열은 직접 성공 근거로 사용하�
 
 목표: “그 파일”, “같은 방식”, “이어서”가 작업 상태와 연결됩니다.
 
-- [ ] Conversation, pending request, recent intent, Scratchpad 상태 통합
-- [ ] Task별 목표·대상·Slot·계획·Artifact·검증 결과 저장
-- [ ] 지시 수정, 대상 교체, 취소, 재개를 상태 전이로 처리
-- [ ] 새 요청과 후속 답변 구분 신뢰도 도입
-- [ ] 앱 재시작 후 대기 작업 복구 정책
-- [ ] Workspace·세션별 Task 격리
-- [ ] 오래된 pending task 만료와 UI 관리
+진행 기록:
+
+- 2026-07-27: 기존 `pending_requests`, `intent_states`, `recent_intents`,
+  Executor Scratchpad에 흩어졌던 실행 상태를 `agent_tasks` 중심으로 연결했다.
+  Task는 Workspace, Intent, Slot, 확인 질문, 대화 문맥, 실행 계획, Artifact,
+  Evidence, 마지막 Tool, 재시도 횟수, 검증 상태를 영속 저장한다.
+- 기존 DB를 삭제하지 않고 필요한 열을 추가하는 SQLite migration을 연결했다.
+- Pending과 recent intent 조회를 세션뿐 아니라 현재 Workspace로 격리했다. 작업
+  상태/제어 조회도 다른 Workspace의 Task ID를 사용할 수 없다.
+- 실행 중 앱이 종료되면 Task를 `interrupted`로 바꾸고 자동 재실행하지 않는다.
+  사용자가 작업 목록을 확인한 뒤 명시적으로 재개할 수 있다.
+- 확인 응답을 7일 동안 받지 못한 Task는 `expired` 처리하고 pending 행을 제거한다.
+- Intent 직접 일치와 후속 Slot 보완의 신뢰도를 Task에 기록한다.
+- 허용 상태 전이표와 검증 API를 추가했다. 1차 구현 당시에는 기존 Executor 제어
+  경로 전체의 강제 적용과 Task 관리 GUI가 후속 범위로 남아 있었다.
+- 2026-08-01: Executor의 시작·완료·취소·수정·일시정지·재개 경로를
+  `transition_task()`로 통일했다. 잘못된 상태의 명령은 상태를 훼손하지 않고
+  거절한다. 재시작 복구는 새 Task 복제가 아니라 동일 Task를 `queued`로 되돌려
+  목표·계획·증거 연결을 유지한다.
+- 상단 `☷` 작업 관리 UI를 추가했다. 현재 세션·Workspace의 Task만 조회하며 상태,
+  목표, 확인 질문, Intent, 마지막 Tool, 검증 상태와 Artifact/Evidence 수를 표시한다.
+  중단 작업 재개, 활성 작업 취소, 종료·만료 기록 삭제를 지원한다.
+
+- [x] Conversation, pending request, recent intent, Scratchpad 상태 통합
+- [x] Task별 목표·대상·Slot·계획·Artifact·검증 결과 저장
+- [x] 지시 수정, 대상 교체, 취소, 재개를 상태 전이로 처리
+- [x] 새 요청과 후속 답변 구분 신뢰도 도입
+- [x] 앱 재시작 후 대기 작업 복구 정책
+- [x] Workspace·세션별 Task 격리
+- [x] 오래된 pending task 만료와 UI 관리
 
 수락 기준:
 
 - 대상과 지시를 여러 발화에 나눠 말해도 다시 묻지 않습니다.
 - 다른 주제로 전환하면 이전 대기 작업이 새 요청을 가로채지 않습니다.
+
+검증 결과: 자동 회귀 테스트 `181 passed, 4 deselected`, Qt offscreen Task 관리창
+스모크 테스트 통과. P1 대화와 Task State 통합은 **완료**입니다.
 
 ## P2 — 의미 기반 Capability Router
 

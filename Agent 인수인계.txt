@@ -7,6 +7,49 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-08-01 P1 대화와 Task State 통합 완료
+
+- Executor의 작업 시작·종료·수정·취소·일시정지·재개를 허용 상태 전이표와
+  `transition_task()`를 통하도록 변경했다. 종료된 작업을 다시 실행 상태로 바꾸는
+  잘못된 명령은 거절된다.
+- 비정상 종료 후 재개는 기존 Task를 취소하고 새 Task를 만들지 않는다. 동일 Task를
+  `queued`로 복구해 목표·Slot·계획·Artifact·Evidence 연결을 보존한다.
+- 상단에 `☷` 작업 관리 버튼과 대화상자를 추가했다. 현재 세션·Workspace 범위의
+  Task만 표시하며 상태, 확인 질문, Intent, 마지막 Tool, 검증 상태, Artifact와
+  Evidence 수를 확인할 수 있다.
+- UI에서 paused/interrupted 작업 재개, 활성 작업 취소, completed/partial/failed/
+  unverified/cancelled/expired 기록 삭제를 지원한다. 실행 중 기록은 삭제할 수 없다.
+- GUI 작업 제어도 별도 우회 경로가 아니라 기존 Executor 제어 계약을 사용한다.
+- 코드 커밋: `dc36569` (`[Feat] P1 작업 전이와 관리 UI 완성`)
+- 검증: 전체 `181 passed, 4 deselected`; Qt offscreen Task 관리창 스모크 테스트 통과.
+- P1 대화와 Task State 통합: **완료**.
+- 다음 해야 할 일: `AGENT_RUNTIME_ROADMAP.md`의 P2 의미 기반 Capability Router를
+  시작한다. 표준 `domain/action/target/constraints/reference/confidence` 의도 타입과
+  Plugin Capability 계약을 먼저 정의하고 기존 키워드 점수 라우팅을 점진 교체한다.
+
+## 2026-07-27 P1 대화와 Task State 통합 1차
+
+- `agent_tasks`를 통합 상태의 중심으로 확장했다. Workspace, Intent/Slot,
+  pending 질문과 대화 문맥, 실행 계획, Artifact/Evidence, 마지막 Tool, 재시도,
+  만료 시각, 검증 상태와 문맥 신뢰도를 저장한다.
+- 기존 설치의 SQLite DB는 삭제하지 않고 `_ensure_column()` migration으로
+  새 필드를 추가한다.
+- Pending request와 recent intent, 작업 목록·작업 제어는 세션과 현재 Workspace를
+  함께 기준으로 조회한다. 다른 Workspace의 Task ID는 제어할 수 없다.
+- Intent 경로와 자율 Planner 경로 모두 실행 계획과 실제 Tool 결과 증거를 Task에
+  연결한다. Scratchpad는 실행 중 상태로 유지하되 영속 스냅샷은 Task에 저장한다.
+- 비정상 종료 당시 실행 중 작업은 `interrupted`로 복구하며 자동 실행하지 않는다.
+  확인 질문은 7일 후 `expired` 처리되어 새 요청을 가로채지 않는다.
+- `IntentResolution.confidence`와 Task의 `context_confidence`를 추가했다.
+- 허용 상태 전이표와 `transition_task()`를 추가했다. 아직 기존 Executor의 모든
+  제어 분기가 이 API를 강제 사용하지는 않으므로 P1 완료로 표시하지 않았다.
+- 코드 커밋: `1e74cec` (`[Feat] P1 통합 작업 상태 기반 구축`)
+- 회귀 테스트 기준선: `180 passed, 4 deselected`.
+- 다음 해야 할 일: P1의 남은 두 항목을 완료한다. Executor의 지시 수정·대상 교체·
+  취소·일시정지·재개를 `transition_task()` 기반으로 통일하고, UI에서 현재
+  Workspace의 queued/running/awaiting/interrupted Task를 조회·재개·취소하며
+  만료 pending을 관리할 수 있게 한다.
+
 ## 2026-07-27 Codex급 Agent Runtime 개선 문서화 및 P0 착수
 
 - 기존 대화에서 합의한 모델 외 27개 상위 개선 방향을 `AGENT_RUNTIME_ROADMAP.md`에
