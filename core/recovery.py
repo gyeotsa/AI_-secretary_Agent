@@ -74,6 +74,18 @@ class RecoveryManager:
             error_signature=signature, repeated_failure_blocked=repeated,
         )
 
+    def _try_retry(self, tool_name: str, tool_input: Dict[str, Any]) -> RecoveryResult:
+        """Compatibility boundary: one typed retry without string error heuristics."""
+        try:
+            result = self.tool_executor.execute_tool(tool_name, dict(tool_input))
+            return RecoveryResult(
+                success=result.succeeded, result=result,
+                message="재시도 성공" if result.succeeded else f"재시도 실패: {result.error or result.raw_output}",
+                retry_count=1, strategy="retry",
+            )
+        except Exception as exc:
+            return RecoveryResult(False, message=f"재시도 오류: {exc}", retry_count=1, strategy="retry")
+
 
 _recovery_manager: Optional[RecoveryManager] = None
 

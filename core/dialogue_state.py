@@ -45,6 +45,7 @@ class StoredAgentTask:
     plan: List[Dict[str, Any]] = None
     verification_status: str = ""
     context_confidence: float = 0.0
+    plan_id: str = ""
 
     def __post_init__(self):
         self.slots = dict(self.slots or {})
@@ -117,6 +118,7 @@ class DialogueStateStore:
                     plan TEXT NOT NULL DEFAULT '[]',
                     verification_status TEXT NOT NULL DEFAULT '',
                     context_confidence REAL NOT NULL DEFAULT 0
+                    ,plan_id TEXT NOT NULL DEFAULT ''
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_tasks_session ON agent_tasks(session_id, updated_at)")
@@ -154,6 +156,7 @@ class DialogueStateStore:
                 ("plan", "TEXT NOT NULL DEFAULT '[]'"),
                 ("verification_status", "TEXT NOT NULL DEFAULT ''"),
                 ("context_confidence", "REAL NOT NULL DEFAULT 0"),
+                ("plan_id", "TEXT NOT NULL DEFAULT ''"),
             ):
                 self._ensure_column(conn, "agent_tasks", name, definition)
             # 비정상 종료 당시 실행 중이던 작업은 자동 실행하지 않고 재개 가능한 상태로 둔다.
@@ -254,7 +257,8 @@ class DialogueStateStore:
                     expires_at: Optional[str] = None,
                     plan: Optional[List[Dict[str, Any]]] = None,
                     verification_status: Optional[str] = None,
-                    context_confidence: Optional[float] = None) -> bool:
+                    context_confidence: Optional[float] = None,
+                    plan_id: Optional[str] = None) -> bool:
         fields, values = [], []
         json_fields = {
             "slots": slots, "conversation_history": conversation_history,
@@ -268,6 +272,7 @@ class DialogueStateStore:
             ("retry_count", retry_count), ("expires_at", expires_at),
             ("verification_status", verification_status),
             ("context_confidence", context_confidence),
+            ("plan_id", plan_id),
         ):
             if value is not None:
                 fields.append(f"{name} = ?")
@@ -327,7 +332,7 @@ class DialogueStateStore:
                 "SELECT task_id, session_id, goal, status, priority, result, created_at, updated_at, "
                 "workspace_path, intent_name, slots, pending_question, conversation_history, "
                 "artifacts, evidence, last_tool, retry_count, expires_at, plan, verification_status, "
-                "context_confidence FROM agent_tasks WHERE session_id = ? AND task_id = ?"
+                "context_confidence, plan_id FROM agent_tasks WHERE session_id = ? AND task_id = ?"
                 f"{workspace_clause}", params,
             ).fetchone()
         return self._task_from_row(row) if row else None
@@ -345,7 +350,7 @@ class DialogueStateStore:
                 "SELECT task_id, session_id, goal, status, priority, result, created_at, updated_at, "
                 "workspace_path, intent_name, slots, pending_question, conversation_history, "
                 "artifacts, evidence, last_tool, retry_count, expires_at, plan, verification_status, "
-                "context_confidence "
+                "context_confidence, plan_id "
                 f"FROM agent_tasks WHERE session_id = ? {clause}{workspace_clause} "
                 "ORDER BY priority DESC, updated_at DESC",
                 params,

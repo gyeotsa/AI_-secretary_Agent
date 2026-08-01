@@ -48,6 +48,8 @@ class PlanStep:
     observations: List[Dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self):
+        if isinstance(self.status, str):
+            self.status = StepStatus(self.status)
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", self.id):
             raise ValueError(f"유효하지 않은 단계 ID입니다: {self.id}")
         if self.retry_budget < 0 or self.retry_budget > 10:
@@ -121,6 +123,14 @@ class PlanDAG:
             step["status"] = step["status"].value if isinstance(step["status"], StepStatus) else step["status"]
         return value
 
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "PlanDAG":
+        return cls(
+            goal=str(payload["goal"]),
+            steps=[PlanStep(**item) for item in payload.get("steps", [])],
+            plan_id=str(payload["plan_id"]), revision=int(payload.get("revision", 1)),
+        )
+
 
 class ErrorClassifier:
     TRANSIENT = ("timeout", "timed out", "temporarily", "connection reset", "429", "503")
@@ -176,6 +186,13 @@ class PlanExecutionStore:
                 status=excluded.status,payload=excluded.payload,updated_at=excluded.updated_at""",
                 (plan.plan_id, plan.goal, plan.revision, status,
                  json.dumps(plan.to_dict(), ensure_ascii=False), time.time()))
+
+    def load_plan(self, plan_id: str) -> Optional[PlanDAG]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT payload FROM plan_runs WHERE plan_id=?", (plan_id,)).fetchone()
+        if not row:
+            return None
+        return PlanDAG.from_dict(json.loads(row[0]))
 
     def record_attempt(self, plan_id: str, step: PlanStep, strategy: str,
                        result: ToolRunResult, signature: str) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from core.plan_runtime import PlanDAG
+from core.plan_runtime import PlanDAG, PlanStep
 
 
 class PlanningService:
@@ -14,7 +14,14 @@ class PlanningService:
         self.planner = planner
 
     def create(self, goal: str, context: str, allowed_tools: Optional[List[str]]) -> PlanDAG:
-        return self.planner.build_plan_dag(goal, context, allowed_tools)
+        if hasattr(self.planner, "build_plan_dag"):
+            return self.planner.build_plan_dag(goal, context, allowed_tools)
+        tasks = self.planner.decompose_goal(goal, context, allowed_tools)
+        return PlanDAG(goal, [PlanStep(
+            id=task.id, description=task.description,
+            tool_name=(getattr(task, "required_tools", []) or [""])[0],
+            dependencies=list(getattr(task, "dependencies", []) or []),
+        ) for task in tasks])
 
 
 class ResponseComposer:

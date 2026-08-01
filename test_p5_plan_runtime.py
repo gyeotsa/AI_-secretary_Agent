@@ -7,6 +7,7 @@ from core.plan_runtime import (
 )
 from core.recovery import RecoveryManager
 from core.scratchpad import Task
+from core.dialogue_state import DialogueStateStore
 from core.tool_result import Artifact, Evidence, ToolRunResult
 
 
@@ -155,3 +156,29 @@ def test_legacy_recovery_uses_budget_signature_and_same_verifier(tmp_path):
     assert result.repeated_failure_blocked is True
     assert result.retry_count == 2
     assert len(verified) == 2
+
+
+def test_plan_and_approval_checkpoint_survive_restart(tmp_path):
+    plan_db = tmp_path / "plans.db"
+    store = PlanExecutionStore(str(plan_db))
+    plan = PlanDAG("persist", [PlanStep(
+        "publish", tool_name="publish", requires_approval=True,
+        approval_reason="외부 공개 변경",
+    )])
+    coordinator = PlanCoordinator(store)
+    outcome = coordinator.run(plan, lambda step, strategy: success(step),
+                              lambda step, candidate: candidate)
+    assert outcome.status == "awaiting_approval"
+    restored = PlanExecutionStore(str(plan_db)).load_plan(plan.plan_id)
+    assert restored is not None
+    assert restored.steps[0].status == StepStatus.AWAITING_APPROVAL
+    assert restored.steps[0].approval_reason == "외부 공개 변경"
+
+    state = DialogueStateStore(str(tmp_path / "dialogue.db"))
+    task = state.create_task("session", "publish")
+    state.transition_task(task.task_id, "running")
+    state.update_task(task.task_id, plan_id=plan.plan_id, plan=plan.to_dict()["steps"])
+    assert state.transition_task(task.task_id, "awaiting_approval")
+    loaded = DialogueStateStore(str(tmp_path / "dialogue.db")).get_task("session", task.task_id)
+    assert loaded.plan_id == plan.plan_id
+    assert loaded.status == "awaiting_approval"

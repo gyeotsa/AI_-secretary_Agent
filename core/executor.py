@@ -349,11 +349,16 @@ class Executor:
         # 1. 초기 Planning
         initial_context = self.build_context()
         allowed_tools = self._allowed_tools_for_goal(goal)
-        self.current_plan = self.planning_service.create(goal, initial_context, allowed_tools)
+        planning_service = getattr(self, "planning_service", None)
+        if planning_service is None:
+            planning_service = PlanningService(self.planner)
+            self.planning_service = planning_service
+        self.current_plan = planning_service.create(goal, initial_context, allowed_tools)
         planned_tasks = self.current_plan.steps
         self.dialogue_state.update_task(
             agent_task_id,
             plan=self.current_plan.to_dict()["steps"],
+            plan_id=self.current_plan.plan_id,
         )
         model_role_router = getattr(self, "model_role_router", None)
         if model_role_router is not None:
@@ -394,7 +399,8 @@ class Executor:
             if scratchpad is not None else 0
         )
         retry_count = getattr(self, "_retry_count", 0)
-        status, response = self.response_composer.terminal(
+        response_composer = getattr(self, "response_composer", ResponseComposer())
+        status, response = response_composer.terminal(
             response=response,
             cancelled=bool(control.get("cancel")),
             terminal_error=self.terminal_error,
@@ -465,6 +471,7 @@ class Executor:
         if self.current_agent_task_id:
             self.dialogue_state.update_task(
                 self.current_agent_task_id, plan=outcome.plan.to_dict()["steps"],
+                plan_id=outcome.plan.plan_id,
                 retry_count=sum(step.attempts - 1 for step in outcome.plan.steps),
                 verification_status=outcome.status,
             )
