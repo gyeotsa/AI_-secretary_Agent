@@ -7,6 +7,28 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-08-01 P3 원자적 Coding Transaction 1차
+
+- 기존 `filesystem_write_file`은 코딩 모델의 전체 파일 출력을 즉시 덮어써 여러 파일
+  계획, 사용자 변경 충돌, 검증 실패 롤백과 최종 diff 검토가 없었다.
+- `core/coding_agent.py`에 저장소 단위 Coding Transaction을 추가했다. README,
+  의존성 파일, 파일 구조, Git 브랜치·status를 분석하고 `.git/.venv/node_modules/
+  build/dist/IDE cache`를 제외한다.
+- `FileEdit`는 상대 경로, 정확히 한 번 존재하는 old/new text, 선택적 변경 전 SHA-256을
+  사용한다. Workspace escape, 전체 재생성용 빈 old_text, 다중 일치, 사용자 변경
+  충돌을 모두 적용 전에 차단한다.
+- UTF-8, UTF-8 BOM, CP949를 판별해 보존하고 임시 파일 fsync 후 `os.replace`로
+  적용한다. Python 파일은 기본 `py_compile`, 그 밖에는 안전한 인자 배열 검증 명령을
+  지원하며 실패하면 모든 변경 파일을 원본 bytes로 롤백한다.
+- `plugins/coding.py`가 `coding_analyze_repository`, `coding_apply_patch`를 Registry에
+  등록한다. 분석 snapshot, unified diff hash, 검증 출력, 변경 파일을 Evidence와
+  Artifact로 반환한다.
+- 코드 커밋: `dd9b8f0` (`[Feat] P3 원자적 Coding Transaction 기반 구축`)
+- 검증: 전체 `204 passed, 4 deselected`.
+- 다음 해야 할 일: P3 2차로 ProjectIndexer의 심볼/파일 검색을 CodingAgent 분석에
+  연결하고 구조화 변경 계획·영향 범위를 만든다. 이어서 Python/JS 등 언어별 formatter,
+  lint, type check, 관련 테스트 자동 선택과 실패 로그 기반 재수정 루프를 구현한다.
+
 ## 2026-08-01 P2 의미 기반 Capability Router 완료
 
 - `IntentSchema`/`IntentResolution`에 `freshness`와 `requires_sources`를 추가했다.

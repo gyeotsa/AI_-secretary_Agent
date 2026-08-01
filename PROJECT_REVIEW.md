@@ -101,6 +101,13 @@ P2 마지막 단계에서 Intent freshness/source 계약과 일반화된 시간 
 웹 검색으로 라우팅됩니다. 실제 사용자형 발화를 JSON 데이터셋으로 분리했으며 전체
 기준선은 `198 passed, 4 deselected`입니다. P2 Capability Router는 완료입니다.
 
+P3 첫 구현으로 저장소 분석과 원자적 최소 patch를 담당하는 Coding Transaction
+엔진을 추가했습니다. 전체 파일 생성 응답을 즉시 덮어쓰지 않고 exact replacement와
+변경 전 SHA-256을 요구하며, 다중 파일 적용 후 검증 실패 시 원본 bytes로 롤백합니다.
+Coding Plugin은 저장소 snapshot과 변경 diff·검증 결과를 typed Evidence/Artifact로
+반환합니다. 현재 기준선은 `204 passed, 4 deselected`이며 계획 생성·심볼 영향 분석·
+언어별 검증 자동 선택·실패 재수정 루프는 P3 후속 범위입니다.
+
 ## 판정
 
 기존 문서의 “Level 2 완료” 표기는 실제 동작 검증보다 앞서 있었습니다. 이번 검토에서 1–7단계의 핵심 연결 오류를 수정했고 8단계 플러그인과 Chromium 종단 검증, 9단계 RAG, 10단계 역할 기반 하이브리드 LLM 라우팅까지 구현했습니다. 실제 Anthropic 성공 경로 및 GUI·하드웨어 연동은 별도 실환경 검증이 남아 있습니다.
