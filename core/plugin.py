@@ -53,11 +53,14 @@ class ToolSchema:
                 self.side_effect = "read"
         if not self.output_schema:
             self.output_schema = {
-                "oneOf": [
-                    {"type": "string"}, {"type": "array"},
-                    {"type": "object"}, {"type": "number"},
-                    {"type": "boolean"}, {"type": "null"},
-                ]
+                "type": "object",
+                "required": ["status", "raw_output", "evidence", "artifacts"],
+                "properties": {
+                    "status": {"type": "string"},
+                    "raw_output": {"type": "string"},
+                    "evidence": {"type": "array"},
+                    "artifacts": {"type": "array"},
+                },
             }
 
 
@@ -279,7 +282,12 @@ class PluginRegistry:
         expected = {"query": "read", "execute": "execute", "change": "change", "external_send": "external_send"}.get(request_type, request_type)
         if request_type and expected != contract.side_effect:
             errors.append(f"요청 종류({request_type})와 도구 부작용({contract.side_effect})이 다릅니다.")
-        return errors + self._validate_instance(tool_input, contract.input_schema, "입력")
+        missing = [name for name in contract.input_schema.get("required", [])
+                   if tool_input.get(name) in (None, "")]
+        errors.extend(f"필수 입력이 없습니다: {name}" for name in missing)
+        schema_errors = self._validate_instance(tool_input, contract.input_schema, "입력")
+        errors.extend(error for error in schema_errors if "is a required property" not in error)
+        return errors
 
     def validate_contracts(self) -> Dict[str, List[str]]:
         issues: Dict[str, List[str]] = {}
@@ -327,6 +335,12 @@ class PluginRegistry:
                                 raise
                             continue
                     output = result.to_dict() if isinstance(result, ToolRunResult) else result
+                    if (tool.output_schema.get("required") == ["status", "raw_output", "evidence", "artifacts"]
+                            and not isinstance(result, ToolRunResult)):
+                        output = {
+                            "status": "unverified", "raw_output": str(result),
+                            "evidence": [], "artifacts": [],
+                        }
                     output_errors = self._validate_instance(output, tool.output_schema, "출력")
                     if output_errors: return ToolRunResult.failed(tool_name=tool_name, error="; ".join(output_errors), duration_ms=(time.perf_counter()-started)*1000)
                     return result
