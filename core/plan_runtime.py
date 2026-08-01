@@ -208,10 +208,11 @@ class PlanCoordinator:
     """Runs ready DAG nodes concurrently and owns recovery/replanning policy."""
 
     def __init__(self, store: Optional[PlanExecutionStore] = None, max_parallel: int = 4,
-                 duplicate_failure_limit: int = 2):
+                 duplicate_failure_limit: int = 2, max_replans: int = 2):
         self.store = store or PlanExecutionStore()
         self.max_parallel = max(1, max_parallel)
         self.duplicate_failure_limit = max(1, duplicate_failure_limit)
+        self.max_replans = max(0, max_replans)
 
     def run(
         self, plan: PlanDAG,
@@ -221,6 +222,7 @@ class PlanCoordinator:
         replan: Optional[Callable[[PlanDAG, PlanStep, ToolRunResult], Optional[PlanDAG]]] = None,
     ) -> PlanRunResult:
         results: Dict[str, ToolRunResult] = {}
+        replan_count = 0
         self.store.save_plan(plan)
         while True:
             ready = plan.ready_steps()
@@ -247,9 +249,11 @@ class PlanCoordinator:
                     step = futures[future]
                     result = future.result()
                     results[step.id] = result
-                    if step.status == StepStatus.FAILED and replan is not None:
+                    if (step.status == StepStatus.FAILED and replan is not None
+                            and replan_count < self.max_replans):
                         replacement = replan(plan, step, result)
                         if replacement is not None:
+                            replan_count += 1
                             replacement.revision = plan.revision + 1
                             replacement.plan_id = plan.plan_id
                             replacement.validate()

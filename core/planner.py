@@ -228,6 +228,31 @@ __TOOLS_TEXT__
             ))
         return PlanDAG(goal=goal, steps=steps)
 
+    def replan_from_observation(
+        self, current: PlanDAG, failed_step: PlanStep, observation: str,
+        context: str = "", allowed_tool_names: List[str] | None = None,
+    ) -> PlanDAG:
+        """Create a new revision grounded in the concrete failed observation."""
+        replan_context = (
+            f"{context}\n\n실패 단계: {failed_step.id} - {failed_step.description}\n"
+            f"실제 관찰 결과: {observation[:2000]}\n"
+            "같은 실패를 반복하지 말고 완료된 단계는 다시 계획하지 마세요."
+        )
+        replacement = self.build_plan_dag(current.goal, replan_context, allowed_tool_names)
+        completed = [step for step in current.steps if step.status.value == "completed"]
+        completed_descriptions = {step.description for step in completed}
+        candidates = [step for step in replacement.steps if step.description not in completed_descriptions]
+        revision = current.revision + 1
+        rename = {step.id: f"r{revision}_{step.id}" for step in candidates}
+        for step in candidates:
+            original_id = step.id
+            step.id = rename[original_id]
+            step.dependencies = [rename.get(dep, dep) for dep in step.dependencies]
+        return PlanDAG(
+            goal=current.goal, steps=completed + candidates,
+            plan_id=current.plan_id, revision=revision,
+        )
+
 
 # Singleton instance
 _planner = None

@@ -454,6 +454,11 @@ class Executor:
                 verification=verification, duration_ms=candidate.duration_ms,
             )
 
+        if replan_callback is None:
+            replan_callback = lambda current, failed, result: self.planner.replan_from_observation(
+                current, failed, result.raw_output, self.build_context(),
+                self._allowed_tools_for_goal(current.goal),
+            )
         outcome = self.plan_coordinator.run(
             plan, execute, verify, approve=approval_callback, replan=replan_callback,
         )
@@ -1217,10 +1222,13 @@ class Executor:
             tool_name=tool_name,
             tool_input=tool_input,
             last_result=last_result,
-            retry_count=self._retry_count
+            retry_count=self._retry_count,
+            verify_callback=lambda candidate: self.build_tool_run_result(
+                task, tool_name, tool_input, candidate
+            ),
         )
 
-        self._retry_count += 1
+        self._retry_count = recovery_result.retry_count
         
         if recovery_result.success:
             print(f"[Executor] 복구 성공! {recovery_result.message}")

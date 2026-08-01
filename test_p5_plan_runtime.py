@@ -5,6 +5,8 @@ import pytest
 from core.plan_runtime import (
     PlanCoordinator, PlanDAG, PlanExecutionStore, PlanStep, StepStatus,
 )
+from core.recovery import RecoveryManager
+from core.scratchpad import Task
 from core.tool_result import Artifact, Evidence, ToolRunResult
 
 
@@ -127,3 +129,29 @@ def test_observation_can_replace_plan_with_new_revision(tmp_path):
     assert outcome.status == "completed"
     assert outcome.plan.revision == 2
     assert outcome.plan.steps[0].id == "new"
+
+
+def test_legacy_recovery_uses_budget_signature_and_same_verifier(tmp_path):
+    manager = RecoveryManager.__new__(RecoveryManager)
+    manager.max_retries = 5
+    manager.coordinator = PlanCoordinator(
+        PlanExecutionStore(str(tmp_path / "legacy.db")), duplicate_failure_limit=2
+    )
+
+    class FailingTools:
+        calls = 0
+
+        def execute_tool(self, name, value):
+            self.calls += 1
+            return ToolRunResult.failed(tool_name=name, error="Timeout 999")
+
+    manager.tool_executor = FailingTools()
+    verified = []
+    result = manager.recover(
+        Task("task", "demo"), "demo", {}, "initial", 0,
+        verify_callback=lambda candidate: verified.append(candidate) or candidate,
+    )
+    assert result.success is False
+    assert result.repeated_failure_blocked is True
+    assert result.retry_count == 2
+    assert len(verified) == 2
