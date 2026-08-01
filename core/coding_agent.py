@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 import difflib
 import json
 import os
@@ -53,6 +53,8 @@ class CodingTransactionResult:
     validation_output: str = ""
     error: str = ""
     rolled_back: bool = False
+    attempt_count: int = 1
+    review_issues: List[str] = field(default_factory=list)
 
     @property
     def succeeded(self) -> bool:
@@ -69,6 +71,7 @@ class CodingAgent:
         "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
         "cargo.toml", "go.mod",
     }
+    MAX_PATCH_LINES = 2000
 
     def __init__(self, root: str | Path):
         self.root = Path(root).expanduser().resolve()
@@ -147,6 +150,7 @@ class CodingAgent:
         originals: dict[Path, bytes] = {}
         updates: dict[Path, bytes] = {}
         diffs = []
+        applied = False
         try:
             for edit in edits:
                 target = self._resolve(edit.path)
@@ -173,14 +177,20 @@ class CodingAgent:
                     fromfile=f"a/{edit.path}", tofile=f"b/{edit.path}",
                 ))
 
+            diff_text = "".join(diffs)
+            review_issues = self.review_diff(diff_text)
+            if review_issues:
+                raise ValueError("최종 diff 자체 검토 실패: " + "; ".join(review_issues))
+
             for target, updated in updates.items():
                 self._atomic_write(target, updated)
+            applied = True
 
             commands = validation_commands or self._default_validation_commands(list(updates))
             validation_output = self._run_validations(commands)
             return CodingTransactionResult(
                 "completed", [str(path.relative_to(self.root)) for path in updates],
-                "".join(diffs), validation_output,
+                diff_text, validation_output, review_issues=review_issues,
             )
         except Exception as exc:
             rollback_error = ""
@@ -190,8 +200,41 @@ class CodingAgent:
                 except Exception as rollback_exc:
                     rollback_error = f"; 롤백 오류: {rollback_exc}"
             return CodingTransactionResult(
-                "failed", error=f"{exc}{rollback_error}", rolled_back=bool(originals),
+                "failed", error=f"{exc}{rollback_error}", rolled_back=applied,
             )
+
+    def apply_with_recovery(
+        self,
+        initial_edits: List[FileEdit],
+        repair_callback: Callable[[CodingTransactionResult, int], Optional[List[FileEdit]]],
+        validation_commands: Optional[List[List[str]]] = None,
+        max_attempts: int = 3,
+    ) -> CodingTransactionResult:
+        """Retry only with a caller-proposed new minimal patch after full rollback."""
+        edits = initial_edits
+        last_result = CodingTransactionResult("failed", error="실행되지 않았습니다.")
+        for attempt in range(1, max(1, min(max_attempts, 5)) + 1):
+            last_result = self.apply_transaction(edits, validation_commands)
+            last_result.attempt_count = attempt
+            if last_result.succeeded:
+                return last_result
+            replacement = repair_callback(last_result, attempt)
+            if not replacement:
+                return last_result
+            edits = replacement
+        return last_result
+
+    def review_diff(self, diff_text: str) -> List[str]:
+        issues = []
+        if not diff_text.strip():
+            issues.append("변경 diff가 비어 있습니다.")
+        added_lines = [line for line in diff_text.splitlines() if line.startswith("+") and not line.startswith("+++")]
+        removed_lines = [line for line in diff_text.splitlines() if line.startswith("-") and not line.startswith("---")]
+        if len(added_lines) + len(removed_lines) > self.MAX_PATCH_LINES:
+            issues.append(f"최소 patch 한도({self.MAX_PATCH_LINES}줄)를 초과했습니다.")
+        if any(marker in line for line in added_lines for marker in ("<<<<<<<", "=======", ">>>>>>>")):
+            issues.append("병합 충돌 표식이 추가되었습니다.")
+        return issues
 
     @staticmethod
     def _decode(raw: bytes) -> tuple[str, str]:
@@ -245,6 +288,43 @@ class CodingAgent:
                             if Path(path).suffix.casefold() in {".js", ".mjs", ".cjs"}]
         if javascript_files and shutil.which("node"):
             commands.extend([["node", "--check", path] for path in javascript_files])
+        commands.extend(self._manifest_validation_commands(relative_paths))
+        return commands
+
+    def _manifest_validation_commands(self, relative_paths: List[str]) -> List[List[str]]:
+        commands: List[List[str]] = []
+        pyproject = self.root / "pyproject.toml"
+        pyproject_text = pyproject.read_text(encoding="utf-8", errors="replace") if pyproject.exists() else ""
+        python_targets = [str(self._resolve(path)) for path in relative_paths if Path(path).suffix == ".py"]
+        if python_targets and "[tool.ruff" in pyproject_text:
+            try:
+                import ruff  # noqa: F401
+                commands.append([sys.executable, "-m", "ruff", "check", *python_targets])
+                if "[tool.ruff.format" in pyproject_text:
+                    commands.append([sys.executable, "-m", "ruff", "format", "--check", *python_targets])
+            except ImportError:
+                pass
+        if python_targets and ((self.root / "mypy.ini").exists() or "[tool.mypy]" in pyproject_text):
+            try:
+                import mypy  # noqa: F401
+                commands.append([sys.executable, "-m", "mypy", *python_targets])
+            except ImportError:
+                pass
+
+        package_json = self.root / "package.json"
+        npm = shutil.which("npm")
+        if package_json.exists() and npm and any(Path(path).suffix in {".js", ".mjs", ".cjs", ".ts", ".tsx"} for path in relative_paths):
+            try:
+                scripts = json.loads(package_json.read_text(encoding="utf-8")).get("scripts", {})
+            except (json.JSONDecodeError, OSError):
+                scripts = {}
+            for script in ("format:check", "lint", "typecheck", "test", "build"):
+                if script in scripts:
+                    commands.append([npm, "run", "--if-present", script])
+        if (self.root / "Cargo.toml").exists() and shutil.which("cargo"):
+            commands.extend([["cargo", "check"], ["cargo", "test", "--no-fail-fast"]])
+        if (self.root / "go.mod").exists() and shutil.which("go"):
+            commands.append(["go", "test", "./..."])
         return commands
 
     def _run_validations(self, commands: List[List[str]]) -> str:

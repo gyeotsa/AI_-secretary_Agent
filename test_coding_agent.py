@@ -142,3 +142,54 @@ def test_default_validation_runs_related_test_and_rolls_back_on_failure(tmp_path
     assert result.rolled_back
     assert "1 failed" in result.error
     assert "return a + b" in source.read_text(encoding="utf-8")
+
+
+def test_manifest_validation_detects_javascript_quality_pipeline(tmp_path, monkeypatch):
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"lint":"eslint .","typecheck":"tsc --noEmit","test":"vitest","build":"vite build"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "app.js").write_text("const value = 1;\n", encoding="utf-8")
+    monkeypatch.setattr("core.coding_agent.shutil.which", lambda name: f"C:/tools/{name}.cmd")
+
+    commands = CodingAgent(tmp_path)._validation_commands_for_relative_paths(["app.js"])
+    flattened = [" ".join(command) for command in commands]
+
+    assert any("node --check" in command for command in flattened)
+    assert any("run --if-present lint" in command for command in flattened)
+    assert any("run --if-present typecheck" in command for command in flattened)
+    assert any("run --if-present test" in command for command in flattened)
+    assert any("run --if-present build" in command for command in flattened)
+
+
+def test_diff_self_review_rejects_conflict_markers_without_writing(tmp_path):
+    target = tmp_path / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+
+    result = CodingAgent(tmp_path).apply_transaction([
+        FileEdit("app.py", "value = 1", "<<<<<<< ours\nvalue = 2\n=======\nvalue = 3\n>>>>>>> theirs"),
+    ])
+
+    assert not result.succeeded
+    assert "병합 충돌 표식" in result.error
+    assert not result.rolled_back
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_failed_validation_can_repair_and_reverify_with_bounded_retry(tmp_path):
+    target = tmp_path / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    failures = []
+
+    def repair(result, attempt):
+        failures.append((attempt, result.error))
+        return [FileEdit("app.py", "value = 1", "value = 2")]
+
+    result = CodingAgent(tmp_path).apply_with_recovery(
+        [FileEdit("app.py", "value = 1", "value =")], repair, max_attempts=2,
+    )
+
+    assert result.succeeded
+    assert result.attempt_count == 2
+    assert failures and "py_compile" in failures[0][1]
+    assert target.read_text(encoding="utf-8") == "value = 2\n"
