@@ -1,26 +1,24 @@
-"""
-Project Indexer for Jarvis - Claude Code 수준의 프로젝트 인덱싱
-- 프로젝트 파일 트리 구조 관리
-- 파일 내용 인덱싱 (텍스트 추출, Python AST 분석)
-- 파일/심볼 검색 기능
-- Workspace와 연동
-"""
+"""Incremental, ignore-aware project index used by workspace intelligence."""
 
-import os
+from __future__ import annotations
+
 import ast
+import fnmatch
 import json
+import os
 import sqlite3
-from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass, field
-from datetime import datetime
 import threading
-from core.workspace import get_workspace_manager
+import time
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import Any, Dict, Iterable, List, Optional
+
+from core.workspace import DEFAULT_EXCLUDED_DIRS, get_workspace_manager
 
 
 @dataclass
 class FileInfo:
-    """파일 정보 데이터 클래스"""
     path: str
     name: str
     extension: str
@@ -33,325 +31,324 @@ class FileInfo:
 
 @dataclass
 class SymbolInfo:
-    """코드 심볼 정보 (함수, 클래스, 변수)"""
     name: str
-    type: str  # "function", "class", "variable", "method"
+    type: str
     line: int
     end_line: int
     file_path: str
     docstring: Optional[str] = None
 
 
+class IgnoreRules:
+    """Small gitignore-compatible matcher with negation and nested rule files."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.rules: List[tuple[str, bool, bool]] = []
+        for ignore_file in root.rglob(".gitignore"):
+            if any(part in DEFAULT_EXCLUDED_DIRS for part in ignore_file.relative_to(root).parts[:-1]):
+                continue
+            base = ignore_file.parent.relative_to(root).as_posix()
+            try:
+                lines = ignore_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for raw in lines:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                negate = line.startswith("!")
+                if negate:
+                    line = line[1:]
+                directory_only = line.endswith("/")
+                line = line.rstrip("/").lstrip("/")
+                pattern = f"{base}/{line}" if base not in ("", ".") else line
+                self.rules.append((pattern, negate, directory_only))
+
+    def ignored(self, path: Path, is_dir: bool = False) -> bool:
+        rel = path.relative_to(self.root).as_posix()
+        if any(part in DEFAULT_EXCLUDED_DIRS for part in PurePosixPath(rel).parts):
+            return True
+        ignored = False
+        for pattern, negate, directory_only in self.rules:
+            if directory_only and not (is_dir or rel.startswith(pattern.rstrip("/") + "/")):
+                continue
+            matched = PurePosixPath(rel).match(pattern)
+            if not matched and "/" not in pattern:
+                matched = any(fnmatch.fnmatch(part, pattern) for part in PurePosixPath(rel).parts)
+            if matched or rel.startswith(pattern.rstrip("/") + "/"):
+                ignored = not negate
+        return ignored
+
+
 class ProjectIndexer:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or "data/project_index.db"
-        Path(self.db_path).parent.mkdir(exist_ok=True)
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self.project_root: Optional[str] = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._ignore: Optional[IgnoreRules] = None
         self._init_db()
-        # Workspace Manager와 연동
-        self.workspace_manager = get_workspace_manager()
-        if self.workspace_manager.current_workspace:
-            self.set_project_root(self.workspace_manager.current_workspace)
+        current = get_workspace_manager().current_workspace
+        if current:
+            self.set_project_root(current)
 
-    def _init_db(self):
-        """데이터베이스 초기화"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                path TEXT UNIQUE NOT NULL,
-                name TEXT NOT NULL,
-                extension TEXT,
-                size INTEGER,
-                modified_at REAL,
-                is_text INTEGER,
-                content_preview TEXT,
-                last_indexed_at REAL
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS symbols (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_id INTEGER,
-                name TEXT NOT NULL,
-                type TEXT NOT NULL,
-                line INTEGER,
-                end_line INTEGER,
-                docstring TEXT,
-                FOREIGN KEY(file_id) REFERENCES files(id)
-            )
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)")
-        conn.commit()
-        conn.close()
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.db_path, timeout=10)
+        connection.execute("PRAGMA foreign_keys=ON")
+        return connection
+
+    def _init_db(self) -> None:
+        with self._connect() as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL,
+                project_root TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, extension TEXT,
+                size INTEGER, modified_at REAL, is_text INTEGER, content_preview TEXT,
+                last_indexed_at REAL)""")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(files)")}
+            if "project_root" not in columns:
+                conn.execute("ALTER TABLE files ADD COLUMN project_root TEXT NOT NULL DEFAULT ''")
+            conn.execute("""CREATE TABLE IF NOT EXISTS symbols (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER, name TEXT NOT NULL,
+                type TEXT NOT NULL, line INTEGER, end_line INTEGER, docstring TEXT,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE)""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_files_root ON files(project_root)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)")
 
     def set_project_root(self, path: str) -> bool:
-        """프로젝트 루트 경로 설정"""
-        if os.path.isdir(path):
-            self.project_root = os.path.abspath(path)
-            return True
-        return False
-
-    def _is_text_file(self, path: str) -> bool:
-        """텍스트 파일인지 확인"""
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                f.read(1024)
-            return True
-        except UnicodeDecodeError:
+        root = Path(path).resolve()
+        if not root.is_dir():
             return False
-        except Exception:
-            return False
+        self.project_root = str(root)
+        self._ignore = IgnoreRules(root)
+        return True
 
-    def _extract_text_preview(self, path: str, max_length: int = 500) -> str:
-        """파일 내용 미리보기 추출"""
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                content = f.read(max_length + 100)
-                if len(content) > max_length:
-                    content = content[:max_length] + "..."
-                return content
-        except Exception:
-            return ""
+    def _root(self) -> Optional[Path]:
+        return Path(self.project_root) if self.project_root else None
 
-    def _extract_python_symbols(self, path: str) -> List[SymbolInfo]:
-        """Python 파일에서 심볼 추출 (AST 분석)"""
-        symbols = []
+    def _iter_files(self) -> Iterable[Path]:
+        root = self._root()
+        if root is None:
+            return
+        rules = self._ignore or IgnoreRules(root)
+        for current, dirs, files in os.walk(root):
+            base = Path(current)
+            dirs[:] = [d for d in dirs if not rules.ignored(base / d, True)]
+            for name in files:
+                candidate = base / name
+                if not rules.ignored(candidate, False):
+                    yield candidate
+
+    @staticmethod
+    def _read_text(path: Path, limit: Optional[int] = None) -> Optional[str]:
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                content = f.read()
+            data = path.read_bytes()
+            if b"\0" in data[:4096]:
+                return None
+            text = data.decode("utf-8")
+            return text if limit is None else text[:limit]
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    @staticmethod
+    def _extract_python_symbols(path: Path, content: str) -> List[SymbolInfo]:
+        result: List[SymbolInfo] = []
+        try:
             tree = ast.parse(content)
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    docstring = ast.get_docstring(node)
-                    symbols.append(SymbolInfo(
-                        name=node.name,
-                        type="function",
-                        line=node.lineno,
-                        end_line=getattr(node, 'end_lineno', node.lineno),
-                        file_path=path,
-                        docstring=docstring
-                    ))
-                elif isinstance(node, ast.ClassDef):
-                    docstring = ast.get_docstring(node)
-                    symbols.append(SymbolInfo(
-                        name=node.name,
-                        type="class",
-                        line=node.lineno,
-                        end_line=getattr(node, 'end_lineno', node.lineno),
-                        file_path=path,
-                        docstring=docstring
-                    ))
-                    for item in node.body:
-                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            method_docstring = ast.get_docstring(item)
-                            symbols.append(SymbolInfo(
-                                name=item.name,
-                                type="method",
-                                line=item.lineno,
-                                end_line=getattr(item, 'end_lineno', item.lineno),
-                                file_path=path,
-                                docstring=method_docstring
+        except (SyntaxError, ValueError):
+            return result
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                kind = "class" if isinstance(node, ast.ClassDef) else "function"
+                result.append(SymbolInfo(
+                    node.name, kind, node.lineno, getattr(node, "end_lineno", node.lineno),
+                    str(path), ast.get_docstring(node),
+                ))
+                if isinstance(node, ast.ClassDef):
+                    for child in node.body:
+                        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            result.append(SymbolInfo(
+                                child.name, "method", child.lineno,
+                                getattr(child, "end_lineno", child.lineno), str(path),
+                                ast.get_docstring(child),
                             ))
-        except Exception:
-            pass
-        return symbols
+        return result
 
     def index_file(self, path: str) -> Optional[int]:
-        """단일 파일 인덱싱"""
-        if not self.project_root or not os.path.isfile(path):
+        root = self._root()
+        candidate = Path(path).resolve()
+        if root is None or not candidate.is_file() or not candidate.is_relative_to(root):
             return None
-        if not path.startswith(self.project_root):
+        if (self._ignore or IgnoreRules(root)).ignored(candidate):
             return None
-
         try:
-            stat = os.stat(path)
-            name = os.path.basename(path)
-            ext = os.path.splitext(name)[1].lower()
-            is_text = self._is_text_file(path)
-            content_preview = self._extract_text_preview(path) if is_text else ""
-
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT OR REPLACE INTO files 
-                (path, name, extension, size, modified_at, is_text, content_preview, last_indexed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                path, name, ext, stat.st_size, stat.st_mtime,
-                1 if is_text else 0, content_preview, datetime.now().timestamp()
-            ))
-            file_id = cursor.lastrowid or cursor.execute("SELECT id FROM files WHERE path=?", (path,)).fetchone()[0]
-            cursor.execute("DELETE FROM symbols WHERE file_id=?", (file_id,))
-
-            if ext == ".py":
-                symbols = self._extract_python_symbols(path)
-                for sym in symbols:
-                    cursor.execute("""
-                        INSERT INTO symbols (file_id, name, type, line, end_line, docstring)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (
-                        file_id, sym.name, sym.type, sym.line, sym.end_line, sym.docstring
-                    ))
-            conn.commit()
-            conn.close()
-            return file_id
-        except Exception:
+            stat = candidate.stat()
+            content = self._read_text(candidate)
+            preview = (content[:500] + "...") if content is not None and len(content) > 500 else (content or "")
+            with self._lock, self._connect() as conn:
+                existing = conn.execute("SELECT id FROM files WHERE path=?", (str(candidate),)).fetchone()
+                if existing:
+                    file_id = existing[0]
+                    conn.execute("""UPDATE files SET project_root=?, name=?, extension=?, size=?,
+                        modified_at=?, is_text=?, content_preview=?, last_indexed_at=? WHERE id=?""",
+                        (str(root), candidate.name, candidate.suffix.lower(), stat.st_size, stat.st_mtime,
+                         int(content is not None), preview, time.time(), file_id))
+                else:
+                    cursor = conn.execute("""INSERT INTO files
+                        (path, project_root, name, extension, size, modified_at, is_text,
+                         content_preview, last_indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (str(candidate), str(root), candidate.name, candidate.suffix.lower(), stat.st_size,
+                         stat.st_mtime, int(content is not None), preview, time.time()))
+                    file_id = int(cursor.lastrowid)
+                conn.execute("DELETE FROM symbols WHERE file_id=?", (file_id,))
+                if candidate.suffix.lower() == ".py" and content is not None:
+                    conn.executemany(
+                        "INSERT INTO symbols (file_id,name,type,line,end_line,docstring) VALUES (?,?,?,?,?,?)",
+                        [(file_id, s.name, s.type, s.line, s.end_line, s.docstring)
+                         for s in self._extract_python_symbols(candidate, content)],
+                    )
+                return file_id
+        except OSError:
             return None
+
+    def sync_changes(self) -> Dict[str, int]:
+        """Index new/changed files and remove stale or newly ignored rows."""
+        root = self._root()
+        if root is None:
+            return {"added": 0, "updated": 0, "deleted": 0, "unchanged": 0}
+        self._ignore = IgnoreRules(root)
+        current = {str(path): path for path in self._iter_files()}
+        with self._lock, self._connect() as conn:
+            indexed = {
+                row[0]: (row[1], row[2]) for row in conn.execute(
+                    "SELECT path,size,modified_at FROM files WHERE project_root=?", (str(root),)
+                )
+            }
+        stats = {"added": 0, "updated": 0, "deleted": 0, "unchanged": 0}
+        for path_string, path in current.items():
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            old = indexed.get(path_string)
+            if old and old[0] == stat.st_size and old[1] == stat.st_mtime:
+                stats["unchanged"] += 1
+                continue
+            if self.index_file(path_string):
+                stats["updated" if old else "added"] += 1
+        stale = set(indexed) - set(current)
+        if stale:
+            with self._lock, self._connect() as conn:
+                placeholders = ",".join("?" for _ in stale)
+                conn.execute(f"DELETE FROM files WHERE path IN ({placeholders})", tuple(stale))
+            stats["deleted"] = len(stale)
+        return stats
 
     def index_project(self, exclude_dirs: Optional[List[str]] = None) -> int:
-        """프로젝트 전체 인덱싱"""
-        if not self.project_root:
-            return 0
-        exclude = exclude_dirs or ["__pycache__", ".git", "venv", "node_modules", ".venv"]
-        count = 0
-        for root, dirs, files in os.walk(self.project_root):
-            dirs[:] = [d for d in dirs if d not in exclude]
-            for file in files:
-                file_path = os.path.join(root, file)
-                if self.index_file(file_path):
-                    count += 1
-        return count
+        # exclude_dirs remains accepted for callers; the shared ignore contract is authoritative.
+        result = self.sync_changes()
+        return result["added"] + result["updated"] + result["unchanged"]
 
-    def get_file_tree(self, root_path: Optional[str] = None) -> Dict[str, Any]:
-        """파일 트리 구조 반환"""
-        base_path = root_path or self.project_root or os.getcwd()
-        tree = {"name": os.path.basename(base_path), "path": base_path, "type": "directory", "children": []}
-        try:
-            for item in os.listdir(base_path):
-                item_path = os.path.join(base_path, item)
-                if os.path.isdir(item_path):
-                    if item not in ["__pycache__", ".git", "venv", "node_modules", ".venv"]:
-                        tree["children"].append(self.get_file_tree(item_path))
-                else:
-                    tree["children"].append({"name": item, "path": item_path, "type": "file"})
-        except Exception:
-            pass
-        tree["children"].sort(key=lambda x: (x["type"] != "directory", x["name"]))
-        return tree
+    def detect_project_profile(self) -> Dict[str, Any]:
+        root = self._root()
+        if root is None:
+            return {"languages": [], "frameworks": [], "test_commands": []}
+        extensions = Counter(path.suffix.lower() for path in self._iter_files())
+        language_map = {
+            ".py": "Python", ".js": "JavaScript", ".ts": "TypeScript", ".tsx": "TypeScript",
+            ".java": "Java", ".kt": "Kotlin", ".rs": "Rust", ".go": "Go", ".cs": "C#",
+            ".cpp": "C++", ".c": "C", ".swift": "Swift",
+        }
+        languages = [language_map[ext] for ext, _ in extensions.most_common() if ext in language_map]
+        frameworks: List[str] = []
+        commands: List[str] = []
+        if (root / "pyproject.toml").exists() or (root / "requirements.txt").exists():
+            text = " ".join(
+                self._read_text(path) or "" for path in (root / "pyproject.toml", root / "requirements.txt")
+                if path.exists()
+            ).lower()
+            for token, label in (("django", "Django"), ("fastapi", "FastAPI"), ("flask", "Flask"), ("pytest", "pytest")):
+                if token in text:
+                    frameworks.append(label)
+            commands.append("python -m pytest")
+        package = root / "package.json"
+        if package.exists():
+            try:
+                manifest = json.loads(package.read_text(encoding="utf-8"))
+                deps = {**manifest.get("dependencies", {}), **manifest.get("devDependencies", {})}
+                for token, label in (("react", "React"), ("next", "Next.js"), ("vue", "Vue"), ("svelte", "Svelte")):
+                    if token in deps:
+                        frameworks.append(label)
+                scripts = manifest.get("scripts", {})
+                for name in ("test", "lint", "typecheck", "build"):
+                    if name in scripts:
+                        commands.append(f"npm run {name}")
+            except (OSError, ValueError, TypeError):
+                pass
+        if (root / "Cargo.toml").exists():
+            commands.extend(["cargo test", "cargo check"])
+        if (root / "go.mod").exists():
+            commands.append("go test ./...")
+        return {"languages": languages, "frameworks": sorted(set(frameworks)), "test_commands": commands}
 
     def search_files(self, query: str, search_type: str = "name") -> List[Dict[str, Any]]:
-        """
-        파일 검색
-        search_type: "name", "content", "extension"
-        """
-        if not self.project_root:
+        if not self.project_root or search_type not in {"name", "content", "extension"}:
             return []
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        results = []
-        try:
-            if search_type == "name":
-                cursor.execute("""
-                    SELECT path, name, extension, size, modified_at FROM files
-                    WHERE path LIKE ? AND name LIKE ?
-                """, (f"{self.project_root}%", f"%{query}%"))
-            elif search_type == "extension":
-                cursor.execute("""
-                    SELECT path, name, extension, size, modified_at FROM files
-                    WHERE path LIKE ? AND extension LIKE ?
-                """, (f"{self.project_root}%", f"%{query}%"))
-            elif search_type == "content":
-                cursor.execute("""
-                    SELECT path, name, extension, size, modified_at, content_preview FROM files
-                    WHERE path LIKE ? AND content_preview LIKE ?
-                """, (f"{self.project_root}%", f"%{query}%"))
-            else:
-                return []
-            rows = cursor.fetchall()
-            for row in rows:
-                results.append({
-                    "path": row[0],
-                    "name": row[1],
-                    "extension": row[2],
-                    "size": row[3],
-                    "modified_at": datetime.fromtimestamp(row[4]).isoformat() if row[4] else "",
-                    "content_preview": row[5] if len(row) > 5 else ""
-                })
-        finally:
-            conn.close()
-        return results
+        column = {"name": "name", "content": "content_preview", "extension": "extension"}[search_type]
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT path,name,extension,size,modified_at,content_preview FROM files "
+                f"WHERE project_root=? AND {column} LIKE ?", (self.project_root, f"%{query}%")
+            ).fetchall()
+        return [{"path": r[0], "name": r[1], "extension": r[2], "size": r[3],
+                 "modified_at": r[4], "content_preview": r[5]} for r in rows]
 
     def search_symbols(self, query: str, symbol_type: Optional[str] = None) -> List[Dict[str, Any]]:
-        """심볼 검색 (함수, 클래스, 메서드)"""
         if not self.project_root:
             return []
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        results = []
-        try:
-            if symbol_type:
-                cursor.execute("""
-                    SELECT s.name, s.type, s.line, s.end_line, s.docstring, f.path 
-                    FROM symbols s JOIN files f ON s.file_id = f.id
-                    WHERE f.path LIKE ? AND s.name LIKE ? AND s.type = ?
-                """, (f"{self.project_root}%", f"%{query}%", symbol_type))
-            else:
-                cursor.execute("""
-                    SELECT s.name, s.type, s.line, s.end_line, s.docstring, f.path 
-                    FROM symbols s JOIN files f ON s.file_id = f.id
-                    WHERE f.path LIKE ? AND s.name LIKE ?
-                """, (f"{self.project_root}%", f"%{query}%"))
-            rows = cursor.fetchall()
-            for row in rows:
-                results.append({
-                    "name": row[0],
-                    "type": row[1],
-                    "line": row[2],
-                    "end_line": row[3],
-                    "docstring": row[4],
-                    "file_path": row[5]
-                })
-        finally:
-            conn.close()
-        return results
+        sql = """SELECT s.name,s.type,s.line,s.end_line,s.docstring,f.path FROM symbols s
+                 JOIN files f ON s.file_id=f.id WHERE f.project_root=? AND s.name LIKE ?"""
+        args: List[Any] = [self.project_root, f"%{query}%"]
+        if symbol_type:
+            sql += " AND s.type=?"
+            args.append(symbol_type)
+        with self._connect() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        return [{"name": r[0], "type": r[1], "line": r[2], "end_line": r[3],
+                 "docstring": r[4], "file_path": r[5]} for r in rows]
 
     def get_file_info(self, path: str) -> Optional[FileInfo]:
-        """파일 정보 가져오기"""
-        if not self.project_root:
-            return None
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        with self._connect() as conn:
+            row = conn.execute("""SELECT path,name,extension,size,modified_at,is_text,content_preview
+                                  FROM files WHERE path=?""", (str(Path(path).resolve()),)).fetchone()
+            if not row:
+                return None
+            info = FileInfo(row[0], row[1], row[2], row[3], row[4], bool(row[5]), row[6])
+            symbols = conn.execute("""SELECT name,type,line,end_line,docstring FROM symbols
+                                      WHERE file_id=(SELECT id FROM files WHERE path=?)""", (row[0],)).fetchall()
+        info.symbols = [{"name": s[0], "type": s[1], "line": s[2], "end_line": s[3], "docstring": s[4]} for s in symbols]
+        return info
+
+    def get_file_tree(self, root_path: Optional[str] = None) -> Dict[str, Any]:
+        root = Path(root_path or self.project_root or os.getcwd()).resolve()
+        result = {"name": root.name, "path": str(root), "type": "directory", "children": []}
+        rules = self._ignore if self._root() == root else IgnoreRules(root)
         try:
-            cursor.execute("""
-                SELECT path, name, extension, size, modified_at, is_text, content_preview
-                FROM files WHERE path=?
-            """, (path,))
-            row = cursor.fetchone()
-            if row:
-                file_info = FileInfo(
-                    path=row[0],
-                    name=row[1],
-                    extension=row[2],
-                    size=row[3],
-                    modified_at=row[4],
-                    is_text=bool(row[5]),
-                    content_preview=row[6]
-                )
-                cursor.execute("""
-                    SELECT name, type, line, end_line, docstring FROM symbols WHERE file_id IN 
-                    (SELECT id FROM files WHERE path=?)
-                """, (path,))
-                symbols = cursor.fetchall()
-                for sym in symbols:
-                    file_info.symbols.append({
-                        "name": sym[0],
-                        "type": sym[1],
-                        "line": sym[2],
-                        "end_line": sym[3],
-                        "docstring": sym[4]
-                    })
-                return file_info
-        finally:
-            conn.close()
-        return None
+            entries = sorted(root.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except OSError:
+            return result
+        for item in entries:
+            if rules and rules.ignored(item, item.is_dir()):
+                continue
+            result["children"].append(
+                self.get_file_tree(str(item)) if item.is_dir()
+                else {"name": item.name, "path": str(item), "type": "file"}
+            )
+        return result
 
 
-# Singleton
 _project_indexer: Optional[ProjectIndexer] = None
+
 
 def get_project_indexer() -> ProjectIndexer:
     global _project_indexer
