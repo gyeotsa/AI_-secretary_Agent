@@ -70,9 +70,13 @@ class EpisodeMemoryManager:
                 session_id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 created_at REAL NOT NULL,
-                updated_at REAL NOT NULL
+                updated_at REAL NOT NULL,
+                workspace_namespace TEXT NOT NULL DEFAULT 'global'
             )
         """)
+        session_columns = {row[1] for row in cursor.execute("PRAGMA table_info(conversation_sessions)")}
+        if "workspace_namespace" not in session_columns:
+            cursor.execute("ALTER TABLE conversation_sessions ADD COLUMN workspace_namespace TEXT NOT NULL DEFAULT 'global'")
         cursor.execute("""
             INSERT OR IGNORE INTO conversation_sessions (session_id, title, created_at, updated_at)
             SELECT session_id, session_id, MIN(timestamp), MAX(timestamp)
@@ -86,8 +90,9 @@ class EpisodeMemoryManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT OR IGNORE INTO conversation_sessions VALUES (?, ?, ?, ?)",
-            (episode.session_id, episode.session_id, episode.timestamp, episode.timestamp),
+            "INSERT OR IGNORE INTO conversation_sessions (session_id,title,created_at,updated_at,workspace_namespace) VALUES (?, ?, ?, ?, ?)",
+            (episode.session_id, episode.session_id, episode.timestamp, episode.timestamp,
+             episode.metadata.get("workspace_namespace", "global")),
         )
         cursor.execute(
             "UPDATE conversation_sessions SET updated_at = ? WHERE session_id = ?",
@@ -190,17 +195,24 @@ class EpisodeMemoryManager:
             ))
         return episodes
         
-    def list_sessions(self) -> List[Dict[str, Any]]:
+    def list_sessions(self, workspace_namespace: Optional[str] = None) -> List[Dict[str, Any]]:
         """모든 세션 목록 가져오기"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("""
+        query = """
             SELECT s.session_id, s.title, s.created_at, s.updated_at, COUNT(e.id) as message_count
             FROM conversation_sessions s
             LEFT JOIN episodes e ON e.session_id = s.session_id
-            GROUP BY s.session_id, s.title, s.created_at, s.updated_at
+        """
+        args = []
+        if workspace_namespace is not None:
+            query += " WHERE s.workspace_namespace = ?"
+            args.append(workspace_namespace)
+        query += """
+            GROUP BY s.session_id, s.title, s.created_at, s.updated_at, s.workspace_namespace
             ORDER BY s.updated_at DESC
-        """)
+        """
+        cursor.execute(query, args)
         rows = cursor.fetchall()
         conn.close()
         
@@ -393,6 +405,10 @@ class SemanticMemoryManager:
 class ConversationMemory:
     def __init__(self, db_path: Optional[str] = None):
         self.episode_manager = EpisodeMemoryManager(db_path)
+        self.workspace_namespace = "global"
+
+    def set_namespace(self, namespace: str) -> None:
+        self.workspace_namespace = str(namespace or "global")
         
     def init_db(self):
         # episode_manager가 이미 초기화함
@@ -402,7 +418,8 @@ class ConversationMemory:
         episode = Episode(
             session_id=session_id,
             role=role,
-            content=content
+            content=content,
+            metadata={"workspace_namespace": self.workspace_namespace}
         )
         self.episode_manager.add_episode(episode)
         
@@ -411,14 +428,22 @@ class ConversationMemory:
         return [{"role": e.role, "content": e.content} for e in episodes]
         
     def list_sessions(self) -> List[tuple]:
-        sessions = self.episode_manager.list_sessions()
+        sessions = self.episode_manager.list_sessions(self.workspace_namespace)
         return [(s["session_id"], s["start_time"]) for s in sessions]
 
     def list_session_details(self) -> List[Dict[str, Any]]:
-        return self.episode_manager.list_sessions()
+        return self.episode_manager.list_sessions(self.workspace_namespace)
 
     def create_session(self, title: str = "새 대화") -> str:
-        return self.episode_manager.create_session(title)
+        session_id = uuid.uuid4().hex
+        now = datetime.now().timestamp()
+        with sqlite3.connect(self.episode_manager.db_path) as conn:
+            conn.execute(
+                "INSERT INTO conversation_sessions "
+                "(session_id,title,created_at,updated_at,workspace_namespace) VALUES (?,?,?,?,?)",
+                (session_id, title.strip() or "새 대화", now, now, self.workspace_namespace),
+            )
+        return session_id
 
     def clear_session(self, session_id: str) -> bool:
         return self.episode_manager.clear_session(session_id)

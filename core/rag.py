@@ -13,6 +13,7 @@ class VectorRAGManager:
         
         # 문서 저장소: {doc_id: {chunks: [text, ...], source: file_path}}
         self.documents = {}
+        self.namespace = "global"
         self._load()
         
         # Vector DB, Embedding, Reranker 초기화 (try-except로 fallback)
@@ -21,6 +22,12 @@ class VectorRAGManager:
         self.embedding_model = None
         self.reranker = None
         self._init_vector_rag()
+
+    def set_namespace(self, namespace: str) -> None:
+        self.namespace = str(namespace or "global")
+
+    def _document_key(self, doc_id: str) -> str:
+        return f"{self.namespace}::{doc_id}"
     
     def _init_vector_rag(self):
         try:
@@ -120,9 +127,11 @@ class VectorRAGManager:
                 return "오류: 파일 내용이 비어있습니다."
             
             doc_id = os.path.basename(file_path)
-            self.documents[doc_id] = {
+            self.documents[self._document_key(doc_id)] = {
                 "chunks": chunks,
-                "source": file_path
+                "source": file_path,
+                "namespace": self.namespace,
+                "doc_id": doc_id
             }
             self._save()
             
@@ -130,13 +139,16 @@ class VectorRAGManager:
             if self.use_vector_rag:
                 try:
                     # 기존 문서 삭제
-                    existing_ids = self.collection.get(where={"doc_id": doc_id})["ids"]
+                    existing_ids = self.collection.get(where={
+                        "$and": [{"doc_id": doc_id}, {"namespace": self.namespace}]
+                    })["ids"]
                     if existing_ids:
                         self.collection.delete(ids=existing_ids)
                     
                     # 새로운 문서 추가
-                    ids = [f"{doc_id}_chunk_{i}" for i in range(len(chunks))]
-                    metadatas = [{"doc_id": doc_id, "source": file_path} for _ in chunks]
+                    ids = [f"{self.namespace}_{doc_id}_chunk_{i}" for i in range(len(chunks))]
+                    metadatas = [{"doc_id": doc_id, "source": file_path,
+                                  "namespace": self.namespace} for _ in chunks]
                     self.collection.add(
                         ids=ids,
                         documents=chunks,
@@ -167,7 +179,8 @@ class VectorRAGManager:
             # 1. Vector DB로 초기 검색 (top_k * 2개)
             initial_results = self.collection.query(
                 query_texts=[query],
-                n_results=top_k * 2
+                n_results=top_k * 2,
+                where={"namespace": self.namespace}
             )
             
             if not initial_results["documents"] or not initial_results["documents"][0]:
@@ -209,6 +222,8 @@ class VectorRAGManager:
         results = []
         
         for doc_id, doc_data in self.documents.items():
+            if doc_data.get("namespace", "global") != self.namespace:
+                continue
             for chunk in doc_data["chunks"]:
                 chunk_words = set(re.split(r'\W+', chunk.lower()))
                 overlap = len(query_words & chunk_words)
@@ -228,12 +243,14 @@ class VectorRAGManager:
         ]
     
     def list_documents(self) -> str:
-        if not self.documents:
+        scoped = [doc for doc in self.documents.values()
+                  if doc.get("namespace", "global") == self.namespace]
+        if not scoped:
             return "저장된 문서가 없습니다."
         
         result = ["저장된 문서 목록:"]
-        for doc_id in self.documents.keys():
-            result.append(f"- {doc_id}")
+        for document in scoped:
+            result.append(f"- {document.get('doc_id') or os.path.basename(document['source'])}")
         
         return "\n".join(result)
 

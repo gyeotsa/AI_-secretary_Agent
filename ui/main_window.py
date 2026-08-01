@@ -1422,12 +1422,17 @@ class JarvisMainWindow(QWidget):
         if folder_path:
             self.workspace_selected.emit(folder_path)
     
-    def set_workspace_info(self, name: str, path: str = ""):
+    def set_workspace_info(self, name: str, path: str = "", git_status=None):
         # Workspace 정보 UI에 표시
         self.current_workspace_name = name
         self.current_workspace_path = path
         if name:
-            self.workspace_label.setText(f"Workspace: {name}")
+            suffix = ""
+            if git_status and git_status.get("is_repository"):
+                marker = "*" if git_status.get("dirty") else ""
+                suffix = f" · {git_status.get('branch', 'detached')}{marker}"
+            self.workspace_label.setText(f"Workspace: {name}{suffix}")
+            self.workspace_label.setToolTip(path or name)
             self.workspace_label.setStyleSheet("color: #00ffcc; padding: 5px;")
         else:
             self.workspace_label.setText("Workspace: 없음")

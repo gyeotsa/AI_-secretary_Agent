@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 
 from core.project_indexer import ProjectIndexer
+from core.memory import ConversationMemory
+from core.rag import VectorRAGManager
 from core.workspace import WorkspaceManager
 
 
@@ -69,3 +71,28 @@ def test_project_profile_detects_framework_and_commands(tmp_path):
     assert {"FastAPI", "pytest", "React"}.issubset(profile["frameworks"])
     assert "python -m pytest" in profile["test_commands"]
     assert "npm run test" in profile["test_commands"]
+
+
+def test_memory_sessions_are_scoped_by_workspace(tmp_path):
+    memory = ConversationMemory(str(tmp_path / "memory.db"))
+    memory.set_namespace("workspace-a")
+    session_a = memory.create_session("A")
+    memory.save_message(session_a, "user", "alpha")
+    assert [item[0] for item in memory.list_sessions()] == [session_a]
+
+    memory.set_namespace("workspace-b")
+    session_b = memory.create_session("B")
+    memory.save_message(session_b, "user", "beta")
+    assert [item[0] for item in memory.list_sessions()] == [session_b]
+    assert memory.load_session(session_a)[0]["content"] == "alpha"
+
+
+def test_simple_rag_search_is_scoped_by_namespace():
+    rag = VectorRAGManager.__new__(VectorRAGManager)
+    rag.namespace = "workspace-a"
+    rag.documents = {
+        "workspace-a::a.txt": {"chunks": ["shared alpha"], "source": "a.txt", "namespace": "workspace-a"},
+        "workspace-b::b.txt": {"chunks": ["shared beta"], "source": "b.txt", "namespace": "workspace-b"},
+    }
+    result = rag._simple_search("shared", 5)
+    assert [item["source"] for item in result] == ["a.txt"]

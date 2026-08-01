@@ -18,6 +18,7 @@ from core.rag import get_rag_manager
 from core.hardware import get_hardware_manager
 from core.audio_processor import get_audio_processor
 from core.workspace import get_workspace_manager
+from core.project_indexer import get_project_indexer
 from core.permission import get_permission_manager
 from core.executor import get_executor
 from core.scheduler import get_automation_engine
@@ -118,6 +119,8 @@ class JarvisApp:
         self.rag_manager = get_rag_manager()
         self.hardware_manager = get_hardware_manager()
         self.workspace_manager = get_workspace_manager()
+        self.project_indexer = get_project_indexer()
+        self._activate_workspace_context(initial=True)
         self.permission_manager = get_permission_manager()
         self.window.set_permission_manager(self.permission_manager)
         self.executor = get_executor()
@@ -181,6 +184,10 @@ class JarvisApp:
         self.heartbeat_timer = QTimer()
         self.heartbeat_timer.timeout.connect(lambda: None)
         self.heartbeat_timer.start(3000)
+
+        self.workspace_timer = QTimer()
+        self.workspace_timer.timeout.connect(self._refresh_workspace_state)
+        self.workspace_timer.start(5000)
         
         self._init_ui()
         threading.Thread(target=self.tool_executor.prepare_selected_tts, daemon=True).start()
@@ -650,8 +657,8 @@ class JarvisApp:
         print(f"[Workspace] 선택됨: {folder_path}")
         success = self.workspace_manager.set_workspace(folder_path)
         if success:
+            self._activate_workspace_context()
             info = self.workspace_manager.get_info()
-            self.window.set_workspace_info(info.name, info.path)
             print(f"[Workspace] 설정 완료: {info.name} (파일: {info.file_count}개)")
             # Personal Memory에 즐겨찾기 경로로 추가
             try:
@@ -661,6 +668,36 @@ class JarvisApp:
         else:
             self.window.set_workspace_info("")
             print(f"[Workspace] 설정 실패: 유효하지 않은 경로")
+
+    def _activate_workspace_context(self, initial: bool = False):
+        """Apply one project scope to indexing, memory, RAG, and UI."""
+        if not self.workspace_manager.is_set():
+            return
+        info = self.workspace_manager.get_info()
+        namespace = self.workspace_manager.get_namespace()
+        self.memory.set_namespace(namespace)
+        self.rag_manager.set_namespace(namespace)
+        self.project_indexer.set_project_root(info.path)
+        self.window.set_workspace_info(
+            info.alias or info.name, info.path, self.workspace_manager.get_git_status()
+        )
+
+        def index_workspace():
+            result = self.project_indexer.sync_changes()
+            profile = self.project_indexer.detect_project_profile()
+            action = "복원" if initial else "선택"
+            print(f"[Workspace] {action} 및 인덱싱 완료: {result}; {profile}")
+
+        threading.Thread(target=index_workspace, daemon=True).start()
+
+    def _refresh_workspace_state(self):
+        if not self.workspace_manager.is_set():
+            return
+        info = self.workspace_manager.get_info()
+        self.window.set_workspace_info(
+            info.alias or info.name, info.path, self.workspace_manager.get_git_status()
+        )
+        threading.Thread(target=self.project_indexer.sync_changes, daemon=True).start()
     
     def _on_permission_request(self, permission_name: str, permission_description: str):
         """메인 스레드에서 권한 요청 대화상자를 보여주고 결과를 반환"""
