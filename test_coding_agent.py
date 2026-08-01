@@ -103,3 +103,42 @@ def test_coding_plugin_returns_typed_repository_and_patch_evidence(tmp_path, mon
     assert changed.evidence[0].kind == "coding_transaction"
     assert changed.artifacts[0].uri == str(target)
     assert target.read_text(encoding="utf-8") == "value = 2\n"
+
+
+def test_build_plan_finds_python_symbol_related_file_and_test(tmp_path):
+    source = tmp_path / "service.py"
+    test_file = tmp_path / "test_service.py"
+    source.write_text(
+        "class UserService:\n    def create_user(self):\n        return True\n",
+        encoding="utf-8",
+    )
+    test_file.write_text(
+        "from service import UserService\n\ndef test_create_user():\n    assert UserService().create_user()\n",
+        encoding="utf-8",
+    )
+
+    plan = CodingAgent(tmp_path).build_plan("UserService create_user 동작을 수정해줘")
+
+    assert "service.py" in plan.related_files
+    assert any(symbol["name"] == "UserService" for symbol in plan.related_symbols)
+    assert "test_service.py" in plan.impact_scope
+    assert any(command[2:4] == ["pytest", "-q"] for command in plan.validation_commands)
+
+
+def test_default_validation_runs_related_test_and_rolls_back_on_failure(tmp_path):
+    source = tmp_path / "math_service.py"
+    test_file = tmp_path / "test_math_service.py"
+    source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    test_file.write_text(
+        "from math_service import add\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+        encoding="utf-8",
+    )
+
+    result = CodingAgent(tmp_path).apply_transaction([
+        FileEdit("math_service.py", "return a + b", "return a - b"),
+    ])
+
+    assert not result.succeeded
+    assert result.rolled_back
+    assert "1 failed" in result.error
+    assert "return a + b" in source.read_text(encoding="utf-8")

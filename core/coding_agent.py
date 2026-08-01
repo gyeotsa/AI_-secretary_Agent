@@ -4,13 +4,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 import difflib
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import re
+import shutil
+
+from core.project_indexer import ProjectIndexer
 
 
 @dataclass(frozen=True)
@@ -29,6 +33,16 @@ class FileEdit:
     old_text: str
     new_text: str
     expected_sha256: str = ""
+
+
+@dataclass(frozen=True)
+class CodingPlan:
+    request: str
+    related_files: List[str]
+    related_symbols: List[dict[str, Any]]
+    impact_scope: List[str]
+    validation_commands: List[List[str]]
+    repository: RepositorySnapshot
 
 
 @dataclass
@@ -87,6 +101,40 @@ class CodingAgent:
         return RepositorySnapshot(
             str(self.root), sorted(files), sorted(readmes), sorted(dependencies),
             branch.strip(), status.rstrip(),
+        )
+
+    def build_plan(self, request: str, max_results: int = 30) -> CodingPlan:
+        """Build a deterministic impact plan from repository and symbol evidence."""
+        snapshot = self.analyze_repository()
+        tokens = list(dict.fromkeys(re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", request)))
+        related_files: set[str] = set()
+        related_symbols: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory(prefix="jarvis-index-") as temp_dir:
+            indexer = ProjectIndexer(str(Path(temp_dir) / "project.db"))
+            indexer.set_project_root(str(self.root))
+            indexer.index_project(list(self.IGNORED_PARTS))
+            for token in tokens[:12]:
+                for item in indexer.search_files(token, "name")[:max_results]:
+                    related_files.add(str(Path(item["path"]).relative_to(self.root)))
+                for item in indexer.search_files(token, "content")[:max_results]:
+                    related_files.add(str(Path(item["path"]).relative_to(self.root)))
+                for item in indexer.search_symbols(token)[:max_results]:
+                    normalized = dict(item)
+                    normalized["file_path"] = str(
+                        Path(normalized["file_path"]).relative_to(self.root)
+                    )
+                    related_symbols.append(normalized)
+                    related_files.add(normalized["file_path"])
+        ordered_files = sorted(related_files)[:max_results]
+        impact = sorted(set(ordered_files + self._related_tests(ordered_files)))
+        validation = self._validation_commands_for_relative_paths(impact)
+        return CodingPlan(
+            request=request,
+            related_files=ordered_files,
+            related_symbols=related_symbols[:max_results],
+            impact_scope=impact,
+            validation_commands=validation,
+            repository=snapshot,
         )
 
     def apply_transaction(
@@ -170,8 +218,34 @@ class CodingAgent:
                 os.unlink(temp_name)
 
     def _default_validation_commands(self, paths: List[Path]) -> List[List[str]]:
-        python_files = [str(path) for path in paths if path.suffix.casefold() == ".py"]
-        return [[sys.executable, "-m", "py_compile", *python_files]] if python_files else []
+        relatives = [str(path.relative_to(self.root)) for path in paths]
+        scope = list(dict.fromkeys([*relatives, *self._related_tests(relatives)]))
+        return self._validation_commands_for_relative_paths(scope)
+
+    def _related_tests(self, relative_paths: List[str]) -> List[str]:
+        candidates = []
+        all_files = self.analyze_repository().files
+        for relative in relative_paths:
+            path = Path(relative)
+            if path.suffix.casefold() != ".py" or path.name.startswith("test_"):
+                continue
+            names = {f"test_{path.stem}.py", f"{path.stem}_test.py"}
+            candidates.extend(name for name in all_files if Path(name).name in names)
+        return sorted(set(candidates))
+
+    def _validation_commands_for_relative_paths(self, relative_paths: List[str]) -> List[List[str]]:
+        commands: List[List[str]] = []
+        python_files = [str(self._resolve(path)) for path in relative_paths if Path(path).suffix.casefold() == ".py"]
+        if python_files:
+            commands.append([sys.executable, "-m", "py_compile", *python_files])
+            tests = [path for path in relative_paths if Path(path).name.startswith("test_")]
+            if tests:
+                commands.append([sys.executable, "-m", "pytest", "-q", *tests])
+        javascript_files = [str(self._resolve(path)) for path in relative_paths
+                            if Path(path).suffix.casefold() in {".js", ".mjs", ".cjs"}]
+        if javascript_files and shutil.which("node"):
+            commands.extend([["node", "--check", path] for path in javascript_files])
+        return commands
 
     def _run_validations(self, commands: List[List[str]]) -> str:
         outputs = []

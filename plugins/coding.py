@@ -53,6 +53,12 @@ class CodingPlugin(BasePlugin):
                 },
                 ["filesystem_write", "run_command"], side_effect="change",
             ),
+            ToolSchema(
+                "coding_plan_change", "관련 파일·심볼·영향 범위와 검증 전략을 계획합니다",
+                {"type": "object", "properties": {"request": {"type": "string"}},
+                 "required": ["request"]},
+                ["filesystem_read"], side_effect="read",
+            ),
         ]
 
     def _agent(self) -> CodingAgent:
@@ -102,6 +108,21 @@ class CodingPlugin(BasePlugin):
                         Artifact("file", str(Path(agent.root, name)), {"changed": True})
                         for name in result.changed_files
                     ],
+                )
+            if tool_name == "coding_plan_change":
+                plan = agent.build_plan(str(tool_input["request"]))
+                payload = asdict(plan)
+                return ToolRunResult.successful(
+                    tool_name=tool_name,
+                    raw_output=json.dumps(payload, ensure_ascii=False),
+                    evidence=[Evidence(
+                        "coding_plan", "관련 파일·심볼·영향 범위와 검증 전략을 생성했습니다.",
+                        {"related_files": plan.related_files,
+                         "symbol_count": len(plan.related_symbols),
+                         "impact_scope": plan.impact_scope,
+                         "validation_commands": plan.validation_commands},
+                    )],
+                    artifacts=[Artifact("directory", str(agent.root), {"role": "planned_repository"})],
                 )
             return ToolRunResult.failed(tool_name=tool_name, error=f"알 수 없는 Tool: {tool_name}")
         except Exception as exc:
