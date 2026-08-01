@@ -21,6 +21,21 @@ class ToolSchema:
     description: str
     input_schema: Dict[str, Any] = field(default_factory=dict)  # JSON Schema
     required_permissions: List[str] = field(default_factory=list)
+    output_schema: Dict[str, Any] = field(default_factory=dict)
+    side_effect: str = "read"
+    verification_required: bool = True
+
+
+@dataclass(frozen=True)
+class CapabilityContract:
+    """Registry-owned execution contract exposed to every router/executor."""
+    name: str
+    description: str
+    input_schema: Dict[str, Any]
+    output_schema: Dict[str, Any]
+    side_effect: str
+    required_permissions: List[str]
+    verification_required: bool
 
 
 @dataclass
@@ -29,6 +44,7 @@ class SlotSchema:
     description: str
     question: str
     required: bool = True
+    role: str = "parameter"
 
 
 @dataclass
@@ -42,6 +58,28 @@ class IntentSchema:
     follow_up_hints: List[str] = field(default_factory=list)
     capability_response: str = ""
     utterance_patterns: List[str] = field(default_factory=list)
+    domain: str = ""
+    action: str = ""
+    request_type: str = "execute"
+    target_slot: str = ""
+    constraint_slots: List[str] = field(default_factory=list)
+    reference_slots: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        parts = self.name.split(".", 1)
+        if not self.domain:
+            self.domain = parts[0]
+        if not self.action:
+            self.action = parts[1] if len(parts) > 1 else self.name
+        if not self.target_slot:
+            target = next((slot.name for slot in self.slots if slot.role == "target"), "")
+            if not target:
+                target = next(
+                    (slot.name for slot in self.slots
+                     if slot.name in {"target", "path", "filename", "query", "name", "location"}),
+                    "",
+                )
+            self.target_slot = target
 
 class BasePlugin(ABC):
     """플러그인 기본 클래스"""
@@ -135,6 +173,36 @@ class PluginRegistry:
             if plugin.enabled:
                 intents.extend((plugin, intent) for intent in plugin.get_intents())
         return intents
+
+    def get_capability(self, tool_name: str) -> Optional[CapabilityContract]:
+        for tool in self.get_all_tools():
+            if tool.name == tool_name:
+                return CapabilityContract(
+                    name=tool.name,
+                    description=tool.description,
+                    input_schema=tool.input_schema,
+                    output_schema=tool.output_schema,
+                    side_effect=tool.side_effect,
+                    required_permissions=list(tool.required_permissions),
+                    verification_required=tool.verification_required,
+                )
+        return None
+
+    def get_capabilities(self) -> List[CapabilityContract]:
+        return [
+            contract for tool in self.get_all_tools()
+            if (contract := self.get_capability(tool.name)) is not None
+        ]
+
+    def validate_tool_call(self, tool_name: str, tool_input: Dict[str, Any]) -> List[str]:
+        """Validate required input fields at the Registry boundary before execution."""
+        contract = self.get_capability(tool_name)
+        if contract is None:
+            return [f"등록되지 않은 도구입니다: {tool_name}"]
+        if not isinstance(tool_input, dict):
+            return ["도구 입력은 객체여야 합니다."]
+        required = contract.input_schema.get("required", [])
+        return [f"필수 입력이 없습니다: {name}" for name in required if tool_input.get(name) in (None, "")]
     
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> PluginToolOutput:
         """툴 실행 (어떤 플러그인의 툴인지 찾아서 실행)"""

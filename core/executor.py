@@ -916,6 +916,14 @@ class Executor:
                                  session_id: str, task_id: str = "",
                                  progress_callback: Optional[Callable[[str], None]] = None) -> ExecutionOutcome:
         workspace_scope = self._workspace_scope()
+        contract_errors = self.intent_router.registry.validate_tool_call(
+            resolution.tool_name, resolution.slots
+        )
+        if contract_errors:
+            return ExecutionOutcome(
+                "도구 계약 검사를 통과하지 못했습니다: " + "; ".join(contract_errors),
+                "failed", goal, task_id=task_id,
+            )
         task_id = task_id or self.dialogue_state.create_task(
             session_id, goal, workspace_path=workspace_scope
         ).task_id
