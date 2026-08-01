@@ -26,6 +26,7 @@ class BrowserPlugin(BasePlugin):
         super().__init__()
         self.name = "browser"
         self.description = "Playwright 기반 웹 페이지 조회 및 스크린샷"
+        self.dependencies = ["playwright"]
 
     def get_tools(self) -> List[ToolSchema]:
         return [

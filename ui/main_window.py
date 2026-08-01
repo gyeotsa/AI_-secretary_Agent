@@ -736,6 +736,66 @@ class TaskManagerDialog(QDialog):
             QMessageBox.warning(self, "작업 기록 삭제", "실행 중인 작업은 삭제할 수 없습니다.")
         self._load_tasks()
 
+
+class PluginDiagnosticsDialog(QDialog):
+    """Shows installation, connection, authentication and verification separately."""
+
+    def __init__(self, plugin_registry, parent=None):
+        super().__init__(parent)
+        self.plugin_registry = plugin_registry
+        self.setWindowTitle("Plugin 상태 및 진단")
+        self.resize(760, 520)
+        layout = QVBoxLayout(self)
+        guide = QLabel("설치 · 연결 · 인증 · 계약 검증은 서로 다른 상태입니다.")
+        guide.setStyleSheet("color: #00d4ff; padding: 6px;")
+        layout.addWidget(guide)
+        self.plugin_list = QListWidget()
+        self.plugin_list.currentItemChanged.connect(self._show_details)
+        layout.addWidget(self.plugin_list, 2)
+        self.details = QTextEdit()
+        self.details.setReadOnly(True)
+        layout.addWidget(self.details, 1)
+        buttons = QHBoxLayout()
+        refresh = QPushButton("새로 진단")
+        close = QPushButton("닫기")
+        refresh.clicked.connect(self.refresh)
+        close.clicked.connect(self.accept)
+        buttons.addStretch()
+        buttons.addWidget(refresh)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        self.refresh()
+
+    @staticmethod
+    def _mark(value):
+        return "정상" if value else "필요"
+
+    def refresh(self):
+        self.plugin_list.clear()
+        for status in self.plugin_registry.get_plugin_statuses():
+            item = QListWidgetItem(
+                f"{status.name}  v{status.version}  | "
+                f"설치 {self._mark(status.installed)} · 연결 {self._mark(status.connected)} · "
+                f"인증 {self._mark(status.authenticated)} · 검증 {self._mark(status.verified)}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, status)
+            self.plugin_list.addItem(item)
+        if self.plugin_list.count():
+            self.plugin_list.setCurrentRow(0)
+
+    def _show_details(self, current, _previous):
+        status = current.data(Qt.ItemDataRole.UserRole) if current else None
+        if not status:
+            self.details.clear()
+            return
+        diagnostics = "\n".join(f"- {item}" for item in status.diagnostics) or "- 발견된 문제가 없습니다."
+        self.details.setPlainText(
+            f"Plugin: {status.name}\nVersion: {status.version}\n"
+            f"설치됨: {status.installed}\n연결됨: {status.connected}\n"
+            f"인증됨: {status.authenticated}\n검증됨: {status.verified}\n"
+            f"활성화됨: {status.enabled}\n\n진단\n{diagnostics}"
+        )
+
 class JarvisMainWindow(QWidget):
     command_triggered = pyqtSignal(str)
     text_submitted = pyqtSignal(str)
@@ -765,6 +825,7 @@ class JarvisMainWindow(QWidget):
         self.tts_settings_manager = None
         self.memory_manager = None
         self.dialogue_state_store = None
+        self.plugin_registry = None
         self.current_session_id = ""
         
         # 원형 사운드바 상태 변수
@@ -861,6 +922,13 @@ class JarvisMainWindow(QWidget):
         self.task_btn.setToolTip("현재 작업 관리")
         self.task_btn.clicked.connect(self.show_task_manager)
         tab_layout.addWidget(self.task_btn)
+
+        self.plugin_btn = QPushButton("P")
+        self.plugin_btn.setStyleSheet(button_style)
+        self.plugin_btn.setFixedSize(35, 35)
+        self.plugin_btn.setToolTip("Plugin 상태 및 진단")
+        self.plugin_btn.clicked.connect(self.show_plugin_diagnostics)
+        tab_layout.addWidget(self.plugin_btn)
         
         self.sound_bar = SoundBarWidget(self)
         self.sound_bar.hide()
@@ -1485,6 +1553,15 @@ class JarvisMainWindow(QWidget):
 
     def set_dialogue_state_store(self, state_store):
         self.dialogue_state_store = state_store
+
+    def set_plugin_registry(self, plugin_registry):
+        self.plugin_registry = plugin_registry
+
+    def show_plugin_diagnostics(self):
+        if self.plugin_registry is None:
+            QMessageBox.information(self, "Plugin 진단", "Plugin Registry가 아직 연결되지 않았습니다.")
+            return
+        PluginDiagnosticsDialog(self.plugin_registry, self).exec()
 
     def show_task_manager(self):
         if self.dialogue_state_store is None:

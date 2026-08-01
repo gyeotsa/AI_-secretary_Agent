@@ -18,6 +18,13 @@ class MailPlugin(BasePlugin):
         super().__init__()
         self.name = "mail"
         self.description = "환경변수 기반 SMTP 전송과 로컬 메일 초안 저장"
+        self.auth_required = True
+        self.auth_type = "SMTP 환경 변수"
+
+    def is_authenticated(self) -> bool:
+        return all(os.getenv(name) for name in (
+            "MAIL_SMTP_HOST", "MAIL_SMTP_USERNAME", "MAIL_SMTP_PASSWORD"
+        ))
 
     def get_tools(self) -> List[ToolSchema]:
         message = {
