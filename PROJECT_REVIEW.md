@@ -161,7 +161,19 @@ P3 마지막 단계에서 자연어 저장소 변경 Intent를 CodingPlan과 JSO
 3. 저장소 단위 Coding Agent와 patch→test→diff 루프.
 4. Workspace·Project Intelligence 완료. 다음 구현 우선순위는 P5 Planner·Executor·Recovery 재설계.
 
-P5도 완료되어 다음 구현 우선순위는 P6 Tool Runtime과 Plugin 완전 단일화입니다.
+P5와 P6를 완료했으며 다음 구현 우선순위는 P7 Memory·RAG·Knowledge입니다.
+
+## 2026-08-02 P6 완료
+
+- `get_tools_schema()`와 `execute_tool()`은 초기화된 Plugin Registry만 사용합니다.
+  `core/tools.py`의 내장 구현은 `legacy_runtime` Plugin 계약으로 편입했습니다.
+- Plugin·Tool·Intent 이름 충돌과 잘못된 입출력 Schema를 시작 시 차단하고,
+  모든 실행 입력·출력을 JSON Schema Draft 2020-12로 검증합니다.
+- 동기·비동기 실행, Tool별 timeout·재시도·취소 정책을 중앙 worker runtime에서
+  처리합니다. 실패는 typed `ToolRunResult`로 반환됩니다.
+- 버전·의존성·지원 OS·인증 방식·취소 가능성을 Plugin/Tool 계약에 추가했습니다.
+- 상단 Plugin 진단 UI는 설치·연결·인증·검증 상태를 서로 구분해 표시합니다.
+- 전체 자동화 회귀 결과는 `212 passed, 4 deselected`입니다.
 
 ## 2026-08-01 P5 완료
 

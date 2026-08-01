@@ -348,13 +348,28 @@ pytest까지 통과하는 E2E 및 전체 `212 passed, 4 deselected`. P3 범용 C
 
 ## P6 — Tool Runtime과 Plugin 완전 단일화
 
-- [ ] `core/tools.py` 레거시 Tool을 Plugin으로 이전
-- [ ] 중복 이름·Schema 충돌을 시작 시 차단
-- [ ] JSON Schema 입력과 출력 모두 검증
-- [ ] Plugin 버전·의존성·지원 OS·취소 가능성 선언
-- [ ] 동기/비동기·Timeout·재시도 정책
-- [ ] Plugin 상태·인증·진단 UI
-- [ ] 연결됨/설치됨/인증됨/검증됨 상태 분리
+- [x] `core/tools.py` 레거시 Tool을 Plugin으로 이전
+- [x] 중복 이름·Schema 충돌을 시작 시 차단
+- [x] JSON Schema 입력과 출력 모두 검증
+- [x] Plugin 버전·의존성·지원 OS·취소 가능성 선언
+- [x] 동기/비동기·Timeout·재시도 정책
+- [x] Plugin 상태·인증·진단 UI
+- [x] 연결됨/설치됨/인증됨/검증됨 상태 분리
+
+진행 기록 (2026-08-02):
+
+- 모든 공개 Tool 스키마 조회와 실행을 `PluginRegistry` 단일 경계로 통일했다.
+  기존 내장 구현은 `legacy_runtime` Plugin이 제공하며 더 이상 Executor의 우회 분기로
+  실행되지 않는다.
+- Plugin/Tool/Intent 중복과 잘못된 JSON Schema는 등록 시 예외로 시작을 중단한다.
+  입력과 출력은 Draft 2020-12 JSON Schema로 검증한다.
+- Tool 계약에 실행 모드, timeout, 재시도 횟수, 취소 가능성을 추가했다. 동기·비동기
+  반환을 같은 worker 경계에서 처리하고 timeout·취소·재시도 예산을 강제한다.
+- Plugin은 버전, Python 의존성, 지원 OS, 인증 방식과 연결/인증 진단을 선언한다.
+  상단 `P` UI에서 설치됨·연결됨·인증됨·검증됨을 독립적으로 확인할 수 있다.
+- P6 전용 계약 테스트와 전체 회귀 `212 passed, 4 deselected`를 통과했다.
+
+P6 상태: **완료**. 다음 단계는 P7 Memory·RAG·Knowledge 통합이다.
 
 ## P7 — Memory·RAG·Knowledge
 

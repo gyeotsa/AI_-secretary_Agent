@@ -7,6 +7,23 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-08-02 P6 Tool Runtime·Plugin 완전 단일화 완료
+
+- `PluginRegistry`를 Tool 스키마와 실행의 유일한 공개 경계로 변경했다. 내장 Tool은
+  `legacy_runtime` Plugin을 통해 등록되며 Executor의 도메인별 우회 실행 분기를 제거했다.
+- Plugin, Tool, Intent 중복 이름과 잘못된 JSON Schema를 등록 시 fail-fast로 차단한다.
+  입력과 출력 모두 JSON Schema Draft 2020-12 검증을 통과해야 한다.
+- Tool 계약에 sync/async 실행 모드, timeout, retry budget, cancellable 선언을 추가하고
+  중앙 worker runtime에 timeout·재시도·취소 처리를 연결했다.
+- Plugin 계약에 버전·Python 의존성·지원 OS·인증 방식과 연결/인증/진단 API를 추가했다.
+- 앱 상단 `P` 버튼에 Plugin 진단 UI를 추가했다. 설치됨·연결됨·인증됨·검증됨을
+  별도 상태로 표시하며 SMTP 설정 누락 같은 진단 내용을 보여준다.
+- 코드 커밋: `772511e`, `3dab2e5`, `e09cc3e`.
+- 검증: P6 관련 35개 테스트 통과, 전체 `212 passed, 4 deselected`.
+- P6 Tool Runtime·Plugin 완전 단일화: **완료**.
+- 다음 해야 할 일: P7 Memory·RAG·Knowledge를 시작한다. 메모리 유형 분리와
+  사실·추측·출처·기록 시각을 담는 영속 계약부터 구현한다.
+
 ## 2026-08-01 P5 Planner·Executor·Recovery 재설계 완료
 
 - `core/plan_runtime.py`에 실행 가능한 `PlanDAG`·`PlanStep`·`PlanCoordinator`와 SQLite
