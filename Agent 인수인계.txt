@@ -7,6 +7,29 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-08-02 P8 Research·Browser Agent 완료
+
+- `core/research.py`에 실제 페이지 방문형 `ResearchAgent`와 typed Source/Claim/Report,
+  SQLite TTL Cache, Prompt Injection Guard를 추가했다.
+- DDGS는 후보 URL 발견에만 사용한다. Playwright가 실제 방문해 성공 응답·최종 URL·렌더링
+  본문을 확인해야 Source로 채택한다.
+- meta·JSON-LD·time·Last-Modified에서 게시/수정일을 추출하고 정부·교육 도메인과
+  공식/보도자료 표식으로 공식 출처를 우선 정렬한다.
+- 유사 주장을 출처별 Source ID로 교차 연결한다. 숫자 값이 다른 주장은 conflicts와 원문
+  variants를 보존하며 Presenter는 주장별 `[S1, S2]` 인용과 상충 경고를 표시한다.
+- Playwright persistent profile로 로그인 Cookie/세션을 유지한다. Profile 이름은 경로 탈출이
+  불가능하게 정규화하며 Cookie 값은 상태 Tool에서 노출하지 않는다.
+- 안전한 다운로드, 동적 페이지 network-idle, HTML table, PDF 본문 추출을 지원한다.
+- 웹 본문과 레거시 검색 스니펫의 시스템 지시·이전 명령 무시·비밀 노출·도구 실행 문구는
+  `[격리된 웹 지시문]`으로 치환하고 경고를 Evidence에 남긴다.
+- Research Cache는 query/source/profile 키와 TTL을 사용하며 force refresh만 우회한다.
+- 코드 커밋: `dcc94ed`, `b263b09`.
+- 검증: P8 관련 26개 통과, Playwright Chromium 설치·headless 실행 확인,
+  전체 `212 passed, 4 deselected`.
+- P8 Research·Browser Agent: **완료**.
+- 다음 해야 할 일: P9 Office·Cloud·Communication을 시작한다. 기존 서식 보존형 편집과
+  렌더링 기반 시각 QA 계약부터 구현한다.
+
 ## 2026-08-02 P7 Memory·RAG·Knowledge 완료
 
 - `core/knowledge_memory.py`에 Conversation/Task/Project/Preference/Fact/Case 의미 유형과

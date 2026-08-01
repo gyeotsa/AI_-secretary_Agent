@@ -405,15 +405,35 @@ P7 상태: **완료**. 다음 단계는 P8 Research·Browser Agent다.
 
 ## P8 — Research·Browser Agent
 
-- [ ] 검색 결과 페이지 실제 방문과 본문 추출
-- [ ] 게시·수정 날짜 확인
-- [ ] 공식 출처 탐지와 우선순위
-- [ ] 다중 출처 교차 검증과 상충 정보 표시
-- [ ] 주장별 인용
-- [ ] 로그인 세션·쿠키·다운로드
-- [ ] PDF·표·동적 페이지 처리
-- [ ] Prompt Injection과 웹 지시 격리
-- [ ] 검색 Cache와 만료
+- [x] 검색 결과 페이지 실제 방문과 본문 추출
+- [x] 게시·수정 날짜 확인
+- [x] 공식 출처 탐지와 우선순위
+- [x] 다중 출처 교차 검증과 상충 정보 표시
+- [x] 주장별 인용
+- [x] 로그인 세션·쿠키·다운로드
+- [x] PDF·표·동적 페이지 처리
+- [x] Prompt Injection과 웹 지시 격리
+- [x] 검색 Cache와 만료
+
+진행 기록 (2026-08-02):
+
+- `ResearchAgent`가 DDGS 결과의 스니펫을 답으로 사용하지 않고 후보 URL을 Playwright로
+  실제 방문한다. HTTP 성공과 최종 URL을 확인한 페이지 본문만 Research Source가 된다.
+- meta, JSON-LD, `time[datetime]`, Last-Modified에서 게시·수정 날짜를 추출한다.
+  정부·교육 도메인과 공식/보도자료 표식을 점수화해 공식 출처를 우선 정렬한다.
+- 여러 본문의 유사 주장을 묶어 Source ID를 인용하고 숫자 값이 다른 주장은 conflicts에
+  출처별 원문을 보존한다. 사용자 응답도 `[S1]` 형식의 주장별 인용과 상충 경고를 유지한다.
+- 이름이 정규화된 Playwright persistent profile로 로그인 Cookie·세션을 재사용한다.
+  다운로드는 허용 경로에만 저장하고 크기·SHA-256을 검증한다.
+- 렌더링 완료 대기, HTML table 구조 추출, PyMuPDF 기반 PDF 본문 추출을 지원한다.
+- 웹 본문의 시스템 지시·이전 명령 무시·비밀 노출·도구 실행 패턴은 분석 전에 격리하고
+  Source에 경고를 남긴다. 레거시 본문·검색 스니펫 경로에도 같은 방어를 적용했다.
+- SQLite Research Cache는 query·source 수·profile 단위 키와 TTL을 사용한다.
+  `force_refresh`만 캐시를 우회하며 만료 레코드는 조회 시 제거한다.
+- Playwright Chromium 설치·headless 실행을 확인했고 전체 회귀
+  `212 passed, 4 deselected`를 통과했다.
+
+P8 상태: **완료**. 다음 단계는 P9 Office·Cloud·Communication이다.
 
 ## P9 — Office·Cloud·Communication
 

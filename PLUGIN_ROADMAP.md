@@ -20,8 +20,11 @@
 
 - DDGS 무료 웹 검색·출처 URL 검증·후속 검색 문맥 — 1차 연결됨
 - Playwright 공개 페이지 본문·스크린샷·SSRF 방어 — 1차 연결됨
-- 검색 결과 페이지 실제 방문·게시일 확인·주장별 교차 인용 — 개선 필요
-- Playwright 세션·다운로드·업로드·취소 고도화
+- 검색 결과 페이지 실제 방문·게시/수정일 확인·공식 출처 우선·주장별 교차 인용 — 연결됨
+- Playwright persistent profile·Cookie·다운로드·취소 — 연결됨
+- PDF 본문·HTML 표·동적 페이지와 Prompt Injection 격리 — 연결됨
+- TTL Research Cache와 강제 재검색 — 연결됨
+- 업로드·결제·게시 같은 외부 반영 Browser Action — 대기
 - 선택적 Tavily 공급자
 - YouTube 자막 수집 및 요약
 - 브라우저 작업의 로그인 세션과 전송/구매 승인 분리

@@ -161,7 +161,18 @@ P3 마지막 단계에서 자연어 저장소 변경 Intent를 CodingPlan과 JSO
 3. 저장소 단위 Coding Agent와 patch→test→diff 루프.
 4. Workspace·Project Intelligence 완료. 다음 구현 우선순위는 P5 Planner·Executor·Recovery 재설계.
 
-P5·P6·P7을 완료했으며 다음 구현 우선순위는 P8 Research·Browser Agent입니다.
+P5·P6·P7·P8을 완료했으며 다음 구현 우선순위는 P9 Office·Cloud·Communication입니다.
+
+## 2026-08-02 P8 완료
+
+- 검색 결과 후보를 Playwright로 실제 방문하고 렌더링된 본문과 표를 추출합니다.
+- 게시·수정일은 meta·JSON-LD·time·HTTP header에서 확인하고 공식 출처를 우선합니다.
+- 유사 주장을 다중 출처로 묶어 Source ID를 부여하며 수치 상충은 별도 conflict로 노출합니다.
+- Browser persistent profile로 로그인 Cookie를 보존하고 다운로드 결과의 크기·해시를 검증합니다.
+- PDF 본문, HTML table, 동적 페이지 network-idle 처리를 지원합니다.
+- Prompt Injection 성격의 웹 문장은 분석 Context에서 격리하고 원 Source에 경고를 남깁니다.
+- Research Cache는 TTL 만료와 강제 새로고침 정책을 지원합니다.
+- Playwright Chromium headless 실행 및 전체 `212 passed, 4 deselected`를 확인했습니다.
 
 ## 2026-08-02 P7 완료
 
