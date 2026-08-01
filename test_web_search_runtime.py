@@ -22,7 +22,7 @@ def test_latest_product_question_routes_to_real_web_search():
     )
     assert resolution.ready
     assert resolution.intent_name == "web.search"
-    assert resolution.tool_name == "browser_web_search"
+    assert resolution.tool_name == "browser_research"
     assert "타이틀리스트" in resolution.slots["query"]
 
 

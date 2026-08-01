@@ -8,9 +8,11 @@ from typing import Any, Dict, List
 from urllib.parse import urlparse
 import ipaddress
 import socket
+import time
 
 from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema
 from core.tool_result import Artifact, Evidence, ToolRunResult
+from core.research import PlaywrightPageFetcher, PromptInjectionGuard, ResearchAgent, ResearchCache
 
 try:
     from ddgs import DDGS
@@ -27,19 +29,42 @@ class BrowserPlugin(BasePlugin):
         self.name = "browser"
         self.description = "Playwright 기반 웹 페이지 조회 및 스크린샷"
         self.dependencies = ["playwright"]
+        self._research_agent = None
 
     def get_tools(self) -> List[ToolSchema]:
         return [
             ToolSchema("browser_get_text", "웹 페이지의 본문 텍스트를 가져옵니다", {
-                "type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}, ["browser"]),
+                "type": "object", "properties": {"url": {"type": "string"},
+                    "profile": {"type": "string", "default": "default"},
+                    "dynamic": {"type": "boolean", "default": True}},
+                "required": ["url"], "additionalProperties": False}, ["browser"]),
             ToolSchema("browser_screenshot", "웹 페이지 스크린샷을 저장합니다", {
-                "type": "object", "properties": {"url": {"type": "string"}, "path": {"type": "string"}},
-                "required": ["url", "path"]}, ["browser", "filesystem_write"]),
+                "type": "object", "properties": {"url": {"type": "string"}, "path": {"type": "string"},
+                    "profile": {"type": "string", "default": "default"}},
+                "required": ["url", "path"], "additionalProperties": False}, ["browser", "filesystem_write"]),
             ToolSchema("browser_web_search", "웹에서 최신 정보를 검색하고 출처와 함께 반환합니다", {
                 "type": "object", "properties": {
                     "query": {"type": "string"},
                     "max_results": {"type": "integer", "default": 5},
                 }, "required": ["query"]}, ["browser"]),
+            ToolSchema("browser_research", "검색 결과 페이지를 실제 방문해 교차검증 보고서를 만듭니다", {
+                "type": "object", "properties": {
+                    "query": {"type": "string"}, "max_sources": {"type": "integer", "minimum": 2, "maximum": 8, "default": 5},
+                    "profile": {"type": "string", "default": "default"},
+                    "ttl_seconds": {"type": "number", "minimum": 60, "maximum": 86400, "default": 3600},
+                    "force_refresh": {"type": "boolean", "default": False},
+                }, "required": ["query"], "additionalProperties": False,
+            }, ["browser"], timeout_seconds=180, max_retries=1, cancellable=True),
+            ToolSchema("browser_download", "로그인 세션을 유지한 브라우저에서 파일을 안전한 경로로 다운로드합니다", {
+                "type": "object", "properties": {
+                    "url": {"type": "string"}, "path": {"type": "string"},
+                    "profile": {"type": "string", "default": "default"},
+                }, "required": ["url", "path"], "additionalProperties": False,
+            }, ["browser", "filesystem_write"], timeout_seconds=120, cancellable=True),
+            ToolSchema("browser_profile_status", "브라우저 로그인 세션 Profile의 로컬 저장 상태를 확인합니다", {
+                "type": "object", "properties": {"profile": {"type": "string", "default": "default"}},
+                "additionalProperties": False,
+            }, ["browser"], side_effect="read"),
         ]
 
     def get_intents(self) -> List[IntentSchema]:
@@ -47,7 +72,7 @@ class BrowserPlugin(BasePlugin):
             IntentSchema(
                 "web.search",
                 "최신·외부 정보를 실제 웹에서 검색",
-                "browser_web_search",
+                "browser_research",
                 ["검색", "찾아봐", "알아봐", "확인해", "최신", "신형", "새로 나온", "출시"],
                 [SlotSchema("query", "검색할 전체 질문",
                             "웹에서 무엇을 검색할지 알려주세요, 보스.")],
@@ -130,6 +155,12 @@ class BrowserPlugin(BasePlugin):
             route.abort()
 
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
+        if tool_name == "browser_research":
+            return self._research_web(tool_input)
+        if tool_name == "browser_download":
+            return self._download(tool_input)
+        if tool_name == "browser_profile_status":
+            return self._profile_status(tool_input)
         if tool_name == "browser_web_search":
             return self._search_web(tool_input)
         if tool_name not in {"browser_get_text", "browser_screenshot"}:
@@ -153,14 +184,22 @@ class BrowserPlugin(BasePlugin):
         try:
             url = self._validate_url(str(tool_input["url"]))
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
-                page = browser.new_page()
+                fetcher = self._get_research_agent().fetcher
+                profile = fetcher._profile_name(str(tool_input.get("profile", "default")))
+                context = playwright.chromium.launch_persistent_context(
+                    str(fetcher.profiles_dir / profile), headless=True, accept_downloads=True)
+                page = context.pages[0] if context.pages else context.new_page()
                 page.route("**/*", self._guard_route)
                 response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                if tool_name == "browser_get_text" and tool_input.get("dynamic", True):
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=5000)
+                    except Exception:
+                        pass
                 self._validate_url(page.url)
                 if response is None or not response.ok:
                     status = response.status if response else "응답 없음"
-                    browser.close()
+                    context.close()
                     return ToolRunResult.failed(
                         tool_name=tool_name, error=f"페이지 응답 실패: {status}"
                     )
@@ -168,7 +207,8 @@ class BrowserPlugin(BasePlugin):
                 final_url = page.url
                 status_code = response.status
                 if tool_name == "browser_get_text":
-                    result = page.locator("body").inner_text()[:50000]
+                    raw_text = page.locator("body").inner_text()[:50000]
+                    result, injection_warnings = PromptInjectionGuard.isolate(raw_text)
                     tool_result = ToolRunResult.successful(
                         tool_name=tool_name,
                         raw_output=result,
@@ -182,6 +222,7 @@ class BrowserPlugin(BasePlugin):
                                 "retrieved_at": retrieved_at,
                                 "characters": len(result),
                                 "sha256": hashlib.sha256(result.encode("utf-8")).hexdigest(),
+                                "prompt_injection_warnings": injection_warnings,
                             },
                         )],
                         artifacts=[Artifact("url", final_url)],
@@ -210,12 +251,77 @@ class BrowserPlugin(BasePlugin):
                             Artifact("url", final_url),
                         ],
                     )
-                browser.close()
+                context.close()
                 return tool_result
         except Exception as exc:
             return ToolRunResult.failed(
                 tool_name=tool_name, error=f"브라우저 실행 실패: {exc}"
             )
+
+    @staticmethod
+    def _search_candidates(query: str, limit: int):
+        if DDGS is None: raise RuntimeError("DDGS 검색 라이브러리가 설치되지 않았습니다.")
+        with DDGS() as ddgs:
+            rows = list(ddgs.text(query, max_results=limit))
+            rows.extend(ddgs.text(f"{query} official 공식", max_results=min(limit, 5)))
+        seen, results = set(), []
+        for row in rows:
+            url = str(row.get("href", "")).strip()
+            if url and url not in seen and urlparse(url).scheme in {"http", "https"}:
+                seen.add(url)
+                results.append({"url": url, "title": str(row.get("title", "")),
+                                "snippet": str(row.get("body", ""))})
+        return results
+
+    def _get_research_agent(self):
+        if self._research_agent is None:
+            fetcher = PlaywrightPageFetcher(self._validate_url, self._guard_route)
+            self._research_agent = ResearchAgent(self._search_candidates, fetcher, ResearchCache())
+        return self._research_agent
+
+    def _research_web(self, data):
+        query = str(data.get("query", "")).strip()
+        if not query: return ToolRunResult.failed(tool_name="browser_research", error="검색어가 비어 있습니다.")
+        try:
+            report = self._get_research_agent().research(
+                query, max_sources=int(data.get("max_sources", 5)), profile=str(data.get("profile", "default")),
+                ttl_seconds=float(data.get("ttl_seconds", 3600)), force_refresh=bool(data.get("force_refresh", False)))
+            if not report.sources:
+                return ToolRunResult.failed(tool_name="browser_research", error="실제로 방문해 검증할 수 있는 검색 결과가 없습니다.")
+            payload = report.to_dict()
+            return ToolRunResult.successful(tool_name="browser_research", raw_output=json.dumps(payload, ensure_ascii=False),
+                evidence=[Evidence("research_report", "검색 결과를 실제 방문하고 본문·날짜·출처·상충 여부를 분석했습니다.", {
+                    "source_count": len(report.sources), "claim_count": len(report.claims),
+                    "conflict_count": len(report.conflicts), "cache_hit": report.cache_hit,
+                    "expires_at": report.expires_at,
+                })], artifacts=[Artifact("url", source.url, {"source_id": source.source_id,
+                    "official": source.official, "published_at": source.published_at,
+                    "modified_at": source.modified_at}) for source in report.sources])
+        except Exception as exc:
+            return ToolRunResult.failed(tool_name="browser_research", error=f"Research 실행 실패: {exc}")
+
+    def _download(self, data):
+        from core.harness import SafetyLayer
+        ok, error = SafetyLayer.validate_path(str(data["path"]))
+        if not ok: return ToolRunResult.failed(tool_name="browser_download", error=error)
+        try:
+            fetcher = self._get_research_agent().fetcher
+            result = fetcher.download(str(data["url"]), str(data["path"]), profile=str(data.get("profile", "default")))
+            return ToolRunResult.successful(tool_name="browser_download", raw_output="브라우저 다운로드를 완료했습니다.",
+                evidence=[Evidence("browser_download", "저장 파일의 크기와 해시를 확인했습니다.", result)],
+                artifacts=[Artifact("download", result["path"], {"sha256": result["sha256"], "size": result["size"]})])
+        except Exception as exc:
+            return ToolRunResult.failed(tool_name="browser_download", error=f"다운로드 실패: {exc}")
+
+    def _profile_status(self, data):
+        fetcher = self._get_research_agent().fetcher
+        profile = fetcher._profile_name(str(data.get("profile", "default")))
+        path = (fetcher.profiles_dir / profile).resolve()
+        files = sum(1 for item in path.rglob("*") if item.is_file()) if path.exists() else 0
+        return ToolRunResult.successful(tool_name="browser_profile_status", raw_output=("Profile 저장됨" if path.exists() else "Profile 미생성"),
+            evidence=[Evidence("browser_profile", "Cookie 값을 노출하지 않고 영속 Profile 존재 여부만 확인했습니다.", {
+                "profile": profile, "path": str(path), "exists": path.exists(), "file_count": files,
+            })])
 
     @staticmethod
     def _search_web(tool_input: Dict[str, Any]):
@@ -238,7 +344,7 @@ class BrowserPlugin(BasePlugin):
                 {
                     "title": str(row.get("title", "")).strip(),
                     "url": str(row.get("href", "")).strip(),
-                    "snippet": str(row.get("body", "")).strip(),
+                    "snippet": PromptInjectionGuard.isolate(str(row.get("body", "")).strip())[0],
                 }
                 for row in rows
                 if row.get("href")
@@ -300,6 +406,17 @@ class BrowserPlugin(BasePlugin):
             )
 
     def present_result(self, tool_name: str, result: str) -> str:
+        if tool_name == "browser_research":
+            try:
+                payload = json.loads(result)
+                claims = payload.get("claims", [])[:5]
+                lines = [f"- {claim['text']} [{', '.join(claim['citations'])}]" for claim in claims]
+                if payload.get("conflicts"):
+                    lines.append(f"상충하는 정보 {len(payload['conflicts'])}건이 있어 출처별 값을 함께 확인해야 합니다.")
+                lines.extend(f"[{source['source_id']}] {source['url']}" for source in payload.get("sources", []))
+                return "\n".join(lines) if lines else "검증 가능한 주장을 찾지 못했습니다."
+            except (json.JSONDecodeError, KeyError, TypeError):
+                return result
         if tool_name != "browser_web_search":
             return result
         try:
