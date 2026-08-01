@@ -3,6 +3,7 @@ from pathlib import Path
 
 from core.project_indexer import ProjectIndexer
 from core.memory import ConversationMemory
+from core.project_bootstrap import ProjectBootstrapper
 from core.rag import VectorRAGManager
 from core.workspace import WorkspaceManager
 
@@ -96,3 +97,44 @@ def test_simple_rag_search_is_scoped_by_namespace():
     }
     result = rag._simple_search("shared", 5)
     assert [item["source"] for item in result] == ["a.txt"]
+
+
+def test_project_bootstrap_creates_template_and_git_repository(tmp_path):
+    result = ProjectBootstrapper().create(
+        str(tmp_path), "sample-app", "python-cli", create_venv=False, init_git=True
+    )
+    root = Path(result.path)
+    assert (root / "src" / "sample_app" / "main.py").exists()
+    assert (root / "tests" / "test_main.py").exists()
+    assert (root / ".jarvis-project.json").exists()
+    assert (root / ".git").is_dir()
+    assert result.git_initialized is True
+
+
+def test_project_bootstrap_rejects_escape_and_existing_target(tmp_path):
+    bootstrapper = ProjectBootstrapper()
+    try:
+        bootstrapper.create(str(tmp_path), "../escape", create_venv=False, init_git=False)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("경로 탈출 이름은 거부되어야 합니다.")
+
+    existing = tmp_path / "exists"
+    existing.mkdir()
+    try:
+        bootstrapper.create(str(tmp_path), "exists", create_venv=False, init_git=False)
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError("기존 프로젝트를 덮어쓰면 안 됩니다.")
+
+
+def test_project_bootstrap_can_create_virtual_environment(tmp_path):
+    result = ProjectBootstrapper().create(
+        str(tmp_path), "venv-check", "empty", create_venv=True, init_git=False
+    )
+    python_name = "python.exe" if __import__("os").name == "nt" else "python"
+    scripts = "Scripts" if __import__("os").name == "nt" else "bin"
+    assert (Path(result.path) / ".venv" / scripts / python_name).exists()
+    assert result.virtual_environment is True
