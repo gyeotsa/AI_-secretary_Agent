@@ -61,6 +61,8 @@ class BrowserPlugin(BasePlugin):
                     r"(?:최신|신형|최근|새로 나온).*(?:이름|무엇|뭐|알려|찾아)",
                     r"(?:검색|찾아봐|알아봐|확인해)",
                 ],
+                freshness="live",
+                requires_sources=True,
             )
         ]
 

@@ -95,6 +95,8 @@ class IntentSchema:
     target_slot: str = ""
     constraint_slots: List[str] = field(default_factory=list)
     reference_slots: List[str] = field(default_factory=list)
+    freshness: str = "static"
+    requires_sources: bool = False
 
     def __post_init__(self):
         parts = self.name.split(".", 1)
@@ -278,6 +280,10 @@ class PluginRegistry:
                 current.append(f"등록되지 않은 Tool 참조: {intent.tool_name}")
             if intent.request_type not in {"query", "execute", "change", "external_send"}:
                 current.append(f"알 수 없는 request_type: {intent.request_type}")
+            if intent.freshness not in {"static", "session", "live"}:
+                current.append(f"알 수 없는 freshness: {intent.freshness}")
+            if intent.freshness == "live" and not intent.requires_sources:
+                current.append("live Intent는 requires_sources=True여야 합니다.")
             contract = self.get_capability(intent.tool_name)
             expected_effect = {
                 "query": "read", "execute": "execute", "change": "change",

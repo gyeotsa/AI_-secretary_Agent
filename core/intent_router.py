@@ -26,6 +26,8 @@ class IntentResolution:
     routing_reason: str = ""
     alternatives: List[Dict[str, Any]] = field(default_factory=list)
     ambiguous: bool = False
+    freshness: str = "static"
+    requires_sources: bool = False
 
     @property
     def ready(self) -> bool:
@@ -34,6 +36,14 @@ class IntentResolution:
 
 class IntentRouter:
     CAPABILITY_HINTS = ("가능", "지원", "할 수 있", "아니었어")
+    TEMPORAL_PATTERN = re.compile(
+        r"(?:현재|지금|오늘|어제|내일|최근|최신|실시간|방금|이번\s*(?:주|달|분기|해|년도)|"
+        r"(?:20)?\d{2}년|\d{1,2}월\s*\d{1,2}일)", re.IGNORECASE,
+    )
+    INFORMATION_PATTERN = re.compile(
+        r"(?:무엇|뭐|누구|어디|언제|어떻게|어때|알려|확인|찾아|검색|조회|"
+        r"소식|뉴스|결과|현황|상태|가격|시세|순위|일정|\?)", re.IGNORECASE,
+    )
 
     def __init__(self, registry: PluginRegistry):
         self.registry = registry
@@ -91,6 +101,20 @@ class IntentRouter:
         confidence = min(0.99, 0.45 + min(score, 120) / 300 + margin * 0.25)
         return plugin, intent, confidence
 
+    def _fresh_information_intent(self, text: str):
+        if not (self.TEMPORAL_PATTERN.search(text) and self.INFORMATION_PATTERN.search(text)):
+            return None
+        return next(
+            (
+                (plugin, intent, 0.82)
+                for plugin, intent in self.registry.get_all_intents()
+                if intent.request_type == "query"
+                and intent.freshness == "live"
+                and intent.requires_sources
+            ),
+            None,
+        )
+
     def resolve(self, text: str, intent_name: str = "",
                 current_slots: Optional[Dict[str, Any]] = None) -> IntentResolution:
         selected = None
@@ -101,12 +125,19 @@ class IntentRouter:
             )
         else:
             selected = self._find(text)
+            if not selected:
+                selected = self._fresh_information_intent(text)
         if not selected:
             return IntentResolution()
 
         plugin, intent, confidence = selected
         ranked = self._rank(text) if not intent_name else []
-        routing_reason = ranked[0][3] if ranked else "기존 intent 문맥과 Slot을 이어받음"
+        if ranked:
+            routing_reason = ranked[0][3]
+        elif not intent_name and intent.freshness == "live":
+            routing_reason = "시간 민감 정보 질문과 live/source-required Capability 계약 일치"
+        else:
+            routing_reason = "기존 intent 문맥과 Slot을 이어받음"
         alternatives = [
             {"intent": candidate.name, "score": round(score, 3)}
             for score, _plugin, candidate, _reason in ranked[1:4]
@@ -123,9 +154,10 @@ class IntentRouter:
                 "어떤 작업을 원하시는지 말씀해 주세요."
             )
         normalized = text.casefold()
-        is_execution = any(hint.casefold() in normalized for hint in intent.execution_hints)
+        has_action_hint = any(hint.casefold() in normalized for hint in intent.execution_hints)
+        is_execution = has_action_hint or intent.request_type == "query"
         is_capability = any(hint in normalized for hint in self.CAPABILITY_HINTS)
-        if not intent_name and is_capability and not is_execution:
+        if not intent_name and is_capability and not has_action_hint:
             return self._resolution(
                 intent, {}, confidence, capability_response=intent.capability_response,
                 explicit=not bool(intent_name), execution_requested=False,
@@ -160,6 +192,8 @@ class IntentRouter:
             constraints=constraints,
             reference=reference,
             request_type=values.pop("request_type", intent.request_type),
+            freshness=intent.freshness,
+            requires_sources=intent.requires_sources,
             **values,
         )
 

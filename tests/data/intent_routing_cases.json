@@ -1,0 +1,13 @@
+[
+  {"id": "ordinary_greeting", "utterance": "안녕", "intent": null},
+  {"id": "personal_today_feeling", "utterance": "오늘 기분이 별로 안 좋아", "intent": null},
+  {"id": "live_stock_question", "utterance": "현재 엔비디아 주가가 얼마인지 알려줘", "intent": "web.search", "request_type": "query", "freshness": "live"},
+  {"id": "live_public_figure", "utterance": "지금 한국 대통령이 누구야?", "intent": "web.search", "request_type": "query", "freshness": "live"},
+  {"id": "recent_news", "utterance": "최근 인공지능 업계 소식을 알려줘", "intent": "web.search", "request_type": "query", "freshness": "live"},
+  {"id": "local_current_date", "utterance": "오늘 날짜가 며칠이야?", "intent": "system.current_date", "request_type": "query"},
+  {"id": "local_current_time", "utterance": "현재 시간이 몇 시야?", "intent": "system.current_time", "request_type": "query"},
+  {"id": "dedicated_weather", "utterance": "서울은 지금 날씨가 어때?", "intent": "weather.current", "request_type": "query"},
+  {"id": "launch_application", "utterance": "메모장 실행해줘", "intent": "windows.launch_app", "request_type": "execute"},
+  {"id": "generic_file_creation", "utterance": "456이라는 이름으로 파일 생성해줘", "intent": "filesystem.create_file", "request_type": "change"},
+  {"id": "calendar_creation", "utterance": "바탕화면에 캘린더 파일 만들어줘", "intent": "calendar.create_event", "request_type": "change"}
+]
