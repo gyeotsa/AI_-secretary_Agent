@@ -5,6 +5,8 @@ from core.llm import get_llm_client
 from core.scratchpad import get_scratchpad, Scratchpad
 from core.context import get_context_manager
 from core.tools import get_tools_description_text
+from core.plan_runtime import PlanDAG, PlanStep
+from core.plugin import get_plugin_registry
 
 
 @dataclass
@@ -16,6 +18,14 @@ class DecomposedTask:
     dependencies: List[str] = field(default_factory=list)
     priority: int = 0
     estimated_steps: int = 1
+    tool_input: Dict[str, Any] = field(default_factory=dict)
+    preconditions: List[str] = field(default_factory=list)
+    expected_artifacts: List[Dict[str, Any]] = field(default_factory=list)
+    verification: Dict[str, Any] = field(default_factory=dict)
+    requires_approval: bool = False
+    approval_reason: str = ""
+    retry_budget: int = 2
+    retry_strategies: List[str] = field(default_factory=lambda: ["retry", "replan"])
 
 
 class Planner:
@@ -90,6 +100,14 @@ class Planner:
             "dependencies": [],
             "priority": 1,
             "estimated_steps": 1
+            ,"tool_input": {},
+            "preconditions": [],
+            "expected_artifacts": [{"kind": "file", "uri": "예상 경로"}],
+            "verification": {"method": "tool_verifier", "success_condition": "검증 조건"},
+            "requires_approval": false,
+            "approval_reason": "",
+            "retry_budget": 2,
+            "retry_strategies": ["retry", "replan"]
         },
         {
             "id": "task_2",
@@ -148,6 +166,14 @@ __TOOLS_TEXT__
                     dependencies=task_data.get("dependencies", []),
                     priority=task_data.get("priority", 0),
                     estimated_steps=task_data.get("estimated_steps", 1)
+                    ,tool_input=task_data.get("tool_input", {}),
+                    preconditions=task_data.get("preconditions", []),
+                    expected_artifacts=task_data.get("expected_artifacts", []),
+                    verification=task_data.get("verification", {}),
+                    requires_approval=bool(task_data.get("requires_approval", False)),
+                    approval_reason=task_data.get("approval_reason", ""),
+                    retry_budget=int(task_data.get("retry_budget", 2)),
+                    retry_strategies=task_data.get("retry_strategies", ["retry", "replan"]),
                 )
                 decomposed_tasks.append(task)
                 # Scratchpad에 Task로 추가 (기존 Task 클래스 사용)
@@ -171,6 +197,36 @@ __TOOLS_TEXT__
             )
             self.scratchpad.add_task(fallback_task.description, 1)
             return [fallback_task]
+
+    def build_plan_dag(self, goal: str, context: str = "",
+                       allowed_tool_names: List[str] | None = None) -> PlanDAG:
+        """Create and validate the executable contract used by the coordinator."""
+        tasks = self.decompose_goal(goal, context, allowed_tool_names)
+        steps = []
+        for task in tasks:
+            tool_name = task.required_tools[0] if task.required_tools else ""
+            capability = get_plugin_registry().get_capability(tool_name) if tool_name else None
+            permission_checkpoint = bool(capability and (
+                capability.side_effect == "external_send"
+                or any(permission in {"filesystem_delete", "git_push", "mail_send"}
+                       for permission in capability.required_permissions)
+            ))
+            requires_approval = task.requires_approval or permission_checkpoint
+            approval_reason = task.approval_reason
+            if requires_approval and not approval_reason:
+                approval_reason = f"{tool_name} 단계가 외부 전송 또는 되돌리기 어려운 변경을 수행합니다."
+            steps.append(PlanStep(
+                id=task.id, description=task.description, tool_name=tool_name,
+                tool_input=dict(task.tool_input), dependencies=list(task.dependencies),
+                preconditions=list(task.preconditions),
+                expected_artifacts=list(task.expected_artifacts),
+                verification=dict(task.verification),
+                requires_approval=requires_approval,
+                approval_reason=approval_reason,
+                retry_budget=task.retry_budget,
+                retry_strategies=list(task.retry_strategies),
+            ))
+        return PlanDAG(goal=goal, steps=steps)
 
 
 # Singleton instance

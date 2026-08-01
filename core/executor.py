@@ -22,6 +22,8 @@ from core.intent_router import IntentRouter, IntentResolution
 from core.custom_tts import load_custom_voice_profiles
 from core.model_registry import get_model_role_router
 from core.tool_result import ToolRunResult, ToolRunStatus
+from core.plan_runtime import PlanCoordinator, PlanDAG, PlanRunResult, PlanStep
+from core.agent_services import PlanningService, ResponseComposer
 
 
 @dataclass
@@ -93,6 +95,10 @@ class Executor:
         self.current_agent_task_id = ""
         self._task_controls: Dict[str, Dict[str, bool]] = {}
         self._control_condition = threading.Condition()
+        self.plan_coordinator = PlanCoordinator()
+        self.planning_service = PlanningService(self.planner)
+        self.response_composer = ResponseComposer()
+        self.current_plan: Optional[PlanDAG] = None
 
     def initialize(self, goal: str, session_id: Optional[str] = None):
         """초기화: Goal 설정, Scratchpad 초기화, Context 빌드"""
@@ -103,6 +109,7 @@ class Executor:
         self._consecutive_failures = 0
         self._total_failures = 0
         self.terminal_error = None
+        self.current_plan = None
         self.scratchpad.reset()
         self.scratchpad.set_goal(goal)
         print(f"[Executor] 초기화 완료: Goal='{goal}'")
@@ -342,18 +349,11 @@ class Executor:
         # 1. 초기 Planning
         initial_context = self.build_context()
         allowed_tools = self._allowed_tools_for_goal(goal)
-        planned_tasks = self.planner.decompose_goal(goal, initial_context, allowed_tools)
+        self.current_plan = self.planning_service.create(goal, initial_context, allowed_tools)
+        planned_tasks = self.current_plan.steps
         self.dialogue_state.update_task(
             agent_task_id,
-            plan=[
-                {
-                    "id": task.id,
-                    "description": task.description,
-                    "status": task.status,
-                    "required_tools": list(getattr(task, "required_tools", []) or []),
-                }
-                for task in planned_tasks
-            ],
+            plan=self.current_plan.to_dict()["steps"],
         )
         model_role_router = getattr(self, "model_role_router", None)
         if model_role_router is not None:
@@ -394,7 +394,7 @@ class Executor:
             if scratchpad is not None else 0
         )
         retry_count = getattr(self, "_retry_count", 0)
-        status, response = self._present_terminal_state(
+        status, response = self.response_composer.terminal(
             response=response,
             cancelled=bool(control.get("cancel")),
             terminal_error=self.terminal_error,
@@ -405,15 +405,7 @@ class Executor:
         self.dialogue_state.transition_task(
             agent_task_id, status, result=response,
             retry_count=retry_count,
-            plan=[
-                {
-                    "id": task.id,
-                    "description": task.description,
-                    "status": task.status,
-                    "required_tools": list(getattr(task, "required_tools", []) or []),
-                }
-                for task in (scratchpad.tasks if scratchpad is not None else [])
-            ],
+            plan=self._serialized_current_plan(scratchpad.tasks if scratchpad is not None else []),
         )
         with self._control_condition:
             self._task_controls.pop(agent_task_id, None)
@@ -425,6 +417,58 @@ class Executor:
             completed_steps=completed_steps,
             failed_steps=failed_steps,
         )
+
+    def _serialized_current_plan(self, scratchpad_tasks) -> List[Dict[str, Any]]:
+        if self.current_plan is None:
+            return [{"id": task.id, "description": task.description, "status": task.status}
+                    for task in scratchpad_tasks]
+        status_by_description = {task.description: task.status for task in scratchpad_tasks}
+        payload = self.current_plan.to_dict()["steps"]
+        for step in payload:
+            legacy = status_by_description.get(step["description"])
+            if legacy:
+                step["status"] = {
+                    "completed": "completed", "failed": "failed", "in_progress": "running"
+                }.get(legacy, legacy)
+        return payload
+
+    def execute_plan_dag(
+        self, plan: PlanDAG,
+        approval_callback: Optional[Callable[[PlanStep], bool]] = None,
+        replan_callback: Optional[Callable[[PlanDAG, PlanStep, ToolRunResult], Optional[PlanDAG]]] = None,
+    ) -> PlanRunResult:
+        """Execute a prevalidated DAG through the central Tool and verification contracts."""
+        def execute(step: PlanStep, strategy: str) -> ToolRunResult:
+            if not step.tool_name:
+                return ToolRunResult.failed(
+                    tool_name=step.id, error="실행 단계에 Tool이 지정되지 않았습니다."
+                )
+            return self.tool_executor.execute_tool(step.tool_name, dict(step.tool_input))
+
+        def verify(step: PlanStep, candidate: ToolRunResult) -> ToolRunResult:
+            if candidate.succeeded and candidate.evidence:
+                return candidate
+            verification = self.verifier.verify(step.tool_name, step.tool_input, candidate.raw_output)
+            return ToolRunResult.from_verification(
+                tool_name=step.tool_name, raw_output=candidate.raw_output,
+                verification=verification, duration_ms=candidate.duration_ms,
+            )
+
+        outcome = self.plan_coordinator.run(
+            plan, execute, verify, approve=approval_callback, replan=replan_callback,
+        )
+        if self.current_agent_task_id:
+            self.dialogue_state.update_task(
+                self.current_agent_task_id, plan=outcome.plan.to_dict()["steps"],
+                retry_count=sum(step.attempts - 1 for step in outcome.plan.steps),
+                verification_status=outcome.status,
+            )
+            if outcome.status == "awaiting_approval":
+                self.dialogue_state.transition_task(
+                    self.current_agent_task_id, "awaiting_approval",
+                    pending_question="사람 승인이 필요한 실행 단계가 대기 중입니다.",
+                )
+        return outcome
 
     @staticmethod
     def _present_terminal_state(
