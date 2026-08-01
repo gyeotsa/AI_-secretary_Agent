@@ -328,15 +328,23 @@ pytest까지 통과하는 E2E 및 전체 `212 passed, 4 deselected`. P3 범용 C
 
 ## P5 — Planner·Executor·Recovery 재설계
 
-- [ ] `executor.py`의 대화·계획·실행·응답 책임 분리
-- [ ] 실행 가능한 Plan DAG
-- [ ] 단계별 사전 조건·예상 Artifact·검증 방법
-- [ ] 독립 단계 병렬 실행
-- [ ] 관찰 결과 기반 재계획
-- [ ] 오류 서명·시도 전략·재시도 예산 저장
-- [ ] 동일 실패 반복 차단
-- [ ] 복구 후 같은 검증기 재실행
-- [ ] 사람 승인이 필요한 중단점 명시
+- [x] `executor.py`의 대화·계획·실행·응답 책임 분리
+- [x] 실행 가능한 Plan DAG
+- [x] 단계별 사전 조건·예상 Artifact·검증 방법
+- [x] 독립 단계 병렬 실행
+- [x] 관찰 결과 기반 재계획
+- [x] 오류 서명·시도 전략·재시도 예산 저장
+- [x] 동일 실패 반복 차단
+- [x] 복구 후 같은 검증기 재실행
+- [x] 사람 승인이 필요한 중단점 명시
+
+완료 기준: `Executor`는 호환 facade이며 일반 대화는 `ConversationService`, 계획 생성은
+`PlanningService`, DAG 실행·병렬화·복구는 `PlanCoordinator`, 종료 상태 문구는
+`ResponseComposer`가 담당한다. 각 `PlanStep`은 의존성·사전조건·Tool 입력·예상 Artifact·
+검증법·승인 이유·재시도 예산과 전략을 보유한다. Plan/attempt/error signature는 SQLite에
+저장되며 동일 서명 2회, 단계 예산, 전체 재계획 2회 중 먼저 도달한 경계에서 중단한다.
+모든 복구 시도는 최초 실행과 같은 검증 callback을 거친다. 외부 전송·삭제·push 권한 단계는
+`awaiting_approval`로 영속화되고 승인된 단계만 재개할 수 있다.
 
 ## P6 — Tool Runtime과 Plugin 완전 단일화
 

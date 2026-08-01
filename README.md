@@ -36,6 +36,9 @@ JARVIS는 Windows PC에서 대화, 파일·문서 작업, 웹 조사, 앱 제어
 - `.gitignore` 기반 초기/증분 인덱싱, 언어·프레임워크·테스트 명령 감지
 - 프로젝트별 Memory/RAG 격리와 Git 브랜치·dirty UI
 - 새 프로젝트 템플릿·가상환경·Git 초기화
+- 실행 가능한 Plan DAG와 독립 단계 병렬 실행
+- 오류 서명·재시도 예산·관찰 기반 재계획·사람 승인 체크포인트
+- Conversation·Planning·Execution·Response 서비스 책임 분리
 - Gmail, Outlook, Calendar, Drive 등의 실제 OAuth 연결
 - 장시간 자동화와 실제 장치의 제품 수준 E2E 검증
 

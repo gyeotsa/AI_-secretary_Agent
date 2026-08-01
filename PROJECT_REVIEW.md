@@ -161,6 +161,24 @@ P3 마지막 단계에서 자연어 저장소 변경 Intent를 CodingPlan과 JSO
 3. 저장소 단위 Coding Agent와 patch→test→diff 루프.
 4. Workspace·Project Intelligence 완료. 다음 구현 우선순위는 P5 Planner·Executor·Recovery 재설계.
 
+P5도 완료되어 다음 구현 우선순위는 P6 Tool Runtime과 Plugin 완전 단일화입니다.
+
+## 2026-08-01 P5 완료
+
+- 설명 목록 수준의 계획을 cycle·누락 의존성을 거부하는 실행 가능한 Plan DAG로 교체했습니다.
+- 단계별 사전조건, Tool 입력, 예상 Artifact, 검증 방법, 승인 이유, 재시도 예산·전략을
+  계획 및 통합 Task 상태에 저장합니다.
+- 동시에 준비된 독립 단계는 제한된 worker pool에서 병렬 실행하고 의존 단계는 완료를 기다립니다.
+- 실제 실패 관찰을 포함해 계획을 revision 단위로 다시 만들며 완료 단계는 반복하지 않습니다.
+- 오류 유형과 정규화된 서명을 attempt별로 저장하고 같은 실패 2회·단계 예산·전체 재계획
+  2회의 경계로 무한 반복을 차단합니다.
+- 복구 실행 결과는 최초 단계와 같은 verifier callback으로 다시 검증합니다.
+- 외부 전송·삭제·push 계약은 승인 이유와 함께 `awaiting_approval`로 영속화되며 승인된
+  단계만 재개합니다.
+- Executor는 호환 facade로 유지하고 Conversation, Planning, Execution/Recovery, Response
+  책임을 독립 서비스로 분리했습니다.
+- 전체 자동화 회귀 결과는 `212 passed, 4 deselected`입니다.
+
 ## 2026-08-01 P4 완료
 
 - 마지막 Workspace를 영속 카탈로그에서 자동 복원하고 목록·별칭·프로젝트별 설정을 관리합니다.

@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -176,8 +177,17 @@ class PlanExecutionStore:
                 observation TEXT NOT NULL, created_at REAL NOT NULL)""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_attempt_signature ON step_attempts(plan_id,step_id,error_signature)")
 
+    @contextmanager
     def _connect(self):
-        return sqlite3.connect(self.db_path, timeout=10)
+        connection = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def save_plan(self, plan: PlanDAG, status: str = "running") -> None:
         with self._lock, self._connect() as conn:
