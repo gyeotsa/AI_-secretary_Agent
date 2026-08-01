@@ -6,6 +6,7 @@ from config import Config
 import os
 import uuid
 from dataclasses import dataclass, asdict
+from pathlib import Path
 
 
 @dataclass
@@ -261,6 +262,10 @@ class SemanticMemoryManager:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or Config.DB_PATH.replace(".db", "_semantic.db")
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        from core.knowledge_memory import KnowledgeMemoryStore
+        self.knowledge_store = KnowledgeMemoryStore(
+            str(Path(self.db_path).with_name("knowledge_memory.db"))
+        )
         self._init_db()
         
     def _init_db(self):
@@ -283,6 +288,26 @@ class SemanticMemoryManager:
         
     def add_memory(self, memory: SemanticMemory) -> int:
         """시맨틱 메모리 추가 또는 업데이트"""
+        from core.knowledge_memory import (
+            EpistemicStatus, KnowledgeRecord, MemoryKind, get_knowledge_memory,
+        )
+        category_map = {
+            "사용자_프로필": MemoryKind.PREFERENCE,
+            "프로젝트_정보": MemoryKind.PROJECT,
+            "사례": MemoryKind.CASE,
+            "작업": MemoryKind.TASK,
+        }
+        self.knowledge_store.remember(KnowledgeRecord(
+            content=memory.content,
+            kind=category_map.get(memory.category, MemoryKind.FACT),
+            subject=memory.key,
+            predicate="describes",
+            epistemic_status=EpistemicStatus.USER_CLAIM,
+            source_label="legacy semantic memory",
+            workspace_namespace=str(memory.metadata.get("workspace_namespace", "global")),
+            metadata={**memory.metadata, "legacy_category": memory.category},
+            recorded_at=memory.timestamp,
+        ), automatic=True)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
@@ -512,6 +537,22 @@ def build_memory_context(session_id: str, max_episodes: int = 20, include_semant
             context_parts.append("## 프로젝트 정보")
             for mem in project_memories:
                 context_parts.append(f"- {mem.key}: {mem.content}")
+            context_parts.append("")
+
+        from core.knowledge_memory import get_knowledge_memory
+        namespace = get_memory().workspace_namespace
+        typed_records = get_knowledge_memory().search(
+            workspace_namespace=namespace, limit=20
+        )
+        if typed_records:
+            context_parts.append("## 검증 가능한 장기 메모리")
+            for record in typed_records:
+                source = record.source_label or record.source_uri or "사용자 진술"
+                context_parts.append(
+                    f"- [{record.kind.value}/{record.epistemic_status.value}] "
+                    f"{record.subject} {record.predicate}: {record.content} "
+                    f"(출처: {source}, 기록: {datetime.fromtimestamp(record.recorded_at).isoformat()})"
+                )
             context_parts.append("")
     
     return "\n".join(context_parts)
