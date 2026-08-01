@@ -114,6 +114,12 @@ CodingAgent에 연결했습니다. 구조화 CodingPlan은 관련 파일·심볼
 실행하고 실패 시 전체 transaction을 롤백합니다. JavaScript는 사용 가능한 Node의
 `--check`를 선택합니다. 현재 기준선은 `206 passed, 4 deselected`입니다.
 
+P3 3차에서 pyproject/package/Cargo/go manifest와 실제 설치 실행기를 기준으로
+formatter·lint·type·test·build 검증 전략을 자동 구성합니다. 모든 명령은 shell 없는
+인자 배열이며, 실패 시 원본 롤백 후 구조화 오류를 다음 최소 patch에 전달하는 최대
+5회의 복구 인터페이스를 제공합니다. 빈 diff·과대 patch·병합 충돌 표식은 저장 전
+자체 검토에서 차단합니다. 현재 기준선은 `209 passed, 4 deselected`입니다.
+
 ## 판정
 
 기존 문서의 “Level 2 완료” 표기는 실제 동작 검증보다 앞서 있었습니다. 이번 검토에서 1–7단계의 핵심 연결 오류를 수정했고 8단계 플러그인과 Chromium 종단 검증, 9단계 RAG, 10단계 역할 기반 하이브리드 LLM 라우팅까지 구현했습니다. 실제 Anthropic 성공 경로 및 GUI·하드웨어 연동은 별도 실환경 검증이 남아 있습니다.

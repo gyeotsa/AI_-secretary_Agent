@@ -7,6 +7,26 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-08-01 P3 검증 전략과 제한 복구 루프
+
+- CodingAgent가 프로젝트 manifest와 현재 인터프리터에서 사용 가능한 실행기를 함께
+  확인해 검증 명령을 구성한다. Python은 py_compile/관련 pytest와 설정된 Ruff/Mypy,
+  JS/TS는 node check 및 package scripts의 format:check/lint/typecheck/test/build,
+  Rust는 cargo check/test, Go는 go test를 지원한다.
+- 명령은 모두 `shell=False` 인자 배열이며 manifest에 선언되지 않았거나 설치되지 않은
+  도구를 실행하지 않는다.
+- `review_diff()`가 빈 diff, 2,000줄 초과 patch, 병합 충돌 표식을 원자적 저장 전에
+  차단한다.
+- `apply_with_recovery()`는 검증 실패로 전체 롤백된 결과와 로그를 repair callback에
+  전달한다. 새 exact-minimal patch만 최대 5회 범위에서 재적용·재검증하며 테스트에서
+  첫 문법 실패 후 두 번째 patch 성공을 확인했다.
+- 코드 커밋: `9629243` (`[Feat] P3 검증 전략과 제한 복구 루프 연결`)
+- 검증: 전체 `209 passed, 4 deselected`.
+- 다음 해야 할 일: P3의 남은 새 기능 테스트 생성 정책과 자연어 Coding 요청→계획→
+  edits 생성→transaction 실행을 연결한다. 생성 테스트도 제품 코드와 같은 최소 patch,
+  검증, diff review, rollback 계약을 통과해야 하며 테스트 없는 새 동작은 완료 처리하지
+  않도록 한다.
+
 ## 2026-08-01 P3 심볼 영향 계획과 관련 테스트
 
 - CodingAgent에 `CodingPlan`과 `build_plan()`을 추가했다. 요청에서 코드 식별자를

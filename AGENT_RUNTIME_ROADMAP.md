@@ -270,19 +270,25 @@ P0 상태: **완료**. 레거시 문자열은 직접 성공 근거로 사용하�
 - 변경 파일명과 대응하는 `test_<stem>.py`/`<stem>_test.py`를 자동 영향 범위에 넣고
   Python `py_compile` 후 관련 pytest를 실행한다. JavaScript는 Node가 있을 때
   `node --check`를 선택한다. 관련 테스트 실패 시 원자적 롤백됨을 검증했다.
+- 2026-08-01: manifest와 설치된 실행기를 함께 확인해 Ruff check/format, Mypy,
+  npm format/lint/typecheck/test/build, Cargo check/test, Go test를 안전한 인자 배열로
+  선택한다. 설정이나 실행기가 없으면 존재하지 않는 검증을 성공으로 가장하지 않는다.
+- diff가 비었거나 2,000줄 최소 patch 한도를 넘거나 병합 충돌 표식을 추가하면 저장
+  전에 자체 검토에서 거절한다. 검증 실패는 전체 롤백 후 오류 로그를 repair callback에
+  전달하며 최대 5회 이내의 새 최소 patch만 재적용·재검증한다.
 
 - [x] 저장소 구조·README·의존성·Git 상태 사전 분석
 - [x] 관련 심볼과 파일 검색
 - [x] 변경 계획과 영향 범위 작성
 - [x] 전체 파일 재생성 대신 최소 patch 적용
 - [x] 인코딩·줄바꿈·사용자 변경 보존
-- [ ] 언어별 문법·formatter·lint·type check
+- [x] 언어별 문법·formatter·lint·type check
 - [x] 관련 테스트 자동 선택·실행
 - [ ] 실패 로그 분석 후 수정·재검증
-- [ ] 최종 diff 자체 검토
+- [x] 최종 diff 자체 검토
 - [x] 원자적 적용과 실패 롤백
 - [ ] 새 기능 테스트 생성
-- [ ] 빌드·실행 결과와 Artifact 보고
+- [x] 빌드·실행 결과와 Artifact 보고
 
 수락 기준:
 
