@@ -23,7 +23,7 @@ from core.custom_tts import load_custom_voice_profiles
 from core.model_registry import get_model_role_router
 from core.tool_result import ToolRunResult, ToolRunStatus
 from core.plan_runtime import PlanCoordinator, PlanDAG, PlanRunResult, PlanStep
-from core.agent_services import PlanningService, ResponseComposer
+from core.agent_services import ConversationService, PlanningService, ResponseComposer
 
 
 @dataclass
@@ -98,6 +98,7 @@ class Executor:
         self.plan_coordinator = PlanCoordinator()
         self.planning_service = PlanningService(self.planner)
         self.response_composer = ResponseComposer()
+        self.conversation_service = ConversationService(self.llm)
         self.current_plan: Optional[PlanDAG] = None
 
     def initialize(self, goal: str, session_id: Optional[str] = None):
@@ -1275,6 +1276,11 @@ class Executor:
             {},
         )
         assistant_name = str(selected_profile.get("assistant_name", "")).strip()
+        conversation_service = getattr(self, "conversation_service", ConversationService(self.llm))
+        return conversation_service.respond(
+            message, history, assistant_name=assistant_name, voice_name=custom_voice,
+            address=address, style=conversation_style,
+        )
         if assistant_name and message.strip().casefold() == assistant_name.casefold():
             return f"응, 듣고 있어. {address}."
         style_prompt = ""

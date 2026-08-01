@@ -8,6 +8,7 @@ from core.plan_runtime import (
 from core.recovery import RecoveryManager
 from core.scratchpad import Task
 from core.dialogue_state import DialogueStateStore
+from core.agent_services import ConversationService, ResponseComposer
 from core.tool_result import Artifact, Evidence, ToolRunResult
 
 
@@ -182,3 +183,23 @@ def test_plan_and_approval_checkpoint_survive_restart(tmp_path):
     loaded = DialogueStateStore(str(tmp_path / "dialogue.db")).get_task("session", task.task_id)
     assert loaded.plan_id == plan.plan_id
     assert loaded.status == "awaiting_approval"
+
+
+def test_conversation_and_response_policies_are_separate_services():
+    class LLM:
+        seen = None
+
+        def chat(self, messages):
+            self.seen = messages
+            return "반가워요"
+
+    llm = LLM()
+    response = ConversationService(llm).respond("안녕", [], address="지휘관님")
+    assert response == "반가워요"
+    assert "도구 실행이 아닌 일반 대화" in llm.seen[0]["content"]
+    status, text = ResponseComposer.terminal(
+        response="완료", cancelled=False, terminal_error="검증 실패",
+        completed_steps=1, failed_steps=1, retry_count=2,
+    )
+    assert status == "partial"
+    assert "1단계 완료" in text

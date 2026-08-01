@@ -7,6 +7,34 @@ from typing import List, Optional
 from core.plan_runtime import PlanDAG, PlanStep
 
 
+class ConversationService:
+    """Generates ordinary dialogue without exposing the Tool runtime."""
+
+    def __init__(self, llm):
+        self.llm = llm
+
+    def respond(self, message: str, history, *, assistant_name: str = "",
+                voice_name: str = "", address: str = "보스", style: str = "") -> str:
+        if assistant_name and message.strip().casefold() == assistant_name.casefold():
+            return f"응, 듣고 있어. {address}."
+        recent = [
+            {"role": item.get("role", "user"), "content": str(item.get("content", ""))}
+            for item in list(history)[-6:]
+            if item.get("role") in {"user", "assistant"} and item.get("content")
+        ]
+        persona = f"선택 음성: {voice_name}. 대화 스타일: {style}" if style else ""
+        prompt = (
+            "당신은 로컬 개인 비서 Jarvis입니다. 지금 요청은 도구 실행이 아닌 일반 대화입니다. "
+            "도구를 찾거나 실행했다고 주장하지 마세요. 최근 발화의 맥락과 감정을 먼저 반영하고 "
+            "자연스럽고 간결한 한국어로 답하세요. 최신 정보가 필요하면 확인이 필요하다고 말하세요. "
+            f"사용자 호칭은 '{address}'이며 답변에서 최대 한 번만 사용하세요. {persona}"
+        )
+        messages = [{"role": "system", "content": prompt}, *recent,
+                    {"role": "user", "content": message}]
+        response = str(self.llm.chat(messages) or "").strip()
+        return response or f"응, 듣고 있어. 무슨 이야기부터 해볼까, {address}?"
+
+
 class PlanningService:
     """Owns validated plan creation."""
 
