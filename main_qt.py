@@ -121,6 +121,7 @@ class JarvisApp:
         self.permission_manager = get_permission_manager()
         self.window.set_permission_manager(self.permission_manager)
         self.executor = get_executor()
+        self.window.set_dialogue_state_store(self.executor.dialogue_state)
         self.automation_engine = get_automation_engine()
         self.signals = AppSignals()  # <-- 여기로 옮겼어요!
         
@@ -175,6 +176,7 @@ class JarvisApp:
         self.window.session_created.connect(self._create_session)
         self.window.session_deleted.connect(self._delete_session)
         self.window.session_reset.connect(self._reset_session)
+        self.window.task_control_requested.connect(self._on_task_control_requested)
         
         self.heartbeat_timer = QTimer()
         self.heartbeat_timer.timeout.connect(lambda: None)
@@ -280,6 +282,10 @@ class JarvisApp:
                 self._select_session(remaining[0][0])
             else:
                 self._select_session(self.memory.create_session("새 대화"))
+
+    def _on_task_control_requested(self, task_id: str, action: str):
+        """Route Task UI actions through the same validated Executor control contract."""
+        self._on_user_input(f"{task_id} {action}")
     
     def _on_state_changed(self, old_state: State, new_state: State):
         self.window.update_state(new_state)
@@ -344,6 +350,7 @@ class JarvisApp:
         self.memory.save_message(self.session_id, "assistant", response_text)
         if getattr(outcome, "next_goal", ""):
             self.executor.enqueue_goal(outcome.next_goal, self.session_id, priority=100)
+        QTimer.singleShot(0, self._run_next_queued_task)
     
     def _process_ai(self, text: str, existing_task_id=None):
         print("[DEBUG] _process_ai called with:", text)
@@ -486,7 +493,10 @@ class JarvisApp:
         if self._is_processing_ai or not hasattr(self.executor, "dialogue_state"):
             return
         queued = [
-            task for task in self.executor.dialogue_state.list_tasks(self.session_id, include_finished=False)
+            task for task in self.executor.dialogue_state.list_tasks(
+                self.session_id, include_finished=False,
+                workspace_path=self.executor._workspace_scope(),
+            )
             if task.status == "queued"
         ]
         if queued:

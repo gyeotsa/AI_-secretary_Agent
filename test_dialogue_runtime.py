@@ -146,14 +146,17 @@ def test_running_task_revision_cancels_old_task_and_returns_replacement_goal(tmp
     assert executor._task_controls[task.task_id]["cancel"] is True
 
 
-def test_interrupted_task_resume_returns_automatic_reexecution_goal(tmp_path):
+def test_interrupted_task_resume_restores_same_task_to_queue(tmp_path):
     executor = _executor_for_dialogue_test(tmp_path)
     task = executor.dialogue_state.create_task("restart-session", "중단된 분석 계속하기")
     executor.dialogue_state.update_task(task.task_id, status="interrupted")
 
     outcome = executor.handle_control_command(f"작업 {task.task_id} 재개", "restart-session")
-    assert outcome.status == "interrupted"
-    assert outcome.next_goal == "중단된 분석 계속하기"
+    assert outcome.status == "queued"
+    assert outcome.next_goal == ""
+    restored = executor.dialogue_state.get_task("restart-session", task.task_id)
+    assert restored.status == "queued"
+    assert restored.goal == "중단된 분석 계속하기"
 
 
 def test_queued_tasks_are_ordered_by_priority_and_survive_restart(tmp_path):
@@ -475,6 +478,19 @@ def test_task_state_rejects_invalid_transition_and_isolates_workspace(tmp_path):
     assert not store.transition_task(task.task_id, "running")
     assert store.get_task("session", task.task_id, "C:/one") is not None
     assert store.get_task("session", task.task_id, "C:/two") is None
+
+
+def test_only_terminal_task_history_can_be_deleted(tmp_path):
+    store = DialogueStateStore(str(tmp_path / "delete.db"))
+    active = store.create_task("session", "실행 중", workspace_path="C:/one")
+    finished = store.create_task("session", "완료", workspace_path="C:/one")
+    store.transition_task(finished.task_id, "running")
+    store.transition_task(finished.task_id, "completed")
+
+    assert not store.delete_task("session", active.task_id, "C:/one")
+    assert not store.delete_task("session", finished.task_id, "C:/two")
+    assert store.delete_task("session", finished.task_id, "C:/one")
+    assert store.get_task("session", finished.task_id) is None
 
 
 def test_intent_resolution_exposes_follow_up_confidence():

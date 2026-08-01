@@ -59,8 +59,8 @@ class DialogueStateStore:
         "queued": {"running", "awaiting_user", "cancelled", "expired"},
         "awaiting_user": {"running", "cancelled", "expired"},
         "running": {"paused", "completed", "partial", "failed", "unverified", "cancelled", "interrupted"},
-        "paused": {"running", "cancelled", "interrupted"},
-        "interrupted": {"running", "cancelled", "expired"},
+        "paused": {"queued", "running", "cancelled", "interrupted"},
+        "interrupted": {"queued", "running", "cancelled", "expired"},
         "completed": set(),
         "partial": set(),
         "failed": set(),
@@ -295,6 +295,26 @@ class DialogueStateStore:
         if status != current and status not in self.ALLOWED_TRANSITIONS.get(current, set()):
             return False
         return self.update_task(task_id, status=status, **changes)
+
+    def delete_task(self, session_id: str, task_id: str,
+                    workspace_path: Optional[str] = None) -> bool:
+        """Delete only terminal task history within its session/workspace scope."""
+        workspace_clause = "" if workspace_path is None else " AND workspace_path = ?"
+        params = ((session_id, task_id) if workspace_path is None
+                  else (session_id, task_id, workspace_path))
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM agent_tasks WHERE session_id=? AND task_id=?"
+                f"{workspace_clause}", params,
+            ).fetchone()
+            if not row or row[0] not in {
+                "completed", "partial", "failed", "unverified", "cancelled", "expired"
+            }:
+                return False
+            conn.execute("DELETE FROM pending_requests WHERE task_id=?", (task_id,))
+            conn.execute("DELETE FROM intent_states WHERE task_id=?", (task_id,))
+            cursor = conn.execute("DELETE FROM agent_tasks WHERE task_id=?", (task_id,))
+        return cursor.rowcount > 0
 
     def get_task(self, session_id: str, task_id: str,
                  workspace_path: Optional[str] = None) -> Optional[StoredAgentTask]:

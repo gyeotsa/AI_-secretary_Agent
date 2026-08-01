@@ -626,6 +626,116 @@ class SessionManagerDialog(QDialog):
             self.session_deleted.emit(session_id)
             self.accept()
 
+
+class TaskManagerDialog(QDialog):
+    task_control_requested = pyqtSignal(str, str)
+
+    def __init__(self, state_store, session_id: str, workspace_path: str, parent=None):
+        super().__init__(parent)
+        self.state_store = state_store
+        self.session_id = session_id
+        self.workspace_path = workspace_path
+        self.setWindowTitle("JARVIS 작업 관리")
+        self.resize(820, 580)
+        self.setStyleSheet("""
+            QDialog, QListWidget, QTextEdit { background-color: #0a0a1a; color: #d8faff; }
+            QLabel { color: #00d4ff; }
+            QListWidget, QTextEdit { border: 1px solid #26677a; border-radius: 6px; }
+            QListWidget::item { padding: 9px; }
+            QListWidget::item:selected { background-color: #16495a; }
+            QPushButton { color: #00d4ff; border: 1px solid #00d4ff;
+                          border-radius: 6px; padding: 7px 12px; }
+        """)
+        layout = QVBoxLayout(self)
+        scope = workspace_path or "Workspace 없음"
+        layout.addWidget(QLabel(f"현재 세션 · {scope}"))
+        content = QHBoxLayout()
+        self.task_list = QListWidget()
+        self.task_list.setMinimumWidth(330)
+        self.details = QTextEdit()
+        self.details.setReadOnly(True)
+        content.addWidget(self.task_list, 1)
+        content.addWidget(self.details, 1)
+        layout.addLayout(content)
+
+        buttons = QHBoxLayout()
+        self.resume_button = QPushButton("재개")
+        self.cancel_button = QPushButton("취소")
+        self.delete_button = QPushButton("기록 삭제")
+        refresh_button = QPushButton("새로고침")
+        close_button = QPushButton("닫기")
+        self.resume_button.clicked.connect(lambda: self._request("재개"))
+        self.cancel_button.clicked.connect(lambda: self._request("취소"))
+        self.delete_button.clicked.connect(self._delete_record)
+        refresh_button.clicked.connect(self._load_tasks)
+        close_button.clicked.connect(self.accept)
+        for button in (self.resume_button, self.cancel_button, self.delete_button, refresh_button):
+            buttons.addWidget(button)
+        buttons.addStretch()
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+        self.task_list.currentItemChanged.connect(self._show_details)
+        self._load_tasks()
+
+    def _load_tasks(self):
+        self.task_list.clear()
+        tasks = self.state_store.list_tasks(
+            self.session_id, include_finished=True, workspace_path=self.workspace_path
+        )
+        for task in tasks:
+            item = QListWidgetItem(
+                f"{task.task_id} [{task.status}]\n{task.goal[:70]}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, task)
+            self.task_list.addItem(item)
+        if self.task_list.count():
+            self.task_list.setCurrentRow(0)
+        else:
+            self.details.setPlainText("현재 범위에 저장된 작업이 없습니다.")
+
+    def _selected_task(self):
+        item = self.task_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _show_details(self, current, _previous=None):
+        task = current.data(Qt.ItemDataRole.UserRole) if current else None
+        if not task:
+            self.details.clear()
+            return
+        self.details.setPlainText(
+            f"상태: {task.status}\n목표: {task.goal}\n"
+            f"확인 질문: {task.pending_question or '-'}\n"
+            f"Intent: {task.intent_name or '-'}\n마지막 도구: {task.last_tool or '-'}\n"
+            f"검증 상태: {task.verification_status or '-'}\n"
+            f"Artifact: {len(task.artifacts)}개 · Evidence: {len(task.evidence)}개\n"
+            f"갱신 시각: {task.updated_at}"
+        )
+        self.resume_button.setEnabled(task.status in {"paused", "interrupted"})
+        self.cancel_button.setEnabled(task.status in {"queued", "running", "paused", "interrupted", "awaiting_user"})
+        self.delete_button.setEnabled(task.status in {
+            "completed", "partial", "failed", "unverified", "cancelled", "expired"
+        })
+
+    def _request(self, action: str):
+        task = self._selected_task()
+        if task:
+            self.task_control_requested.emit(task.task_id, action)
+            self.accept()
+
+    def _delete_record(self):
+        task = self._selected_task()
+        if not task:
+            return
+        if QMessageBox.question(
+            self, "작업 기록 삭제", "선택한 종료 작업 기록을 삭제할까요?"
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        if not self.state_store.delete_task(
+            self.session_id, task.task_id, self.workspace_path
+        ):
+            QMessageBox.warning(self, "작업 기록 삭제", "실행 중인 작업은 삭제할 수 없습니다.")
+        self._load_tasks()
+
 class JarvisMainWindow(QWidget):
     command_triggered = pyqtSignal(str)
     text_submitted = pyqtSignal(str)
@@ -637,6 +747,7 @@ class JarvisMainWindow(QWidget):
     session_created = pyqtSignal(str)
     session_deleted = pyqtSignal(str)
     session_reset = pyqtSignal(str)
+    task_control_requested = pyqtSignal(str, str)
     
     def __init__(self, audio_processor=None):
         super().__init__()
@@ -653,6 +764,7 @@ class JarvisMainWindow(QWidget):
         self.permission_manager = None
         self.tts_settings_manager = None
         self.memory_manager = None
+        self.dialogue_state_store = None
         self.current_session_id = ""
         
         # 원형 사운드바 상태 변수
@@ -742,6 +854,13 @@ class JarvisMainWindow(QWidget):
         self.session_btn.setToolTip("대화 세션 관리")
         self.session_btn.clicked.connect(self.show_session_manager)
         tab_layout.addWidget(self.session_btn)
+
+        self.task_btn = QPushButton("☷")
+        self.task_btn.setStyleSheet(button_style)
+        self.task_btn.setFixedSize(35, 35)
+        self.task_btn.setToolTip("현재 작업 관리")
+        self.task_btn.clicked.connect(self.show_task_manager)
+        tab_layout.addWidget(self.task_btn)
         
         self.sound_bar = SoundBarWidget(self)
         self.sound_bar.hide()
@@ -1357,6 +1476,20 @@ class JarvisMainWindow(QWidget):
         dialog.session_created.connect(self.session_created.emit)
         dialog.session_deleted.connect(self.session_deleted.emit)
         dialog.session_reset.connect(self.session_reset.emit)
+        dialog.exec()
+
+    def set_dialogue_state_store(self, state_store):
+        self.dialogue_state_store = state_store
+
+    def show_task_manager(self):
+        if self.dialogue_state_store is None:
+            QMessageBox.warning(self, "작업 관리", "작업 상태 저장소가 아직 준비되지 않았습니다.")
+            return
+        dialog = TaskManagerDialog(
+            self.dialogue_state_store, self.current_session_id,
+            self.current_workspace_path, self,
+        )
+        dialog.task_control_requested.connect(self.task_control_requested.emit)
         dialog.exec()
     
     def _on_text_submitted(self):
