@@ -1,5 +1,6 @@
 from hashlib import sha256
 from pathlib import Path
+import json
 import sys
 
 from core.coding_agent import CodingAgent, FileEdit
@@ -193,3 +194,51 @@ def test_failed_validation_can_repair_and_reverify_with_bounded_retry(tmp_path):
     assert result.attempt_count == 2
     assert failures and "py_compile" in failures[0][1]
     assert target.read_text(encoding="utf-8") == "value = 2\n"
+
+
+def test_natural_language_feature_request_requires_test_and_creates_it_atomically(tmp_path):
+    source = tmp_path / "service.py"
+    source.write_text("def greet():\n    return 'hello'\n", encoding="utf-8")
+
+    class FeatureLLM:
+        def chat(self, _messages):
+            return json.dumps({
+                "summary": "한국어 인사 기능",
+                "change_kind": "feature",
+                "edits": [
+                    {"path": "service.py", "old_text": "return 'hello'",
+                     "new_text": "return '안녕'", "create": False},
+                    {"path": "test_service.py", "old_text": "",
+                     "new_text": "from service import greet\n\ndef test_greet():\n    assert greet() == '안녕'\n",
+                     "create": True},
+                ],
+            }, ensure_ascii=False)
+
+    _plan, result = CodingAgent(tmp_path).execute_request(
+        "greet 함수에 한국어 인사 기능을 구현해줘", FeatureLLM()
+    )
+
+    assert result.succeeded
+    assert set(result.changed_files) == {"service.py", "test_service.py"}
+    assert (tmp_path / "test_service.py").is_file()
+    assert "1 passed" in result.validation_output
+
+
+def test_feature_without_test_is_rejected_before_writing(tmp_path):
+    target = tmp_path / "service.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+
+    class MissingTestLLM:
+        def chat(self, _messages):
+            return json.dumps({
+                "summary": "새 기능", "change_kind": "feature",
+                "edits": [{"path": "service.py", "old_text": "value = 1",
+                           "new_text": "value = 2", "create": False}],
+            }, ensure_ascii=False)
+
+    try:
+        CodingAgent(tmp_path).execute_request("새 기능 구현", MissingTestLLM())
+        assert False, "테스트 없는 feature는 거절되어야 합니다."
+    except ValueError as exc:
+        assert "테스트 edit" in str(exc)
+    assert target.read_text(encoding="utf-8") == "value = 1\n"

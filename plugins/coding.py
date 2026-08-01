@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 import json
 
 from core.coding_agent import CodingAgent, FileEdit
-from core.plugin import BasePlugin, ToolSchema
+from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema
 from core.tool_result import Artifact, Evidence, ToolRunResult
 from core.workspace import get_workspace_manager
 
@@ -59,7 +59,35 @@ class CodingPlugin(BasePlugin):
                  "required": ["request"]},
                 ["filesystem_read"], side_effect="read",
             ),
+            ToolSchema(
+                "coding_execute_request", "자연어 코딩 요청을 계획·patch·검증·복구합니다",
+                {"type": "object", "properties": {"request": {"type": "string"}},
+                 "required": ["request"]},
+                ["filesystem_read", "filesystem_write", "run_command"], side_effect="change",
+            ),
         ]
+
+    def get_intents(self):
+        return [IntentSchema(
+            "coding.change_repository", "저장소 단위 코드 변경과 검증",
+            "coding_execute_request",
+            ["코드 수정", "기능 구현", "버그 수정", "리팩토링", "소스 수정"],
+            [SlotSchema("request", "전체 코딩 요청", "어떤 코드 변경이 필요한가요?")],
+            execution_hints=["수정", "구현", "고쳐", "리팩토링"],
+            request_type="change",
+            utterance_patterns=[
+                r"(?:코드|소스|함수|메서드|클래스|모듈|저장소|프로젝트).*"
+                r"(?:수정|구현|고쳐|리팩토링|테스트|빌드)",
+                r"[A-Za-z_][A-Za-z0-9_]*(?:\s*함수|\s*메서드|\s*클래스)?.*"
+                r"(?:수정|구현|고쳐|리팩토링).*(?:테스트|검증|빌드)",
+            ],
+        )]
+
+    def extract_slots(self, intent_name, text, current_slots):
+        slots = dict(current_slots)
+        if intent_name == "coding.change_repository" and text.strip():
+            slots["request"] = text.strip()
+        return slots
 
     def _agent(self) -> CodingAgent:
         root = self.workspace.get_workspace_path()
@@ -123,6 +151,32 @@ class CodingPlugin(BasePlugin):
                          "validation_commands": plan.validation_commands},
                     )],
                     artifacts=[Artifact("directory", str(agent.root), {"role": "planned_repository"})],
+                )
+            if tool_name == "coding_execute_request":
+                from core.llm import get_llm_client
+                plan, result = agent.execute_request(
+                    str(tool_input["request"]), get_llm_client("coding")
+                )
+                if not result.succeeded:
+                    return ToolRunResult.failed(tool_name=tool_name, error=result.error)
+                payload = {
+                    "status": result.status, "summary": result.summary,
+                    "changed_files": result.changed_files, "diff": result.diff,
+                    "validation_output": result.validation_output,
+                    "attempt_count": result.attempt_count,
+                }
+                return ToolRunResult.successful(
+                    tool_name=tool_name,
+                    raw_output=json.dumps(payload, ensure_ascii=False),
+                    evidence=[Evidence(
+                        "coding_request", "자연어 요청의 계획·최소 patch·검증을 완료했습니다.",
+                        {"related_files": plan.related_files,
+                         "changed_files": result.changed_files,
+                         "attempt_count": result.attempt_count,
+                         "diff_sha256": sha256(result.diff.encode("utf-8")).hexdigest()},
+                    )],
+                    artifacts=[Artifact("file", str(Path(agent.root, name)), {"changed": True})
+                               for name in result.changed_files],
                 )
             return ToolRunResult.failed(tool_name=tool_name, error=f"알 수 없는 Tool: {tool_name}")
         except Exception as exc:

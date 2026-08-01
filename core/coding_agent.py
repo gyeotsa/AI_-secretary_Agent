@@ -33,6 +33,7 @@ class FileEdit:
     old_text: str
     new_text: str
     expected_sha256: str = ""
+    create: bool = False
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,7 @@ class CodingTransactionResult:
     rolled_back: bool = False
     attempt_count: int = 1
     review_issues: List[str] = field(default_factory=list)
+    summary: str = ""
 
     @property
     def succeeded(self) -> bool:
@@ -147,13 +149,28 @@ class CodingAgent:
     ) -> CodingTransactionResult:
         if not edits:
             return CodingTransactionResult("failed", error="적용할 최소 변경이 없습니다.")
-        originals: dict[Path, bytes] = {}
+        originals: dict[Path, Optional[bytes]] = {}
         updates: dict[Path, bytes] = {}
         diffs = []
         applied = False
         try:
             for edit in edits:
                 target = self._resolve(edit.path)
+                if edit.create:
+                    if target.exists():
+                        raise ValueError(f"생성 대상이 이미 존재합니다: {edit.path}")
+                    if edit.old_text:
+                        raise ValueError(f"새 파일 생성의 old_text는 비어 있어야 합니다: {edit.path}")
+                    if not edit.new_text:
+                        raise ValueError(f"빈 새 파일은 생성할 수 없습니다: {edit.path}")
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    originals[target] = None
+                    updates[target] = edit.new_text.encode("utf-8")
+                    diffs.extend(difflib.unified_diff(
+                        [], edit.new_text.splitlines(keepends=True),
+                        fromfile="/dev/null", tofile=f"b/{edit.path}",
+                    ))
+                    continue
                 if not target.is_file():
                     raise ValueError(f"변경 대상 파일이 없습니다: {edit.path}")
                 raw = target.read_bytes()
@@ -196,7 +213,11 @@ class CodingAgent:
             rollback_error = ""
             for target, raw in originals.items():
                 try:
-                    self._atomic_write(target, raw)
+                    if raw is None:
+                        if target.exists():
+                            target.unlink()
+                    else:
+                        self._atomic_write(target, raw)
                 except Exception as rollback_exc:
                     rollback_error = f"; 롤백 오류: {rollback_exc}"
             return CodingTransactionResult(
@@ -223,6 +244,88 @@ class CodingAgent:
                 return last_result
             edits = replacement
         return last_result
+
+    def execute_request(self, request: str, llm, max_attempts: int = 3):
+        """Turn natural language into reviewed JSON edits; only this class writes files."""
+        plan = self.build_plan(request)
+        proposal = self._propose_edits(request, plan, llm)
+        self._validate_test_policy(proposal)
+
+        def repair(failure: CodingTransactionResult, _attempt: int):
+            replacement = self._propose_edits(request, plan, llm, failure.error)
+            self._validate_test_policy(replacement)
+            return [FileEdit(**item) for item in replacement["edits"]]
+
+        result = self.apply_with_recovery(
+            [FileEdit(**item) for item in proposal["edits"]],
+            repair,
+            max_attempts=max_attempts,
+        )
+        result.summary = str(proposal.get("summary", "")).strip()
+        return plan, result
+
+    def _propose_edits(self, request: str, plan: CodingPlan, llm,
+                       failure_log: str = "") -> dict[str, Any]:
+        contexts = []
+        for relative in plan.related_files[:12]:
+            path = self._resolve(relative)
+            if path.is_file() and path.stat().st_size <= 200_000:
+                raw = path.read_bytes()
+                text, _encoding = self._decode(raw)
+                contexts.append({
+                    "path": relative, "sha256": sha256(raw).hexdigest(),
+                    "content": text,
+                })
+        prompt = {
+            "request": request,
+            "related_symbols": plan.related_symbols,
+            "impact_scope": plan.impact_scope,
+            "repository_files": plan.repository.files[:300],
+            "file_context": contexts,
+            "previous_failure": failure_log[-8000:],
+            "output_contract": {
+                "summary": "string",
+                "change_kind": "feature|bugfix|refactor|docs|config",
+                "edits": [{
+                    "path": "workspace-relative path", "old_text": "exact existing text",
+                    "new_text": "replacement", "expected_sha256": "context sha256",
+                    "create": False,
+                }],
+            },
+        }
+        response = llm.chat([
+            {"role": "system", "content": (
+                "당신은 코드 변경안을 제안하는 시니어 개발자입니다. 파일을 직접 수정하거나 "
+                "완성 파일 전체를 반환하지 마세요. 제공된 JSON 계약의 단일 JSON 객체만 반환하세요. "
+                "기존 파일은 가장 작은 exact old_text/new_text 치환을 사용하고 새 파일만 create=true로 "
+                "표시하세요. feature에는 실행되는 테스트 edit를 반드시 포함하세요."
+            )},
+            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+        ]).strip()
+        response = re.sub(r"^```(?:json)?\s*", "", response, flags=re.IGNORECASE)
+        response = re.sub(r"\s*```$", "", response).strip()
+        try:
+            proposal = json.loads(response)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Coding 모델이 유효한 JSON 변경안을 반환하지 않았습니다: {exc}") from exc
+        if not isinstance(proposal, dict) or not isinstance(proposal.get("edits"), list) or not proposal["edits"]:
+            raise ValueError("Coding 모델 변경안에 edits가 없습니다.")
+        allowed = {"path", "old_text", "new_text", "expected_sha256", "create"}
+        for item in proposal["edits"]:
+            if not isinstance(item, dict) or not {"path", "old_text", "new_text"}.issubset(item):
+                raise ValueError("Coding edit 계약이 올바르지 않습니다.")
+            unknown = set(item) - allowed
+            if unknown:
+                raise ValueError(f"Coding edit에 허용되지 않은 필드가 있습니다: {sorted(unknown)}")
+        return proposal
+
+    @staticmethod
+    def _validate_test_policy(proposal: dict[str, Any]):
+        if proposal.get("change_kind") != "feature":
+            return
+        paths = [Path(str(item.get("path", ""))).name.casefold() for item in proposal["edits"]]
+        if not any(name.startswith("test_") or name.endswith(("_test.py", ".test.js", ".test.ts", ".spec.js", ".spec.ts")) for name in paths):
+            raise ValueError("새 기능 변경안에는 실행 가능한 테스트 edit가 필요합니다.")
 
     def review_diff(self, diff_text: str) -> List[str]:
         issues = []

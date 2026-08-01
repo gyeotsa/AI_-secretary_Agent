@@ -9,5 +9,6 @@
   {"id": "dedicated_weather", "utterance": "서울은 지금 날씨가 어때?", "intent": "weather.current", "request_type": "query"},
   {"id": "launch_application", "utterance": "메모장 실행해줘", "intent": "windows.launch_app", "request_type": "execute"},
   {"id": "generic_file_creation", "utterance": "456이라는 이름으로 파일 생성해줘", "intent": "filesystem.create_file", "request_type": "change"},
-  {"id": "calendar_creation", "utterance": "바탕화면에 캘린더 파일 만들어줘", "intent": "calendar.create_event", "request_type": "change"}
+  {"id": "calendar_creation", "utterance": "바탕화면에 캘린더 파일 만들어줘", "intent": "calendar.create_event", "request_type": "change"},
+  {"id": "repository_code_change", "utterance": "UserService 코드 수정하고 테스트까지 실행해줘", "intent": "coding.change_repository", "request_type": "change"}
 ]
