@@ -201,7 +201,22 @@ P0 상태: **완료**. 레거시 문자열은 직접 성공 근거로 사용하�
 
 목표: 키워드가 아니라 구조화된 의도와 Capability 계약으로 Tool을 선택합니다.
 
-- [ ] `domain/action/target/constraints/reference/confidence` 표준 의도 타입
+진행 기록:
+
+- 2026-08-01: `IntentSchema`와 `IntentResolution`에 표준 `domain/action/target/
+  constraints/reference/confidence` 구조를 추가했다. 기존 Plugin 선언은 intent 이름과
+  Slot 이름에서 하위 호환 방식으로 표준 필드를 유도할 수 있다.
+- `ToolSchema`에 출력 스키마, 부작용, 검증 필수 여부를 추가하고 Registry가
+  `CapabilityContract`를 단일 조회한다. Executor는 Intent Tool 실행 전에 Registry의
+  필수 입력 계약을 검사한다.
+- 라우터가 hint·action·pattern·의도 설명 유사도와 2순위 점수 차이를 함께 사용해
+  신뢰도를 계산하고 상위 대안과 선택 근거를 반환한다. 설명 유사도만으로 새 도메인을
+  만들지 않아 “파일” 같은 일반 단어의 오분류를 막는다.
+- 현재는 표준 구조와 실행 경계가 마련된 1차 단계다. 모든 Plugin의 부작용·출력·검증
+  계약 명시, 낮은 신뢰도 최소 질문, 시간 민감 자동 웹 라우팅, 요청 종류 분리와 실제
+  발화 회귀 데이터셋은 후속 P2 작업으로 남아 있다.
+
+- [x] `domain/action/target/constraints/reference/confidence` 표준 의도 타입
 - [ ] Plugin별 입력·출력·부작용·권한·검증 계약
 - [ ] 낮은 신뢰도에서만 최소 확인 질문
 - [ ] 시간 민감 질문의 웹 검색 자동 라우팅

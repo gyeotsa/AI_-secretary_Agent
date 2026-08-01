@@ -7,6 +7,25 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-08-01 P2 의미 기반 Capability Router 1차
+
+- `IntentSchema`/`IntentResolution`에 `domain`, `action`, `target`, `constraints`,
+  `reference`, `confidence`, `request_type`, `routing_reason`, 상위 대안을 추가했다.
+- 기존 Plugin은 이름(`domain.action`)과 대상성 Slot 이름에서 표준 필드를 자동 유도해
+  기존 41개 Tool과 Intent 생성 코드를 깨뜨리지 않는다.
+- `ToolSchema`에 output schema, side effect, verification required를 추가하고
+  Registry가 불변 `CapabilityContract`를 제공한다.
+- `PluginRegistry.validate_tool_call()`로 등록 여부와 필수 입력을 검사하며,
+  Executor의 선언형 Intent 실행 전에 이 계약 검사를 강제한다.
+- Router는 hint/action/pattern 점수에 Intent 설명 토큰 겹침과 2순위 margin을 더해
+  신뢰도를 계산한다. 설명 유사도만으로 후보를 만들지 않아 일반적인 “파일” 발화가
+  Calendar 같은 도메인으로 잘못 들어가는 회귀를 방지했다.
+- 코드 커밋: `a866f0d` (`[Feat] P2 표준 의도와 Capability 계약 도입`)
+- 검증: 전체 `184 passed, 4 deselected`.
+- 다음 해야 할 일: P2 2차로 기존 Plugin Tool/Intent에 request type, side effect,
+  output schema, verification contract를 명시적으로 채운다. 이후 충돌 점수 임계값에
+  따른 최소 확인 질문과 query/change/send 분리 정책을 Executor에 연결한다.
+
 ## 2026-08-01 P1 대화와 Task State 통합 완료
 
 - Executor의 작업 시작·종료·수정·취소·일시정지·재개를 허용 상태 전이표와

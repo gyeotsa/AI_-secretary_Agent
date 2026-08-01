@@ -80,8 +80,14 @@ Executor의 수정·취소·정지·재개 경로도 허용 상태 전이 API를
 세션·Workspace 작업의 상세 상태를 확인하고 재개·취소·종료 기록 삭제를 수행할 수
 있습니다. 이에 따라 P1 대화와 Task State 통합은 완료로 판정합니다.
 
-현재 기본 자동 회귀 테스트 기준선은 `181 passed, 4 deselected`입니다. 이는
+현재 기본 자동 회귀 테스트 기준선은 `184 passed, 4 deselected`입니다. 이는
 네트워크·OAuth·실제 장치·Office COM·장시간 자동화를 모두 보증하는 수치는 아닙니다.
+
+P2 첫 구현으로 표준 Intent의 domain/action/target/constraints/reference/confidence와
+Registry 소유 CapabilityContract를 추가했습니다. 라우팅 결과는 선택 근거와 상위
+대안을 제공하고, Executor는 실행 전에 Registry 필수 입력 계약을 검사합니다. 기존
+Plugin은 하위 호환되지만 개별 Tool의 부작용·출력 스키마를 명시적으로 채우는 이전과
+낮은 신뢰도 확인 질문 정책은 남아 있습니다.
 
 ## 판정
 
