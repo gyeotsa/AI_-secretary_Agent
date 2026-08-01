@@ -86,8 +86,15 @@ Executor의 수정·취소·정지·재개 경로도 허용 상태 전이 API를
 P2 첫 구현으로 표준 Intent의 domain/action/target/constraints/reference/confidence와
 Registry 소유 CapabilityContract를 추가했습니다. 라우팅 결과는 선택 근거와 상위
 대안을 제공하고, Executor는 실행 전에 Registry 필수 입력 계약을 검사합니다. 기존
-Plugin은 하위 호환되지만 개별 Tool의 부작용·출력 스키마를 명시적으로 채우는 이전과
-낮은 신뢰도 확인 질문 정책은 남아 있습니다.
+Plugin은 하위 호환되며, 이 1차 시점에는 개별 Tool 계약 정규화와 낮은 신뢰도 확인
+질문 정책이 후속 범위로 남아 있었습니다.
+
+P2 2차에서 모든 Plugin Tool 계약을 `read/execute/change/external_send` 부작용과
+공통 typed 출력 스키마로 정규화했습니다. Registry는 41개 Tool·21개 Intent의
+계약 완전성과 요청 종류/부작용 일치를 전수 검사하고 Executor는 실행 전 불일치를
+차단합니다. 유사 Intent가 근접 점수로 충돌할 때는 실행하지 않고 상위 두 후보를
+한 문장으로 확인하며 선택 근거와 대안을 로그에 남깁니다. 현재 기준선은
+`187 passed, 4 deselected`입니다.
 
 ## 판정
 
