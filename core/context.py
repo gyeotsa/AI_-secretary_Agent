@@ -56,10 +56,18 @@ class ContextManager:
             rag_docs = self.rag.search_docs(user_query)
             if rag_docs:
                 rag_str = "\n".join([
-                    f"문서 {i + 1}: {doc['content']}"
+                    (
+                        f"근거 [{doc.get('chunk_id') or doc.get('citation', {}).get('chunk_id', i + 1)}] "
+                        f"출처={doc.get('source', '')} 섹션={doc.get('section', '')} "
+                        f"줄={doc.get('start_line', 0)}-{doc.get('end_line', 0)}\n{doc['content']}"
+                    )
                     for i, doc in enumerate(rag_docs[:3])  # 최대 3개
                 ])
-                context_parts.append(f"\n[관련 문서]\n{rag_str}")
+                context_parts.append(
+                    "\n[관련 문서와 인용 근거]\n"
+                    "문서 기반 주장을 답변에 사용할 때 해당 [근거 ID]를 함께 표시하세요.\n"
+                    + rag_str
+                )
 
         # 4. Scratchpad (현재 작업 상태)
         scratchpad_context = self.scratchpad.get_context()

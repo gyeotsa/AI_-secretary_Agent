@@ -1,7 +1,12 @@
 import os
 import re
 import json
+import csv
+import hashlib
+import time
+from io import StringIO
 from config import Config
+from core.knowledge_memory import FreshnessPolicy
 
 
 class VectorRAGManager:
@@ -95,6 +100,11 @@ class VectorRAGManager:
                 json.dump(self.documents, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"[RAG] 파일 저장 오류: {e}")
+
+    @staticmethod
+    def _chunk_id(namespace: str, doc_id: str, index: int, content: str) -> str:
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+        return f"{namespace}:{doc_id}:{index}:{digest}"
     
     def chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 50) -> list:
         sentences = re.split(r'(?<=[.!?])\s+', text)
@@ -113,8 +123,52 @@ class VectorRAGManager:
             chunks.append(current_chunk.strip())
         
         return chunks
+
+    def chunk_document(self, text: str, file_path: str = "", chunk_size: int = 700) -> list[dict]:
+        """Preserve useful Markdown, code, JSON and CSV boundaries in chunk metadata."""
+        suffix = os.path.splitext(file_path)[1].casefold()
+        blocks = []
+        if suffix in {".md", ".markdown"}:
+            section, current, start = "문서", [], 1
+            for line_no, line in enumerate(text.splitlines(), 1):
+                if re.match(r"^#{1,6}\s+", line) and current:
+                    blocks.append((section, "\n".join(current), start, line_no - 1))
+                    current, start = [], line_no
+                if re.match(r"^#{1,6}\s+", line): section = line.lstrip("#").strip()
+                current.append(line)
+            if current: blocks.append((section, "\n".join(current), start, len(text.splitlines())))
+        elif suffix == ".json":
+            try:
+                value = json.loads(text)
+                items = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, list) else [("value", value)]
+                blocks = [(str(key), json.dumps(item, ensure_ascii=False, indent=2), 0, 0) for key, item in items]
+            except json.JSONDecodeError:
+                blocks = [("문서", text, 1, len(text.splitlines()))]
+        elif suffix == ".csv":
+            rows = list(csv.reader(StringIO(text)))
+            header = rows[0] if rows else []
+            blocks = [("CSV", ",".join(header) + "\n" + ",".join(row), index + 2, index + 2)
+                      for index, row in enumerate(rows[1:])]
+        elif suffix in {".py", ".js", ".ts", ".java", ".go", ".rs"}:
+            lines = text.splitlines()
+            starts = [i for i, line in enumerate(lines) if re.match(r"^\s*(?:async\s+def|def|class|function|export\s+(?:async\s+)?function)\s+", line)]
+            if not starts: starts = [0]
+            for index, start_index in enumerate(starts):
+                end_index = starts[index + 1] if index + 1 < len(starts) else len(lines)
+                title = lines[start_index].strip()[:120] if lines else "code"
+                blocks.append((title, "\n".join(lines[start_index:end_index]), start_index + 1, end_index))
+        else:
+            blocks = [("문서", chunk, 0, 0) for chunk in self.chunk_text(text, chunk_size, min(80, chunk_size // 5))]
+
+        chunks = []
+        for section, block, start_line, end_line in blocks:
+            for part in self.chunk_text(block, chunk_size, min(80, chunk_size // 5)) or [block.strip()]:
+                if part.strip():
+                    chunks.append({"content": part.strip(), "section": section,
+                                   "start_line": start_line, "end_line": end_line})
+        return chunks
     
-    def add_document(self, file_path: str) -> str:
+    def add_document(self, file_path: str, metadata: dict | None = None) -> str:
         if not os.path.exists(file_path):
             return f"오류: 파일 '{file_path}'가 존재하지 않습니다."
         
@@ -122,16 +176,31 @@ class VectorRAGManager:
             with open(file_path, "r", encoding="utf-8") as f:
                 text = f.read()
             
-            chunks = self.chunk_text(text)
-            if not chunks:
+            chunk_records = self.chunk_document(text, file_path)
+            if not chunk_records:
                 return "오류: 파일 내용이 비어있습니다."
-            
+            chunks = [item["content"] for item in chunk_records]
             doc_id = os.path.basename(file_path)
+            now = time.time()
+            base_metadata = dict(metadata or {})
+            base_metadata.setdefault("source_type", "file")
+            base_metadata.setdefault("recorded_at", now)
+            if base_metadata.get("source_type") == "web" and not base_metadata.get("expires_at"):
+                base_metadata["expires_at"] = FreshnessPolicy.expires_at(
+                    "web", str(base_metadata.get("topic", "general")), now
+                )
+            for index, item in enumerate(chunk_records):
+                item.update(base_metadata)
+                item["chunk_id"] = self._chunk_id(self.namespace, doc_id, index, item["content"])
             self.documents[self._document_key(doc_id)] = {
                 "chunks": chunks,
+                "chunk_metadata": chunk_records,
                 "source": file_path,
                 "namespace": self.namespace,
-                "doc_id": doc_id
+                "doc_id": doc_id,
+                "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "recorded_at": now,
+                "metadata": base_metadata,
             }
             self._save()
             
@@ -146,9 +215,12 @@ class VectorRAGManager:
                         self.collection.delete(ids=existing_ids)
                     
                     # 새로운 문서 추가
-                    ids = [f"{self.namespace}_{doc_id}_chunk_{i}" for i in range(len(chunks))]
-                    metadatas = [{"doc_id": doc_id, "source": file_path,
-                                  "namespace": self.namespace} for _ in chunks]
+                    ids = [item["chunk_id"] for item in chunk_records]
+                    metadatas = [{"doc_id": doc_id, "source": file_path, "namespace": self.namespace,
+                                  "chunk_id": item["chunk_id"], "section": str(item.get("section", "")),
+                                  "recorded_at": float(item.get("recorded_at", now)),
+                                  "source_type": str(item.get("source_type", "file"))}
+                                 for item in chunk_records]
                     self.collection.add(
                         ids=ids,
                         documents=chunks,
@@ -162,18 +234,83 @@ class VectorRAGManager:
         
         except Exception as e:
             return f"문서 추가 오류: {str(e)}"
+
+    def remove_document(self, doc_id: str) -> bool:
+        key = self._document_key(os.path.basename(doc_id))
+        document = self.documents.pop(key, None)
+        if document is None: return False
+        self._save()
+        if self.use_vector_rag:
+            try:
+                ids = self.collection.get(where={"$and": [
+                    {"doc_id": document["doc_id"]}, {"namespace": self.namespace}
+                ]})["ids"]
+                if ids: self.collection.delete(ids=ids)
+            except Exception as exc:
+                print(f"[RAG] Vector DB 삭제 오류: {exc}")
+        return True
+
+    def sync_document(self, file_path: str, metadata: dict | None = None) -> str:
+        doc_id, key = os.path.basename(file_path), self._document_key(os.path.basename(file_path))
+        if not os.path.exists(file_path):
+            return "삭제 동기화 완료" if self.remove_document(doc_id) else "문서가 이미 없습니다."
+        content = open(file_path, "r", encoding="utf-8").read()
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if self.documents.get(key, {}).get("content_sha256") == digest:
+            return "문서 변경 없음"
+        return self.add_document(file_path, metadata)
+
+    def sync_index(self) -> dict:
+        """Synchronize changed/deleted local sources without touching web freshness state."""
+        changed, deleted = [], []
+        scoped = list(self.documents.items())
+        for key, document in scoped:
+            if document.get("namespace", "global") != self.namespace: continue
+            if document.get("metadata", {}).get("source_type", "file") != "file": continue
+            source = document.get("source", "")
+            if not os.path.exists(source):
+                if self.remove_document(document.get("doc_id", os.path.basename(source))):
+                    deleted.append(source)
+                continue
+            try:
+                digest = hashlib.sha256(open(source, "rb").read()).hexdigest()
+            except OSError:
+                continue
+            if digest != document.get("content_sha256"):
+                self.add_document(source, document.get("metadata"))
+                changed.append(source)
+        return {"changed": changed, "deleted": deleted}
+
+    def revalidate_document(self, doc_id: str, *, verified_at: float | None = None,
+                            ttl_seconds: float | None = None) -> bool:
+        document = self.documents.get(self._document_key(os.path.basename(doc_id)))
+        if not document or document.get("metadata", {}).get("source_type") != "web": return False
+        verified_at = float(verified_at or time.time())
+        metadata = document["metadata"]
+        metadata["recorded_at"] = verified_at
+        metadata["expires_at"] = verified_at + float(ttl_seconds or FreshnessPolicy.WEB_TTL_SECONDS.get(
+            str(metadata.get("topic", "general")), FreshnessPolicy.WEB_TTL_SECONDS["general"]
+        ))
+        document["recorded_at"] = verified_at
+        for chunk in document.get("chunk_metadata", []):
+            chunk["recorded_at"] = metadata["recorded_at"]
+            chunk["expires_at"] = metadata["expires_at"]
+        self._save()
+        return True
     
-    def search_docs(self, query: str, top_k: int = 3) -> list:
+    def search_docs(self, query: str, top_k: int = 3, metadata_filter: dict | None = None,
+                    include_stale: bool = False) -> list:
         """검색 결과를 dict 리스트로 반환 (기존 str 대신)"""
+        self.sync_index()
         if not self.documents:
             return []
         
         if self.use_vector_rag:
-            return self._vector_search(query, top_k)
+            return self._vector_search(query, top_k, metadata_filter, include_stale)
         else:
-            return self._simple_search(query, top_k)
+            return self._simple_search(query, top_k, metadata_filter, include_stale)
     
-    def _vector_search(self, query: str, top_k: int) -> list:
+    def _vector_search(self, query: str, top_k: int, metadata_filter=None, include_stale=False) -> list:
         """Vector DB 기반 검색 + Reranker"""
         try:
             # 1. Vector DB로 초기 검색 (top_k * 2개)
@@ -201,46 +338,77 @@ class VectorRAGManager:
                 
                 # Top-k 반환
                 top_results = scored_results[:top_k]
-                return [
-                    {"content": chunk, "source": meta["source"]}
-                    for _, chunk, meta in top_results
-                ]
+                candidates = [{"content": chunk, "source": meta["source"], **meta, "score": float(score)}
+                              for score, chunk, meta in top_results]
             else:
-                # Reranker 없으면 초기 결과 반환
-                return [
-                    {"content": chunk, "source": meta["source"]}
-                    for chunk, meta in zip(chunks[:top_k], metadatas[:top_k])
-                ]
+                candidates = [{"content": chunk, "source": meta["source"], **meta}
+                              for chunk, meta in zip(chunks, metadatas)]
+            return self._filter_and_rerank(query, candidates, top_k, metadata_filter, include_stale)
         
         except Exception as e:
             print(f"[RAG] Vector 검색 오류: {e}, Simple 검색으로 fallback합니다.")
-            return self._simple_search(query, top_k)
+            return self._simple_search(query, top_k, metadata_filter, include_stale)
     
-    def _simple_search(self, query: str, top_k: int) -> list:
+    def _simple_search(self, query: str, top_k: int, metadata_filter=None, include_stale=False) -> list:
         """기존 Simple 키워드 기반 검색"""
-        query_words = set(re.split(r'\W+', query.lower()))
+        query_words = {word for word in re.split(r'\W+', query.lower()) if word}
         results = []
         
         for doc_id, doc_data in self.documents.items():
             if doc_data.get("namespace", "global") != self.namespace:
                 continue
-            for chunk in doc_data["chunks"]:
-                chunk_words = set(re.split(r'\W+', chunk.lower()))
-                overlap = len(query_words & chunk_words)
+            records = doc_data.get("chunk_metadata") or [
+                {"content": chunk, "chunk_id": self._chunk_id(self.namespace, doc_data.get("doc_id", doc_id), i, chunk)}
+                for i, chunk in enumerate(doc_data["chunks"])
+            ]
+            for record in records:
+                chunk = record["content"]
+                chunk_words = {word for word in re.split(r'\W+', chunk.lower()) if word}
+                overlap = sum(
+                    1 for query_word in query_words
+                    if any(query_word == word or (len(query_word) >= 2 and query_word in word)
+                           for word in chunk_words)
+                )
                 if overlap > 0:
-                    results.append((overlap, chunk, doc_data["source"]))
+                    results.append({"score": float(overlap), "content": chunk,
+                                    "source": doc_data["source"], **record})
         
         if not results:
             return []
         
         # 점수 높은 순으로 정렬
-        results.sort(reverse=True, key=lambda x: x[0])
-        top_results = results[:top_k]
-        
-        return [
-            {"content": chunk, "source": source}
-            for _, chunk, source in top_results
-        ]
+        return self._filter_and_rerank(query, results, top_k, metadata_filter, include_stale)
+
+    def _filter_and_rerank(self, query, candidates, top_k, metadata_filter, include_stale):
+        now, tokens = time.time(), set(re.findall(r"\w+", query.casefold()))
+        catalog = {}
+        for document in self.documents.values():
+            if document.get("namespace", "global") != self.namespace: continue
+            for chunk in document.get("chunk_metadata", []):
+                catalog[chunk.get("chunk_id", "")] = {"source": document.get("source", ""), **chunk}
+        filtered = []
+        for item in candidates:
+            item = {**catalog.get(item.get("chunk_id", ""), {}), **item}
+            expires_at = item.get("expires_at")
+            stale = bool(expires_at and float(expires_at) <= now)
+            if stale and not include_stale: continue
+            if metadata_filter and not all(item.get(key) == value for key, value in metadata_filter.items()): continue
+            content_tokens = set(re.findall(r"\w+", str(item.get("content", "")).casefold()))
+            lexical = sum(1 for token in tokens if any(
+                token == word or (len(token) >= 2 and token in word) for word in content_tokens
+            ))
+            item = dict(item)
+            item["score"] = float(item.get("score", 0.0)) + lexical
+            item["stale"] = stale
+            item["needs_revalidation"] = stale and item.get("source_type") == "web"
+            item["citation"] = {
+                "chunk_id": item.get("chunk_id", ""), "source": item.get("source", ""),
+                "section": item.get("section", ""), "start_line": item.get("start_line", 0),
+                "end_line": item.get("end_line", 0),
+            }
+            filtered.append(item)
+        filtered.sort(key=lambda item: (item["score"], float(item.get("recorded_at", 0))), reverse=True)
+        return filtered[:top_k]
     
     def list_documents(self) -> str:
         scoped = [doc for doc in self.documents.values()

@@ -1462,7 +1462,8 @@ class ToolExecutor:
             return ToolRunResult.failed(tool_name="add_document",error=error_msg)
         raw = self.rag_manager.add_document(file_path)
         doc_id = os.path.basename(file_path)
-        saved = self.rag_manager.documents.get(doc_id)
+        key_builder = getattr(self.rag_manager, "_document_key", None)
+        saved = self.rag_manager.documents.get(key_builder(doc_id) if key_builder else doc_id)
         if not saved:
             return ToolRunResult.failed(tool_name="add_document",error="RAG 저장소에서 추가한 문서를 확인하지 못했습니다.",raw_output=str(raw))
         return ToolRunResult.successful(
@@ -1494,7 +1495,9 @@ class ToolExecutor:
         if self.rag_manager is None:
             return ToolRunResult.failed(tool_name="list_documents",error="RAG 기능을 초기화할 수 없습니다.")
         output = self.rag_manager.list_documents()
-        documents = list(self.rag_manager.documents)
+        namespace = getattr(self.rag_manager, "namespace", "global")
+        documents = [item.get("doc_id", key) for key, item in self.rag_manager.documents.items()
+                     if item.get("namespace", "global") == namespace]
         return ToolRunResult.successful(
             tool_name="list_documents",raw_output=str(output),
             evidence=[Evidence("rag_catalog",f"RAG 문서 {len(documents)}개를 조회했습니다.",{"documents":documents,"count":len(documents)})],
