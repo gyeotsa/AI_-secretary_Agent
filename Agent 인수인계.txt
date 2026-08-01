@@ -7,6 +7,27 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-08-01 P2 의미 기반 Capability Router 완료
+
+- `IntentSchema`/`IntentResolution`에 `freshness`와 `requires_sources`를 추가했다.
+  Browser의 web.search는 `live + source required` 계약을 선언한다.
+- 직접 Intent가 없는 발화에서만 시간 표현과 정보 질문 표현을 함께 검사해 Registry의
+  live 검색 Capability를 찾는다. 특정 제품·인물·사이트를 나열하는 상황별 하드코딩은
+  사용하지 않았다.
+- 현재 날짜·현재 시간·현재 날씨는 직접 매칭되는 System/Weather Plugin이 우선한다.
+  현재 주가, 현재 공적 인물, 최근 뉴스처럼 전용 Plugin이 없는 질문은 출처가 필요한
+  web.search로 라우팅된다. “오늘 기분이 안 좋아” 같은 감정 대화는 검색하지 않는다.
+- `tests/data/intent_routing_cases.json`에 실제 사용자형 발화를 분리하고
+  `test_routing_dataset.py`가 전체 Plugin Registry를 로드해 기대 Intent, request type,
+  freshness를 검증한다. 이후 새 표현은 Executor 분기 대신 데이터셋과 Plugin 계약을
+  확장한다.
+- 코드 커밋: `9b4ed58` (`[Feat] P2 시간 민감 라우팅과 발화 회귀 완성`)
+- 검증: 전체 `198 passed, 4 deselected`.
+- P2 의미 기반 Capability Router: **완료**.
+- 다음 해야 할 일: P3 범용 Coding Agent를 시작한다. 저장소 분석 → 변경 계획 → patch
+  적용 → lint/type/test → diff 검토의 상태 기계를 만들고, 파일 전체 덮어쓰기보다
+  최소 diff를 기본으로 하며 실패 시 원복 가능한 체크포인트를 보존한다.
+
 ## 2026-08-01 P2 Plugin 계약과 충돌 정책
 
 - `ToolSchema.__post_init__()`이 Tool 이름과 권한에서 부작용을 `read`, `execute`,

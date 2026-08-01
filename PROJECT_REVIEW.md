@@ -96,6 +96,11 @@ P2 2차에서 모든 Plugin Tool 계약을 `read/execute/change/external_send` �
 한 문장으로 확인하며 선택 근거와 대안을 로그에 남깁니다. 현재 기준선은
 `187 passed, 4 deselected`입니다.
 
+P2 마지막 단계에서 Intent freshness/source 계약과 일반화된 시간 민감도 판정을
+연결했습니다. 전용 현재 정보 Plugin이 우선하고 그 밖의 현재·최근 정보 질문만 실제
+웹 검색으로 라우팅됩니다. 실제 사용자형 발화를 JSON 데이터셋으로 분리했으며 전체
+기준선은 `198 passed, 4 deselected`입니다. P2 Capability Router는 완료입니다.
+
 ## 판정
 
 기존 문서의 “Level 2 완료” 표기는 실제 동작 검증보다 앞서 있었습니다. 이번 검토에서 1–7단계의 핵심 연결 오류를 수정했고 8단계 플러그인과 Chromium 종단 검증, 9단계 RAG, 10단계 역할 기반 하이브리드 LLM 라우팅까지 구현했습니다. 실제 Anthropic 성공 경로 및 GUI·하드웨어 연동은 별도 실환경 검증이 남아 있습니다.
