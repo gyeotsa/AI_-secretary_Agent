@@ -34,14 +34,16 @@ class WorkspaceInfo:
 class WorkspaceManager:
     """Owns the selected workspace and persists a reusable project catalog."""
 
-    def __init__(self, state_path: Optional[str] = None):
+    def __init__(self, state_path: Optional[str] = None, restore: Optional[bool] = None):
+        should_restore = (state_path is not None) if restore is None else restore
         self.state_path = Path(state_path or "data/workspaces.json")
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self._workspace: Optional[Path] = None
         self._info = WorkspaceInfo()
         self._state: Dict[str, Any] = {"version": 1, "last_workspace": "", "workspaces": {}}
         self._load_state()
-        self.restore_last_workspace()
+        if should_restore:
+            self.restore_last_workspace()
 
     @staticmethod
     def namespace_for(path: str | Path) -> str:
@@ -242,5 +244,5 @@ _workspace_manager: Optional[WorkspaceManager] = None
 def get_workspace_manager() -> WorkspaceManager:
     global _workspace_manager
     if _workspace_manager is None:
-        _workspace_manager = WorkspaceManager()
+        _workspace_manager = WorkspaceManager(restore=True)
     return _workspace_manager

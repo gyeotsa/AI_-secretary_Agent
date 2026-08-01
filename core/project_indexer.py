@@ -10,6 +10,7 @@ import sqlite3
 import threading
 import time
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional
@@ -93,10 +94,18 @@ class ProjectIndexer:
         if current:
             self.set_project_root(current)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
         connection = sqlite3.connect(self.db_path, timeout=10)
         connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def _init_db(self) -> None:
         with self._connect() as conn:
