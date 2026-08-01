@@ -309,15 +309,22 @@ pytest까지 통과하는 E2E 및 전체 `212 passed, 4 deselected`. P3 범용 C
 
 ## P4 — Workspace·Project Intelligence
 
-- [ ] 마지막 Workspace 자동 복원
-- [ ] Workspace 목록·별칭·프로젝트별 설정
-- [ ] 선택 직후 자동 인덱싱
-- [ ] `.gitignore` 준수와 대형 폴더 제외
-- [ ] 파일 변경 감지 기반 증분 인덱싱
-- [ ] 언어·프레임워크·테스트 명령 감지
-- [ ] 프로젝트별 Memory/RAG Namespace
-- [ ] 현재 Git 브랜치·dirty 상태 UI
-- [ ] 새 프로젝트 템플릿·가상환경·Git 초기화
+- [x] 마지막 Workspace 자동 복원
+- [x] Workspace 목록·별칭·프로젝트별 설정
+- [x] 선택 직후 자동 인덱싱
+- [x] `.gitignore` 준수와 대형 폴더 제외
+- [x] 파일 변경 감지 기반 증분 인덱싱
+- [x] 언어·프레임워크·테스트 명령 감지
+- [x] 프로젝트별 Memory/RAG Namespace
+- [x] 현재 Git 브랜치·dirty 상태 UI
+- [x] 새 프로젝트 템플릿·가상환경·Git 초기화
+
+완료 기준: Workspace 카탈로그는 `data/workspaces.json`에 원자적으로 저장되며 앱 singleton만
+마지막 선택을 자동 복원한다. 선택·복원 직후와 5초 주기로 `.gitignore` 및 공통 대형 생성
+폴더를 제외한 증분 인덱싱을 수행한다. Memory 세션과 RAG 문서는 경로 해시 namespace로
+격리된다. 상단 UI는 Git 브랜치와 dirty 표시를 갱신한다. Workspace Plugin은 목록·별칭·
+프로젝트 프로필과 `empty`/`python-basic`/`python-cli` 템플릿, 선택적 `.venv`·`git init`을
+제공하며 실패 시 새 프로젝트 생성 전체를 롤백한다.
 
 ## P5 — Planner·Executor·Recovery 재설계
 

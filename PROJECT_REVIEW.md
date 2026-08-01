@@ -159,6 +159,18 @@ P3 마지막 단계에서 자연어 저장소 변경 Intent를 CodingPlan과 JSO
 1. 타입 기반 ToolRunResult와 검증 증거 계약.
 2. Conversation/Pending/Intent/Artifact를 통합한 Task State.
 3. 저장소 단위 Coding Agent와 patch→test→diff 루프.
-4. Workspace 자동 복원·증분 Project Indexer.
+4. Workspace·Project Intelligence 완료. 다음 구현 우선순위는 P5 Planner·Executor·Recovery 재설계.
+
+## 2026-08-01 P4 완료
+
+- 마지막 Workspace를 영속 카탈로그에서 자동 복원하고 목록·별칭·프로젝트별 설정을 관리합니다.
+- 선택 직후 전체 상태를 동기화하며 이후에는 `.gitignore`와 대형 생성 폴더를 제외한 파일의
+  추가·수정·삭제만 증분 인덱싱합니다.
+- 확장자와 manifest에서 언어·프레임워크·사용 가능한 테스트/검증 명령을 감지합니다.
+- Conversation Memory와 RAG 문서는 Workspace 경로 해시 namespace로 분리합니다.
+- 상단 Workspace 표시에 현재 Git 브랜치와 dirty 상태를 표시하고 주기적으로 갱신합니다.
+- Workspace Plugin이 프로젝트 목록·별칭·프로필과 템플릿 기반 프로젝트 생성을 제공합니다.
+  `.venv`와 Git 저장소를 선택적으로 초기화하며 중간 실패 시 새 프로젝트 폴더를 롤백합니다.
+- 자동화 회귀 결과는 `212 passed, 4 deselected`입니다.
 5. 실제 Ollama, GUI, 마이크·카메라·TTS·Scheduler 장시간 종단 검증.
 6. mail/calendar OAuth 토큰 저장·권한·계정 선택 정책.

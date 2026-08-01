@@ -32,7 +32,10 @@ JARVIS는 Windows PC에서 대화, 파일·문서 작업, 웹 조사, 앱 제어
 - 저장소 전체를 이해하는 Coding Agent
 - 모든 Tool에 적용되는 타입 기반 결과·증거 계약
 - Planner → 실행 → 검증 → 복구 → 재계획의 안정적인 폐쇄 루프
-- Workspace 자동 복원·증분 인덱싱·프로젝트별 메모리
+- Workspace 자동 복원·목록·별칭·프로젝트별 설정
+- `.gitignore` 기반 초기/증분 인덱싱, 언어·프레임워크·테스트 명령 감지
+- 프로젝트별 Memory/RAG 격리와 Git 브랜치·dirty UI
+- 새 프로젝트 템플릿·가상환경·Git 초기화
 - Gmail, Outlook, Calendar, Drive 등의 실제 OAuth 연결
 - 장시간 자동화와 실제 장치의 제품 수준 E2E 검증
 
