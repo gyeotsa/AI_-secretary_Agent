@@ -141,6 +141,13 @@ class Executor:
         if is_new_request:
             goal = re.sub(r"^새 작업\s*[:：]\s*", "", goal, flags=re.I)
         direct_resolution = self.intent_router.resolve(goal)
+        if direct_resolution.matched:
+            print(
+                f"[Router] intent={direct_resolution.intent_name} "
+                f"type={direct_resolution.request_type} confidence={direct_resolution.confidence:.2f} "
+                f"reason={direct_resolution.routing_reason} "
+                f"alternatives={direct_resolution.alternatives}"
+            )
         pending = (
             None if is_new_request
             else self.dialogue_state.get(session_key, selected_task_id, workspace_scope)
@@ -250,6 +257,11 @@ class Executor:
                     intent_resolution = self.intent_router.resolve_from_history(goal, history)
             if intent_resolution.capability_response:
                 return ExecutionOutcome(intent_resolution.capability_response, "completed", goal)
+            if intent_resolution.ambiguous:
+                return ExecutionOutcome(
+                    intent_resolution.question, "completed", goal,
+                    pending_question=intent_resolution.question,
+                )
             if intent_resolution.matched and intent_resolution.question:
                 task = self.dialogue_state.create_task(
                     session_key, goal, workspace_path=workspace_scope
@@ -917,7 +929,7 @@ class Executor:
                                  progress_callback: Optional[Callable[[str], None]] = None) -> ExecutionOutcome:
         workspace_scope = self._workspace_scope()
         contract_errors = self.intent_router.registry.validate_tool_call(
-            resolution.tool_name, resolution.slots
+            resolution.tool_name, resolution.slots, resolution.request_type
         )
         if contract_errors:
             return ExecutionOutcome(

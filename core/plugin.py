@@ -22,8 +22,39 @@ class ToolSchema:
     input_schema: Dict[str, Any] = field(default_factory=dict)  # JSON Schema
     required_permissions: List[str] = field(default_factory=list)
     output_schema: Dict[str, Any] = field(default_factory=dict)
-    side_effect: str = "read"
+    side_effect: str = "auto"
     verification_required: bool = True
+
+    def __post_init__(self):
+        actions = set(self.name.casefold().split("_"))
+        if self.side_effect == "auto":
+            if actions & {"get", "read", "list", "find", "search", "status", "diff", "log"}:
+                self.side_effect = "read"
+            elif "mail_send" in self.required_permissions or actions & {"send", "push", "publish"}:
+                self.side_effect = "external_send"
+            elif actions & {"create", "write", "update", "delete", "remove", "add", "commit", "set"}:
+                self.side_effect = "change"
+            elif any(permission in {
+                "filesystem_write", "git_commit", "git_push"
+            } for permission in self.required_permissions):
+                self.side_effect = "change"
+            elif "windows_api" in self.required_permissions or actions & {
+                "launch", "close", "focus", "execute", "run", "speak", "repeat"
+            }:
+                self.side_effect = "execute"
+            else:
+                self.side_effect = "read"
+        if not self.output_schema:
+            self.output_schema = {
+                "type": "object",
+                "required": ["status", "raw_output", "evidence", "artifacts"],
+                "properties": {
+                    "status": {"type": "string"},
+                    "raw_output": {"type": "string"},
+                    "evidence": {"type": "array"},
+                    "artifacts": {"type": "array"},
+                },
+            }
 
 
 @dataclass(frozen=True)
@@ -60,7 +91,7 @@ class IntentSchema:
     utterance_patterns: List[str] = field(default_factory=list)
     domain: str = ""
     action: str = ""
-    request_type: str = "execute"
+    request_type: str = "auto"
     target_slot: str = ""
     constraint_slots: List[str] = field(default_factory=list)
     reference_slots: List[str] = field(default_factory=list)
@@ -71,6 +102,16 @@ class IntentSchema:
             self.domain = parts[0]
         if not self.action:
             self.action = parts[1] if len(parts) > 1 else self.name
+        if self.request_type == "auto":
+            actions = set(self.action.casefold().split("_"))
+            if actions & {"get", "read", "list", "find", "search", "status", "current", "time", "date", "weather"}:
+                self.request_type = "query"
+            elif actions & {"send", "push", "publish"}:
+                self.request_type = "external_send"
+            elif actions & {"create", "write", "update", "delete", "remove", "add", "commit", "set"}:
+                self.request_type = "change"
+            else:
+                self.request_type = "execute"
         if not self.target_slot:
             target = next((slot.name for slot in self.slots if slot.role == "target"), "")
             if not target:
@@ -194,15 +235,61 @@ class PluginRegistry:
             if (contract := self.get_capability(tool.name)) is not None
         ]
 
-    def validate_tool_call(self, tool_name: str, tool_input: Dict[str, Any]) -> List[str]:
+    def validate_tool_call(self, tool_name: str, tool_input: Dict[str, Any],
+                           request_type: str = "") -> List[str]:
         """Validate required input fields at the Registry boundary before execution."""
         contract = self.get_capability(tool_name)
         if contract is None:
             return [f"등록되지 않은 도구입니다: {tool_name}"]
         if not isinstance(tool_input, dict):
             return ["도구 입력은 객체여야 합니다."]
+        errors = []
+        expected_effect = {
+            "query": "read", "execute": "execute", "change": "change",
+            "external_send": "external_send",
+        }.get(request_type, request_type)
+        if request_type and expected_effect != contract.side_effect:
+            errors.append(
+                f"요청 종류({request_type})와 도구 부작용({contract.side_effect})이 다릅니다."
+            )
         required = contract.input_schema.get("required", [])
-        return [f"필수 입력이 없습니다: {name}" for name in required if tool_input.get(name) in (None, "")]
+        errors.extend(
+            f"필수 입력이 없습니다: {name}"
+            for name in required if tool_input.get(name) in (None, "")
+        )
+        return errors
+
+    def validate_contracts(self) -> Dict[str, List[str]]:
+        """Return all incomplete or internally inconsistent Plugin contracts."""
+        issues: Dict[str, List[str]] = {}
+        tool_names = {tool.name for tool in self.get_all_tools()}
+        valid_effects = {"read", "execute", "change", "external_send"}
+        for tool in self.get_all_tools():
+            current = []
+            if tool.side_effect not in valid_effects:
+                current.append(f"알 수 없는 side_effect: {tool.side_effect}")
+            if not tool.output_schema:
+                current.append("output_schema 누락")
+            if current:
+                issues[tool.name] = current
+        for _plugin, intent in self.get_all_intents():
+            current = []
+            if intent.tool_name not in tool_names:
+                current.append(f"등록되지 않은 Tool 참조: {intent.tool_name}")
+            if intent.request_type not in {"query", "execute", "change", "external_send"}:
+                current.append(f"알 수 없는 request_type: {intent.request_type}")
+            contract = self.get_capability(intent.tool_name)
+            expected_effect = {
+                "query": "read", "execute": "execute", "change": "change",
+                "external_send": "external_send",
+            }.get(intent.request_type, intent.request_type)
+            if contract and expected_effect != contract.side_effect:
+                current.append(
+                    f"request_type({intent.request_type})과 side_effect({contract.side_effect}) 불일치"
+                )
+            if current:
+                issues[f"intent:{intent.name}"] = current
+        return issues
     
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> PluginToolOutput:
         """툴 실행 (어떤 플러그인의 툴인지 찾아서 실행)"""

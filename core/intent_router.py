@@ -25,6 +25,7 @@ class IntentResolution:
     request_type: str = "conversation"
     routing_reason: str = ""
     alternatives: List[Dict[str, Any]] = field(default_factory=list)
+    ambiguous: bool = False
 
     @property
     def ready(self) -> bool:
@@ -110,6 +111,17 @@ class IntentRouter:
             {"intent": candidate.name, "score": round(score, 3)}
             for score, _plugin, candidate, _reason in ranked[1:4]
         ]
+        ambiguous = bool(
+            not intent_name and len(ranked) > 1 and ranked[0][0] < 100
+            and ranked[1][0] / max(1.0, ranked[0][0]) >= 0.88
+            and ranked[0][2].name != ranked[1][2].name
+        )
+        ambiguity_question = ""
+        if ambiguous:
+            ambiguity_question = (
+                f"'{ranked[0][2].description}'과 '{ranked[1][2].description}' 중 "
+                "어떤 작업을 원하시는지 말씀해 주세요."
+            )
         normalized = text.casefold()
         is_execution = any(hint.casefold() in normalized for hint in intent.execution_hints)
         is_capability = any(hint in normalized for hint in self.CAPABILITY_HINTS)
@@ -123,12 +135,12 @@ class IntentRouter:
 
         slots = plugin.extract_slots(intent.name, text, current_slots or {})
         missing = [slot for slot in intent.slots if slot.required and not slots.get(slot.name)]
-        question = missing[0].question if missing else ""
+        question = ambiguity_question or (missing[0].question if missing else "")
         return self._resolution(
             intent, slots, confidence, question=question,
             explicit=not bool(intent_name), execution_requested=is_execution,
             request_type=intent.request_type, routing_reason=routing_reason,
-            alternatives=alternatives,
+            alternatives=alternatives, ambiguous=ambiguous,
         )
 
     @staticmethod
