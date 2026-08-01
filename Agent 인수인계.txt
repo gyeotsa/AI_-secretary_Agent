@@ -7,6 +7,29 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-08-01 P3 범용 Coding Agent 완료
+
+- `coding.change_repository` Intent와 `coding_execute_request` Tool을 추가해 자연어
+  코딩 요청을 CodingPlan→LLM 제안→원자 Transaction→검증으로 연결했다.
+- Coding LLM은 단일 JSON 객체만 반환하며 직접 파일을 쓰지 않는다. 기존 파일은
+  exact `old_text/new_text/expected_sha256`, 새 파일은 `create=true` 계약만 허용된다.
+- 새 파일도 임시 파일 원자 저장, diff review, 문법·관련 테스트·manifest 검증,
+  실패 rollback 대상이다. 실패 후 생성된 새 파일은 삭제되고 기존 파일은 원본 bytes로
+  복구된다.
+- `change_kind=feature`는 test 파일 edit를 반드시 포함해야 한다. 테스트 없는 새 기능은
+  저장 전에 거절되며 완료로 보고할 수 없다.
+- 검증 실패 로그를 Coding 모델에 다시 제공해 최대 시도 예산 안에서 새 최소 edit를
+  제안하고 동일 검증을 재실행한다.
+- 코드+테스트 자연어 E2E와 라우팅 데이터셋에 Coding 요청을 추가했다. “코드 수정하고
+  테스트 실행”의 실행 동사가 Windows Plugin으로 가던 충돌은 Coding Intent pattern
+  계약으로 해결했다.
+- 코드 커밋: `c3a9bde` (`[Feat] P3 자연어 Coding Agent 파이프라인 완성`)
+- 검증: 전체 `212 passed, 4 deselected`.
+- P3 범용 Coding Agent: **완료**.
+- 다음 해야 할 일: P4 Workspace·Project Intelligence를 시작한다. 마지막 Workspace
+  자동 복원, Workspace 목록/별칭/프로젝트 설정, 선택 직후 인덱싱과 `.gitignore` 기반
+  증분 감시를 우선 구현한다.
+
 ## 2026-08-01 P3 검증 전략과 제한 복구 루프
 
 - CodingAgent가 프로젝트 manifest와 현재 인터프리터에서 사용 가능한 실행기를 함께
