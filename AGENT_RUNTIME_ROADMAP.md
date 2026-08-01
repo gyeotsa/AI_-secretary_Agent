@@ -264,14 +264,20 @@ P0 상태: **완료**. 레거시 문자열은 직접 성공 근거로 사용하�
 - unified diff, 검증 명령 결과, 변경 파일 Artifact와 diff hash Evidence를 typed
   Tool 결과로 반환한다. 아직 LLM 변경 계획·관련 심볼 검색·언어별 lint/type/test
   자동 선택과 실패 로그 기반 재수정 루프는 남아 있다.
+- 2026-08-01: CodingAgent가 임시 ProjectIndexer DB로 Python AST 심볼과 파일명·본문을
+  검색해 `CodingPlan(request/related_files/related_symbols/impact_scope/validation)`을
+  생성한다. 사용자 저장소에는 인덱스 DB를 남기지 않는다.
+- 변경 파일명과 대응하는 `test_<stem>.py`/`<stem>_test.py`를 자동 영향 범위에 넣고
+  Python `py_compile` 후 관련 pytest를 실행한다. JavaScript는 Node가 있을 때
+  `node --check`를 선택한다. 관련 테스트 실패 시 원자적 롤백됨을 검증했다.
 
 - [x] 저장소 구조·README·의존성·Git 상태 사전 분석
-- [ ] 관련 심볼과 파일 검색
-- [ ] 변경 계획과 영향 범위 작성
+- [x] 관련 심볼과 파일 검색
+- [x] 변경 계획과 영향 범위 작성
 - [x] 전체 파일 재생성 대신 최소 patch 적용
 - [x] 인코딩·줄바꿈·사용자 변경 보존
 - [ ] 언어별 문법·formatter·lint·type check
-- [ ] 관련 테스트 자동 선택·실행
+- [x] 관련 테스트 자동 선택·실행
 - [ ] 실패 로그 분석 후 수정·재검증
 - [ ] 최종 diff 자체 검토
 - [x] 원자적 적용과 실패 롤백

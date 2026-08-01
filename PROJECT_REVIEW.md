@@ -108,6 +108,12 @@ Coding Plugin은 저장소 snapshot과 변경 diff·검증 결과를 typed Evide
 반환합니다. 현재 기준선은 `204 passed, 4 deselected`이며 계획 생성·심볼 영향 분석·
 언어별 검증 자동 선택·실패 재수정 루프는 P3 후속 범위입니다.
 
+P3 2차에서 ProjectIndexer의 Python AST 심볼·파일명·본문 검색을 임시 인덱스로
+CodingAgent에 연결했습니다. 구조화 CodingPlan은 관련 파일·심볼·영향 범위·검증
+명령을 보존합니다. 변경 파일과 대응하는 pytest를 자동 선택해 py_compile 이후
+실행하고 실패 시 전체 transaction을 롤백합니다. JavaScript는 사용 가능한 Node의
+`--check`를 선택합니다. 현재 기준선은 `206 passed, 4 deselected`입니다.
+
 ## 판정
 
 기존 문서의 “Level 2 완료” 표기는 실제 동작 검증보다 앞서 있었습니다. 이번 검토에서 1–7단계의 핵심 연결 오류를 수정했고 8단계 플러그인과 Chromium 종단 검증, 9단계 RAG, 10단계 역할 기반 하이브리드 LLM 라우팅까지 구현했습니다. 실제 Anthropic 성공 경로 및 GUI·하드웨어 연동은 별도 실환경 검증이 남아 있습니다.

@@ -7,6 +7,26 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-08-01 P3 심볼 영향 계획과 관련 테스트
+
+- CodingAgent에 `CodingPlan`과 `build_plan()`을 추가했다. 요청에서 코드 식별자를
+  추출하고 ProjectIndexer로 Python AST 심볼, 파일명, 본문 preview를 검색한다.
+- ProjectIndexer DB는 OS 임시 폴더에서 생성·삭제하므로 사용자 Workspace에
+  인덱스 부산물을 남기지 않는다.
+- 계획은 request, repository snapshot, related files/symbols, impact scope,
+  validation commands를 구조화해 반환한다. Coding Plugin의
+  `coding_plan_change` Tool로 Registry/Planner에서도 사용할 수 있다.
+- Python 변경은 `py_compile`과 대응하는 `test_<stem>.py` 또는 `<stem>_test.py`를
+  자동 선택한다. JavaScript 계열은 Node 설치 시 `node --check`를 선택한다.
+- 관련 pytest가 실패하는 실제 테스트에서 다중 파일 transaction이 원본으로 롤백되고
+  완료로 보고되지 않는 것을 확인했다.
+- 코드 커밋: `bf994d0` (`[Feat] P3 심볼 영향 계획과 관련 테스트 연결`)
+- 검증: 전체 `206 passed, 4 deselected`.
+- 다음 해야 할 일: P3 3차로 프로젝트 manifest에서 formatter/lint/type/build 명령을
+  안전하게 감지하고, 실패 로그를 구조화해 Coding 모델이 새 최소 patch를 제안한 뒤
+  제한 횟수 내 재검증하는 복구 루프를 구현한다. 최종 diff 자체 검토와 새 기능 테스트
+  생성 정책도 연결한다.
+
 ## 2026-08-01 P3 원자적 Coding Transaction 1차
 
 - 기존 `filesystem_write_file`은 코딩 모델의 전체 파일 출력을 즉시 덮어써 여러 파일
