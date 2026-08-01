@@ -75,8 +75,11 @@ class ToolExecutor:
         # Load plugins from plugins directory
         try:
             self.plugin_registry.load_plugins_from_directory()
+            if self.plugin_registry.get_plugin("legacy_runtime") is None:
+                from plugins.legacy_runtime import LegacyRuntimePlugin
+                self.plugin_registry.register_plugin(LegacyRuntimePlugin(self))
         except Exception as e:
-            print(f"[ToolExecutor] Plugin 로딩 오류: {e}")
+            raise RuntimeError(f"Plugin Runtime 초기화 실패: {e}") from e
 
     @property
     def rag_manager(self):
@@ -1826,6 +1829,19 @@ class ToolExecutor:
             )
             self._record_tool_run(tool_input, denied)
             return denied
+        try:
+            raw_result = self.plugin_registry.execute_tool(tool_name, tool_input)
+        except Exception as e:
+            raw_result = ToolRunResult.failed(tool_name=tool_name, error=f"Plugin Runtime 오류: {e}")
+        tool_run = self._adapt_tool_output(
+            tool_name, tool_input, raw_result,
+            (time.perf_counter() - started_at) * 1000,
+        )
+        self._record_tool_run(tool_input, tool_run)
+        return tool_run
+
+    def _execute_legacy_tool(self, tool_name: str, tool_input: dict):
+        """Implementation bridge used only by LegacyRuntimePlugin."""
         tool_functions = {
             "read_file": self.read_file,
             "write_file": self.write_file,
@@ -1891,25 +1907,10 @@ class ToolExecutor:
             "get_task_history": self.get_task_history,
         }
 
-        if tool_name in tool_functions:
-            try:
-                raw_result = tool_functions[tool_name](**tool_input)
-            except TypeError as e:
-                raw_result = f"툴 파라미터 오류: {str(e)}"
-        else:
-            # Try plugin tools
-            try:
-                raw_result = self.plugin_registry.execute_tool(tool_name, tool_input)
-            except Exception as e:
-                raw_result = f"오류: 알 수 없는 툴 '{tool_name}' (플러그인 오류: {str(e)})"
-        tool_run = self._adapt_tool_output(
-            tool_name,
-            tool_input,
-            raw_result,
-            (time.perf_counter() - started_at) * 1000,
-        )
-        self._record_tool_run(tool_input, tool_run)
-        return tool_run
+        function = tool_functions.get(tool_name)
+        if function is None:
+            raise KeyError(f"legacy_runtime에 등록되지 않은 도구: {tool_name}")
+        return function(**tool_input)
 
     @staticmethod
     def _journal_safe_value(value, key: str = ""):
@@ -1986,7 +1987,7 @@ class ToolExecutor:
         )
 
 
-def get_tools_schema() -> list[dict]:
+def _get_legacy_tools_schema() -> list[dict]:
     schema = [
         {
             "name": "read_file",
@@ -2910,19 +2911,16 @@ def get_tools_schema() -> list[dict]:
             },
         },
     ]
-    # Add plugin tools
-    try:
-        plugin_registry = get_plugin_registry()
-        plugin_registry.load_plugins_from_directory()
-        for tool in plugin_registry.get_all_tools():
-            schema.append({
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.input_schema,
-            })
-    except Exception as e:
-        print(f"[get_tools_schema] Plugin 스키마 로딩 오류: {e}")
     return schema
+
+
+def get_tools_schema() -> list[dict]:
+    """Return schemas exclusively from the initialized Plugin Registry."""
+    executor = get_tool_executor()
+    return [
+        {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
+        for tool in executor.plugin_registry.get_all_tools()
+    ]
 
 
 # 자율 실행 루프(Executor)나 native tool-calling(llm.py)에서 모델이 스스로
