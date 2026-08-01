@@ -373,15 +373,35 @@ P6 상태: **완료**. 다음 단계는 P7 Memory·RAG·Knowledge 통합이다.
 
 ## P7 — Memory·RAG·Knowledge
 
-- [ ] 단기 대화/Task/프로젝트/선호/사실/사례 메모리 분리
-- [ ] 사실·추측·출처·기록 시각 저장
-- [ ] 사용자 정정과 모순 해결
-- [ ] 민감 정보 자동 기억 금지
-- [ ] 문서 유형별 구조 보존 Chunking
-- [ ] 삭제·수정 문서 인덱스 동기화
-- [ ] Metadata filter와 reranking
-- [ ] 답변 주장과 근거 Chunk 연결
-- [ ] 웹 정보의 만료·재검증 정책
+- [x] 단기 대화/Task/프로젝트/선호/사실/사례 메모리 분리
+- [x] 사실·추측·출처·기록 시각 저장
+- [x] 사용자 정정과 모순 해결
+- [x] 민감 정보 자동 기억 금지
+- [x] 문서 유형별 구조 보존 Chunking
+- [x] 삭제·수정 문서 인덱스 동기화
+- [x] Metadata filter와 reranking
+- [x] 답변 주장과 근거 Chunk 연결
+- [x] 웹 정보의 만료·재검증 정책
+
+진행 기록 (2026-08-02):
+
+- 대화와 Task의 기존 전용 저장소는 유지하면서 프로젝트·선호·사실·사례를 typed
+  `KnowledgeRecord`로 분리했다. 각 기록은 Workspace, subject/predicate, 사실성,
+  confidence, 출처, 기록 시각, 만료 시각과 metadata를 보유한다.
+- 모순 기록은 조용히 덮어쓰지 않고 `conflicts_with` 관계로 함께 보존한다. 사용자 정정은
+  기존 활성 기록을 `superseded`로 전환하고 새 기록과 연결한다.
+- 자격증명·토큰·개인식별번호 패턴은 자동 장기 기억 단계에서 차단한다.
+- Markdown heading, JSON top-level, CSV header/row, 코드 symbol 경계를 보존하는 Chunking을
+  추가했다. 모든 Chunk는 안정 ID, section, line range와 원본 해시를 가진다.
+- 검색 전 로컬 원본 변경·삭제를 자동 동기화한다. Metadata filter 뒤 lexical/vector
+  점수와 기록 시각으로 reranking하며 결과마다 citation 객체를 반환한다.
+- 답변 Context에 근거 Chunk ID와 출처·section·line을 포함하고, 문서 기반 주장은 근거 ID를
+  표시하도록 응답 계약을 연결했다.
+- 웹 문서는 주제별 TTL을 적용한다. 만료 정보는 기본 검색에서 제외되고 명시적 재검증 Tool만
+  TTL을 갱신한다.
+- 전체 회귀 `212 passed, 4 deselected`를 통과했다.
+
+P7 상태: **완료**. 다음 단계는 P8 Research·Browser Agent다.
 
 ## P8 — Research·Browser Agent
 

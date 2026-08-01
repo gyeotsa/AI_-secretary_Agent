@@ -7,6 +7,26 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+## 2026-08-02 P7 Memory·RAG·Knowledge 완료
+
+- `core/knowledge_memory.py`에 Conversation/Task/Project/Preference/Fact/Case 의미 유형과
+  Fact/Inference/User Claim 사실성 계약을 추가했다. 모든 장기 기록은 출처, confidence,
+  기록·만료 시각, Workspace와 metadata를 보유한다.
+- 같은 subject/predicate의 다른 내용은 `conflicts_with`로 보존한다. 사용자 정정은 이전
+  기록을 `superseded` 처리하고 새 기록의 `supersedes_id`로 연결한다.
+- 비밀번호, API key, token, 주민등록번호, 카드·계좌·개인 키 등은 자동 기억에서 차단한다.
+- Markdown·JSON·CSV·코드 구조를 보존한 Chunking과 stable chunk ID, section, line range,
+  source hash를 구현했다. 검색 시 로컬 문서 수정·삭제를 자동 동기화한다.
+- RAG 검색에 metadata filter와 lexical/vector·recency reranking을 적용했다. 결과 citation을
+  답변 Context에 넣어 문서 기반 주장과 근거 Chunk를 연결한다.
+- 웹 문서는 주제별 TTL을 적용한다. 만료 결과는 기본 검색에서 제외하며
+  `rag_revalidate_web_document`의 실제 재검증 기록으로만 만료 시각을 갱신한다.
+- 코드 커밋: `d5ed707`, `da69694`.
+- 검증: P7 및 관련 회귀 25개 통과, 전체 `212 passed, 4 deselected`.
+- P7 Memory·RAG·Knowledge: **완료**.
+- 다음 해야 할 일: P8 Research·Browser Agent를 시작한다. 검색 결과 URL 실제 방문,
+  본문·게시일 추출과 공식 출처 우선순위 계약부터 구현한다.
+
 ## 2026-08-02 P6 Tool Runtime·Plugin 완전 단일화 완료
 
 - `PluginRegistry`를 Tool 스키마와 실행의 유일한 공개 경계로 변경했다. 내장 Tool은

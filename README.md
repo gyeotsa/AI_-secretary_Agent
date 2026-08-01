@@ -15,6 +15,7 @@ JARVIS는 Windows PC에서 대화, 파일·문서 작업, 웹 조사, 앱 제어
 - 대화·작업 Slot 상태와 후속 질문
 - Plugin Registry 기반 Tool·Intent 로딩
 - Plugin 입출력 JSON Schema 검증, timeout·재시도·취소 정책, 상태·인증 진단 UI
+- 유형·출처·정정·민감정보 정책을 갖춘 장기 Memory와 근거 인용형 RAG
 - 파일·프로젝트 생성, 파일 내용 수정과 실제 경로·해시 검증
 - Excel, Word, PowerPoint, PDF, HWPX 파일 처리
 - Git, Windows 앱 탐색·실행·창 제어

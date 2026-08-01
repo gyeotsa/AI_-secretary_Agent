@@ -161,7 +161,21 @@ P3 마지막 단계에서 자연어 저장소 변경 Intent를 CodingPlan과 JSO
 3. 저장소 단위 Coding Agent와 patch→test→diff 루프.
 4. Workspace·Project Intelligence 완료. 다음 구현 우선순위는 P5 Planner·Executor·Recovery 재설계.
 
-P5와 P6를 완료했으며 다음 구현 우선순위는 P7 Memory·RAG·Knowledge입니다.
+P5·P6·P7을 완료했으며 다음 구현 우선순위는 P8 Research·Browser Agent입니다.
+
+## 2026-08-02 P7 완료
+
+- Conversation, Task, Project, Preference, Fact, Case를 별도 의미 유형으로 관리합니다.
+- 장기 기록에 사실·추측·사용자 진술, 출처, confidence, 기록·만료 시각을 저장합니다.
+- 모순은 충돌 관계로 보존하고 사용자 정정으로만 이전 활성 기록을 폐기합니다.
+- 자격증명과 고위험 개인식별정보는 자동 기억하지 않습니다.
+- Markdown·JSON·CSV·코드 구조를 보존한 Chunk와 원본 해시 기반 수정·삭제 동기화를
+  구현했습니다.
+- Metadata filter·reranking 결과는 안정 Chunk ID와 source·section·line citation을
+  포함하며 최종 응답 Context와 연결됩니다.
+- 웹 정보는 weather·traffic·finance·news·software·general 유형별 TTL을 적용하고,
+  만료된 근거는 재검증 전까지 기본 검색과 답변에서 제외합니다.
+- 전체 자동화 회귀 결과는 `212 passed, 4 deselected`입니다.
 
 ## 2026-08-02 P6 완료
 
