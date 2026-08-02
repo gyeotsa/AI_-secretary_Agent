@@ -1710,4 +1710,5 @@ AI_-secretary_Agent/
 - 기존의 큰 회전 원, scan line, 강한 네온을 표시하던 메인 배경을 차분한 navy gradient, 상태별 cyan/violet glow, 낮은 대비의 48px grid로 교체했다. 좌측 이름 자리를 제거하고 상단 도구는 W/A/V/C/T/P/S compact control로 정리했다.
 - 메인 메시지·상태·Workspace·입력창에 Segoe UI 기반의 새 토큰을 적용했다. 전문가 Hub·문서·Photoshop·시안 창은 같은 surface/border/accent/focus/scrollbar/button 규칙과 22px 외곽 여백, 14px 간격을 공유한다.
 - offscreen 실제 렌더로 메인과 문서 전문가 창을 PNG 캡처해 시각 구조를 확인한 뒤 임시 캡처는 삭제했다. UI 집중 테스트 `15 passed`, 전체 회귀 `339 passed, 4 deselected`를 통과했다.
+- 코드 커밋: `ac7573b`.
 - 다음 해야 할 일: 실제 Windows 디스플레이 배율(100%/125%/150%)에서 글자 잘림과 도구 버튼 hit area를 수락 검사하고, 사용자가 세부 GUI 요구를 정하면 각 전문가 Canvas를 같은 디자인 토큰으로 확장한다.
