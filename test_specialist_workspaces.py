@@ -2,6 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
 from core.model_registry import ModelRegistry, ModelRoleRouter
@@ -50,4 +51,7 @@ def test_main_window_opens_both_specialist_workspaces():
     assert set(main.specialist_windows) == {"document", "photoshop"}
     assert document.spec.model_role == "document"
     assert photoshop.spec.model_role == "image_editing"
+    assert document.parent() is None and photoshop.parent() is None
+    assert not document.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    assert not photoshop.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     photoshop.close(); document.close(); main.close()

@@ -1702,3 +1702,12 @@ AI_-secretary_Agent/
 - 모델과 라이선스 원문: https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5 및 https://huggingface.co/h94/IP-Adapter . 공개 배포 전에는 각 라이선스 조건과 안전 필터 정책을 별도로 검토해야 한다.
 - 코드 커밋: `ca2feb3`.
 - 다음 해야 할 일: 실제 사용자 참고 시안으로 생성 품질을 평가하고, 텍스트·로고 위치와 인물/제품 컷아웃을 픽셀 단위로 재현해야 하는 유형에는 segmentation 및 ControlNet/템플릿 recipe를 추가한다. 현재 구현은 가중치 재학습이 아니라 reference-conditioned generation이다.
+
+## 2026-08-03 메인·전문가 UI 시각 개편 및 일반 Z-order 복구
+
+- 메인 좌측 상단의 비서 이름 라벨을 제거했다. `set_assistant_identity()`는 호출어·응답·TTS에 필요한 runtime identity만 저장하며 제목 바에 `아니스` 같은 이름을 다시 표시하지 않는다.
+- 메인 창은 기존처럼 `Window`이며 `WindowStaysOnTopHint`를 사용하지 않는다. 문서·Photoshop·시안 전문가 작업공간도 메인 창의 owned child가 아니라 독립 top-level 창으로 생성하고 always-on-top flag가 없음을 테스트한다. 처음 열 때만 일반 앱처럼 focus하며 이후에는 다른 앱과 정상적인 Windows Z-order를 따른다.
+- 기존의 큰 회전 원, scan line, 강한 네온을 표시하던 메인 배경을 차분한 navy gradient, 상태별 cyan/violet glow, 낮은 대비의 48px grid로 교체했다. 좌측 이름 자리를 제거하고 상단 도구는 W/A/V/C/T/P/S compact control로 정리했다.
+- 메인 메시지·상태·Workspace·입력창에 Segoe UI 기반의 새 토큰을 적용했다. 전문가 Hub·문서·Photoshop·시안 창은 같은 surface/border/accent/focus/scrollbar/button 규칙과 22px 외곽 여백, 14px 간격을 공유한다.
+- offscreen 실제 렌더로 메인과 문서 전문가 창을 PNG 캡처해 시각 구조를 확인한 뒤 임시 캡처는 삭제했다. UI 집중 테스트 `15 passed`, 전체 회귀 `339 passed, 4 deselected`를 통과했다.
+- 다음 해야 할 일: 실제 Windows 디스플레이 배율(100%/125%/150%)에서 글자 잘림과 도구 버튼 hit area를 수락 검사하고, 사용자가 세부 GUI 요구를 정하면 각 전문가 Canvas를 같은 디자인 토큰으로 확장한다.

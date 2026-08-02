@@ -17,12 +17,31 @@ from core.mockup_design import MockupDesignRuntime
 
 
 STYLE = """
-QMainWindow, QDialog, QWidget { background: #080d18; color: #d9f7ff; }
-QFrame#panel, QListWidget, QTextEdit { background: #0d1728; border: 1px solid #24445b; border-radius: 8px; }
-QPushButton { color: #67e8f9; background: #10243a; border: 1px solid #28728d; border-radius: 6px; padding: 7px 11px; }
-QPushButton:hover { background: #173a50; }
-QLabel#heading { color: #67e8f9; font-size: 18px; font-weight: bold; }
-QLabel#muted { color: #87a6b7; }
+QMainWindow, QDialog { background: #080d16; }
+QWidget { color: #dce8f5; font-family: "Segoe UI"; font-size: 12px; }
+QFrame#panel {
+    background: #0d1624; border: 1px solid #203247; border-radius: 12px;
+}
+QListWidget, QTextEdit, QLineEdit, QComboBox {
+    color: #e8f2fb; background: #0a121e; border: 1px solid #253a51;
+    border-radius: 9px; padding: 7px; selection-background-color: #1f6178;
+}
+QListWidget:focus, QTextEdit:focus, QLineEdit:focus, QComboBox:focus { border-color: #4bc7de; }
+QListWidget::item { padding: 7px; border-radius: 5px; }
+QListWidget::item:selected { background: #18394b; color: #f3fbff; }
+QPushButton {
+    color: #cbeaf2; background: #132338; border: 1px solid #29455f;
+    border-radius: 8px; padding: 8px 12px; font-weight: 600;
+}
+QPushButton:hover { color: #ffffff; background: #19314a; border-color: #4bbbd0; }
+QPushButton:pressed { background: #0e1b2b; }
+QLabel#heading { color: #eaf8ff; font-size: 19px; font-weight: 650; }
+QLabel#section { color: #70d8e9; font-size: 13px; font-weight: 650; }
+QLabel#muted { color: #7f96aa; }
+QSplitter::handle { background: transparent; width: 8px; }
+QScrollBar:vertical { background: transparent; width: 9px; margin: 2px; }
+QScrollBar::handle:vertical { background: #2b4258; min-height: 28px; border-radius: 4px; }
+QToolTip { color: #eaf7ff; background: #101d2d; border: 1px solid #29445f; padding: 5px; }
 """
 
 
@@ -67,13 +86,14 @@ class SpecialistWorkspaceWindow(QMainWindow):
         super().__init__(parent)
         self.spec = spec
         self.setWindowTitle(f"JARVIS · {spec.title}")
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
         self.resize(1180, 760)
         self.setStyleSheet(STYLE)
         self._build()
 
     def _build(self):
         root = QWidget()
-        layout = QVBoxLayout(root)
+        layout = QVBoxLayout(root); layout.setContentsMargins(22, 20, 22, 20); layout.setSpacing(14)
         header = QHBoxLayout()
         heading = QLabel(self.spec.title)
         heading.setObjectName("heading")
@@ -83,7 +103,8 @@ class SpecialistWorkspaceWindow(QMainWindow):
         header.addStretch()
         header.addWidget(role)
         layout.addLayout(header)
-        layout.addWidget(QLabel(self.spec.description))
+        description = QLabel(self.spec.description); description.setObjectName("muted")
+        description.setWordWrap(True); layout.addWidget(description)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_asset_panel())
@@ -106,7 +127,7 @@ class SpecialistWorkspaceWindow(QMainWindow):
     def _build_asset_panel(self):
         panel = QFrame(); panel.setObjectName("panel")
         layout = QVBoxLayout(panel)
-        layout.addWidget(QLabel("파일 및 도구"))
+        section = QLabel("파일 및 도구"); section.setObjectName("section"); layout.addWidget(section)
         self.assets = QListWidget()
         layout.addWidget(self.assets, 1)
         open_button = QPushButton("파일 열기")
@@ -126,7 +147,7 @@ class SpecialistWorkspaceWindow(QMainWindow):
     def _build_canvas_panel(self):
         panel = QFrame(); panel.setObjectName("panel")
         layout = QVBoxLayout(panel)
-        layout.addWidget(QLabel("작업 미리보기"))
+        section = QLabel("작업 미리보기"); section.setObjectName("section"); layout.addWidget(section)
         if self.spec.key == "photoshop":
             self.preview = QLabel("이미지를 열면 이곳에 미리보기가 표시됩니다.")
             self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -144,7 +165,7 @@ class SpecialistWorkspaceWindow(QMainWindow):
     def _build_result_panel(self):
         panel = QFrame(); panel.setObjectName("panel")
         layout = QVBoxLayout(panel)
-        layout.addWidget(QLabel("전문가 실행 결과"))
+        section = QLabel("전문가 실행 결과"); section.setObjectName("section"); layout.addWidget(section)
         self.results = QTextEdit()
         self.results.setReadOnly(True)
         self.results.setPlaceholderText("진행 상황, 검증 결과와 생성된 파일이 여기에 표시됩니다.")
@@ -218,6 +239,7 @@ class MockupWorkspaceWindow(QMainWindow):
         self.reference_paths, self.production_paths = [], []
         self.active_profile_id = ""
         self.setWindowTitle("JARVIS · 시안 제작 전문가")
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
         self.resize(1320, 820)
         self.setStyleSheet(STYLE)
         self.analysis_done.connect(self._on_analysis_done)
@@ -231,6 +253,7 @@ class MockupWorkspaceWindow(QMainWindow):
 
     def _build(self):
         root = QWidget(); outer = QVBoxLayout(root)
+        outer.setContentsMargins(22, 20, 22, 20); outer.setSpacing(14)
         heading = QLabel("시안 제작 전문가"); heading.setObjectName("heading")
         outer.addWidget(heading)
         guide = QLabel("① 학습용 시안에서 디자인 형식을 분석한 뒤  ② 제작용 사진에 그 스타일을 적용합니다. 두 자료는 서로 섞이지 않습니다.")
@@ -244,7 +267,7 @@ class MockupWorkspaceWindow(QMainWindow):
 
     def _upload_panel(self, title: str, learning: bool):
         panel = QFrame(); panel.setObjectName("panel"); layout = QVBoxLayout(panel)
-        label = QLabel(("1. " if learning else "2. ") + title); label.setObjectName("heading"); layout.addWidget(label)
+        label = QLabel(("1. " if learning else "2. ") + title); label.setObjectName("section"); layout.addWidget(label)
         help_text = ("완성된 기존 시안 여러 장을 추가하세요. 원본 사진이 아니라 참고할 디자인 결과물입니다."
                      if learning else "새 시안에 실제로 사용할 제품·인물·배경 사진을 추가하세요.")
         help_label = QLabel(help_text); help_label.setWordWrap(True); help_label.setObjectName("muted"); layout.addWidget(help_label)

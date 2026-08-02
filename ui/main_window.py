@@ -13,16 +13,36 @@ from core.state_machine import State
 from core.specialist_workspaces import get_specialist_workspace_registry
 from .specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindow, MockupWorkspaceWindow
 
+MAIN_STYLE = """
+QWidget { color: #dce8f5; font-family: "Segoe UI"; font-size: 12px; }
+QFrame#topBar { background: rgba(10, 18, 31, 238); border-bottom: 1px solid #213247; }
+QPushButton#toolbarButton {
+    color: #8da2b8; background: transparent; border: 1px solid transparent;
+    border-radius: 8px; font-size: 11px; font-weight: 600; padding: 4px;
+}
+QPushButton#toolbarButton:hover { color: #ecf8ff; background: #16263a; border-color: #29445f; }
+QPushButton#toolbarButton:pressed { background: #0e1a2a; }
+QPushButton#closeButton { color: #8da2b8; background: transparent; border: 0; border-radius: 8px; }
+QPushButton#closeButton:hover { color: #ffffff; background: #d64f63; }
+QLabel#status { color: #6de8ff; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
+QLabel#workspace { color: #718ba4; font-size: 11px; padding: 4px; }
+QLabel#userMessage { color: #9cb8ce; font-size: 14px; padding: 12px 20px; }
+QLabel#assistantMessage { color: #edf7ff; font-size: 15px; font-weight: 500; padding: 12px 20px; }
+QLineEdit#commandInput {
+    color: #eef8ff; background: rgba(13, 25, 42, 242); border: 1px solid #29445f;
+    border-radius: 12px; padding: 13px 16px; font-size: 13px; selection-background-color: #217d9b;
+}
+QLineEdit#commandInput:hover { border-color: #3c607f; }
+QLineEdit#commandInput:focus { border-color: #54d8ef; background: rgba(16, 31, 51, 250); }
+QToolTip { color: #eaf7ff; background: #101d2d; border: 1px solid #29445f; padding: 5px; }
+"""
+
 class DragTab(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(40)
+        self.setObjectName("topBar")
         self.drag_position = None
-        self.setStyleSheet("""
-            QFrame {
-                background: transparent;
-            }
-        """)
     
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -173,7 +193,7 @@ class SoundBarWidget(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
+
         bar_width = (self.width() - 20) // self.bar_count
         gap = 2
         
@@ -852,6 +872,7 @@ class JarvisMainWindow(QWidget):
         # 일반 앱처럼 작업 표시줄에 표시하고 다른 창의 앞뒤로 이동할 수 있게 한다.
         self.setWindowFlags(Qt.WindowType.Window |
                            Qt.WindowType.FramelessWindowHint)
+        self.setStyleSheet(MAIN_STYLE)
         
         screen = QApplication.primaryScreen().geometry()
         window_width = 800
@@ -870,54 +891,35 @@ class JarvisMainWindow(QWidget):
         tab_layout = QHBoxLayout(self.drag_tab)
         tab_layout.setContentsMargins(15, 5, 10, 0)
         
-        self.title_label = QLabel("JARVIS")
-        title_font = QFont("Orbitron", 16, QFont.Weight.Bold)
-        self.title_label.setFont(title_font)
-        self.title_label.setStyleSheet("color: #00d4ff; letter-spacing: 6px;")
-        tab_layout.addWidget(self.title_label)
-        
-        # 버튼 스타일 정의 (먼저 정의!)
-        button_style = """
-            QPushButton {
-                background-color: transparent;
-                color: #888888;
-                border: none;
-                font-size: 18px;
-                font-weight: bold;
-                padding: 5px 10px;
-            }
-            QPushButton:hover {
-                background-color: rgba(136, 136, 136, 30);
-                color: #ffffff;
-            }
-            QPushButton:pressed {
-                background-color: rgba(136, 136, 136, 60);
-            }
-        """
+        button_style = ""
         
         # Workspace 선택 버튼
-        self.workspace_btn = QPushButton("📁")
+        self.workspace_btn = QPushButton("W")
+        self.workspace_btn.setObjectName("toolbarButton")
         self.workspace_btn.setStyleSheet(button_style)
         self.workspace_btn.setFixedSize(35, 35)
         self.workspace_btn.setToolTip("작업 폴더 선택")
         self.workspace_btn.clicked.connect(self._select_workspace)
         tab_layout.addWidget(self.workspace_btn)
 
-        self.permission_btn = QPushButton("🔐")
+        self.permission_btn = QPushButton("A")
+        self.permission_btn.setObjectName("toolbarButton")
         self.permission_btn.setStyleSheet(button_style)
         self.permission_btn.setFixedSize(35, 35)
         self.permission_btn.setToolTip("권한 관리")
         self.permission_btn.clicked.connect(self.show_permission_settings)
         tab_layout.addWidget(self.permission_btn)
 
-        self.voice_btn = QPushButton("🔊")
+        self.voice_btn = QPushButton("V")
+        self.voice_btn.setObjectName("toolbarButton")
         self.voice_btn.setStyleSheet(button_style)
         self.voice_btn.setFixedSize(35, 35)
         self.voice_btn.setToolTip("TTS 목소리 및 호칭 설정")
         self.voice_btn.clicked.connect(self.show_tts_voice_settings)
         tab_layout.addWidget(self.voice_btn)
 
-        self.session_btn = QPushButton("💬")
+        self.session_btn = QPushButton("C")
+        self.session_btn.setObjectName("toolbarButton")
         self.session_btn.setStyleSheet(button_style)
         self.session_btn.setFixedSize(35, 35)
         self.session_btn.setToolTip("대화 세션 관리")
@@ -925,6 +927,7 @@ class JarvisMainWindow(QWidget):
         tab_layout.addWidget(self.session_btn)
 
         self.task_btn = QPushButton("☷")
+        self.task_btn.setObjectName("toolbarButton")
         self.task_btn.setStyleSheet(button_style)
         self.task_btn.setFixedSize(35, 35)
         self.task_btn.setToolTip("현재 작업 관리")
@@ -932,6 +935,7 @@ class JarvisMainWindow(QWidget):
         tab_layout.addWidget(self.task_btn)
 
         self.plugin_btn = QPushButton("P")
+        self.plugin_btn.setObjectName("toolbarButton")
         self.plugin_btn.setStyleSheet(button_style)
         self.plugin_btn.setFixedSize(35, 35)
         self.plugin_btn.setToolTip("Plugin 상태 및 진단")
@@ -939,6 +943,7 @@ class JarvisMainWindow(QWidget):
         tab_layout.addWidget(self.plugin_btn)
 
         self.specialist_btn = QPushButton("S")
+        self.specialist_btn.setObjectName("toolbarButton")
         self.specialist_btn.setStyleSheet(button_style)
         self.specialist_btn.setFixedSize(35, 35)
         self.specialist_btn.setToolTip("전문가 작업공간")
@@ -952,35 +957,21 @@ class JarvisMainWindow(QWidget):
         tab_layout.addStretch()
         
         self.minimize_btn = QPushButton("─")
+        self.minimize_btn.setObjectName("toolbarButton")
         self.minimize_btn.setStyleSheet(button_style)
         self.minimize_btn.setFixedSize(35, 35)
         self.minimize_btn.clicked.connect(self.minimize_window)
         tab_layout.addWidget(self.minimize_btn)
         
         self.size_btn = QPushButton("□")
+        self.size_btn.setObjectName("toolbarButton")
         self.size_btn.setStyleSheet(button_style)
         self.size_btn.setFixedSize(35, 35)
         self.size_btn.clicked.connect(self.toggle_window_mode)
         tab_layout.addWidget(self.size_btn)
         
         self.close_btn = QPushButton("✕")
-        self.close_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: #888888;
-                border: none;
-                font-size: 18px;
-                font-weight: bold;
-                padding: 5px 10px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 68, 68, 30);
-                color: #ff4444;
-            }
-            QPushButton:pressed {
-                background-color: rgba(255, 68, 68, 60);
-            }
-        """)
+        self.close_btn.setObjectName("closeButton")
         self.close_btn.setFixedSize(35, 35)
         self.close_btn.clicked.connect(self.close_requested.emit)  # 종료 시그널 보내기
         tab_layout.addWidget(self.close_btn)
@@ -1005,48 +996,35 @@ class JarvisMainWindow(QWidget):
         center_layout.setContentsMargins(30, 20, 30, 20)
         
         self.status_label = QLabel("SYSTEM READY")
+        self.status_label.setObjectName("status")
         status_font = QFont("Orbitron", 11)
         self.status_label.setFont(status_font)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_label.setStyleSheet("color: #00d4ff; letter-spacing: 3px;")
         
         # Workspace 정보 라벨
         self.workspace_label = QLabel("Workspace: 없음")
+        self.workspace_label.setObjectName("workspace")
         workspace_font = QFont("Consolas", 9)
         self.workspace_label.setFont(workspace_font)
         self.workspace_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.workspace_label.setStyleSheet("color: #00a8cc; padding: 5px;")
         
         self.user_text_label = QLabel("")
+        self.user_text_label.setObjectName("userMessage")
         user_font = QFont("Consolas", 10)
         self.user_text_label.setFont(user_font)
         self.user_text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.user_text_label.setStyleSheet("color: #00a8cc; padding: 10px;")
         self.user_text_label.setWordWrap(True)
         
         self.assistant_text_label = QLabel("")
+        self.assistant_text_label.setObjectName("assistantMessage")
         assistant_font = QFont("Consolas", 10)
         self.assistant_text_label.setFont(assistant_font)
         self.assistant_text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.assistant_text_label.setStyleSheet("color: #9945ff; padding: 10px;")
         self.assistant_text_label.setWordWrap(True)
         
         self.text_input = QLineEdit()
-        self.text_input.setPlaceholderText("SPEAK OR TYPE YOUR COMMAND...")
-        self.text_input.setStyleSheet("""
-            QLineEdit {
-                background: rgba(0, 20, 40, 200);
-                color: #00d4ff;
-                border: 2px solid #00d4ff;
-                border-radius: 15px;
-                padding: 12px 18px;
-                font-size: 13px;
-                font-family: Consolas;
-            }
-            QLineEdit:focus {
-                border: 2px solid #00ffcc;
-            }
-        """)
+        self.text_input.setObjectName("commandInput")
+        self.text_input.setPlaceholderText("메시지 또는 작업 명령을 입력하세요")
         self.text_input.returnPressed.connect(self._on_text_submitted)
         
         center_layout.addStretch()
@@ -1069,11 +1047,30 @@ class JarvisMainWindow(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
         if self.window_mode == "mini":
-            gradient = QRadialGradient(self.width()/2, self.height()/2, self.width()/2)
-            gradient.setColorAt(0.0, QColor(20, 20, 30))
-            gradient.setColorAt(1.0, QColor(5, 5, 10))
+            gradient = QLinearGradient(0, 0, 0, self.height())
+            gradient.setColorAt(0.0, QColor(14, 23, 37))
+            gradient.setColorAt(1.0, QColor(7, 12, 20))
             painter.fillRect(self.rect(), gradient)
             return
+
+        active = self.current_state in [State.PROCESSING, State.EXECUTING, State.RESPONDING]
+        background = QLinearGradient(0, 0, 0, self.height())
+        background.setColorAt(0.0, QColor(20, 16, 35) if active else QColor(13, 18, 31))
+        background.setColorAt(1.0, QColor(6, 10, 18))
+        painter.fillRect(self.rect(), background)
+        glow = QRadialGradient(self.width() * 0.55, self.height() * 0.45,
+                               max(self.width(), self.height()) * 0.62)
+        accent = QColor(125, 92, 246, 42) if active else QColor(57, 203, 230, 34)
+        glow.setColorAt(0.0, accent)
+        glow.setColorAt(0.56, QColor(accent.red(), accent.green(), accent.blue(), 10))
+        glow.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 0))
+        painter.fillRect(self.rect(), glow)
+        painter.setPen(QPen(QColor(72, 108, 137, 18), 1))
+        for x in range(0, self.width(), 48):
+            painter.drawLine(x, 40, x, self.height())
+        for y in range(40, self.height(), 48):
+            painter.drawLine(0, y, self.width(), y)
+        return
         
         if self.current_state in [State.PROCESSING, State.EXECUTING, State.RESPONDING]:
             gradient = QRadialGradient(self.width()/2, self.height()/2, self.width()/2)
@@ -1271,9 +1268,9 @@ class JarvisMainWindow(QWidget):
             }
             self.status_label.setText(state_texts.get(state, "SYSTEM READY"))
             if state in [State.PROCESSING, State.EXECUTING, State.RESPONDING]:
-                self.status_label.setStyleSheet("color: #9945ff; letter-spacing: 3px;")
+                self.status_label.setStyleSheet("color: #b69cff; letter-spacing: 2px;")
             else:
-                self.status_label.setStyleSheet("color: #00d4ff; letter-spacing: 3px;")
+                self.status_label.setStyleSheet("color: #6de8ff; letter-spacing: 2px;")
             
             # LISTENING/RESPONDING 상태일 때 사운드바 활성화, IDLE일 때 리셋
             if state in [State.LISTENING, State.RESPONDING]:
@@ -1516,15 +1513,14 @@ class JarvisMainWindow(QWidget):
                 suffix = f" · {git_status.get('branch', 'detached')}{marker}"
             self.workspace_label.setText(f"Workspace: {name}{suffix}")
             self.workspace_label.setToolTip(path or name)
-            self.workspace_label.setStyleSheet("color: #00ffcc; padding: 5px;")
+            self.workspace_label.setStyleSheet("color: #77d9c4; padding: 4px;")
         else:
             self.workspace_label.setText("Workspace: 없음")
-            self.workspace_label.setStyleSheet("color: #00a8cc; padding: 5px;")
+            self.workspace_label.setStyleSheet("color: #718ba4; padding: 4px;")
 
     def set_assistant_identity(self, name: str):
-        """Refresh user-visible identity without rebuilding or restarting the UI."""
-        normalized = " ".join(str(name or "").strip().split()) or "JARVIS"
-        self.title_label.setText(normalized.upper() if normalized.isascii() else normalized)
+        """Keep the runtime identity without placing a name badge in the title bar."""
+        self.assistant_identity = " ".join(str(name or "").strip().split()) or "JARVIS"
     
     def request_permission(self, permission_name: str, permission_description: str) -> bool:
         """권한 요청 대화상자를 보여주고 사용자 응답을 반환"""
@@ -1595,8 +1591,9 @@ class JarvisMainWindow(QWidget):
             return None
         window = self.specialist_windows.get(spec.key)
         if window is None:
-            window = (MockupWorkspaceWindow(spec, self) if spec.key == "mockup"
-                      else SpecialistWorkspaceWindow(spec, self))
+            # Top-level ownership lets workspaces participate in normal Windows Z-order.
+            window = (MockupWorkspaceWindow(spec) if spec.key == "mockup"
+                      else SpecialistWorkspaceWindow(spec))
             window.prompt_submitted.connect(self.specialist_prompt_submitted.emit)
             self.specialist_windows[spec.key] = window
         window.show()
