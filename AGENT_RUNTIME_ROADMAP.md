@@ -468,14 +468,34 @@ P9 상태: **런타임 구현 완료 / 실계정·설치형 COM 수락 테스트
 
 ## P10 — OS·Multimodal·Voice
 
-- [ ] API/CLI/COM/UI Automation 우선, 좌표 클릭은 최후 수단
-- [ ] 창 Handle·접근성 트리·포커스 검증
-- [ ] 화면 선택 영역·OCR·표·차트 이해
-- [ ] 다중 이미지·영상 프레임 문맥
-- [ ] Wake word 전용 감지와 STT 후보 재평가
-- [ ] TTS 에코 제거·사용자 끼어들기·재생 취소
-- [ ] GPU 중앙 큐와 VRAM 예산
-- [ ] 장치 변경·절전 복귀 자동 복구
+- [x] API/CLI/COM/UI Automation 우선, 좌표 클릭은 최후 수단
+- [x] 창 Handle·접근성 트리·포커스 검증
+- [x] 화면 선택 영역·OCR·표·차트 이해
+- [x] 다중 이미지·영상 프레임 문맥
+- [x] Wake word 전용 감지와 STT 후보 재평가
+- [x] TTS 에코 제거·사용자 끼어들기·재생 취소
+- [x] GPU 중앙 큐와 VRAM 예산
+- [x] 장치 변경·절전 복귀 자동 복구
+
+2026-08-02 구현 상태:
+
+- Windows 자동화 우선순위를 API → CLI → COM → UI Automation → 좌표 fallback으로
+  고정했다. 좌표 클릭은 별도 `coordinate_control` 확인 권한과 이유를 요구하며 결과는
+  검증 불가 상태로 유지한다. 창 Handle·PID·foreground와 UIA Control tree를 조회한다.
+- 화면 전체/선택 영역 PNG 캡처, 이미지 1~12개 순서 보존 분석, 영상 균등 프레임 샘플링을
+  지원한다. OCR·표·차트 모드는 로컬 Vision 모델이 입력 해시와 함께 근거를 반환한다.
+- 호출어 후보는 음향 점수·무음 확률·Registry 어휘·첫 단어 유사도로 재평가한다.
+  TTS 출력 참조 신호의 투영 성분을 마이크 입력에서 제거한 뒤 지속 근접 발화를 판정해
+  재생을 취소한다.
+- STT와 Vision은 process-wide GPU admission queue를 공유하며 STT 우선순위와 VRAM
+  예산을 적용한다. 예산은 CUDA VRAM의 82% 또는 `GPU_VRAM_BUDGET_MB`로 지정한다.
+- 입력 장치가 변경되거나 절전 복귀 뒤 stream이 끊기면 bounded exponential backoff로
+  최대 5회 재연결한다. 사용자가 직접 감지를 중지한 경우에는 재연결하지 않는다.
+- P10 집중 검증 38개, 확장된 전체 회귀 `280 passed, 4 deselected`를 통과했다.
+  Codex 실행 세션은 대화형 Windows 화면 접근이 없어 실제 화면 캡처가 차단됐으며,
+  Jarvis GUI 사용자 세션에서 화면·UIA·끼어들기·장치 복귀 실환경 수락 테스트가 필요하다.
+
+P10 상태: **런타임 구현 완료 / 대화형 장치·화면 수락 테스트 대기**. 다음 단계는 P11이다.
 
 ## P11 — Automation·Proactive Policy
 

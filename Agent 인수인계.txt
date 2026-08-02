@@ -28,7 +28,28 @@
   전체 `212 passed, 4 deselected`.
 - P8 Research·Browser Agent: **완료**.
 - P9 Office·Cloud·Communication 런타임: **완료**. 실제 계정·Office/HWP 설치 환경 수락 테스트는 대기.
-- 다음 해야 할 일: P10 OS·Multimodal·Voice를 시작한다.
+- P10 OS·Multimodal·Voice 런타임: **완료**. 대화형 화면·실제 acoustic 환경 수락 테스트는 대기.
+- 다음 해야 할 일: P11 Automation·Proactive를 시작한다.
+
+## 2026-08-02 P10 OS·Multimodal·Voice 완료
+
+- `core/windows_automation.py`에 창 Handle·PID·foreground 조회/검증과 Windows UI
+  Automation 접근성 트리를 구현했다. 우선순위는 API/CLI/COM/UIA/좌표이며 좌표 Tool은
+  `coordinate_control` 확인 권한과 이유를 요구하고 결과를 `UNVERIFIED`로 유지한다.
+- `core/vision_runtime.py`, `plugins/multimodal_runtime.py`에 화면 선택 영역 캡처,
+  OCR·표·차트 모드, 다중 이미지 순서 보존, 영상 균등 샘플링과 시간축·해시 Evidence를 추가했다.
+- `core/voice_runtime.py`에 Wake word 후보 재평가, 출력 참조 투영 기반 에코 제거,
+  250ms 지속 근접 발화 끼어들기, TTS 즉시 취소를 구현해 AudioProcessor와 HardwareManager에 연결했다.
+- 마이크 stream 오류는 사용자가 중지한 경우를 제외하고 exponential backoff로 최대 5회
+  자동 재연결한다. 장치 변경과 절전 복귀 후 재개 경로를 제공한다.
+- `core/gpu_scheduler.py`가 STT·Vision의 중앙 GPU admission과 VRAM 예산을 관리한다.
+  STT 우선순위가 높고 기본 예산은 CUDA VRAM 82%이며 환경변수로 제한할 수 있다.
+- 기본 pytest 수집에 P4~P10 안전 회귀 파일을 편입했다. P10 집중 38개 및 전체
+  `280 passed, 4 deselected`를 통과했다.
+- Codex 프로세스는 Windows 대화형 화면 세션에 접근하지 못해 실제 ImageGrab은
+  `screen grab failed`로 차단됐다. 성공으로 기록하지 않았으며 Jarvis GUI를 직접 실행한
+  사용자 세션에서 화면·UIA·스피커/마이크 끼어들기·절전 복귀 수락 테스트가 남아 있다.
+- 코드 커밋: `ea194cc`, `ca324fe`, `729e7b4`.
 
 ## 2026-08-02 P9 Office·Cloud·Communication 완료
 

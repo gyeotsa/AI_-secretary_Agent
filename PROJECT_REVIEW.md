@@ -161,7 +161,7 @@ P3 마지막 단계에서 자연어 저장소 변경 Intent를 CodingPlan과 JSO
 3. 저장소 단위 Coding Agent와 patch→test→diff 루프.
 4. Workspace·Project Intelligence 완료. 다음 구현 우선순위는 P5 Planner·Executor·Recovery 재설계.
 
-P5·P6·P7·P8·P9 런타임 구현을 완료했으며 다음 구현 우선순위는 P10 OS·Multimodal·Voice입니다.
+P5·P6·P7·P8·P9·P10 런타임 구현을 완료했으며 다음 구현 우선순위는 P11 Automation·Proactive입니다.
 
 ## 2026-08-02 P8 완료
 
@@ -185,6 +185,20 @@ P5·P6·P7·P8·P9 런타임 구현을 완료했으며 다음 구현 우선순�
 - Drive·OneDrive·Notion 메타데이터는 원격 ID 기반 SQLite 카탈로그에 동기화합니다.
 - P9 집중 테스트 46개가 통과했습니다. 실제 Google/Microsoft/Slack/Notion 계정 호출과
   Office/HWP COM E2E는 자격증명·설치 환경이 준비된 뒤 별도 수락 테스트가 필요합니다.
+
+## 2026-08-02 P10 런타임 구현 완료
+
+- Windows Handle·PID·foreground 검증과 UI Automation 접근성 트리를 추가했습니다.
+  좌표 클릭은 별도 확인 권한을 받는 최후 fallback이며 완료로 자동 승격하지 않습니다.
+- 화면 선택 영역과 다중 이미지, 영상 시간축 프레임을 로컬 Vision 모델에 전달하고 입력
+  해시·프레임 시각을 Evidence로 보존합니다. OCR·표·차트 분석 모드를 제공합니다.
+- Wake word 전사 후보 재평가, TTS 참조 기반 에코 제거, 지속 근접 발화 끼어들기와 즉시
+  재생 취소를 연결했습니다.
+- STT·Vision 중앙 GPU 큐와 VRAM 예산, 마이크 stream의 장치 변경·절전 복귀 재연결을
+  구현했습니다. 기본 pytest 수집에 P4~P10 안전 회귀를 편입해 전체 기준선은
+  `280 passed, 4 deselected`입니다.
+- 실제 데스크톱 화면·UIA·스피커/마이크 acoustic 환경은 Jarvis GUI 사용자 세션에서
+  별도 수락 테스트가 필요합니다.
 
 ## 2026-08-02 P7 완료
 

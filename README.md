@@ -27,6 +27,8 @@ JARVIS는 Windows PC에서 대화, 파일·문서 작업, 웹 조사, 앱 제어
 - faster-whisper STT, Windows·Edge·GPT-SoVITS TTS
 - 단발 알람, Scheduler, Observer와 선제 알림 기반
 - Gemma 3 기반 이미지 분석
+- 화면 영역·다중 이미지·영상 프레임 분석과 Windows UI Automation
+- STT·Vision 중앙 GPU 큐, TTS 에코 제거·음성 끼어들기·장치 자동 복구
 - 영구 권한 정책과 실행 감사 기반
 
 다음 항목은 파일이나 클래스가 존재해도 Codex 수준의 완성 기능으로 보지 않습니다.
@@ -110,6 +112,11 @@ P9부터 Office 문서는 기존 패키지 서식을 보존하는 원자적 치�
 Calendar, Outlook, Slack, Teams의 외부 반영은 반드시 로컬 초안 생성과 권한 승인 뒤
 실행됩니다. Drive·OneDrive·Notion은 원격 ID 기반 카탈로그로 동기화됩니다. 실제 계정
 연결에 필요한 값은 `.env.example`을 참고하되 비밀값은 `.env`에만 저장해야 합니다.
+
+P10의 Windows 제어는 API·CLI·COM·UI Automation을 우선하며 좌표 클릭은 별도 승인
+fallback입니다. 화면·Vision Tool은 캡처 권한을 요구하고, STT와 Vision은 공통 VRAM
+예산을 사용합니다. `GPU_VRAM_BUDGET_MB`를 비워 두면 감지된 CUDA VRAM의 82%를
+사용합니다.
 
 ## 핵심 개발 원칙
 

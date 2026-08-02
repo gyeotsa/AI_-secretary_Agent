@@ -20,6 +20,10 @@ Coding Agent 폐쇄 루프입니다. 더 강한 모델은 복잡한 계획과 �
 `core/model_registry.py`가 역할과 실행 정책의 단일 진실 공급원이다.
 `ModelRoleRouter`는 사용자 문장의 특정 키워드를 하드코딩하지 않고 Planner가
 선택한 Plugin Registry 도구와 입력 modality를 기준으로 전문 역할을 선택한다.
+
+P10부터 STT와 Vision 추론은 `core/gpu_scheduler.py`의 process-wide admission queue를
+공유한다. STT가 Vision보다 높은 우선순위를 가지며 합산 예약량이 예산을 넘으면 대기한다.
+기본 예산은 CUDA VRAM의 82%이고 `.env`의 `GPU_VRAM_BUDGET_MB`로 낮출 수 있다.
 Ollama는 요청된 모델만 로드하고 역할별 `keep_alive` 이후 자동으로 메모리에서
 내린다. RTX 4060 Laptop 8GB에서 여러 생성 모델을 동시에 상주시켜 발생하는
 VRAM 부족을 피하기 위한 정책이다.
