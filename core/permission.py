@@ -115,6 +115,13 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "toggle_automation_job": "automation",
     "start_automation_engine": "automation",
     "execute_multi_agent": "automation",
+    "oauth_begin": "cloud_account",
+    "oauth_complete": "cloud_account",
+    "oauth_status": "cloud_read",
+    "remote_create_draft": "cloud_read",
+    "remote_apply_draft": "external_send",
+    "cloud_sync_catalog": "cloud_read",
+    "communication_read_summary": "cloud_read",
 }
 
 
@@ -140,6 +147,15 @@ class PermissionManager:
             Permission(id="data_delete", name="데이터 삭제", description="메모리·지식그래프·스케줄·자동화 작업 등 파일이 아닌 데이터 삭제",
                        level=PermissionLevel.CONFIRM),
             Permission(id="automation", name="자동화 실행", description="스케줄러·자동화 엔진·멀티에이전트 등 나중에 스스로 실행되는 작업 등록/구동",
+                       level=PermissionLevel.CONFIRM),
+            Permission(id="cloud_account", name="클라우드 계정 연결",
+                       description="Google 또는 Microsoft OAuth 계정 연결 및 토큰 갱신",
+                       level=PermissionLevel.SYSTEM),
+            Permission(id="cloud_read", name="클라우드 조회",
+                       description="메일·일정·파일·메신저 메타데이터 조회 및 로컬 동기화",
+                       level=PermissionLevel.SYSTEM),
+            Permission(id="external_send", name="외부 전송",
+                       description="메일·일정·Slack·Teams 내용을 외부 서비스에 실제 반영",
                        level=PermissionLevel.CONFIRM),
         ]
         self._load()
