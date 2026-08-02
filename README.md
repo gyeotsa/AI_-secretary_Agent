@@ -16,6 +16,7 @@ JARVIS는 Windows PC에서 대화, 파일·문서 작업, 웹 조사, 앱 제어
 - Plugin Registry 기반 Tool·Intent 로딩
 - Plugin 입출력 JSON Schema 검증, timeout·재시도·취소 정책, 상태·인증 진단 UI
 - 유형·출처·정정·민감정보 정책을 갖춘 장기 Memory와 근거 인용형 RAG
+- 대화에서 명시적 선호·프로젝트 결정·정정을 추출해 Knowledge Memory와 Vector RAG에 자동 축적
 - 실제 페이지 방문·교차검증·주장별 인용·Prompt Injection 격리를 갖춘 Research Agent
 - 파일·프로젝트 생성, 파일 내용 수정과 실제 경로·해시 검증
 - Excel, Word, PowerPoint, PDF, HWPX 파일 처리
@@ -80,6 +81,12 @@ python -m venv .venv
 Photoshop 공간은 이미지 미리보기와 설치된 Photoshop의 COM 연결 상태 및 문서 열기를
 제공합니다. Photoshop이 설치되지 않은 PC에서는 연결 실패를 명시하며 다른 작업공간과
 메인 대화는 계속 동작합니다.
+
+대화 전체를 무조건 학습하지는 않습니다. `앞으로`, `항상`, `선호`, `기억해`,
+`우리 프로젝트는`처럼 장기성이 명시된 사용자 발화만 기억 후보로 분류하며, 신뢰도·중복·
+정정·민감정보 검사를 통과한 내용만 Knowledge Memory와 RAG에 함께 저장합니다. 다음 요청은
+현재 Workspace와 global 기억에서 관련 항목만 검색합니다. 잡담과 일회성 명령은 축적하지
+않고, 저장된 사용자 설정이 현재 발화와 충돌하면 현재 발화를 우선합니다.
 
 ## 주요 디렉터리
 

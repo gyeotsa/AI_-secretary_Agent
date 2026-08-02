@@ -1665,3 +1665,14 @@ AI_-secretary_Agent/
 - offscreen 환경에서 메인 UI와 두 전문가 창의 동시 생성·종료를 확인했다. 전문가·GUI·Plugin 대상 테스트 `19 passed`, 전체 회귀 결과는 `325 passed, 4 deselected`다.
 - 코드 커밋: `f7bc434`.
 - 다음 해야 할 일: 사용자가 각 작업공간에 원하는 앱별 세부 GUI를 정하면 document 내 Word/Excel/HWP/PPT/PDF 전용 Canvas와 Photoshop 레이어·마스크·히스토리 패널을 순차 추가한다. Photoshop 실제 설치 환경에서는 COM 수락 테스트가 필요하다.
+
+## 2026-08-02 대화 기반 Knowledge Memory·Vector RAG 폐쇄 루프
+
+- 운영 상태 점검 당시 대화 Episode는 457개였지만 Semantic Memory, Knowledge Memory, Knowledge Graph, Chroma embedding이 모두 0건이었다. 일반 대화는 원문만 저장됐고 대화→장기기억 추출 연결이 없었으며, 일반 대화 경로에는 RAG/장기기억 문맥도 주입되지 않아 사용자가 성장감을 느낄 수 없는 상태였다.
+- `ConversationMemoryConsolidator`를 추가했다. `기억해`, `앞으로`, `항상`, 명시적 선호, 사용자 사실, 프로젝트 결정·정정처럼 지속성이 있는 발화만 후보가 된다. 잡담·일회성 명령은 LLM 추출 호출조차 하지 않는다.
+- 후보는 reasoning 역할 모델이 preference/fact/project/case와 안정적인 subject/predicate/content로 구조화한다. 0.75 미만 신뢰도, 사용자 원문에 없는 숫자·이메일, 원문과 어휘 근거가 부족한 생성 내용, 자격증명·민감식별정보는 저장하지 않는다. 모델 호출 실패 시 보수적인 규칙 추출로 fallback한다.
+- 통과한 기록은 typed `KnowledgeMemoryStore`와 Chroma RAG에 `memory://` 출처로 동시에 저장된다. 완전히 같은 기억은 기존 record ID를 반환해 중복을 만들지 않고, 정정은 이전 기록을 superseded 처리한다.
+- RAG는 현재 Workspace 기억뿐 아니라 global 사용자 기억도 함께 검색한다. 일반 대화의 system 문맥과 Planner/Executor Context 모두 현재 질문에 관련된 기억만 전달하며, 지금 사용자 발화가 과거 기억과 충돌하면 현재 발화를 우선하도록 명시했다.
+- 기존 사용자 프로필과 canonical 설정도 시작 시 idempotent하게 RAG로 이관한다. 레거시 `이름=자비스`, `응답_스타일=보스.`처럼 현재 canonical 설정과 충돌하는 키는 superseded 및 Vector 삭제한다.
+- 실제 운영 DB에는 현재 유효한 이름·호출어·호칭·응답 스타일·이메일 5건만 활성화했고, Chroma 검색에서 5개 memory Chunk가 반환됨을 확인했다. 신규 테스트 7개와 전체 `332 passed, 4 deselected`를 통과했다.
+- 다음 해야 할 일: 장기기억을 사용자가 조회·정정·삭제하고 자동 기억 여부를 조절할 수 있는 Memory 관리 UI를 추가한다. Tool별 기본값 자동 적용은 별도의 typed Preference→Slot mapping 계약으로 확장한다.

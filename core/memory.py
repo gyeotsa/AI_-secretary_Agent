@@ -504,7 +504,8 @@ def get_memory() -> ConversationMemory:
     return _memory
 
 
-def build_memory_context(session_id: str, max_episodes: int = 20, include_semantic: bool = True) -> str:
+def build_memory_context(session_id: str, max_episodes: int = 20, include_semantic: bool = True,
+                         query: str = "") -> str:
     """LLM 컨텍스트용 메모리 빌더"""
     context_parts = []
     
@@ -541,9 +542,14 @@ def build_memory_context(session_id: str, max_episodes: int = 20, include_semant
 
         from core.knowledge_memory import get_knowledge_memory
         namespace = get_memory().workspace_namespace
-        typed_records = get_knowledge_memory().search(
-            workspace_namespace=namespace, limit=20
-        )
+        store = get_knowledge_memory()
+        typed_records = store.search(query, workspace_namespace=namespace, limit=10)
+        if namespace != "global":
+            typed_records.extend(store.search(query, workspace_namespace="global", limit=10))
+        unique_records = {record.record_id: record for record in typed_records}
+        typed_records = sorted(
+            unique_records.values(), key=lambda record: (record.confidence, record.recorded_at), reverse=True
+        )[:12]
         if typed_records:
             context_parts.append("## 검증 가능한 장기 메모리")
             for record in typed_records:
@@ -556,3 +562,22 @@ def build_memory_context(session_id: str, max_episodes: int = 20, include_semant
             context_parts.append("")
     
     return "\n".join(context_parts)
+
+
+def build_relevant_knowledge_context(query: str, workspace_namespace: str = "global",
+                                     limit: int = 6) -> str:
+    """Return only durable memories relevant to the current utterance."""
+    from core.knowledge_memory import get_knowledge_memory
+    store = get_knowledge_memory()
+    records = store.search(query, workspace_namespace=workspace_namespace, limit=limit)
+    if workspace_namespace != "global":
+        records.extend(store.search(query, workspace_namespace="global", limit=limit))
+    unique = {record.record_id: record for record in records}
+    selected = sorted(
+        unique.values(), key=lambda record: (record.confidence, record.recorded_at), reverse=True
+    )[:limit]
+    return "\n".join(
+        f"- {record.subject} {record.predicate}: {record.content} "
+        f"(사용자 기억, 신뢰도 {record.confidence:.2f})"
+        for record in selected
+    )

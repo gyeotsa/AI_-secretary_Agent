@@ -235,6 +235,65 @@ class VectorRAGManager:
         except Exception as e:
             return f"문서 추가 오류: {str(e)}"
 
+    def add_text_document(self, text: str, *, doc_id: str, namespace: str | None = None,
+                          metadata: dict | None = None) -> str:
+        """Index trusted in-memory text such as a consolidated Memory record."""
+        content = str(text or "").strip()
+        if not content:
+            raise ValueError("RAG에 추가할 텍스트가 비어 있습니다.")
+        target_namespace = str(namespace or self.namespace or "global")
+        chunks = self.chunk_text(content)
+        now = time.time()
+        base_metadata = {
+            "source_type": "memory", "recorded_at": now,
+            **dict(metadata or {}),
+        }
+        records = []
+        for index, chunk in enumerate(chunks):
+            records.append({
+                "content": chunk, "section": "memory", "start_line": 0, "end_line": 0,
+                "chunk_id": self._chunk_id(target_namespace, doc_id, index, chunk),
+                **base_metadata,
+            })
+        key = f"{target_namespace}::{doc_id}"
+        self.documents[key] = {
+            "chunks": chunks, "chunk_metadata": records, "source": f"memory://{doc_id}",
+            "namespace": target_namespace, "doc_id": doc_id,
+            "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            "recorded_at": now, "metadata": base_metadata,
+        }
+        self._save()
+        if self.use_vector_rag:
+            existing_ids = self.collection.get(where={"$and": [
+                {"doc_id": doc_id}, {"namespace": target_namespace},
+            ]})["ids"]
+            if existing_ids:
+                self.collection.delete(ids=existing_ids)
+            ids = [item["chunk_id"] for item in records]
+            self.collection.add(
+                ids=ids, documents=chunks,
+                metadatas=[{
+                    "doc_id": doc_id, "source": f"memory://{doc_id}",
+                    "namespace": target_namespace, "chunk_id": item["chunk_id"],
+                    "section": "memory", "recorded_at": now, "source_type": "memory",
+                } for item in records],
+            )
+        return doc_id
+
+    def remove_text_document(self, doc_id: str, *, namespace: str = "global") -> bool:
+        key = f"{namespace}::{doc_id}"
+        removed = self.documents.pop(key, None)
+        if removed is None:
+            return False
+        self._save()
+        if self.use_vector_rag:
+            ids = self.collection.get(where={"$and": [
+                {"doc_id": doc_id}, {"namespace": namespace},
+            ]})["ids"]
+            if ids:
+                self.collection.delete(ids=ids)
+        return True
+
     def remove_document(self, doc_id: str) -> bool:
         key = self._document_key(os.path.basename(doc_id))
         document = self.documents.pop(key, None)
@@ -314,10 +373,14 @@ class VectorRAGManager:
         """Vector DB 기반 검색 + Reranker"""
         try:
             # 1. Vector DB로 초기 검색 (top_k * 2개)
+            namespaces = {"global", self.namespace}
+            namespace_filter = ({"namespace": self.namespace} if len(namespaces) == 1 else {
+                "$or": [{"namespace": value} for value in sorted(namespaces)]
+            })
             initial_results = self.collection.query(
                 query_texts=[query],
                 n_results=top_k * 2,
-                where={"namespace": self.namespace}
+                where=namespace_filter,
             )
             
             if not initial_results["documents"] or not initial_results["documents"][0]:
@@ -354,8 +417,9 @@ class VectorRAGManager:
         query_words = {word for word in re.split(r'\W+', query.lower()) if word}
         results = []
         
+        allowed_namespaces = {"global", self.namespace}
         for doc_id, doc_data in self.documents.items():
-            if doc_data.get("namespace", "global") != self.namespace:
+            if doc_data.get("namespace", "global") not in allowed_namespaces:
                 continue
             records = doc_data.get("chunk_metadata") or [
                 {"content": chunk, "chunk_id": self._chunk_id(self.namespace, doc_data.get("doc_id", doc_id), i, chunk)}
@@ -382,8 +446,9 @@ class VectorRAGManager:
     def _filter_and_rerank(self, query, candidates, top_k, metadata_filter, include_stale):
         now, tokens = time.time(), set(re.findall(r"\w+", query.casefold()))
         catalog = {}
+        allowed_namespaces = {"global", self.namespace}
         for document in self.documents.values():
-            if document.get("namespace", "global") != self.namespace: continue
+            if document.get("namespace", "global") not in allowed_namespaces: continue
             for chunk in document.get("chunk_metadata", []):
                 catalog[chunk.get("chunk_id", "")] = {"source": document.get("source", ""), **chunk}
         filtered = []

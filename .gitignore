@@ -8,6 +8,8 @@ data/*.db-wal
 data/permissions.json
 data/tts_settings.json
 data/workspaces.json
+data/simple_rag.json
+data/chroma_db/
 
 # Python
 .pytest_cache/

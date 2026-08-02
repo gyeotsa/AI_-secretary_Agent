@@ -150,6 +150,13 @@ class KnowledgeMemoryStore:
         if record.epistemic_status in {EpistemicStatus.FACT, EpistemicStatus.INFERENCE} and not (record.source_uri or record.source_label):
             raise MemoryPolicyError("사실·추측 메모리에는 출처가 필요합니다.")
         with self._session() as conn:
+            existing = conn.execute("""
+                SELECT record_id FROM knowledge_records
+                WHERE workspace_namespace=? AND subject=? AND predicate=?
+                  AND content=? AND status='active' LIMIT 1
+            """, (record.workspace_namespace, record.subject, record.predicate, record.content)).fetchone()
+            if existing:
+                return str(existing["record_id"])
             conflicts = conn.execute("""
                 SELECT record_id, metadata FROM knowledge_records
                 WHERE workspace_namespace=? AND subject=? AND predicate=?
@@ -201,9 +208,16 @@ class KnowledgeMemoryStore:
                workspace_namespace: str = "global", metadata_filter: Optional[Dict[str, Any]] = None,
                include_expired: bool = False, limit: int = 10) -> List[KnowledgeRecord]:
         clauses, args = ["workspace_namespace=?", "status='active'"], [workspace_namespace]
-        if query:
-            clauses.append("(subject LIKE ? OR predicate LIKE ? OR content LIKE ?)")
-            args.extend([f"%{query}%"] * 3)
+        query_tokens = list(dict.fromkeys(
+            token for token in re.findall(r"[\w가-힣]+", query.casefold())
+            if len(token) >= 2
+        ))[:8]
+        if query_tokens:
+            token_clauses = []
+            for token in query_tokens:
+                token_clauses.append("(subject LIKE ? OR predicate LIKE ? OR content LIKE ?)")
+                args.extend([f"%{token}%"] * 3)
+            clauses.append("(" + " OR ".join(token_clauses) + ")")
         if kinds:
             values = [item.value if isinstance(item, MemoryKind) else str(item) for item in kinds]
             clauses.append("kind IN (" + ",".join("?" for _ in values) + ")")
@@ -219,7 +233,7 @@ class KnowledgeMemoryStore:
         records = [self._from_row(row) for row in rows]
         if metadata_filter:
             records = [r for r in records if all(r.metadata.get(k) == v for k, v in metadata_filter.items())]
-        tokens = set(re.findall(r"\w+", query.casefold()))
+        tokens = set(query_tokens)
         records.sort(key=lambda r: (
             len(tokens & set(re.findall(r"\w+", f"{r.subject} {r.predicate} {r.content}".casefold()))),
             r.confidence, r.recorded_at,
@@ -230,6 +244,23 @@ class KnowledgeMemoryStore:
         with self._session() as conn:
             row = conn.execute("SELECT * FROM knowledge_records WHERE record_id=?", (record_id,)).fetchone()
         return self._from_row(row) if row else None
+
+    def supersede_profile_records_except(self, valid_subjects: Iterable[str]) -> List[str]:
+        """Retire stale records created from legacy profile keys during bootstrap."""
+        valid = set(valid_subjects)
+        with self._session() as conn:
+            rows = conn.execute("""
+                SELECT record_id, subject FROM knowledge_records
+                WHERE source_label='기존 사용자 프로필' AND status='active'
+            """).fetchall()
+            stale_ids = [str(row["record_id"]) for row in rows if row["subject"] not in valid]
+            if stale_ids:
+                placeholders = ",".join("?" for _ in stale_ids)
+                conn.execute(
+                    f"UPDATE knowledge_records SET status='superseded' WHERE record_id IN ({placeholders})",
+                    stale_ids,
+                )
+        return stale_ids
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> KnowledgeRecord:

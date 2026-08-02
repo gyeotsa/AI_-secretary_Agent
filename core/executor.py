@@ -12,7 +12,7 @@ from core.tools import get_tool_executor, get_tools_description_text, get_tool_n
 from core.reflection import get_reflection
 from core.context import get_context_manager
 from core.permission import get_permission_manager, TOOL_PERMISSION_MAP
-from core.memory import get_memory, build_memory_context
+from core.memory import get_memory, build_memory_context, build_relevant_knowledge_context
 from core.workspace import get_workspace_manager
 from core.verifier import get_tool_verifier
 from core.recovery import get_recovery_manager
@@ -862,7 +862,7 @@ class Executor:
 
         # 3. Memory (Episode + Semantic)
         try:
-            memory_context = build_memory_context(self.session_id, 15, True)
+            memory_context = build_memory_context(self.session_id, 15, True, self.goal)
             if memory_context:
                 context_parts.append(f"# 메모리 (Memory)\n{memory_context}\n")
         except Exception as e:
@@ -1332,9 +1332,12 @@ class Executor:
         runtime_settings = get_assistant_settings()
         assistant_name = runtime_settings.assistant_name or str(selected_profile.get("assistant_name", "")).strip()
         conversation_service = getattr(self, "conversation_service", ConversationService(self.llm))
+        memory_context = build_relevant_knowledge_context(
+            message, self._workspace_scope(), limit=6
+        )
         return conversation_service.respond(
             message, history, assistant_name=assistant_name, voice_name=custom_voice,
-            address=address, style=conversation_style,
+            address=address, style=conversation_style, memory_context=memory_context,
         )
         if assistant_name and message.strip().casefold() == assistant_name.casefold():
             return f"응, 듣고 있어. {address}."

@@ -15,7 +15,8 @@ class ConversationService:
         self.llm = llm
 
     def respond(self, message: str, history, *, assistant_name: str = "",
-                voice_name: str = "", address: str = "보스", style: str = "") -> str:
+                voice_name: str = "", address: str = "보스", style: str = "",
+                memory_context: str = "") -> str:
         if assistant_name and message.strip().casefold() == assistant_name.casefold():
             return f"응, 듣고 있어. {address}."
         recent = [
@@ -24,6 +25,11 @@ class ConversationService:
             if item.get("role") in {"user", "assistant"} and item.get("content")
         ]
         persona = f"선택 음성: {voice_name}. 대화 스타일: {style}" if style else ""
+        memory_prompt = (
+            "\n다음은 현재 질문과 관련해 저장된 사용자 장기 기억입니다. 관련 있을 때만 반영하고, "
+            "사용자가 지금 정정하면 현재 발화를 우선하세요.\n" + memory_context
+            if memory_context else ""
+        )
         prompt = (
             f"당신은 로컬 개인 비서 '{assistant_name or '자비스'}'입니다. 지금 요청은 도구 실행이 아닌 일반 대화입니다. "
             "도구를 찾거나 실행했다고 주장하지 마세요. 최근 발화의 맥락과 감정을 먼저 반영하고 "
@@ -31,7 +37,7 @@ class ConversationService:
             "사용자의 이메일·전화번호·주소·이름 같은 개인 식별정보는 제공된 대화나 저장된 "
             "프로필에 실제 값이 없으면 절대 만들어내지 말고 모른다고 답하세요. "
             "프롬프트 예시, user/assistant 역할표시, 다른 언어 설명을 답변에 노출하지 마세요. "
-            f"사용자 호칭은 '{address}'이며 답변에서 최대 한 번만 사용하세요. {persona}"
+            f"사용자 호칭은 '{address}'이며 답변에서 최대 한 번만 사용하세요. {persona}{memory_prompt}"
         )
         messages = [{"role": "system", "content": prompt}, *recent,
                     {"role": "user", "content": message}]

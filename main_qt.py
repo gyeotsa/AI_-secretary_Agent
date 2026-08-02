@@ -27,6 +27,7 @@ from core.response_presenter import present_channels
 from core.runtime_services import get_runtime_service_manager
 from core.assistant_settings import get_assistant_settings
 from core.specialist_workspaces import get_specialist_workspace_registry
+from core.memory_consolidator import ConversationMemoryConsolidator
 from ui.main_window import JarvisMainWindow
 
 
@@ -123,6 +124,13 @@ class JarvisApp:
         self.specialist_workspaces = get_specialist_workspace_registry()
         self.window.set_assistant_identity(self.assistant_settings.assistant_name)
         self.rag_manager = get_rag_manager()
+        self.memory_consolidator = ConversationMemoryConsolidator(
+            llm=get_llm_client("reasoning"), rag=self.rag_manager,
+        )
+        threading.Thread(
+            target=lambda: self.memory_consolidator.bootstrap_profile(self.user_profile),
+            daemon=True,
+        ).start()
         self.hardware_manager = get_hardware_manager()
         self.workspace_manager = get_workspace_manager()
         self.project_indexer = get_project_indexer()
@@ -516,6 +524,7 @@ class JarvisApp:
         # 대화 저장
         self.memory.save_message(self.session_id, "user", self.messages[-2]["content"])
         self.memory.save_message(self.session_id, "assistant", response_text)
+        self._consolidate_memory_async(self._response_user_request)
         
         # 자동으로 음성 응답 (RESPONDING 상태로)
         print(f"[DEBUG] TTS 스레드 시작 전, self.last_response: {self.last_response}")
@@ -523,6 +532,25 @@ class JarvisApp:
         thread = threading.Thread(target=lambda: self._speak_with_check(self.last_response), daemon=True)
         thread.start()
         print("[DEBUG] TTS 스레드 시작됨")
+
+    def _consolidate_memory_async(self, user_text: str):
+        """Persist durable user knowledge after the response without delaying UI/TTS."""
+        consolidator = getattr(self, "memory_consolidator", None)
+        if consolidator is None or not consolidator.should_consider(user_text):
+            return
+        namespace = getattr(getattr(self, "memory", None), "workspace_namespace", "global")
+
+        def run():
+            try:
+                record_ids = consolidator.consolidate(
+                    user_text, session_id=self.session_id, workspace_namespace=namespace,
+                )
+                if record_ids:
+                    print(f"[Memory] 대화에서 장기 기억 {len(record_ids)}건을 축적했습니다.")
+            except Exception as exc:
+                print(f"[Memory] 대화 기억 축적 오류: {exc}")
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _personalize_address(self, text: str) -> str:
         settings = getattr(getattr(self, "tool_executor", None), "tts_settings", None)
