@@ -1700,4 +1700,5 @@ AI_-secretary_Agent/
 - 실제 SD1.5/IP-Adapter 추론으로 24-step 768×512 PNG를 생성했다. 모델 로딩 포함 약 20초, GPU 추론 약 5.5초였고 출력은 `data/mockup_outputs/backend_smoke_test.png`에서 확인했다. 합성 계약 테스트는 Fake backend를 사용해 CI에서 모델 다운로드나 GPU를 요구하지 않는다.
 - 자동 모드에서 생성형 추론이 실패하면 사유를 provenance와 UI에 남기고 로컬 합성으로 복구한다. 사용자가 생성형을 명시한 경우에는 실패를 숨기지 않는다. 대상 테스트 `7 passed`, 전체 회귀 `339 passed, 4 deselected`를 통과했다.
 - 모델과 라이선스 원문: https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5 및 https://huggingface.co/h94/IP-Adapter . 공개 배포 전에는 각 라이선스 조건과 안전 필터 정책을 별도로 검토해야 한다.
+- 코드 커밋: `ca2feb3`.
 - 다음 해야 할 일: 실제 사용자 참고 시안으로 생성 품질을 평가하고, 텍스트·로고 위치와 인물/제품 컷아웃을 픽셀 단위로 재현해야 하는 유형에는 segmentation 및 ControlNet/템플릿 recipe를 추가한다. 현재 구현은 가중치 재학습이 아니라 reference-conditioned generation이다.
