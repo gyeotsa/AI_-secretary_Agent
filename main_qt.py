@@ -371,7 +371,7 @@ class JarvisApp:
             # 검색 결과는 Executor의 ContextManager가 다시 조립한다. 여기서 사용자
             # 발화 자체를 RAG 문자열로 바꾸면 대화 기록과 확인 질문 재개가 오염된다.
         except Exception as e:
-            print(f"⚠️ RAG 검색 오류: {e}")
+            print(f"[RAG] 검색 오류: {e}")
         
         # AI 호출: Planner → Executor → Reflection 파이프라인 사용!
         print("[DEBUG] Calling Executor.execute_goal...")
@@ -396,7 +396,7 @@ class JarvisApp:
             # 최종 응답 전송
             self.signals.ai_response_ready.emit(response_text)
         except Exception as e:
-            print(f"⚠️ Executor 오류: {e}")
+            print(f"[Executor] 오류: {e}")
             import traceback
             traceback.print_exc()
             error_response = f"죄송해요, 보스! 작업 실행 중 오류가 발생했어요: {str(e)}"
@@ -615,8 +615,8 @@ class JarvisApp:
         try:
             result = self.tool_executor.listen()
             if "오류:" in result:
-                print(f"⚠️ STT 오류: {result}")
-                print("💡 openai-whisper, sounddevice, scipy, numpy를 설치하세요!\n(requirements.txt Phase 3 확인)")
+                print(f"[STT] 오류: {result}")
+                print("[STT] 음성 인식 라이브러리 설치 상태를 확인하세요.")
                 QTimer.singleShot(0, lambda: self.window.show_assistant_text(result))
                 self.last_response = result
                 self.state_machine.go_idle()
@@ -632,8 +632,8 @@ class JarvisApp:
                     self.last_response = result
                     self.state_machine.go_idle()
         except Exception as e:
-            print(f"⚠️ STT 오류: {e}")
-            print("💡 openai-whisper, sounddevice, scipy, numpy를 설치하세요!\n(requirements.txt Phase 3 확인)")
+            print(f"[STT] 오류: {e}")
+            print("[STT] 음성 인식 라이브러리 설치 상태를 확인하세요.")
             result = f"⚠️ 음성 인식 오류: {e}"
             QTimer.singleShot(0, lambda: self.window.show_assistant_text(result))
             self.last_response = result

@@ -62,6 +62,7 @@ class MiniControlBar(QFrame):
             }
         """
         
+        button_style = "\n".join(line.split("# ", 1)[0] for line in button_style.splitlines())
         self.minimize_btn = QPushButton("─")
         self.minimize_btn.setStyleSheet(button_style)
         self.minimize_btn.setFixedSize(17, 17)  # 버튼 크기 조금 키움

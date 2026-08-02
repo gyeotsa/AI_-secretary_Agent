@@ -596,3 +596,31 @@ def test_partial_is_a_first_class_tool_status():
     )
     assert result.to_dict()["status"] == "partial"
     assert result.succeeded is False
+
+
+def test_registry_unwraps_typed_result_only_for_domain_presenter():
+    from core.plugin import BasePlugin, PluginRegistry, ToolSchema
+
+    class PresenterPlugin(BasePlugin):
+        def __init__(self):
+            super().__init__()
+            self.name = "presenter_test"
+
+        def get_tools(self):
+            return [ToolSchema("present_date", "test", {"type": "object", "properties": {}})]
+
+        def execute_tool(self, _name, _data):
+            return ToolRunResult.successful(
+                tool_name="present_date", raw_output="2026-08-02",
+                evidence=[Evidence("test", "verified")],
+            )
+
+        def present_result(self, _name, result):
+            assert isinstance(result, str)
+            return f"presented:{result}"
+
+    registry = PluginRegistry()
+    registry.register_plugin(PresenterPlugin())
+    result = registry.execute_tool("present_date", {})
+    assert isinstance(result, ToolRunResult)
+    assert registry.present_result("present_date", result) == "presented:2026-08-02"

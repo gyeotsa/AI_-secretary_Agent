@@ -44,6 +44,14 @@ class IntentRouter:
         r"(?:무엇|뭐|누구|어디|언제|어떻게|어때|알려|확인|찾아|검색|조회|"
         r"소식|뉴스|결과|현황|상태|가격|시세|순위|일정|\?)", re.IGNORECASE,
     )
+    CONVERSATION_PATTERN = re.compile(
+        r"(?:안녕|반가워|고마워|감사해|잘\s*지내|기분|너는|넌|네\s*생각|"
+        r"뭐\s*하고\s*싶|심심|힘들어|속상|행복|재미있)", re.IGNORECASE,
+    )
+    EXPLICIT_RESEARCH_PATTERN = re.compile(
+        r"(?:검색|찾아\s*봐|찾아\s*줘|조사|뉴스|소식|출처|웹에서|인터넷에서|"
+        r"확인해\s*줘|조회해\s*줘)", re.IGNORECASE,
+    )
 
     def __init__(self, registry: PluginRegistry):
         self.registry = registry
@@ -103,6 +111,12 @@ class IntentRouter:
 
     def _fresh_information_intent(self, text: str):
         if not (self.TEMPORAL_PATTERN.search(text) and self.INFORMATION_PATTERN.search(text)):
+            return None
+        # Temporal words also occur in social conversation ("오늘 기분 어때?").
+        # A social utterance must stay conversational unless the user explicitly asks
+        # for research; otherwise every greeting containing "오늘" becomes a web search.
+        if (self.CONVERSATION_PATTERN.search(text)
+                and not self.EXPLICIT_RESEARCH_PATTERN.search(text)):
             return None
         return next(
             (

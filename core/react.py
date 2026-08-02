@@ -61,15 +61,15 @@ __TOOLS_TEXT__
         )
 
         for step in range(self.max_steps):
-            print(f"\n📝 Step {step + 1}/{self.max_steps}")
+            print(f"\n[ReAct] Step {step + 1}/{self.max_steps}")
 
             # Think + Act
             response = self.llm.chat(messages)
-            print(f"💭 AI 응답:\n{response}")
+            print(f"[ReAct] AI 응답:\n{response}")
 
             if "Final Answer:" in response:
                 final_answer = response.split("Final Answer:")[-1].strip()
-                print(f"\n✅ 최종 답변: {final_answer}")
+                print(f"\n[ReAct] 최종 답변: {final_answer}")
                 return final_answer
 
             if "Tool:" in response and "Input:" in response:
@@ -81,27 +81,27 @@ __TOOLS_TEXT__
                     tool_name = tool_part
                     tool_input = json.loads(input_part)
 
-                    print(f"🔧 툴 실행: {tool_name}")
-                    print(f"📥 입력: {tool_input}")
+                    print(f"[ReAct] Tool 실행: {tool_name}")
+                    print(f"[ReAct] 입력: {tool_input}")
 
                     # Observe
                     tool_result = self.tool_executor.execute_tool(tool_name, tool_input)
-                    print(f"📤 결과:\n{tool_result}")
+                    print(f"[ReAct] 결과:\n{tool_result}")
 
                     # 다음 단계를 위해 메시지에 추가
                     messages.append({"role": "assistant", "content": response})
                     messages.append({"role": "user", "content": f"Observation: {tool_result}"})
 
                 except Exception as e:
-                    print(f"❌ 툴 실행 오류: {e}")
+                    print(f"[ReAct] Tool 실행 오류: {e}")
                     messages.append({"role": "assistant", "content": response})
                     messages.append({"role": "user", "content": f"Error: {str(e)}"})
             else:
                 # 툴을 사용하지 않고 바로 답변
-                print(f"\n✅ 답변: {response}")
+                print(f"\n[ReAct] 답변: {response}")
                 return response
 
-        print("\n⚠️ 최대 스텝을 초과했습니다")
+        print("\n[ReAct] 최대 스텝을 초과했습니다")
         return "죄송합니다, 문제를 해결하는 데 시간이 너무 오래 걸렸어요. 조금 더 구체적으로 질문해주세요!"
 
 

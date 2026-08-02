@@ -383,7 +383,9 @@ class PluginRegistry:
 
     def present_result(self, tool_name: str, result: PluginToolOutput) -> str:
         entry = self._tools.get(tool_name)
-        return entry[0].present_result(tool_name, result) if entry and entry[0].enabled else str(result)
+        presentation_value = result.raw_output if isinstance(result, ToolRunResult) else result
+        return (entry[0].present_result(tool_name, presentation_value)
+                if entry and entry[0].enabled else str(presentation_value))
 
     def load_plugins_from_directory(self, directory: Optional[str] = None):
         path = Path(directory).resolve() if directory else Path(__file__).resolve().parent.parent / "plugins"

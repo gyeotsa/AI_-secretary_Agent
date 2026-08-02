@@ -279,11 +279,26 @@ class DiagnosticReporter:
 
 
 class E2EProbeRunner:
-    def run(self, oauth_configured: bool = False) -> Dict[str, Any]:
+    def run(self, oauth_configured: bool = False, *, live_network: bool = False,
+            network_url: str = "https://api.open-meteo.com/v1/forecast?latitude=37.566&longitude=126.9784&current=temperature_2m") -> Dict[str, Any]:
         probes = []
         probes.append({"name": "windows_device_runtime", "status": "passed" if os.name == "nt" else "skipped",
                        "reason": "Windows runtime" if os.name == "nt" else "Windows only"})
-        probes.append({"name": "network", "status": "not_run", "reason": "explicit live acceptance required"})
+        if live_network:
+            started = time.perf_counter()
+            try:
+                with urllib.request.urlopen(network_url, timeout=10) as response:
+                    payload = response.read(1024)
+                    if response.status != 200 or not payload:
+                        raise RuntimeError(f"HTTP {response.status} returned no payload")
+                probes.append({"name": "network", "status": "passed",
+                               "reason": "live HTTPS response verified",
+                               "latency_ms": round((time.perf_counter() - started) * 1000, 2)})
+            except Exception as exc:
+                probes.append({"name": "network", "status": "failed",
+                               "reason": f"{type(exc).__name__}: {exc}"})
+        else:
+            probes.append({"name": "network", "status": "not_run", "reason": "explicit live acceptance required"})
         probes.append({"name": "oauth", "status": "ready" if oauth_configured else "skipped",
                        "reason": "configured" if oauth_configured else "OAuth credentials absent"})
         return {"probes": probes, "all_executed": all(p["status"] == "passed" for p in probes)}

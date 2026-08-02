@@ -43,6 +43,8 @@ env/
 # 로컬 ML 모델
 data/models/
 data/logs/
+data/diagnostics/
+data/browser_profiles/
 
 # IDE
 .vscode/

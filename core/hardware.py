@@ -672,7 +672,7 @@ class HardwareManager:
         self.last_clap_time = 0
         
         def detect_clap():
-            print("👏 박수 감지 시작... 박수를 쳐보세요!")
+            print("[마이크] 박수 감지 시작... 박수를 쳐보세요!")
             info, native_rate = self._select_microphone()
             
             def audio_callback(indata, frames, callback_time, status):
@@ -688,7 +688,7 @@ class HardwareManager:
                     if current_time - self.last_clap_time > 0.3:
                         self.clap_count += 1
                         self.last_clap_time = current_time
-                        print(f"👏 박수 감지! (총 {self.clap_count}번)")
+                        print(f"[마이크] 박수 감지 (총 {self.clap_count}번)")
                         
                         if self.clap_count >= 2:
                             self._on_clap_detected()
@@ -707,7 +707,7 @@ class HardwareManager:
         return "✅ 박수 감지가 시작되었습니다! 두 번 박수를 쳐보세요."
 
     def _on_clap_detected(self):
-        print("🎵 두 번 박수 감지! 무슨 일을 도와드릴까요?")
+        print("[마이크] 두 번 박수 감지")
 
     def stop_clap_detection(self) -> str:
         if not self.running:

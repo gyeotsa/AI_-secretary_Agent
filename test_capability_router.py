@@ -159,3 +159,17 @@ def test_close_intent_collision_asks_one_explainable_question_without_execution(
     assert "문서 요약" in resolution.question
     assert "문서 검사" in resolution.question
     assert resolution.alternatives
+
+
+def test_temporal_social_question_stays_conversational():
+    registry = PluginRegistry()
+    registry.load_plugins_from_directory()
+    resolution = IntentRouter(registry).resolve("안녕, 오늘 기분은 어때?")
+    assert not resolution.matched
+
+
+def test_social_word_does_not_block_explicit_web_research():
+    registry = PluginRegistry()
+    registry.load_plugins_from_directory()
+    resolution = IntentRouter(registry).resolve("오늘 기분 관련 최신 연구를 웹에서 찾아줘")
+    assert resolution.intent_name == "web.search"

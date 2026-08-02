@@ -70,6 +70,21 @@ def test_e2e_probe_never_claims_unrun_external_checks():
     assert {p["name"]: p["status"] for p in result["probes"]}["network"] == "not_run"
 
 
+def test_e2e_probe_can_verify_live_network_when_explicit(monkeypatch):
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def read(self, _limit): return b'{"current":{}}'
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: Response())
+    result = E2EProbeRunner().run(oauth_configured=True, live_network=True)
+    statuses = {p["name"]: p["status"] for p in result["probes"]}
+    assert statuses["network"] == "passed"
+    assert statuses["oauth"] == "ready"
+    assert result["all_executed"] is False  # configured is not the same as a real OAuth round trip
+
+
 def test_update_rejects_traversal(tmp_path):
     archive = tmp_path / "bad.zip"
     with zipfile.ZipFile(archive, "w") as zf: zf.writestr("../escape.txt", "bad")
