@@ -1663,4 +1663,5 @@ AI_-secretary_Agent/
 - Photoshop 전문가 창에는 이미지/PSD 선택, 일반 이미지 미리보기, 요청·결과 패널, Photoshop 연결 상태 진단을 배치했다. `plugins/photoshop.py`는 Windows COM으로 설치·연결 상태, 문서 열기, 활성 문서 속성을 typed Evidence/Artifact와 함께 제공한다. 현재 PC의 Uninstall Registry에서는 Photoshop 설치가 발견되지 않았으므로 실제 COM 성공으로 표기하지 않았다.
 - 모델 Registry에 `image_editing` 역할을 추가했다. 현재는 GPU 메모리 중복을 피하기 위해 기존 Vision 모델을 공유하지만 Photoshop Tool+image 입력은 일반 Vision과 구분된 역할/temperature/token 정책으로 라우팅된다.
 - offscreen 환경에서 메인 UI와 두 전문가 창의 동시 생성·종료를 확인했다. 전문가·GUI·Plugin 대상 테스트 `19 passed`, 전체 회귀 결과는 `325 passed, 4 deselected`다.
+- 코드 커밋: `f7bc434`.
 - 다음 해야 할 일: 사용자가 각 작업공간에 원하는 앱별 세부 GUI를 정하면 document 내 Word/Excel/HWP/PPT/PDF 전용 Canvas와 Photoshop 레이어·마스크·히스토리 패널을 순차 추가한다. Photoshop 실제 설치 환경에서는 COM 수락 테스트가 필요하다.
