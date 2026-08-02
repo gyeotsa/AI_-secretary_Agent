@@ -24,6 +24,8 @@ from core.model_registry import get_model_role_router
 from core.tool_result import ToolRunResult, ToolRunStatus
 from core.plan_runtime import PlanCoordinator, PlanDAG, PlanRunResult, PlanStep
 from core.agent_services import ConversationService, PlanningService, ResponseComposer
+from core.assistant_settings import get_assistant_settings
+from core.response_realizer import ResponseRealizer
 
 
 @dataclass
@@ -74,6 +76,7 @@ class Executor:
         self.verifier = get_tool_verifier()
         self.recovery_manager = get_recovery_manager()
         self.context_resolver = ConversationContextResolver(self.llm)
+        self.response_realizer = ResponseRealizer(self.llm)
 
         # decide_next_action()에서 잠깐 system_prompt를 바꿔 쓰고 나서 복원하기 위한 원본 보관
         # (generate_response() 등 다른 메서드가 Jarvis 페르소나 프롬프트를 계속 쓸 수 있어야 함)
@@ -1049,6 +1052,20 @@ class Executor:
             response = self.intent_router.registry.present_result(
                 resolution.tool_name, result
             )
+            # Some focused tests and lightweight embedding clients construct an
+            # Executor without running its full initializer. In that mode the
+            # canonical presenter remains the safe response path.
+            realizer = getattr(self, "response_realizer", None)
+            if realizer is not None:
+                settings = get_assistant_settings()
+                response = realizer.realize(
+                    response,
+                    tool_name=resolution.tool_name,
+                    user_request=goal,
+                    assistant_name=settings.assistant_name,
+                    address=settings.get("user_address"),
+                    style=settings.get("response_style"),
+                )
         elif tool_run.status == ToolRunStatus.UNVERIFIED:
             status = "unverified"
             response = (
