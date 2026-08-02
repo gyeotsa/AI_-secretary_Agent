@@ -8,6 +8,17 @@
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
 
+## 2026-08-02 Workspace 임시 테스트 경로 시작 오류 수정
+
+- 과거 pytest가 운영용 `data/workspaces.json`의 마지막 Workspace를 `.pytest-tmp`로
+  덮어써 앱 시작 시 `PermissionError`가 발생했다.
+- 접근 불가·삭제된 Workspace는 예외 없이 자동 복원만 해제하고 앱을 계속 시작한다.
+  운영 상태에 남은 `.pytest-tmp` 경로도 복원하지 않는다.
+- pytest에서 singleton Workspace는 시스템 임시 디렉터리의 프로세스별 상태 파일을 사용해
+  운영 설정을 다시 덮어쓰지 않는다. 일반 `WorkspaceManager(custom_state)` 복원 동작은 유지한다.
+- 실제 운영 초기화는 `workspace_init_ok None`, 전체 회귀는 `299 passed, 4 deselected`,
+  compileall과 diff check를 통과했다.
+
 ## 2026-08-02 P12 Security Observability Productization 완료
 
 - `core/productization.py`: scoped permission(folder/app/domain/account/global),

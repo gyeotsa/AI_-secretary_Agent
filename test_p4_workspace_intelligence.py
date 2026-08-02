@@ -138,3 +138,31 @@ def test_project_bootstrap_can_create_virtual_environment(tmp_path):
     scripts = "Scripts" if __import__("os").name == "nt" else "bin"
     assert (Path(result.path) / ".venv" / scripts / python_name).exists()
     assert result.virtual_environment is True
+def test_inaccessible_last_workspace_does_not_block_startup(tmp_path, monkeypatch):
+    state = tmp_path / "workspaces.json"
+    state.write_text('{"version":1,"last_workspace":"blocked","workspaces":{"blocked":{"path":"blocked"}}}', encoding="utf-8")
+    original = __import__("pathlib").Path.is_dir
+
+    def guarded(path):
+        if str(path) == "blocked":
+            raise PermissionError("access denied")
+        return original(path)
+
+    monkeypatch.setattr("pathlib.Path.is_dir", guarded)
+    manager = WorkspaceManager(str(state), restore=True)
+    assert manager.current_workspace is None
+    assert manager._state["last_workspace"] == ""
+
+
+def test_legacy_pytest_workspace_is_not_restored(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    state = Path("data/workspaces.json")
+    state.parent.mkdir()
+    transient = tmp_path / ".pytest-tmp" / "test_case0"
+    transient.mkdir(parents=True)
+    key = str(transient.resolve())
+    state.write_text(json.dumps({"version": 1, "last_workspace": key,
+                                 "workspaces": {key: {"path": key}}}), encoding="utf-8")
+    manager = WorkspaceManager(str(state), restore=True)
+    assert manager.current_workspace is None
+    assert manager._state["last_workspace"] == ""

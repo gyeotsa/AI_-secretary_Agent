@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -99,9 +100,38 @@ class WorkspaceManager:
         key = self._state.get("last_workspace", "")
         record = self._state.get("workspaces", {}).get(key, {})
         path = record.get("path", key)
-        if not path or not Path(path).is_dir():
+        if not path or self._is_transient_test_path(path) or not self._is_accessible_directory(path):
+            # A removed drive, protected directory, or expired pytest temp path must never
+            # prevent the application from starting. Keep history but clear auto-restore.
+            if key:
+                self._state["last_workspace"] = ""
+                try:
+                    self._save_state()
+                except OSError as exc:
+                    print(f"[Workspace] 복원 상태 정리 실패: {exc}")
             return False
         return self.set_workspace(path)
+
+    @staticmethod
+    def _is_accessible_directory(path: str | Path) -> bool:
+        try:
+            candidate = Path(path)
+            return candidate.is_dir() and os.access(candidate, os.R_OK | os.X_OK)
+        except (OSError, ValueError, TypeError):
+            return False
+
+    def _is_transient_test_path(self, path: str | Path) -> bool:
+        """Reject pytest basetemp paths accidentally persisted by older test suites."""
+        try:
+            if self.state_path.resolve() != Path("data/workspaces.json").resolve():
+                return False
+            candidate = Path(path).resolve()
+            project_root = self.state_path.parent.parent.resolve()
+            return candidate.is_relative_to(project_root) and any(
+                part.casefold() in {".pytest-tmp", ".pytest_cache"} for part in candidate.parts
+            )
+        except (OSError, ValueError, TypeError):
+            return False
 
     def list_workspaces(self) -> List[WorkspaceInfo]:
         result: List[WorkspaceInfo] = []
@@ -110,7 +140,7 @@ class WorkspaceManager:
             key=lambda item: item.get("last_opened_at", 0), reverse=True,
         ):
             path = record.get("path", "")
-            if not path or not Path(path).is_dir():
+            if not path or not self._is_accessible_directory(path):
                 continue
             result.append(WorkspaceInfo(
                 path=path, name=Path(path).name, alias=record.get("alias") or Path(path).name,
@@ -244,5 +274,10 @@ _workspace_manager: Optional[WorkspaceManager] = None
 def get_workspace_manager() -> WorkspaceManager:
     global _workspace_manager
     if _workspace_manager is None:
-        _workspace_manager = WorkspaceManager(restore=True)
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            # Tests using the process singleton must not overwrite the real user's last workspace.
+            isolated = Path(tempfile.gettempdir()) / f"jarvis-test-workspaces-{os.getpid()}.json"
+            _workspace_manager = WorkspaceManager(str(isolated), restore=False)
+        else:
+            _workspace_manager = WorkspaceManager(restore=True)
     return _workspace_manager
