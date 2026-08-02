@@ -552,6 +552,18 @@ P11 상태: **정책·복원 런타임 구현 완료 / 장기 wall-clock 운영 
 
 P12 상태: **보안·관측성·제품화 런타임 구현 완료 / 실제 네트워크·OAuth 배포 수락 대기**.
 
+2026-08-02 실제 GUI 재수락:
+
+- `main_qt.py` 실제 이벤트 루프에서 typed Tool 결과가 Presenter에 그대로 전달되어 날짜
+  응답이 150초 동안 멈추는 결함을 발견하고, 중앙 표시 경계에서 검증 envelope와 도메인
+  payload를 분리했다. 날짜와 Open-Meteo 서울 날씨가 GUI에 정상 표시됐다.
+- `안녕, 오늘 기분은 어때?`를 시간 민감 웹 검색으로 오인하던 Router를 수정했다. 사회적
+  대화는 명시적 조사 요청이 없으면 conversation에 남고, “웹에서 찾아줘”는 live intent를 유지한다.
+- Windows Credential Manager 임시 secret 저장·조회·삭제, 실제 HTTPS(약 1.2초), 카메라
+  프레임 기반 열거 2개, Anis TTS와 AudioProcessor 재생, Qt 패키징 smoke를 통과했다.
+- Scheduler 100,000 tick soak는 실패 0건, Action Journal DB quick check는 `ok`, 전체
+  회귀는 `303 passed, 4 deselected`다. 실제 OAuth는 자격증명이 없어 여전히 미수락이다.
+
 ## 모델 정책
 
 로컬 7B 모델은 장문 계획과 미묘한 Tool 선택에 한계가 있습니다. 그러나 모든 요청을

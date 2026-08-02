@@ -8,6 +8,24 @@
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
 
+## 2026-08-02 P0~P12 실제 main_qt 재수락 및 통합 결함 수정
+
+- 실제 `JarvisApp`에 날짜 질의를 넣자 Tool은 succeeded/Evidence를 반환했지만
+  `system_tools.present_result()`가 `ToolRunResult`를 ISO 문자열로 오인해 TypeError가 났다.
+  Registry의 중앙 presentation 경계가 typed envelope를 보존하면서 Presenter에는 raw payload만
+  전달하도록 수정했다. alarm/browser/filesystem/weather 등 문자열 Presenter에도 동일 적용된다.
+- 예외 출력의 emoji가 CP949에서 2차 `UnicodeEncodeError`를 내던 main/RAG/STT/ReAct/박수
+  로그를 ASCII prefix로 교체했다. MiniControlBar QSS 선언 안의 Python 주석도 제거해 실제
+  시작 시 반복되던 QPushButton stylesheet 경고가 사라졌다.
+- `안녕, 오늘 기분은 어때?`가 “오늘+어때” 때문에 43초 web.search로 가던 문제를 수정했다.
+  사회적 대화는 명시적 검색·조사 표현이 없으면 conversation이며 실제 GUI에서 자연스러운
+  Anis 응답을 확인했다. 명시적 “웹에서 찾아줘”는 계속 live 검색으로 간다.
+- 실제 GUI 날짜, Open-Meteo 서울 날씨, 일반 대화 모두 응답 표시까지 통과했다. HTTPS,
+  Credential Manager 임시 저장/조회/삭제, 카메라 프레임 기반 장치 2개, Anis TTS 실제 재생,
+  패키징 smoke, Scheduler 100,000 tick soak, DB quick check를 확인했다.
+- 실제 OAuth는 자격증명이 없어 skipped이며 성공으로 표시하지 않는다. 전체 회귀
+  `303 passed, 4 deselected`, compileall, diff check 통과.
+
 ## 2026-08-02 Workspace 임시 테스트 경로 시작 오류 수정
 
 - 과거 pytest가 운영용 `data/workspaces.json`의 마지막 Workspace를 `.pytest-tmp`로
