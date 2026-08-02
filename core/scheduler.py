@@ -226,7 +226,7 @@ class AutomationEngine:
             
             self._schedule_job(job_id, description, schedule_type, schedule_value, prompt)
             
-            return f"✅ 작업이 등록되었습니다 (ID: {job_id}): {description}"
+            return f"작업이 등록되었습니다 (ID: {job_id}): {description}"
             
         except Exception as e:
             return f"작업 등록 오류: {str(e)}"
@@ -326,9 +326,9 @@ class AutomationEngine:
             if not rows:
                 return "등록된 자동화 작업이 없습니다."
                 
-            result = ["📋 자동화 작업 목록:"]
+            result = ["자동화 작업 목록:"]
             for row in rows:
-                status = "✅ 활성" if row["enabled"] else "❌ 비활성"
+                status = "활성" if row["enabled"] else "비활성"
                 last_run = row["last_run"] or "아직 실행되지 않음"
                 result.append(f"\nID: {row['id']}")
                 result.append(f"설명: {row['description']}")
@@ -370,7 +370,7 @@ class AutomationEngine:
             if not rows:
                 return f"작업 ID {job_id}의 실행 기록이 없습니다."
                 
-            result = [f"📊 작업 ID {job_id} 실행 기록:"]
+            result = [f"작업 ID {job_id} 실행 기록:"]
             for row in rows:
                 result.append(f"\n시간: {row['run_time']}")
                 if row["result"]:
@@ -420,7 +420,7 @@ class AutomationEngine:
                 self.scheduled_jobs = [j for j in self.scheduled_jobs if j["id"] != job_id]
                 
             status = "활성화" if enabled else "비활성화"
-            return f"✅ 작업 ID {job_id}가 {status}되었습니다."
+            return f"작업 ID {job_id}가 {status}되었습니다."
             
         except Exception as e:
             return f"작업 상태 변경 오류: {str(e)}"
@@ -441,7 +441,7 @@ class AutomationEngine:
             
             self.scheduled_jobs = [j for j in self.scheduled_jobs if j["id"] != job_id]
             
-            return f"✅ 작업 ID {job_id}가 삭제되었습니다."
+            return f"작업 ID {job_id}가 삭제되었습니다."
             
         except Exception as e:
             return f"작업 삭제 오류: {str(e)}"
@@ -480,7 +480,7 @@ class AutomationEngine:
             self.scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
             self.scheduler_thread.start()
             
-            return "✅ 자동화 엔진이 시작되었습니다."
+            return "자동화 엔진이 시작되었습니다."
             
         except Exception as e:
             return f"자동화 엔진 시작 오류: {str(e)}"
@@ -496,7 +496,7 @@ class AutomationEngine:
         if self.scheduler_thread:
             self.scheduler_thread.join(timeout=5)
             
-        return "✅ 자동화 엔진이 중지되었습니다."
+        return "자동화 엔진이 중지되었습니다."
         
     def is_running(self) -> bool:
         """실행 중 여부"""

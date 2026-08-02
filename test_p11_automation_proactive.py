@@ -97,6 +97,24 @@ def test_scheduler_heartbeat_and_accelerated_soak(tmp_path, monkeypatch):
     assert health["running"] and health["thread_alive"] and "heartbeat" in health["state"]
 
 
+def test_scheduler_detects_sleep_gap_and_reloads_jobs(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.Config.DB_PATH", str(tmp_path / "main.db"))
+    engine = AutomationEngine()
+    calls = []
+    original = engine._load_jobs_from_db
+
+    def tracked_load():
+        calls.append(True)
+        return original()
+
+    engine._load_jobs_from_db = tracked_load
+    engine.start()
+    engine._last_tick_monotonic = time.monotonic() - 20
+    time.sleep(1.2)
+    engine.stop()
+    assert len(calls) >= 2  # initial boot restore plus sleep-gap restore
+
+
 def test_plugin_contract_separates_read_manage_and_execution_permissions():
     tools = {tool.name: tool for tool in ProactivePolicyPlugin().get_tools()}
     assert tools["interruption_status"].required_permissions == ["proactive_read"]
