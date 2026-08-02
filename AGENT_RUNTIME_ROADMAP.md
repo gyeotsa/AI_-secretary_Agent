@@ -30,7 +30,7 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
 | Workspace/Indexer | 수동 선택·기초 인덱서 | 연결 보강 필요 |
 | RAG/Memory | 로컬 벡터 검색·복수 메모리 DB | 정책 보강 필요 |
 | Automation/Observer | 알람·스케줄·감시 기반 | 장시간 검증 필요 |
-| OAuth/Cloud | 로컬 초안·ICS 중심 | 미완료 |
+| OAuth/Cloud | DPAPI OAuth·승인 원장·Drive/OneDrive/Notion·Slack/Teams 어댑터 | 자격증명별 실환경 검증 필요 |
 | 배포 | 대형 오프라인 설치본 존재 | 경량화 예정 |
 
 ## 27개 상위 개선 방향
@@ -437,15 +437,34 @@ P8 상태: **완료**. 다음 단계는 P9 Office·Cloud·Communication이다.
 
 ## P9 — Office·Cloud·Communication
 
-- [ ] 기존 서식·템플릿 보존형 Office 편집
-- [ ] 렌더링 기반 시각 QA
-- [ ] HWP·Office COM 라이브 어댑터
-- [ ] Gmail/Google Calendar OAuth
-- [ ] Outlook/Graph OAuth
-- [ ] Drive/OneDrive/Notion 동기화
-- [ ] 초안·승인·외부 반영 Tool 분리
-- [ ] 원격 Message/Event ID 검증
-- [ ] Slack/Teams 조회·요약·승인 후 전송
+- [x] 기존 서식·템플릿 보존형 Office 편집
+- [x] 렌더링 기반 시각 QA
+- [x] HWP·Office COM 라이브 어댑터
+- [x] Gmail/Google Calendar OAuth
+- [x] Outlook/Graph OAuth
+- [x] Drive/OneDrive/Notion 동기화
+- [x] 초안·승인·외부 반영 Tool 분리
+- [x] 원격 Message/Event ID 검증
+- [x] Slack/Teams 조회·요약·승인 후 전송
+
+2026-08-02 구현 상태:
+
+- OOXML/HWPX 패키지의 style·theme·media·layout·header 등 보호 파트를 해시 비교하고,
+  임시 복사본 편집 후 원자 교체한다. DOCX/XLSX/PPTX/HWPX 텍스트 치환과 PDF 페이지
+  렌더·비어 있지 않은 페이지 검증을 제공한다.
+- Word/Excel/PowerPoint/HWP COM은 설치 흔적이 아니라 Registry의 LocalServer 실행 파일을
+  확인한 뒤에만 연결한다. 현재 개발 PC에는 실제 COM class factory가 없어 어댑터는
+  `available=false`이며, 설치된 Office/HWP 환경에서 별도 실환경 수락 검증이 필요하다.
+- Google/Microsoft Authorization Code + PKCE와 refresh를 구현하고 토큰은 Windows DPAPI로
+  암호화한다. 외부 전송은 로컬 draft 원장과 `external_send` 승인을 통과해야 한다.
+- Gmail·Google Calendar·Outlook·Teams·Slack 적용 후 Message/Event ID를 다시 조회한다.
+  Drive·OneDrive·Notion 원격 ID 카탈로그와 Slack·Teams 근거 요약을 제공한다.
+- 자격증명이 없는 자동 테스트에서는 모의 HTTP 계약·DPAPI 왕복·승인 경계·ID 재조회를
+  검증했다. 실제 계정 생성·동의와 외부 전송은 사용자의 자격증명 및 명시 승인 전까지
+  수행하지 않았다.
+- 전체 회귀 테스트 `212 passed, 4 deselected`를 통과했다.
+
+P9 상태: **런타임 구현 완료 / 실계정·설치형 COM 수락 테스트 대기**. 다음 단계는 P10이다.
 
 ## P10 — OS·Multimodal·Voice
 

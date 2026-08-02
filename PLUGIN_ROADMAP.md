@@ -12,9 +12,9 @@
 | PowerPoint | python-pptx, 앱 독립 PPTX 처리 | 무료 | 연결됨 |
 | PDF | PyMuPDF 생성·추출 | 무료 | 연결됨 |
 | HWPX | python-hwpx 순수 Python 처리 | 무료 | 연결됨 |
-| HWP/HWPX 라이브 제어 | 한컴 설치 시 pyhwpx/COM 어댑터 | 무료 라이브러리, 한컴 라이선스 별도 | 대기 |
+| HWP/HWPX 라이브 제어 | 패키지 보존 편집 + 설치 시 COM 어댑터 | 무료 라이브러리, 한컴 라이선스 별도 | 구현됨·현재 COM 미연결 |
 | Windows 앱 | App Paths/PATH 검색, 실행, 창 포커스 | 무료 | 연결됨 |
-| MS Office 라이브 제어 | pywin32 COM 어댑터 | 무료 라이브러리, Office 라이선스 별도 | 대기 |
+| MS Office 라이브 제어 | 보존 편집·PDF 시각 QA·pywin32 COM 어댑터 | 무료 라이브러리, Office 라이선스 별도 | 구현됨·현재 COM 미연결 |
 
 ## Sprint 2 — 웹·검색·미디어
 
@@ -40,15 +40,15 @@
 
 ## Sprint 4 — 계정·클라우드
 
-- Gmail 또는 Outlook Mail OAuth
-- Google Calendar 또는 Outlook Calendar OAuth
-- Google Drive 또는 OneDrive/SharePoint
-- Notion, Box 및 RAG 문서 동기화
-- 조회·초안·승인·외부 반영을 별도 Tool과 Permission으로 분리
+- Google Gmail/Calendar OAuth PKCE·DPAPI Token Vault — 구현됨, 실계정 검증 대기
+- Microsoft Outlook Mail/Calendar Graph OAuth PKCE — 구현됨, 실계정 검증 대기
+- Google Drive·OneDrive 원격 ID 카탈로그 동기화 — 구현됨, 실계정 검증 대기
+- Notion 메타데이터 카탈로그 동기화 — 구현됨, Integration Token 검증 대기
+- 조회·초안·승인·외부 반영 Tool과 Permission 분리 — 구현됨
 
 ## Sprint 5 — 협업·개인비서
 
-- Slack/Teams 메시지 검색·요약·승인 후 전송
+- Slack/Teams 메시지 조회·근거 요약·승인 후 전송·원격 ID 재검증 — 구현됨, 실계정 검증 대기
 - 연락처·할 일·리마인더·지도/교통
 - Windows UI Automation 우선, 화면 좌표 기반 pyautogui는 최후 fallback
 - 카카오톡 등 공식 자동화 API가 없는 앱은 오작동·약관 위험을 별도 표시

@@ -161,7 +161,7 @@ P3 마지막 단계에서 자연어 저장소 변경 Intent를 CodingPlan과 JSO
 3. 저장소 단위 Coding Agent와 patch→test→diff 루프.
 4. Workspace·Project Intelligence 완료. 다음 구현 우선순위는 P5 Planner·Executor·Recovery 재설계.
 
-P5·P6·P7·P8을 완료했으며 다음 구현 우선순위는 P9 Office·Cloud·Communication입니다.
+P5·P6·P7·P8·P9 런타임 구현을 완료했으며 다음 구현 우선순위는 P10 OS·Multimodal·Voice입니다.
 
 ## 2026-08-02 P8 완료
 
@@ -173,6 +173,18 @@ P5·P6·P7·P8을 완료했으며 다음 구현 우선순위는 P9 Office·Cloud
 - Prompt Injection 성격의 웹 문장은 분석 Context에서 격리하고 원 Source에 경고를 남깁니다.
 - Research Cache는 TTL 만료와 강제 새로고침 정책을 지원합니다.
 - Playwright Chromium headless 실행 및 전체 `212 passed, 4 deselected`를 확인했습니다.
+
+## 2026-08-02 P9 런타임 구현 완료
+
+- OOXML/HWPX 보호 파트를 비교하는 원자적 템플릿 치환과 PDF 렌더링 시각 QA를 추가했습니다.
+- Office/HWP COM은 실제 LocalServer 등록을 확인하는 라이브 어댑터로 구현했습니다. 현재 PC는
+  COM class factory 미등록 상태여서 연결 불가를 성공으로 가장하지 않습니다.
+- Google/Microsoft OAuth PKCE·refresh와 Windows DPAPI 토큰 Vault를 구현했습니다.
+- Gmail·Calendar·Outlook·Slack·Teams 외부 반영은 로컬 초안과 승인 Tool로 분리했고,
+  적용 뒤 원격 Message/Event ID를 재조회합니다.
+- Drive·OneDrive·Notion 메타데이터는 원격 ID 기반 SQLite 카탈로그에 동기화합니다.
+- P9 집중 테스트 46개가 통과했습니다. 실제 Google/Microsoft/Slack/Notion 계정 호출과
+  Office/HWP COM E2E는 자격증명·설치 환경이 준비된 뒤 별도 수락 테스트가 필요합니다.
 
 ## 2026-08-02 P7 완료
 

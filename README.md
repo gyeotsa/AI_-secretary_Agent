@@ -105,6 +105,12 @@ AI_-secretary_Agent/
 제외합니다. 마이크, 카메라, 브라우저, OAuth, Office COM, 장시간 Scheduler는 별도
 실환경 수락 테스트가 필요합니다.
 
+P9부터 Office 문서는 기존 패키지 서식을 보존하는 원자적 치환과 PDF 렌더링 QA를
+지원합니다. Google/Microsoft OAuth 토큰은 Windows DPAPI로 암호화하며 Gmail,
+Calendar, Outlook, Slack, Teams의 외부 반영은 반드시 로컬 초안 생성과 권한 승인 뒤
+실행됩니다. Drive·OneDrive·Notion은 원격 ID 기반 카탈로그로 동기화됩니다. 실제 계정
+연결에 필요한 값은 `.env.example`을 참고하되 비밀값은 `.env`에만 저장해야 합니다.
+
 ## 핵심 개발 원칙
 
 1. Tool을 실행하지 않은 응답은 외부 작업이 완료됐다고 주장하지 않습니다.

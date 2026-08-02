@@ -27,8 +27,30 @@
 - 검증: P8 관련 26개 통과, Playwright Chromium 설치·headless 실행 확인,
   전체 `212 passed, 4 deselected`.
 - P8 Research·Browser Agent: **완료**.
-- 다음 해야 할 일: P9 Office·Cloud·Communication을 시작한다. 기존 서식 보존형 편집과
-  렌더링 기반 시각 QA 계약부터 구현한다.
+- P9 Office·Cloud·Communication 런타임: **완료**. 실제 계정·Office/HWP 설치 환경 수락 테스트는 대기.
+- 다음 해야 할 일: P10 OS·Multimodal·Voice를 시작한다.
+
+## 2026-08-02 P9 Office·Cloud·Communication 완료
+
+- `core/office_runtime.py`, `plugins/office_editing.py`에 DOCX/XLSX/PPTX/HWPX의 기존
+  style·theme·media·layout·header 보호 파트를 해시 검증하는 템플릿 치환을 추가했다.
+  임시 복사본 편집 후 보호 파트가 바뀌지 않았을 때만 `os.replace`로 원자 반영한다.
+- PDF 렌더 결과를 PyMuPDF로 다시 열어 페이지 수와 비어 있지 않은 픽셀을 확인한다.
+  Word/Excel/PowerPoint/HWP COM은 Registry LocalServer 실행 파일이 실제 존재할 때만
+  사용 가능하다고 판정한다. 현재 PC는 COM class factory 미등록이므로 연결 불가 상태다.
+- `core/remote_runtime.py`, `plugins/cloud_communication.py`에 Google/Microsoft OAuth
+  Authorization Code + PKCE, refresh, Windows DPAPI 암호화 Token Vault를 구현했다.
+- Gmail·Google Calendar·Outlook·Slack·Teams는 로컬 draft 생성과 `external_send`
+  승인 적용을 분리하고, 적용 뒤 원격 Message/Event ID를 다시 조회해 검증한다.
+- Google Drive·OneDrive·Notion 메타데이터는 provider/account/remote ID 기반 SQLite
+  카탈로그에 동기화한다. Slack·Teams는 메시지 ID·작성자·snippet을 근거로 요약한다.
+- `.env.example`에 OAuth Client ID/Secret, redirect URI, Slack·Notion 설정을 추가했다.
+  비밀값은 Tool 인자나 SQLite 원장에 저장하지 않는다.
+- 코드 커밋: `a0fd348` (`[Feat] P9 서식 보존 Office 편집과 렌더링 QA 구축`),
+  `74e8db0` (`[Feat] P9 OAuth 클라우드 통신 승인 런타임 구축`).
+- 집중 테스트: Office 24개, P9 통합 관련 46개 통과. 실제 외부 계정 호출과 외부 전송은
+  자격증명 및 사용자 승인 없이 실행하지 않았으며, 설치형 COM도 지원 환경에서 별도 검증해야 한다.
+- 전체 회귀 테스트: `212 passed, 4 deselected`.
 
 ## 2026-08-02 P7 Memory·RAG·Knowledge 완료
 
