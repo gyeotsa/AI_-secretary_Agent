@@ -525,17 +525,32 @@ P11 상태: **정책·복원 런타임 구현 완료 / 장기 wall-clock 운영 
 
 ## P12 — Security·Observability·Productization
 
-- [ ] 폴더·앱·도메인·계정별 권한
-- [ ] 한 번/세션/항상 허용 정책
-- [ ] Credential Manager 기반 비밀 저장
-- [ ] 로그 개인정보·토큰 마스킹
-- [ ] 구조화 JSON Trace와 회전 로그
-- [ ] Task/Tool/검증 ID 연결
-- [ ] 모델·GPU·지연·재시도 지표
-- [ ] 진단 보고서와 안전 모드
+- [x] 폴더·앱·도메인·계정별 권한
+- [x] 한 번/세션/항상 허용 정책
+- [x] Credential Manager 기반 비밀 저장
+- [x] 로그 개인정보·토큰 마스킹
+- [x] 구조화 JSON Trace와 회전 로그
+- [x] Task/Tool/검증 ID 연결
+- [x] 모델·GPU·지연·재시도 지표 수집 기반
+- [x] 진단 보고서와 안전 모드
 - [ ] 실제 장치·네트워크·OAuth E2E
-- [ ] 경량 Bootstrap·모델 선택 다운로드
-- [ ] 업데이트·DB migration·rollback
+- [x] 경량 Bootstrap·모델 선택 다운로드
+- [x] 업데이트·DB migration·rollback
+
+진행 기록:
+
+- 2026-08-02: 폴더·앱·도메인·계정 범위와 1회 소비·세션·영구 수명을 지원하는
+  권한 저장소를 중앙 Tool 검사에 연결했다. Windows Credential Manager는 평문 fallback
+  없이 실패 폐쇄하며 관리 Tool은 비밀 원문을 반환하지 않는다.
+- 회전 JSONL Trace에 Task·Tool call·verification ID와 지연·결과를 연결한다. 토큰,
+  Authorization, Cookie, 이메일, 전화번호는 공통 Redactor를 거친다. 안전 모드는 중앙
+  경계에서 읽기 이외 작업을 차단하고 진단 보고서는 DB quick check와 메트릭을 포함한다.
+- 선택형 Bootstrap은 역할별 asset의 SHA-256을 검증한 후 원자 설치한다. Update는 checksum,
+  ZIP 경로 탈출 방지, backup·rollback을 제공하며 DB migration은 version 원장을 사용한다.
+- 장치·네트워크·OAuth 프로브는 `passed/ready/skipped/not_run`을 구분한다. 현재 자동 환경에
+  OAuth 자격증명과 명시적 외부 네트워크 수락 실행이 없어 해당 항목은 성공으로 표기하지 않았다.
+
+P12 상태: **보안·관측성·제품화 런타임 구현 완료 / 실제 네트워크·OAuth 배포 수락 대기**.
 
 ## 모델 정책
 

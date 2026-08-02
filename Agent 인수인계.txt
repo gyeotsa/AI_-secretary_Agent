@@ -7,6 +7,20 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+
+## 2026-08-02 P12 Security Observability Productization 완료
+
+- `core/productization.py`: scoped permission(folder/app/domain/account/global),
+  once/session/always lifetime, Windows Credential Manager, redaction, rotating JSON trace,
+  correlation IDs, metrics, diagnostics, safe mode를 구현했다.
+- 중앙 Tool 경계는 scope 입력을 권한 검사에 전달하고 safe mode에서 read 이외 작업을
+  차단한다. 비밀 원문 조회 Tool은 제공하지 않으며 trace의 token, authorization,
+  cookie, email, phone은 마스킹한다.
+- 선택형 Bootstrap은 role 다운로드, SHA-256, atomic replace를 사용한다. Update는
+  checksum, ZIP traversal 차단, backup/rollback을 제공하고 DB migration version을 기록한다.
+- 실제 network와 OAuth credential이 필요한 E2E는 `not_run/skipped`로 남기며 성공으로
+  간주하지 않는다. 다음 작업은 사용자 Windows 세션의 P10~P12 배포 수락 테스트다.
+
 ## 2026-08-02 P8 Research·Browser Agent 완료
 
 - `core/research.py`에 실제 페이지 방문형 `ResearchAgent`와 typed Source/Claim/Report,
