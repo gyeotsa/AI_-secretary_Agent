@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QApplication
 
 from ui.main_window import JarvisMainWindow
 from main_qt import resource_path
+from core.state_machine import State
 
 
 @pytest.fixture(scope="module")
@@ -32,6 +33,20 @@ def test_both_minimize_buttons_use_standard_minimize(app):
     ) > 0
     window.minimize_window()
     assert window.windowState() & Qt.WindowState.WindowMinimized
+    window.close()
+
+
+def test_main_window_has_rounded_translucent_surface_and_voice_bar(app):
+    window = JarvisMainWindow()
+    assert window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert window.sound_bar.isVisible()
+    assert window.sound_bar.bar_count == 28
+    window.update_state(State.LISTENING)
+    assert window.sound_bar.is_active and not window.sound_bar.is_speaking
+    window.update_state(State.RESPONDING)
+    assert window.sound_bar.is_active and window.sound_bar.is_speaking
+    window.update_state(State.IDLE)
+    assert not window.sound_bar.is_active
     window.close()
 
 

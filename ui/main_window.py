@@ -6,8 +6,8 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel,
                              QFileDialog, QDialog, QMessageBox, QScrollArea,
                              QCheckBox, QListWidget, QListWidgetItem)
 from PyQt6.QtWidgets import QTextEdit, QInputDialog
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect
-from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect, QRectF
+from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush, QPainterPath
 from .visualizer import AudioVisualizer
 from core.state_machine import State
 from core.specialist_workspaces import get_specialist_workspace_registry
@@ -15,7 +15,10 @@ from .specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindo
 
 MAIN_STYLE = """
 QWidget { color: #dce8f5; font-family: "Segoe UI"; font-size: 12px; }
-QFrame#topBar { background: rgba(10, 18, 31, 238); border-bottom: 1px solid #213247; }
+QFrame#topBar {
+    background: rgba(10, 18, 31, 238); border-bottom: 1px solid #213247;
+    border-top-left-radius: 14px; border-top-right-radius: 14px;
+}
 QPushButton#toolbarButton {
     color: #8da2b8; background: transparent; border: 1px solid transparent;
     border-radius: 8px; font-size: 11px; font-weight: 600; padding: 4px;
@@ -132,8 +135,10 @@ class MiniControlBar(QFrame):
 class SoundBarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(145, 25)
-        self.bar_count = 12
+        self.setMinimumWidth(280)
+        self.setMaximumWidth(430)
+        self.setFixedHeight(44)
+        self.bar_count = 28
         self.bar_heights = [0] * self.bar_count
         self.is_speaking = False
         self.is_active = False
@@ -144,20 +149,22 @@ class SoundBarWidget(QWidget):
         
     def set_speaking(self, speaking):
         self.is_speaking = speaking
-        self.is_active = speaking
+        self.is_active = True
+        if not any(self.freq_bands):
+            self.freq_bands = [38.0, 64.0, 46.0]
         
     def set_audio_data(self, amplitude: float, freq_bands: list[float]):
         """실제 오디오 데이터로 사운드바 업데이트"""
         self.is_active = True
         self.freq_bands = freq_bands
         
-        bar_per_band = self.bar_count // len(freq_bands)
+        bar_per_band = max(1, self.bar_count // len(freq_bands))
         for i in range(self.bar_count):
             band_idx = min(i // bar_per_band, len(freq_bands) - 1)
             band_energy = freq_bands[band_idx]
-            height = (amplitude / 100) * 25 * (band_energy / 100 * 2)
+            height = (amplitude / 100) * 19 * (band_energy / 100 * 2)
             offset = random.randint(-1, 1)
-            self.bar_heights[i] = max(0, min(28, int(height + offset)))
+            self.bar_heights[i] = max(2, min(18, int(height + offset)))
         self.update()
         
     def set_audio_level(self, level):
@@ -168,6 +175,7 @@ class SoundBarWidget(QWidget):
     def reset(self):
         self.is_active = False
         self.bar_heights = [0] * self.bar_count
+        self.freq_bands = [0.0, 0.0, 0.0]
         self.update()
         
     def update_bars(self):
@@ -176,44 +184,50 @@ class SoundBarWidget(QWidget):
             
         if self.is_speaking:
             for i in range(self.bar_count):
-                band_idx = min(i // 4, len(self.freq_bands) - 1)
+                band_idx = min(i * len(self.freq_bands) // self.bar_count, len(self.freq_bands) - 1)
                 band_energy = self.freq_bands[band_idx]
-                height = (band_energy / 100) * 25
+                height = (band_energy / 100) * 18
                 offset = random.randint(-2, 2)
-                self.bar_heights[i] = max(0, min(28, int(height + offset)))
+                self.bar_heights[i] = max(2, min(18, int(height + offset)))
         else:
             for i in range(self.bar_count):
-                band_idx = min(i // 4, len(self.freq_bands) - 1)
+                band_idx = min(i * len(self.freq_bands) // self.bar_count, len(self.freq_bands) - 1)
                 band_energy = self.freq_bands[band_idx]
-                height = (band_energy / 100) * 20
+                height = (band_energy / 100) * 15
                 offset = random.randint(-1, 1)
-                self.bar_heights[i] = max(0, min(20, int(height + offset)))
+                self.bar_heights[i] = max(2, min(15, int(height + offset)))
         self.update()
         
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        bar_width = (self.width() - 20) // self.bar_count
-        gap = 2
+        available = self.width() - 28
+        gap = 4
+        bar_width = max(2, (available - gap * (self.bar_count - 1)) // self.bar_count)
+        total_width = bar_width * self.bar_count + gap * (self.bar_count - 1)
+        start_x = (self.width() - total_width) // 2
+        center_y = self.height() // 2
+        painter.setPen(QPen(QColor(82, 120, 145, 45), 1))
+        painter.drawLine(12, center_y, self.width() - 12, center_y)
         
         for i in range(self.bar_count):
             height = self.bar_heights[i]
-            x = 10 + i * (bar_width + gap)
-            y = self.height() - height - 5
+            x = start_x + i * (bar_width + gap)
+            y = center_y - max(1, height // 2)
             
             gradient = QLinearGradient(x, y, x, y + height)
             if self.is_speaking:
-                gradient.setColorAt(0.0, QColor(153, 69, 255))
-                gradient.setColorAt(1.0, QColor(80, 20, 120))
+                gradient.setColorAt(0.0, QColor(193, 166, 255))
+                gradient.setColorAt(1.0, QColor(112, 76, 220))
             else:
-                gradient.setColorAt(0.0, QColor(0, 212, 255))
-                gradient.setColorAt(1.0, QColor(0, 100, 150))
+                gradient.setColorAt(0.0, QColor(108, 232, 255))
+                gradient.setColorAt(1.0, QColor(32, 135, 170))
             
             painter.setBrush(QBrush(gradient))
             painter.setPen(Qt.PenStyle.NoPen)
             if height > 0:
-                painter.drawRoundedRect(x, y, bar_width, height, 2, 2)
+                painter.drawRoundedRect(x, y, bar_width, max(2, height), 2, 2)
 
 
 class CircularSoundBarWidget(QWidget):
@@ -872,6 +886,7 @@ class JarvisMainWindow(QWidget):
         # 일반 앱처럼 작업 표시줄에 표시하고 다른 창의 앞뒤로 이동할 수 있게 한다.
         self.setWindowFlags(Qt.WindowType.Window |
                            Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet(MAIN_STYLE)
         
         screen = QApplication.primaryScreen().geometry()
@@ -950,10 +965,6 @@ class JarvisMainWindow(QWidget):
         self.specialist_btn.clicked.connect(self.show_specialist_hub)
         tab_layout.addWidget(self.specialist_btn)
         
-        self.sound_bar = SoundBarWidget(self)
-        self.sound_bar.hide()
-        tab_layout.addWidget(self.sound_bar)
-        
         tab_layout.addStretch()
         
         self.minimize_btn = QPushButton("─")
@@ -1021,6 +1032,9 @@ class JarvisMainWindow(QWidget):
         self.assistant_text_label.setFont(assistant_font)
         self.assistant_text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.assistant_text_label.setWordWrap(True)
+
+        self.sound_bar = SoundBarWidget(self)
+        self.sound_bar.setToolTip("청록색은 사용자 입력 음성, 보라색은 비서 출력 음성을 나타냅니다.")
         
         self.text_input = QLineEdit()
         self.text_input.setObjectName("commandInput")
@@ -1031,6 +1045,8 @@ class JarvisMainWindow(QWidget):
         center_layout.addSpacing(20)
         center_layout.addWidget(self.status_label)
         center_layout.addWidget(self.workspace_label)
+        center_layout.addSpacing(10)
+        center_layout.addWidget(self.sound_bar, 0, Qt.AlignmentFlag.AlignHCenter)
         center_layout.addSpacing(20)
         center_layout.addWidget(self.user_text_label)
         center_layout.addWidget(self.assistant_text_label)
@@ -1045,6 +1061,10 @@ class JarvisMainWindow(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        radius = 14.0 if self.window_mode != "mini" else 10.0
+        panel_path = QPainterPath()
+        panel_path.addRoundedRect(QRectF(self.rect().adjusted(1, 1, -1, -1)), radius, radius)
+        painter.setClipPath(panel_path)
         
         if self.window_mode == "mini":
             gradient = QLinearGradient(0, 0, 0, self.height())
@@ -1070,6 +1090,10 @@ class JarvisMainWindow(QWidget):
             painter.drawLine(x, 40, x, self.height())
         for y in range(40, self.height(), 48):
             painter.drawLine(0, y, self.width(), y)
+        painter.setClipping(False)
+        painter.setPen(QPen(QColor(55, 82, 108, 150), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(panel_path)
         return
         
         if self.current_state in [State.PROCESSING, State.EXECUTING, State.RESPONDING]:
@@ -1278,9 +1302,12 @@ class JarvisMainWindow(QWidget):
                 self.soundbar_is_active = True
                 self.soundbar_freq_bands = [60, 60, 60]
                 self._update_soundbar_bars(60, self.soundbar_freq_bands)
+                self.sound_bar.set_speaking(self.is_speaking)
+                self.sound_bar.set_audio_data(60, self.soundbar_freq_bands)
             else:
                 self.soundbar_is_active = False
                 self.soundbar_bar_heights = [0] * self.soundbar_bar_count
+                self.sound_bar.reset()
             
             self.update()
     
