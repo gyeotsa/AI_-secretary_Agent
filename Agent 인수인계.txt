@@ -1654,3 +1654,13 @@ AI_-secretary_Agent/
 - 사용자가 그대로 말해 달라고 한 `repeat_text`, TTS·STT 자체 Tool은 의미 변형을 막기 위해 표현 계층을 통과하지 않는다. 긴 절대 경로와 PID 같은 내부 정보는 사용자가 상세 정보를 요구하지 않았다면 자연어 응답에서 생략할 수 있다.
 - 권한·보안 경고, 검증 불가, 실패 응답은 사실 왜곡 위험 때문에 아직 동적 표현 대상이 아니며 기존의 명시적인 안전 문장을 유지한다. 즉 유연성은 검증된 성공 응답에만 적용되고 실행 판정 자체에는 관여하지 않는다.
 - 변경값 거부·원문 fallback·literal bypass·파일명 보존 회귀 테스트를 추가했다. 전체 결과는 `320 passed, 4 deselected`다.
+
+## 2026-08-02 역할별 전문가 작업공간·Photoshop 기반 추가
+
+- 메인 대화창은 유지하면서 역할별 모델·도구·Artifact를 별도 UI에서 다루는 `SpecialistWorkspaceRegistry`와 공통 작업공간 창을 추가했다. 상단 `S` 버튼의 Hub와 음성·채팅 명령이 같은 선언형 Registry를 사용한다.
+- 1차 작업공간은 `document`와 `photoshop`이다. `문서 작업모드 실행해줘`, `포토샵 전문가 작업공간 열어줘`처럼 모드/작업공간을 여는 의도가 명시된 경우에만 GUI 명령으로 처리하며, 일반적인 문서·이미지 편집 요청을 가로채지 않는다.
+- 문서 전문가 창에는 Word·Excel·한글·PowerPoint·PDF 진입 버튼, 작업 파일 목록, 텍스트 파일 직접 검토·수정, 전문가 요청 입력, 공통 Executor의 진행·최종 결과 패널을 배치했다. 향후 앱별 상세 GUI는 이 공통 프레임 안에 추가한다.
+- Photoshop 전문가 창에는 이미지/PSD 선택, 일반 이미지 미리보기, 요청·결과 패널, Photoshop 연결 상태 진단을 배치했다. `plugins/photoshop.py`는 Windows COM으로 설치·연결 상태, 문서 열기, 활성 문서 속성을 typed Evidence/Artifact와 함께 제공한다. 현재 PC의 Uninstall Registry에서는 Photoshop 설치가 발견되지 않았으므로 실제 COM 성공으로 표기하지 않았다.
+- 모델 Registry에 `image_editing` 역할을 추가했다. 현재는 GPU 메모리 중복을 피하기 위해 기존 Vision 모델을 공유하지만 Photoshop Tool+image 입력은 일반 Vision과 구분된 역할/temperature/token 정책으로 라우팅된다.
+- offscreen 환경에서 메인 UI와 두 전문가 창의 동시 생성·종료를 확인했다. 전문가·GUI·Plugin 대상 테스트 `19 passed`, 전체 회귀 결과는 `325 passed, 4 deselected`다.
+- 다음 해야 할 일: 사용자가 각 작업공간에 원하는 앱별 세부 GUI를 정하면 document 내 Word/Excel/HWP/PPT/PDF 전용 Canvas와 Photoshop 레이어·마스크·히스토리 패널을 순차 추가한다. Photoshop 실제 설치 환경에서는 COM 수락 테스트가 필요하다.

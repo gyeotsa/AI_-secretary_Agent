@@ -10,6 +10,8 @@ from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush
 from .visualizer import AudioVisualizer
 from core.state_machine import State
+from core.specialist_workspaces import get_specialist_workspace_registry
+from .specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindow
 
 class DragTab(QFrame):
     def __init__(self, parent=None):
@@ -811,6 +813,7 @@ class JarvisMainWindow(QWidget):
     session_deleted = pyqtSignal(str)
     session_reset = pyqtSignal(str)
     task_control_requested = pyqtSignal(str, str)
+    specialist_prompt_submitted = pyqtSignal(str)
     
     def __init__(self, audio_processor=None):
         super().__init__()
@@ -830,6 +833,8 @@ class JarvisMainWindow(QWidget):
         self.dialogue_state_store = None
         self.plugin_registry = None
         self.current_session_id = ""
+        self.specialist_registry = get_specialist_workspace_registry()
+        self.specialist_windows = {}
         
         # 원형 사운드바 상태 변수
         self.soundbar_bar_count = 80
@@ -932,6 +937,13 @@ class JarvisMainWindow(QWidget):
         self.plugin_btn.setToolTip("Plugin 상태 및 진단")
         self.plugin_btn.clicked.connect(self.show_plugin_diagnostics)
         tab_layout.addWidget(self.plugin_btn)
+
+        self.specialist_btn = QPushButton("S")
+        self.specialist_btn.setStyleSheet(button_style)
+        self.specialist_btn.setFixedSize(35, 35)
+        self.specialist_btn.setToolTip("전문가 작업공간")
+        self.specialist_btn.clicked.connect(self.show_specialist_hub)
+        tab_layout.addWidget(self.specialist_btn)
         
         self.sound_bar = SoundBarWidget(self)
         self.sound_bar.hide()
@@ -1570,6 +1582,31 @@ class JarvisMainWindow(QWidget):
             QMessageBox.information(self, "Plugin 진단", "Plugin Registry가 아직 연결되지 않았습니다.")
             return
         PluginDiagnosticsDialog(self.plugin_registry, self).exec()
+
+    def show_specialist_hub(self):
+        dialog = SpecialistHubDialog(self.specialist_registry.all(), self)
+        dialog.workspace_requested.connect(self.open_specialist_workspace)
+        dialog.exec()
+
+    def open_specialist_workspace(self, key: str):
+        spec = self.specialist_registry.get(key)
+        if spec is None:
+            QMessageBox.warning(self, "전문가 작업공간", f"등록되지 않은 작업공간입니다: {key}")
+            return None
+        window = self.specialist_windows.get(spec.key)
+        if window is None:
+            window = SpecialistWorkspaceWindow(spec, self)
+            window.prompt_submitted.connect(self.specialist_prompt_submitted.emit)
+            self.specialist_windows[spec.key] = window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        return window
+
+    def show_specialist_result(self, text: str):
+        for window in self.specialist_windows.values():
+            if window.isVisible():
+                window.show_result(text)
 
     def show_task_manager(self):
         if self.dialogue_state_store is None:

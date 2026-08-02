@@ -10,7 +10,7 @@ JARVIS는 Windows PC에서 대화, 파일·문서 작업, 웹 조사, 앱 제어
 현재 버전은 “기능이 연결된 AI 비서”에서 “증거 기반 Agent Runtime”으로 전환하는
 단계입니다. 다음 기능은 실제 코드와 자동 테스트가 있습니다.
 
-- PyQt6 대화 UI, 세션·권한·Workspace·TTS 설정
+- PyQt6 대화 UI, 세션·권한·Workspace·TTS 설정과 역할별 전문가 작업공간
 - Ollama 역할별 로컬 모델 라우팅
 - 대화·작업 Slot 상태와 후속 질문
 - Plugin Registry 기반 Tool·Intent 로딩
@@ -19,6 +19,7 @@ JARVIS는 Windows PC에서 대화, 파일·문서 작업, 웹 조사, 앱 제어
 - 실제 페이지 방문·교차검증·주장별 인용·Prompt Injection 격리를 갖춘 Research Agent
 - 파일·프로젝트 생성, 파일 내용 수정과 실제 경로·해시 검증
 - Excel, Word, PowerPoint, PDF, HWPX 파일 처리
+- 문서 전문가 작업공간과 Photoshop 전문가 작업공간·Windows COM 연결 진단
 - Git, Windows 앱 탐색·실행·창 제어
 - Playwright 페이지 조회와 DDGS 웹 검색
 - 출처 URL이 있는 최신 정보 검색과 간결한 답변
@@ -72,6 +73,13 @@ python -m venv .venv
 기본 LLM 공급자는 Ollama입니다. Anthropic 경로는 선택적 하이브리드 확장을 위해
 존재하며 API 키 없이도 로컬 경로가 동작합니다. `.env.example`을 참고해 `.env`를
 구성하되 토큰이나 비밀번호를 Git에 커밋하지 마세요.
+
+상단의 `S` 버튼에서 전문가 작업공간을 선택할 수 있습니다. 채팅이나 음성으로
+`문서 작업모드 실행해줘`, `포토샵 전문가 작업공간 열어줘`라고 말해도 같은 창이
+열립니다. 문서 공간은 Office 파일·직접 텍스트 편집·검증 결과를 함께 표시하고,
+Photoshop 공간은 이미지 미리보기와 설치된 Photoshop의 COM 연결 상태 및 문서 열기를
+제공합니다. Photoshop이 설치되지 않은 PC에서는 연결 실패를 명시하며 다른 작업공간과
+메인 대화는 계속 동작합니다.
 
 ## 주요 디렉터리
 

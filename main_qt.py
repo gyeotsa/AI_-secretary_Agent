@@ -26,6 +26,7 @@ from core.proactive import ProactiveNotificationPolicy
 from core.response_presenter import present_channels
 from core.runtime_services import get_runtime_service_manager
 from core.assistant_settings import get_assistant_settings
+from core.specialist_workspaces import get_specialist_workspace_registry
 from ui.main_window import JarvisMainWindow
 
 
@@ -119,6 +120,7 @@ class JarvisApp:
         self.window.set_tts_settings_manager(self.tool_executor.tts_settings)
         self.user_profile = get_user_profile()
         self.assistant_settings = get_assistant_settings()
+        self.specialist_workspaces = get_specialist_workspace_registry()
         self.window.set_assistant_identity(self.assistant_settings.assistant_name)
         self.rag_manager = get_rag_manager()
         self.hardware_manager = get_hardware_manager()
@@ -185,6 +187,7 @@ class JarvisApp:
         self.window.session_deleted.connect(self._delete_session)
         self.window.session_reset.connect(self._reset_session)
         self.window.task_control_requested.connect(self._on_task_control_requested)
+        self.window.specialist_prompt_submitted.connect(self._on_user_input)
         
         self.heartbeat_timer = QTimer()
         self.heartbeat_timer.timeout.connect(lambda: None)
@@ -310,6 +313,16 @@ class JarvisApp:
         self.window.show_user_text(text)
         self.state_machine.start_listening()
 
+        workspace_registry = getattr(self, "specialist_workspaces", None)
+        specialist = workspace_registry.match_open_command(text) if workspace_registry else None
+        if specialist is not None:
+            self.window.open_specialist_workspace(specialist.key)
+            response = f"{specialist.title} 작업공간을 열었어요. 이 창에서도 채팅으로 작업을 이어갈 수 있어요."
+            self.window.show_assistant_text(response)
+            self.window.show_specialist_result(response)
+            self.state_machine.go_idle()
+            return
+
         settings = getattr(self, "assistant_settings", None) or get_assistant_settings()
         if text.strip().casefold() == settings.wake_word.casefold():
             response = self._personalize_address("네, 보스. 말씀하세요.")
@@ -362,6 +375,8 @@ class JarvisApp:
         """실행 중 제어 응답은 원래 AI 작업의 processing 상태를 변경하지 않는다."""
         response_text = self._personalize_address(outcome.response)
         self.window.show_assistant_text(response_text)
+        if hasattr(self.window, "show_specialist_result"):
+            self.window.show_specialist_result(response_text)
         self.messages.append({"role": "assistant", "content": response_text})
         self.memory.save_message(self.session_id, "assistant", response_text)
         if getattr(outcome, "next_goal", ""):
@@ -471,6 +486,8 @@ class JarvisApp:
         
         print("[DEBUG] Calling window.show_assistant_text")
         self.window.show_assistant_text(response_text)
+        if hasattr(self.window, "show_specialist_result"):
+            self.window.show_specialist_result(response_text)
         workspace_manager = getattr(self, "workspace_manager", None)
         if workspace_manager is not None and workspace_manager.is_set():
             workspace_info = workspace_manager.get_info()

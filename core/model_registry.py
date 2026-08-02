@@ -27,6 +27,7 @@ class ModelRegistry:
         "coding": "code",
         "documents": "document",
         "multimodal": "vision",
+        "photoshop": "image_editing",
     }
 
     def __init__(self):
@@ -42,6 +43,7 @@ class ModelRegistry:
             "code": ModelProfile("code", code, 0.15, 4096, "5m"),
             "document": ModelProfile("document", code, 0.3, 4096, "5m"),
             "vision": ModelProfile("vision", vision, 0.2, 1024, "2m", ("text", "image")),
+            "image_editing": ModelProfile("image_editing", vision, 0.25, 2048, "3m", ("text", "image")),
         }
 
     def resolve(self, role: str = "default") -> ModelProfile:
@@ -69,7 +71,8 @@ class ModelRoleRouter:
         conversational: bool = False,
     ) -> str:
         if any(item in {"image", "video"} for item in modalities):
-            return "vision"
+            normalized_tools = tuple(str(name).casefold() for name in allowed_tools)
+            return "image_editing" if any(name.startswith("photoshop_") for name in normalized_tools) else "vision"
         if conversational:
             return "conversation"
         normalized_tools = tuple(str(name).casefold() for name in allowed_tools)
