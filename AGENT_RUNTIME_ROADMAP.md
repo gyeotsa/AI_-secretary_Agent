@@ -499,12 +499,29 @@ P10 상태: **런타임 구현 완료 / 대화형 장치·화면 수락 테스�
 
 ## P11 — Automation·Proactive Policy
 
-- [ ] 집중 모드·회의·전체화면·방해 금지
-- [ ] 중요도·중복·보류·묶음 알림
-- [ ] 알림 근거와 “왜 알려줬는지” 제공
-- [ ] 장시간 Scheduler soak test
-- [ ] 재부팅·절전 후 작업 복원
-- [ ] 선제 제안과 실제 실행 권한 분리
+- [x] 집중 모드·회의·전체화면·방해 금지
+- [x] 중요도·중복·보류·묶음 알림
+- [x] 알림 근거와 “왜 알려줬는지” 제공
+- [x] 장시간 Scheduler soak test
+- [x] 재부팅·절전 후 작업 복원
+- [x] 선제 제안과 실제 실행 권한 분리
+
+2026-08-02 구현 상태:
+
+- 집중 모드·회의·전체화면·방해 금지 상태를 사용자별 JSON에 원자 저장한다. 전체화면은
+  foreground 창과 monitor rect로 자동 감지하며 나머지 상태는 명시 설정한다.
+- 알림은 severity·dedupe key·이유·이벤트 ID·출처 Evidence와 함께 SQLite 원장에 남긴다.
+  비중요 알림은 방해 상태에서 보류되고 상태 해제 이벤트 뒤 중요도순 digest로 묶인다.
+  security critical 알림만 방해 금지를 우회한다.
+- 선제 행동은 proposal과 approval만 저장한다. 승인 Tool은 원래 대상 Tool을 실행하지
+  않으며 실제 실행은 Plugin Registry의 별도 Tool 호출과 원래 Permission을 다시 거쳐야 한다.
+- Scheduler는 heartbeat·마지막 복원·활성 작업·실행 lease를 기록한다. 시작 시 활성 작업을
+  DB에서 복원하고 10초 이상의 tick 공백을 절전/중단으로 감지해 다시 로드한다.
+- 100,000 tick 가속 soak, 실제 2.2초 heartbeat 시작/중지, 20초 절전 공백 주입 복원을
+  검증했다. P11 관련 33개와 전체 `289 passed, 4 deselected`를 통과했다.
+  며칠 단위 실제 wall-clock soak와 Windows 재부팅 E2E는 배포 수락 환경에서 계속 관찰해야 한다.
+
+P11 상태: **정책·복원 런타임 구현 완료 / 장기 wall-clock 운영 수락 관찰 대기**. 다음 단계는 P12이다.
 
 ## P12 — Security·Observability·Productization
 

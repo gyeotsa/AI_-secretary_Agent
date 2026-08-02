@@ -29,6 +29,7 @@ JARVIS는 Windows PC에서 대화, 파일·문서 작업, 웹 조사, 앱 제어
 - Gemma 3 기반 이미지 분석
 - 화면 영역·다중 이미지·영상 프레임 분석과 Windows UI Automation
 - STT·Vision 중앙 GPU 큐, TTS 에코 제거·음성 끼어들기·장치 자동 복구
+- 집중·회의·전체화면·방해 금지 기반 선제 알림 보류·digest와 Scheduler 복원
 - 영구 권한 정책과 실행 감사 기반
 
 다음 항목은 파일이나 클래스가 존재해도 Codex 수준의 완성 기능으로 보지 않습니다.
@@ -117,6 +118,12 @@ P10의 Windows 제어는 API·CLI·COM·UI Automation을 우선하며 좌표 클
 fallback입니다. 화면·Vision Tool은 캡처 권한을 요구하고, STT와 Vision은 공통 VRAM
 예산을 사용합니다. `GPU_VRAM_BUDGET_MB`를 비워 두면 감지된 CUDA VRAM의 82%를
 사용합니다.
+
+P11 선제 알림은 중요도와 발생 이유를 원장에 기록합니다. 집중·회의·전체화면·방해 금지
+중에는 critical 보안 알림을 제외하고 보류하며, 상태가 해제되면 묶어서 알려줍니다.
+자비스가 먼저 제안한 작업은 승인하더라도 즉시 실행되지 않으며 실제 Tool 권한을 별도로
+통과해야 합니다. Scheduler는 heartbeat와 활성 작업을 DB에 저장해 시작·절전 복귀 시
+다시 구성합니다.
 
 ## 핵심 개발 원칙
 

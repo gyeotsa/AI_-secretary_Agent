@@ -161,7 +161,7 @@ P3 마지막 단계에서 자연어 저장소 변경 Intent를 CodingPlan과 JSO
 3. 저장소 단위 Coding Agent와 patch→test→diff 루프.
 4. Workspace·Project Intelligence 완료. 다음 구현 우선순위는 P5 Planner·Executor·Recovery 재설계.
 
-P5·P6·P7·P8·P9·P10 런타임 구현을 완료했으며 다음 구현 우선순위는 P11 Automation·Proactive입니다.
+P5·P6·P7·P8·P9·P10·P11 런타임 구현을 완료했으며 다음 구현 우선순위는 P12 Security·Observability·Evaluation·Deployment입니다.
 
 ## 2026-08-02 P8 완료
 
@@ -199,6 +199,15 @@ P5·P6·P7·P8·P9·P10 런타임 구현을 완료했으며 다음 구현 우선
   `280 passed, 4 deselected`입니다.
 - 실제 데스크톱 화면·UIA·스피커/마이크 acoustic 환경은 Jarvis GUI 사용자 세션에서
   별도 수락 테스트가 필요합니다.
+
+## 2026-08-02 P11 런타임 구현 완료
+
+- 집중·회의·전체화면·방해 금지 상태와 중요도 기반 알림 보류·중복 억제·digest를 구현했습니다.
+- 모든 선제 알림은 판단 이유, 이벤트 ID, 출처 Evidence를 SQLite 원장에 남깁니다.
+- 선제 행동 proposal 승인과 실제 Tool 실행을 분리해 승인 자체가 외부 행동을 일으키지 않습니다.
+- Scheduler heartbeat, 중복 실행 lease, 시작 시 DB 복원, 절전 공백 감지 후 재로드를 추가했습니다.
+- 100,000 tick 가속 soak와 실제 heartbeat·절전 공백 주입을 통과했습니다. 전체 회귀는
+  `289 passed, 4 deselected`이며 며칠 단위 wall-clock/실제 재부팅은 배포 수락에서 관찰해야 합니다.
 
 ## 2026-08-02 P7 완료
 
