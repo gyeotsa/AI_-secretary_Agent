@@ -1677,3 +1677,14 @@ AI_-secretary_Agent/
 - 실제 운영 DB에는 현재 유효한 이름·호출어·호칭·응답 스타일·이메일 5건만 활성화했고, Chroma 검색에서 5개 memory Chunk가 반환됨을 확인했다. 신규 테스트 7개와 전체 `332 passed, 4 deselected`를 통과했다.
 - 코드 커밋: `d3eeaff`.
 - 다음 해야 할 일: 장기기억을 사용자가 조회·정정·삭제하고 자동 기억 여부를 조절할 수 있는 Memory 관리 UI를 추가한다. Tool별 기본값 자동 적용은 별도의 typed Preference→Slot mapping 계약으로 확장한다.
+
+## 2026-08-03 독립 시안 제작 전문가 작업공간
+
+- 기존 Photoshop 전문가 창은 유지하고 `mockup`을 별도 Specialist Workspace로 등록했다. 상단 S Hub 또는 `시안 제작 전문가 작업공간 열어줘`, `시안 작업모드 실행해줘`로 연다.
+- UI에서 `학습용 시안`과 `제작용 사진` 목록·추가·삭제 버튼을 별도 객체로 분리했다. 학습용에는 완성된 기존 시안, 제작용에는 새 결과물에 실제 사용할 사진만 입력하도록 설명과 상태를 분리했다.
+- `MockupDesignRuntime`은 참고 시안별 SHA-256, median 화면 비율·방향, quantized 대표 색상과 다중 이미지 Vision 분석을 `MockupStyleProfile` JSON으로 영속화한다. 모델에게는 인물·제품 정체가 아니라 레이아웃·타이포 위계·여백·장식 규칙만 분석하도록 제한했다.
+- 제작은 Photoshop/CorelDRAW가 없어도 Pillow 로컬 렌더러로 수행한다. 학습 비율과 palette, 새 사진을 사용해 PNG를 별도 출력하며 원본을 수정하지 않는다. 입력 사진 해시·참고 시안 해시·프로필 ID·렌더러 버전을 같은 이름의 JSON에 기록한다.
+- Plugin Registry에 `mockup_learn_style`, `mockup_render`, `mockup_list_styles` typed Tool을 추가했고 Model Registry에는 `mockup_design` 다중 이미지 역할을 추가했다. 스타일 분석은 GPU Vision 모델, 결과 합성은 CPU 로컬 렌더러로 분리해 VRAM 중복을 피한다.
+- 현재 렌더러는 색상·비율·카드형 레이아웃을 재현하는 기능적 1차 백엔드다. 참고 시안과 픽셀 수준으로 동일한 생성형 style transfer라고 주장하지 않는다. 고급 품질은 8GB VRAM에 맞는 선택형 IP-Adapter/ControlNet 또는 사용자가 지정하는 템플릿 편집 백엔드를 추가해야 한다.
+- synthetic 참고 시안 2장과 제작 사진으로 실제 PNG·provenance JSON 생성, 프로필 재로드, UI 입력 분리, 자연어 작업공간 라우팅을 검증했다. 대상 테스트 `26 passed`, 전체 `336 passed, 4 deselected`다.
+- 다음 해야 할 일: 사용자가 원하는 실제 시안 샘플로 레이아웃 유형을 분류한 뒤 해당 유형 전용 recipe(텍스트 위치, 로고, 컷아웃, 마스크, 폰트)를 추가한다. 고급 생성형 백엔드를 쓸지는 품질·VRAM·다운로드 용량을 비교 후 결정한다.

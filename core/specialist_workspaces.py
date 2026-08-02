@@ -30,6 +30,11 @@ class SpecialistWorkspaceRegistry:
                 "image_editing", ("photoshop", "vision"),
                 ("포토샵", "photoshop", "이미지 편집", "사진 편집", "디자인 작업"),
             ),
+            "mockup": SpecialistWorkspaceSpec(
+                "mockup", "시안 제작 전문가", "학습용 시안 분석과 제작용 사진 기반 이미지 생성",
+                "mockup_design", ("mockup_design", "vision", "image_renderer"),
+                ("시안 작업", "시안 제작", "시안 전문가", "목업 작업", "목업 제작", "mockup"),
+            ),
         }
 
     def all(self) -> tuple[SpecialistWorkspaceSpec, ...]:

@@ -11,7 +11,7 @@ from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialG
 from .visualizer import AudioVisualizer
 from core.state_machine import State
 from core.specialist_workspaces import get_specialist_workspace_registry
-from .specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindow
+from .specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindow, MockupWorkspaceWindow
 
 class DragTab(QFrame):
     def __init__(self, parent=None):
@@ -1595,7 +1595,8 @@ class JarvisMainWindow(QWidget):
             return None
         window = self.specialist_windows.get(spec.key)
         if window is None:
-            window = SpecialistWorkspaceWindow(spec, self)
+            window = (MockupWorkspaceWindow(spec, self) if spec.key == "mockup"
+                      else SpecialistWorkspaceWindow(spec, self))
             window.prompt_submitted.connect(self.specialist_prompt_submitted.emit)
             self.specialist_windows[spec.key] = window
         window.show()

@@ -10,6 +10,8 @@ data/tts_settings.json
 data/workspaces.json
 data/simple_rag.json
 data/chroma_db/
+data/mockup_styles/
+data/mockup_outputs/
 
 # Python
 .pytest_cache/

@@ -2,16 +2,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QPushButton, QSplitter, QTextEdit,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QInputDialog, QMessageBox, QLineEdit,
 )
 
 from core.specialist_workspaces import SpecialistWorkspaceSpec
+from core.mockup_design import MockupDesignRuntime
 
 
 STYLE = """
@@ -198,3 +200,167 @@ class SpecialistWorkspaceWindow(QMainWindow):
 
     def show_result(self, text: str):
         self.results.append(f"{self.spec.title} > {text}")
+
+
+class MockupWorkspaceWindow(QMainWindow):
+    """Dedicated two-stage workspace: learn references, then render production assets."""
+    prompt_submitted = pyqtSignal(str)
+    analysis_done = pyqtSignal(object)
+    render_done = pyqtSignal(object)
+    operation_failed = pyqtSignal(str)
+
+    def __init__(self, spec: SpecialistWorkspaceSpec, parent=None, runtime=None):
+        super().__init__(parent)
+        self.spec = spec
+        self.runtime = runtime or MockupDesignRuntime()
+        self.reference_paths, self.production_paths = [], []
+        self.active_profile_id = ""
+        self.setWindowTitle("JARVIS · 시안 제작 전문가")
+        self.resize(1320, 820)
+        self.setStyleSheet(STYLE)
+        self.analysis_done.connect(self._on_analysis_done)
+        self.render_done.connect(self._on_render_done)
+        self.operation_failed.connect(self._on_failed)
+        self._build()
+        self._reload_profiles()
+
+    def _build(self):
+        root = QWidget(); outer = QVBoxLayout(root)
+        heading = QLabel("시안 제작 전문가"); heading.setObjectName("heading")
+        outer.addWidget(heading)
+        guide = QLabel("① 학습용 시안에서 디자인 형식을 분석한 뒤  ② 제작용 사진에 그 스타일을 적용합니다. 두 자료는 서로 섞이지 않습니다.")
+        guide.setWordWrap(True); guide.setObjectName("muted"); outer.addWidget(guide)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self._upload_panel("학습용 시안", True))
+        splitter.addWidget(self._upload_panel("제작용 사진", False))
+        splitter.addWidget(self._preview_panel())
+        splitter.setSizes([340, 340, 640]); outer.addWidget(splitter, 1)
+        self.setCentralWidget(root)
+
+    def _upload_panel(self, title: str, learning: bool):
+        panel = QFrame(); panel.setObjectName("panel"); layout = QVBoxLayout(panel)
+        label = QLabel(("1. " if learning else "2. ") + title); label.setObjectName("heading"); layout.addWidget(label)
+        help_text = ("완성된 기존 시안 여러 장을 추가하세요. 원본 사진이 아니라 참고할 디자인 결과물입니다."
+                     if learning else "새 시안에 실제로 사용할 제품·인물·배경 사진을 추가하세요.")
+        help_label = QLabel(help_text); help_label.setWordWrap(True); help_label.setObjectName("muted"); layout.addWidget(help_label)
+        listing = QListWidget(); listing.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection); layout.addWidget(listing, 1)
+        add = QPushButton("여러 장 추가"); remove = QPushButton("선택 제거")
+        add.clicked.connect(lambda: self._add_images(learning)); remove.clicked.connect(lambda: self._remove_images(learning))
+        buttons = QHBoxLayout(); buttons.addWidget(add); buttons.addWidget(remove); layout.addLayout(buttons)
+        if learning:
+            self.reference_list = listing
+            self.profile_list = QListWidget(); self.profile_list.setMaximumHeight(150)
+            self.profile_list.currentItemChanged.connect(self._select_profile)
+            layout.addWidget(QLabel("저장된 스타일 프로필")); layout.addWidget(self.profile_list)
+            analyze = QPushButton("참고 시안 분석·학습")
+            analyze.clicked.connect(self._learn_style); layout.addWidget(analyze)
+        else:
+            self.production_list = listing
+            self.instruction = QTextEdit(); self.instruction.setMaximumHeight(105)
+            self.instruction.setPlaceholderText("시안 제목과 구체적인 제작 지시를 입력하세요. 첫 줄은 결과 이미지 제목으로 사용됩니다.")
+            layout.addWidget(self.instruction)
+            output_row = QHBoxLayout(); self.output_dir = QLineEdit(str(Path("data/mockup_outputs").resolve()))
+            choose = QPushButton("출력 폴더"); choose.clicked.connect(self._choose_output_dir)
+            output_row.addWidget(self.output_dir, 1); output_row.addWidget(choose); layout.addLayout(output_row)
+            render = QPushButton("학습 스타일로 시안 제작")
+            render.clicked.connect(self._render); layout.addWidget(render)
+        return panel
+
+    def _preview_panel(self):
+        panel = QFrame(); panel.setObjectName("panel"); layout = QVBoxLayout(panel)
+        layout.addWidget(QLabel("분석 및 결과 미리보기"))
+        self.preview = QLabel("학습용 시안을 추가하고 분석을 시작하세요.")
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter); self.preview.setWordWrap(True)
+        layout.addWidget(self.preview, 3)
+        self.details = QTextEdit(); self.details.setReadOnly(True); layout.addWidget(self.details, 2)
+        return panel
+
+    def _add_images(self, learning: bool):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "학습용 시안 선택" if learning else "제작용 사진 선택", "",
+            "이미지 (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff)",
+        )
+        paths, listing = ((self.reference_paths, self.reference_list) if learning
+                          else (self.production_paths, self.production_list))
+        for filename in files:
+            resolved = str(Path(filename).resolve())
+            if resolved not in paths:
+                paths.append(resolved); item = QListWidgetItem(Path(resolved).name)
+                item.setToolTip(resolved); listing.addItem(item)
+
+    def _remove_images(self, learning: bool):
+        paths, listing = ((self.reference_paths, self.reference_list) if learning
+                          else (self.production_paths, self.production_list))
+        for item in list(listing.selectedItems()):
+            row = listing.row(item); listing.takeItem(row); paths.pop(row)
+
+    def _learn_style(self):
+        if not self.reference_paths:
+            QMessageBox.information(self, "시안 학습", "학습용 시안을 먼저 추가해 주세요."); return
+        name, accepted = QInputDialog.getText(self, "스타일 이름", "분석한 스타일의 이름:", text="새 시안 스타일")
+        if not accepted: return
+        self.details.setPlainText("참고 시안을 분석하고 있습니다…")
+        threading.Thread(target=self._learn_worker, args=(list(self.reference_paths), name), daemon=True).start()
+
+    def _learn_worker(self, paths, name):
+        try: self.analysis_done.emit(self.runtime.learn_style(paths, name=name))
+        except Exception as exc: self.operation_failed.emit(str(exc))
+
+    def _on_analysis_done(self, profile):
+        self.active_profile_id = profile.profile_id; self._reload_profiles(profile.profile_id)
+        self.details.setPlainText(
+            f"스타일: {profile.name}\n참고 이미지: {len(profile.reference_paths)}장\n"
+            f"방향: {profile.orientation}\n대표 비율: {profile.median_aspect_ratio:.3f}\n"
+            f"색상: {', '.join(profile.palette)}\n\nVision 분석\n{profile.vision_analysis}"
+        )
+        self.preview.setText("스타일 분석을 완료했습니다. 이제 제작용 사진을 추가해 시안을 만들 수 있습니다.")
+
+    def _reload_profiles(self, selected_id=""):
+        self.profile_list.clear()
+        for profile in self.runtime.list_profiles():
+            item = QListWidgetItem(f"{profile.name} · 참고 {len(profile.reference_paths)}장")
+            item.setData(Qt.ItemDataRole.UserRole, profile.profile_id); self.profile_list.addItem(item)
+            if profile.profile_id == selected_id: self.profile_list.setCurrentItem(item)
+
+    def _select_profile(self, current, _previous=None):
+        if current: self.active_profile_id = current.data(Qt.ItemDataRole.UserRole)
+
+    def _choose_output_dir(self):
+        directory = QFileDialog.getExistingDirectory(self, "시안 출력 폴더", self.output_dir.text())
+        if directory: self.output_dir.setText(directory)
+
+    def _render(self):
+        if not self.active_profile_id:
+            QMessageBox.information(self, "시안 제작", "먼저 학습된 스타일을 선택해 주세요."); return
+        if not self.production_paths:
+            QMessageBox.information(self, "시안 제작", "제작용 사진을 먼저 추가해 주세요."); return
+        self.details.append("\n시안을 렌더링하고 있습니다…")
+        args = (
+            self.active_profile_id, list(self.production_paths),
+            self.instruction.toPlainText(), self.output_dir.text(),
+        )
+        threading.Thread(target=self._render_worker, args=args, daemon=True).start()
+
+    def _render_worker(self, profile_id, production_paths, instruction, output_dir):
+        try:
+            result = self.runtime.render(
+                profile_id, production_paths, instruction=instruction, output_dir=output_dir,
+            )
+            self.render_done.emit(result)
+        except Exception as exc: self.operation_failed.emit(str(exc))
+
+    def _on_render_done(self, result):
+        pixmap = QPixmap(result["output"])
+        if not pixmap.isNull():
+            self.preview.setPixmap(pixmap.scaled(610, 510, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self.details.append(
+            f"\n생성 완료\n{result['output']}\n{result['width']}×{result['height']}\n"
+            "입력 해시와 스타일 프로필이 같은 이름의 JSON에 기록되었습니다."
+        )
+
+    def _on_failed(self, message: str):
+        self.details.append(f"\n오류: {message}")
+        QMessageBox.warning(self, "시안 제작", message)
+
+    def show_result(self, text: str):
+        self.details.append(f"\n아니스 > {text}")
