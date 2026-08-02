@@ -1687,4 +1687,5 @@ AI_-secretary_Agent/
 - Plugin Registry에 `mockup_learn_style`, `mockup_render`, `mockup_list_styles` typed Tool을 추가했고 Model Registry에는 `mockup_design` 다중 이미지 역할을 추가했다. 스타일 분석은 GPU Vision 모델, 결과 합성은 CPU 로컬 렌더러로 분리해 VRAM 중복을 피한다.
 - 현재 렌더러는 색상·비율·카드형 레이아웃을 재현하는 기능적 1차 백엔드다. 참고 시안과 픽셀 수준으로 동일한 생성형 style transfer라고 주장하지 않는다. 고급 품질은 8GB VRAM에 맞는 선택형 IP-Adapter/ControlNet 또는 사용자가 지정하는 템플릿 편집 백엔드를 추가해야 한다.
 - synthetic 참고 시안 2장과 제작 사진으로 실제 PNG·provenance JSON 생성, 프로필 재로드, UI 입력 분리, 자연어 작업공간 라우팅을 검증했다. 대상 테스트 `26 passed`, 전체 `336 passed, 4 deselected`다.
+- 코드 커밋: `95fecec`.
 - 다음 해야 할 일: 사용자가 원하는 실제 시안 샘플로 레이아웃 유형을 분류한 뒤 해당 유형 전용 recipe(텍스트 위치, 로고, 컷아웃, 마스크, 폰트)를 추가한다. 고급 생성형 백엔드를 쓸지는 품질·VRAM·다운로드 용량을 비교 후 결정한다.
