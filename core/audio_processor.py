@@ -68,6 +68,7 @@ class AudioProcessor(QObject):
                 if len(chunk):
                     amplitude, freq_bands = self._analyze_audio(chunk, sr)
                     self.duplex.update_output(float(np.sqrt(np.mean(chunk * chunk))))
+                    self.duplex.update_output_samples(chunk)
                     self.audio_update.emit(amplitude, freq_bands, True)
                 time.sleep(0.05)
             sd.wait()
@@ -131,6 +132,7 @@ class AudioProcessor(QObject):
                 if len(samples):
                     amplitude, freq_bands = self._analyze_audio(samples, sample_rate)
                     self.duplex.update_output(float(np.sqrt(np.mean(samples * samples))))
+                    self.duplex.update_output_samples(samples)
                     self.audio_update.emit(amplitude, freq_bands, True)
             if stream is None and buffered and stream_format is not None:
                 sample_rate, channels, _sample_width = stream_format

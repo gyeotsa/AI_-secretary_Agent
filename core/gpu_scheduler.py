@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import heapq
+import os
 import threading
 import time
 import uuid
@@ -40,6 +41,9 @@ class GPUResourceQueue:
 
     @staticmethod
     def _detect_budget_mb() -> int:
+        configured = os.getenv("GPU_VRAM_BUDGET_MB", "").strip()
+        if configured:
+            return max(512, int(configured))
         try:
             import torch
             if torch.cuda.is_available():

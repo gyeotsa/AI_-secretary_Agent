@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+import numpy as np
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Callable, Iterable, Optional
@@ -51,6 +52,7 @@ class VoiceDuplexController:
         self.output_active = threading.Event()
         self.cancel_event = threading.Event()
         self._reference_rms = 0.0
+        self._reference_samples = np.array([], dtype=np.float32)
         self._near_end_started: Optional[float] = None
         self._lock = threading.Lock()
 
@@ -64,6 +66,25 @@ class VoiceDuplexController:
         with self._lock:
             measured = max(0.0, float(rms))
             self._reference_rms = measured if self._reference_rms == 0.0 else self._reference_rms * 0.8 + measured * 0.2
+
+    def update_output_samples(self, samples) -> None:
+        values = np.asarray(samples, dtype=np.float32).reshape(-1)
+        if values.size:
+            with self._lock:
+                self._reference_samples = values[-4800:].copy()
+
+    def suppress_echo(self, samples):
+        """Remove the projection of the latest TTS reference from microphone samples."""
+        values = np.asarray(samples, dtype=np.float32).reshape(-1)
+        with self._lock:
+            reference = self._reference_samples.copy()
+        if not values.size or not reference.size:
+            return values
+        positions = np.linspace(0, reference.size - 1, values.size)
+        aligned = np.interp(positions, np.arange(reference.size), reference).astype(np.float32)
+        denominator = float(np.dot(aligned, aligned)) + 1e-8
+        coefficient = max(0.0, min(1.5, float(np.dot(values, aligned)) / denominator))
+        return (values - coefficient * aligned).astype(np.float32)
 
     def observe_input(self, rms: float, now: Optional[float] = None) -> bool:
         if not self.output_active.is_set():
@@ -91,6 +112,7 @@ class VoiceDuplexController:
         with self._lock:
             self.output_active.clear()
             self._reference_rms = 0.0
+            self._reference_samples = np.array([], dtype=np.float32)
             self._near_end_started = None
 
 

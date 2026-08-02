@@ -454,7 +454,9 @@ class HardwareManager:
                             print("[마이크] 입력 버퍼 overflow 감지")
                         rms = float(np.sqrt(np.mean(chunk * chunk)))
                         if self._output_active.is_set():
-                            if self.duplex.observe_input(rms):
+                            residual = self.duplex.suppress_echo(chunk)
+                            residual_rms = float(np.sqrt(np.mean(residual * residual))) if residual.size else 0.0
+                            if self.duplex.observe_input(residual_rms):
                                 print("[음성] 사용자 끼어들기 감지: TTS 재생 취소")
                             wake_buffer = np.array([], dtype=np.float32)
                             command_buffer = np.array([], dtype=np.float32)

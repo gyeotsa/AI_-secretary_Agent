@@ -71,6 +71,15 @@ def test_duplex_ignores_echo_and_interrupts_sustained_near_end():
     assert interrupted and duplex.cancel_event.is_set()
 
 
+def test_duplex_removes_correlated_tts_echo():
+    duplex = VoiceDuplexController()
+    reference = np.sin(np.linspace(0, 8 * np.pi, 1600)).astype(np.float32) * 0.1
+    duplex.update_output_samples(reference)
+    microphone = reference * 0.8 + np.random.default_rng(1).normal(0, 0.002, len(reference))
+    residual = duplex.suppress_echo(microphone)
+    assert float(np.sqrt(np.mean(residual * residual))) < float(np.sqrt(np.mean(microphone * microphone))) * 0.2
+
+
 def test_device_recovery_retries_with_bounded_backoff():
     attempts, sleeps = [], []
 
