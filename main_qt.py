@@ -159,6 +159,7 @@ class JarvisApp:
         self._response_user_request = ""
         
         self._is_processing_ai = False
+        self._queued_dispatch_inflight = set()
         
         # 콘솔 리더 초기화
         self.console_reader = ConsoleReader()
@@ -400,6 +401,13 @@ class JarvisApp:
                 response_text = self.executor.execute_goal(text, self.session_id, conversation_history)
             print("[DEBUG] Executor.execute_goal returned:", response_text)
 
+            if existing_task_id:
+                task = self.executor.dialogue_state.get_task(
+                    self.session_id, existing_task_id, self.executor._workspace_scope()
+                )
+                if task and task.status != "queued":
+                    getattr(self, "_queued_dispatch_inflight", set()).discard(existing_task_id)
+
             # 최종 응답 전송
             self.signals.ai_response_ready.emit(response_text)
         except Exception as e:
@@ -487,7 +495,6 @@ class JarvisApp:
             self.messages.append({"role": "assistant", "content": response_text})
         
         self._is_processing_ai = False
-        QTimer.singleShot(0, self._run_next_queued_task)
         
         # 대화 저장
         self.memory.save_message(self.session_id, "user", self.messages[-2]["content"])
@@ -518,6 +525,13 @@ class JarvisApp:
         ]
         if queued:
             task = queued[0]
+            inflight = getattr(self, "_queued_dispatch_inflight", None)
+            if inflight is None:
+                inflight = self._queued_dispatch_inflight = set()
+            if task.task_id in inflight:
+                print(f"[Queue] 동일 대기 작업 재디스패치 차단: {task.task_id}")
+                return
+            inflight.add(task.task_id)
             self._on_user_input(task.goal, task.task_id)
     
     def _on_command_triggered(self, command: str):
@@ -618,6 +632,9 @@ class JarvisApp:
         self.state_machine.go_idle()
         self.window.set_soundbar_speaking(False)
         self.window.reset_soundbar()
+        # 다음 대기 작업은 현재 답변 음성이 완전히 끝난 뒤 시작한다. 응답 직후
+        # 시작하면 여러 TTS 스레드가 겹치고 마이크 되먹임처럼 보일 수 있다.
+        QTimer.singleShot(0, self._run_next_queued_task)
     
     def _listen_from_mic(self):
         # 음성 입력 처리

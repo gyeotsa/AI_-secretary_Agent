@@ -169,6 +169,27 @@ def test_queued_tasks_are_ordered_by_priority_and_survive_restart(tmp_path):
     assert [task.task_id for task in queued] == [high.task_id, low.task_id]
 
 
+def test_queued_conversation_is_completed_instead_of_dispatched_forever(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+    executor.llm = object()
+    executor.tool_executor = object()
+    executor._respond_conversationally = lambda _goal, _history: "어떤 게임인지 알려주세요."
+    task = executor.enqueue_goal("렙해줘", "queue-loop-session")
+
+    outcome = executor.execute_turn(
+        task.goal, "queue-loop-session", existing_task_id=task.task_id
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.task_id == task.task_id
+    stored = executor.dialogue_state.get_task("queue-loop-session", task.task_id)
+    assert stored.status == "completed"
+    assert stored.result == "어떤 게임인지 알려주세요."
+    assert executor.dialogue_state.list_tasks(
+        "queue-loop-session", include_finished=False
+    ) == []
+
+
 def test_calendar_creation_waits_for_times_before_planner_or_llm(tmp_path):
     executor = _executor_for_dialogue_test(tmp_path)
 

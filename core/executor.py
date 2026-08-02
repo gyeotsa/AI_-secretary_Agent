@@ -132,6 +132,27 @@ class Executor:
         history = list(conversation_history or [])
         normalized = goal.strip().lower()
 
+        def terminal_outcome(response: str, status: str = "completed",
+                             pending_question: str = "") -> ExecutionOutcome:
+            """Close a persisted queued task even when no Tool/Planner path is needed."""
+            if existing_task_id:
+                task = self.dialogue_state.get_task(
+                    session_key, existing_task_id, workspace_scope
+                )
+                if task and task.status == "queued":
+                    self.dialogue_state.transition_task(existing_task_id, "running")
+                    self.dialogue_state.transition_task(
+                        existing_task_id, status, result=response,
+                        pending_question=pending_question,
+                    )
+                return ExecutionOutcome(
+                    response, status, goal, question=pending_question,
+                    task_id=existing_task_id,
+                )
+            return ExecutionOutcome(
+                response, status, goal, question=pending_question,
+            )
+
         if self.is_control_command(goal):
             return self.handle_control_command(goal, session_key)
 
@@ -248,10 +269,9 @@ class Executor:
             if (intent_resolution.matched and intent_resolution.tool_name
                     and not intent_resolution.execution_requested
                     and not intent_resolution.capability_response):
-                return ExecutionOutcome(
+                return terminal_outcome(
                     "대상은 들었지만 어떤 작업을 할지 명확히 인식하지 못했습니다. "
                     "원하는 동작을 다시 말씀해 주세요, 보스.",
-                    "completed", goal,
                 )
             if not intent_resolution.matched:
                 recent_intent = self.dialogue_state.get_recent_intent(session_key, workspace_scope)
@@ -264,14 +284,18 @@ class Executor:
                 elif self.intent_router.is_contextual_follow_up(goal):
                     intent_resolution = self.intent_router.resolve_from_history(goal, history)
             if intent_resolution.capability_response:
-                return ExecutionOutcome(intent_resolution.capability_response, "completed", goal)
+                return terminal_outcome(intent_resolution.capability_response)
             if intent_resolution.ambiguous:
-                return ExecutionOutcome(
-                    intent_resolution.question, "completed", goal,
+                return terminal_outcome(
+                    intent_resolution.question,
                     pending_question=intent_resolution.question,
                 )
             if intent_resolution.matched and intent_resolution.question:
-                task = self.dialogue_state.create_task(
+                task = (
+                    self.dialogue_state.get_task(
+                        session_key, existing_task_id, workspace_scope
+                    ) if existing_task_id else None
+                ) or self.dialogue_state.create_task(
                     session_key, goal, workspace_path=workspace_scope
                 )
                 self.dialogue_state.save_intent_state(
@@ -302,11 +326,7 @@ class Executor:
         if (not intent_resolution.matched
                 and hasattr(self, "llm")
                 and hasattr(self, "tool_executor")):
-            return ExecutionOutcome(
-                self._respond_conversationally(goal, history),
-                "completed",
-                goal,
-            )
+            return terminal_outcome(self._respond_conversationally(goal, history))
 
         resolved = self.context_resolver.resolve(goal, history, session_key)
         if resolved.needs_clarification:
@@ -330,7 +350,7 @@ class Executor:
             print(f"[Context] 요청 해석: {resolved.original_request!r} → {goal!r} (confidence={resolved.confidence:.2f})")
         unsupported = self._unsupported_capability_message(goal)
         if unsupported:
-            return ExecutionOutcome(unsupported, "completed", goal)
+            return terminal_outcome(unsupported)
         if not agent_task_id:
             agent_task_id = self.dialogue_state.create_task(
                 session_key, goal, workspace_path=workspace_scope
