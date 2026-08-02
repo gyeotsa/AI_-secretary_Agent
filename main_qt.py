@@ -462,7 +462,7 @@ class JarvisApp:
         print("[DEBUG] User-facing response:", response_text)
         # 이모지는 제거하되 상세정보 요청 시 경로와 PID 문법은 보존한다.
         import re
-        response_text = re.sub(r'[^\w\s가-힣.,!?:/\\()\-]', '', response_text)
+        response_text = re.sub(r'[^\w\s가-힣.,!?:/\\()@+\-]', '', response_text)
         print("[DEBUG] After emoji filter:", response_text)
         
         # 마지막 응답 저장

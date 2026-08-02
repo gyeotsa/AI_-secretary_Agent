@@ -70,9 +70,13 @@ class SystemToolsPlugin(BasePlugin):
             ),
             IntentSchema(
                 "speech.repeat_text", "지정 문자열 그대로 읽기", "repeat_text",
-                ["읽어봐", "읽어 줘", "읽어줘", "발음해", "말해봐"],
+                [],
                 [],
                 execution_hints=["읽어", "발음", "말해"],
+                utterance_patterns=[
+                    r"[\"'“”‘’][^\"'“”‘’]+[\"'“”‘’](?:을|를)?\s*(?:읽어|발음해|말해)",
+                    r"^[A-Za-z0-9_.+\-]+(?:을|를)?\s*(?:읽어|발음해)(?:\s*봐|\s*줘)?[?!.]*$",
+                ],
             ),
         ]
 

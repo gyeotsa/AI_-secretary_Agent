@@ -54,3 +54,47 @@ def test_wake_word_can_be_configured_independently():
     resolution = IntentRouter(registry).resolve("호출어를 컴패니언으로 바꿔줘")
     assert resolution.ready
     assert resolution.slots == {"setting": "wake_word", "value": "컴패니언"}
+
+
+def test_compound_address_and_speech_style_are_both_applied(monkeypatch):
+    plugin = PreferencesPlugin()
+    registry = PluginRegistry()
+    registry.register_plugin(plugin)
+    resolution = IntentRouter(registry).resolve(
+        "내 호칭은 지휘관님으로 불러주고 대신 대답은 반말로 해."
+    )
+    assert resolution.ready
+    assert resolution.slots["setting"] == "user_address"
+    assert resolution.slots["value"] == "지휘관님"
+    assert resolution.slots["additional_changes"] == {
+        "response_style": "자연스러운 반말로 대답"
+    }
+
+    settings = AssistantSettings(MemoryProfile())
+    monkeypatch.setattr("plugins.preferences.get_assistant_settings", lambda: settings)
+    result = plugin.execute_tool(resolution.tool_name, resolution.slots)
+    assert result.succeeded
+    assert settings.get("user_address") == "지휘관님"
+    assert settings.get("response_style") == "자연스러운 반말로 대답"
+
+
+def test_profile_question_is_not_misrouted_to_repeat_text(monkeypatch):
+    plugin = PreferencesPlugin()
+    registry = PluginRegistry()
+    registry.register_plugin(plugin)
+    from plugins.system_tools import SystemToolsPlugin
+    registry.register_plugin(SystemToolsPlugin())
+
+    resolution = IntentRouter(registry).resolve("내 메일주소 말해봐")
+    assert resolution.intent_name == "profile.get_value"
+    assert resolution.slots == {"key": "email"}
+
+
+def test_direct_conversation_behavior_instruction_becomes_persistent_setting():
+    plugin = PreferencesPlugin()
+    registry = PluginRegistry()
+    registry.register_plugin(plugin)
+    resolution = IntentRouter(registry).resolve("내 말 따라하지마")
+    assert resolution.ready
+    assert resolution.slots["setting"] == "response_style"
+    assert "반복하지 말고" in resolution.slots["value"]

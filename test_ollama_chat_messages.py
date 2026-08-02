@@ -26,7 +26,6 @@ def test_ollama_chat_preserves_per_call_system_messages(monkeypatch):
         {"role": "user", "content": "make a plan"},
     ]) == "ok"
     assert captured["messages"] == [
-        {"role": "system", "content": "global instruction"},
         {"role": "system", "content": "planner instruction"},
         {"role": "user", "content": "make a plan"},
     ]

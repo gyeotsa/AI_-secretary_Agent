@@ -1388,6 +1388,9 @@ class Executor:
         configured_style = get_assistant_settings().get("response_style")
         if configured_style:
             style = " ".join(filter(None, [style, configured_style]))
+        response_language = get_assistant_settings().get("response_language")
+        if response_language:
+            style = " ".join(filter(None, [style, f"응답 언어는 {response_language}"]))
         return voice_id, address, style
 
     def generate_response(self) -> str:

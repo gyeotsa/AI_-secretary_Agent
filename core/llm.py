@@ -47,7 +47,8 @@ class AnthropicClient(BaseLLMClient):
 
     def _prepare_messages(self, messages: List[Dict]) -> Tuple[str, List[Dict]]:
         """Anthropic API에서 허용하지 않는 system role을 최상위 system으로 이동."""
-        system_parts = [self.system_prompt] if self.system_prompt else []
+        has_explicit_system = any(message.get("role") == "system" for message in messages)
+        system_parts = [self.system_prompt] if self.system_prompt and not has_explicit_system else []
         api_messages = []
         for message in messages:
             if message.get("role") == "system":
@@ -293,7 +294,8 @@ class OllamaClient(BaseLLMClient):
             # 발화와 과거 assistant 응답을 혼동하기 쉽다. Ollama의 chat
             # endpoint에 역할 구조를 그대로 전달한다.
             ollama_messages = []
-            if self.system_prompt:
+            has_explicit_system = any(message.get("role") == "system" for message in messages)
+            if self.system_prompt and not has_explicit_system:
                 ollama_messages.append({"role": "system", "content": self.system_prompt})
             for message in messages:
                 if message.get("content") is None:

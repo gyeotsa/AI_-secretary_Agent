@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import List, Optional
+import re
 
 from core.plan_runtime import PlanDAG, PlanStep
 
@@ -27,12 +28,85 @@ class ConversationService:
             f"당신은 로컬 개인 비서 '{assistant_name or '자비스'}'입니다. 지금 요청은 도구 실행이 아닌 일반 대화입니다. "
             "도구를 찾거나 실행했다고 주장하지 마세요. 최근 발화의 맥락과 감정을 먼저 반영하고 "
             "자연스럽고 간결한 한국어로 답하세요. 최신 정보가 필요하면 확인이 필요하다고 말하세요. "
+            "사용자의 이메일·전화번호·주소·이름 같은 개인 식별정보는 제공된 대화나 저장된 "
+            "프로필에 실제 값이 없으면 절대 만들어내지 말고 모른다고 답하세요. "
+            "프롬프트 예시, user/assistant 역할표시, 다른 언어 설명을 답변에 노출하지 마세요. "
             f"사용자 호칭은 '{address}'이며 답변에서 최대 한 번만 사용하세요. {persona}"
         )
         messages = [{"role": "system", "content": prompt}, *recent,
                     {"role": "user", "content": message}]
         response = str(self.llm.chat(messages) or "").strip()
+        needs_repair = (
+            _normalized(response) == _normalized(message)
+            or _has_prompt_leak(response)
+            or ("반말" in style and re.search(r"(?:습니다|세요|해요|까요|입니다)", response))
+        )
+        if response and needs_repair:
+            response = str(self.llm.chat([
+                {"role": "system", "content": (
+                    f"아래 초안을 사용자의 질문에 대한 자연스러운 한국어 답변으로 한 번만 고쳐 써. "
+                    f"역할표시·예시·외국어를 넣지 말고, 사용자 호칭은 '{address}'로 최대 한 번만 써. "
+                    f"적용할 스타일: {style or '간결하고 자연스러운 말투'}"
+                )},
+                {"role": "user", "content": f"질문: {message}\n초안: {response}"},
+            ]) or "").strip()
+        response = _sanitize_response(response, message)
+        response = _apply_requested_style(response, style)
         return response or f"응, 듣고 있어. 무슨 이야기부터 해볼까, {address}?"
+
+
+def _normalized(text: str) -> str:
+    return re.sub(r"\W+", "", str(text or "")).casefold()
+
+
+def _has_prompt_leak(text: str) -> bool:
+    return bool(
+        re.search(r"(?im)^\s*(?:user|assistant|system)\s*:?", str(text or ""))
+        or re.search(r"[\u0400-\u04ff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", str(text or ""))
+    )
+
+
+def _sanitize_response(text: str, user_message: str = "") -> str:
+    """Remove role/prompt leakage without rewriting legitimate Korean content."""
+    value = str(text or "").strip()
+    if not re.search(r"(?:러시아어|키릴|중국어|일본어|한자|번역|원문)", user_message, re.IGNORECASE):
+        value = re.split(
+            r"[\u0400-\u04ff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]",
+            value, maxsplit=1,
+        )[0].rstrip(" :\n")
+    kept = []
+    for line in value.splitlines():
+        if re.match(r"^\s*(?:user|assistant|system)\s*:?(?:\s|$)", line, re.IGNORECASE):
+            break
+        kept.append(line)
+    value = "\n".join(kept).strip()
+    value = re.sub(r"\s*\[?(?:GAME|WORK)\]?\s*$", "", value, flags=re.IGNORECASE)
+    return value.strip()
+
+
+def _apply_requested_style(text: str, style: str) -> str:
+    """Enforce common Korean sentence endings after a small model ignores style."""
+    if "반말" not in str(style or ""):
+        return text
+    value = str(text or "")
+    replacements = (
+        (r"찾아드릴게요(?=[.!?\n]|$)", "찾아줄게"),
+        (r"제안해드릴게요(?=[.!?\n]|$)", "제안할게"),
+        (r"드릴게요(?=[.!?\n]|$)", "줄게"),
+        (r"할게요(?=[.!?\n]|$)", "할게"),
+        (r"입니다(?=[.!?\n]|$)", "이야"),
+        (r"거예요(?=[.!?\n]|$)", "거야"),
+        (r"예요(?=[.!?\n]|$)", "야"),
+        (r"좋겠어요(?=[.!?\n]|$)", "좋겠어"),
+        (r"해요(?=[.!?\n]|$)", "해"),
+        (r"봐요(?=[.!?\n]|$)", "봐"),
+        (r"주세요(?=[.!?\n]|$)", "줘"),
+        (r"바랍니다(?=[.!?\n]|$)", "바라"),
+        (r"습니다(?=[.!?\n]|$)", "어"),
+    )
+    for pattern, replacement in replacements:
+        value = re.sub(pattern, replacement, value)
+    return value
 
 
 class PlanningService:
