@@ -18,6 +18,28 @@ class FakeVision:
         return {"analysis": "큰 제목, 짙은 배경, 밝은 강조색과 둥근 사진 카드가 반복됩니다."}
 
 
+class FakeGenerationBackend:
+    def __init__(self, ready=False):
+        self.ready = ready
+
+    def status(self):
+        return {"ready": self.ready, "base_ready": self.ready, "adapter_ready": self.ready,
+                "image_encoder_ready": self.ready, "cuda": True, "vram_mb": 8192}
+
+    def prepare(self, progress=None):
+        if progress: progress("준비 중")
+        self.ready = True
+        return self.status()
+
+    def generate_background(self, **_kwargs):
+        return Image.new("RGB", (512, 768), (30, 80, 120))
+
+
+class FailingGenerationBackend(FakeGenerationBackend):
+    def generate_background(self, **_kwargs):
+        raise RuntimeError("테스트 생성 실패")
+
+
 def _image(path: Path, color, size=(400, 500), accent=(255, 255, 255)):
     image = Image.new("RGB", size, color)
     draw = ImageDraw.Draw(image)
@@ -29,9 +51,9 @@ def _image(path: Path, color, size=(400, 500), accent=(255, 255, 255)):
 def test_learned_style_profile_and_rendered_output_are_persistent(tmp_path):
     refs = [_image(tmp_path / "ref1.png", (10, 25, 55)), _image(tmp_path / "ref2.png", (20, 35, 70))]
     products = [_image(tmp_path / "product1.png", (190, 80, 70), accent=(240, 220, 100))]
-    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision())
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend())
     profile = runtime.learn_style(refs, name="네이비 카드형")
-    result = runtime.render(profile.profile_id, products, instruction="여름 신제품\n시원한 분위기", output_dir=tmp_path / "out")
+    result = runtime.render(profile.profile_id, products, instruction="여름 신제품\n시원한 분위기", output_dir=tmp_path / "out", backend="local")
     output = Path(result["output"])
     assert output.is_file() and output.stat().st_size > 1000
     assert output.with_suffix(".json").is_file()
@@ -42,7 +64,8 @@ def test_learned_style_profile_and_rendered_output_are_persistent(tmp_path):
 def test_reference_and_production_inputs_stay_separate_in_ui(tmp_path):
     app = QApplication.instance() or QApplication([])
     spec = get_specialist_workspace_registry().get("mockup")
-    window = MockupWorkspaceWindow(spec, runtime=MockupDesignRuntime(tmp_path / "styles", vision=FakeVision()))
+    window = MockupWorkspaceWindow(spec, runtime=MockupDesignRuntime(
+        tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend()))
     ref, product = str(tmp_path / "ref.png"), str(tmp_path / "product.png")
     _image(Path(ref), (1, 2, 3)); _image(Path(product), (4, 5, 6))
     window.reference_paths.append(ref); window.reference_list.addItem(QListWidgetItem("ref.png"))
@@ -62,4 +85,39 @@ def test_mockup_workspace_and_model_role_are_registered():
 
 def test_mockup_plugin_exposes_two_stage_contract():
     names = {tool.name for tool in MockupDesignPlugin().get_tools()}
-    assert names == {"mockup_learn_style", "mockup_render", "mockup_list_styles"}
+    assert names == {"mockup_learn_style", "mockup_render", "mockup_list_styles",
+                     "mockup_generation_status", "mockup_prepare_generation"}
+
+
+def test_generative_backend_preserves_production_layout_and_records_provenance(tmp_path):
+    refs = [_image(tmp_path / "ref.png", (10, 20, 40))]
+    products = [_image(tmp_path / "product.png", (200, 90, 70))]
+    backend = FakeGenerationBackend(ready=True)
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=backend)
+    profile = runtime.learn_style(refs, name="생성형 스타일")
+    result = runtime.render(profile.profile_id, products, output_dir=tmp_path / "out", backend="auto")
+    assert Path(result["output"]).is_file()
+    assert result["generation_backend"] == "generative"
+    assert "ip-adapter" in result["renderer"]
+
+
+def test_generation_model_prepare_contract(tmp_path):
+    backend = FakeGenerationBackend()
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=backend)
+    messages = []
+    assert runtime.prepare_generation_models(messages.append)["ready"] is True
+    assert messages == ["준비 중"]
+
+
+def test_auto_backend_falls_back_but_explicit_generative_reports_failure(tmp_path):
+    refs = [_image(tmp_path / "ref.png", (10, 20, 40))]
+    products = [_image(tmp_path / "product.png", (200, 90, 70))]
+    runtime = MockupDesignRuntime(
+        tmp_path / "styles", vision=FakeVision(), generation_backend=FailingGenerationBackend(ready=True))
+    profile = runtime.learn_style(refs)
+    result = runtime.render(profile.profile_id, products, output_dir=tmp_path / "out", backend="auto")
+    assert result["generation_backend"] == "local"
+    assert result["generation_fallback_reason"] == "테스트 생성 실패"
+    import pytest
+    with pytest.raises(RuntimeError, match="테스트 생성 실패"):
+        runtime.render(profile.profile_id, products, output_dir=tmp_path / "out", backend="generative")

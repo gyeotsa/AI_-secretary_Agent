@@ -28,16 +28,22 @@ class MockupStyleProfile:
     median_aspect_ratio: float
     orientation: str
     vision_analysis: str
+    generation_prompt: str = ""
     created_at: float = field(default_factory=time.time)
 
 
 class MockupDesignRuntime:
     """Keeps measured visual traits separate from unverified Vision interpretation."""
 
-    def __init__(self, profile_dir: str | Path = "data/mockup_styles", vision=None):
+    def __init__(self, profile_dir: str | Path = "data/mockup_styles", vision=None,
+                 generation_backend=None):
         self.profile_dir = Path(profile_dir)
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self.vision = vision
+        if generation_backend is None:
+            from core.mockup_generation import IPAdapterGenerationBackend
+            generation_backend = IPAdapterGenerationBackend()
+        self.generation_backend = generation_backend
 
     @staticmethod
     def _validate_images(paths) -> list[Path]:
@@ -92,19 +98,26 @@ class MockupDesignRuntime:
                 [str(path) for path in paths[:12]],
                 "이 이미지들은 같은 계열의 시안 참고 자료입니다. 공통 레이아웃 구조, 이미지 배치, "
                 "타이포그래피 위계, 여백, 색상 분위기, 테두리와 장식 요소를 한국어로 분석하세요. "
-                "사진 속 인물이나 제품의 정체가 아니라 재사용 가능한 디자인 규칙에 집중하세요.",
+                "사진 속 인물이나 제품의 정체가 아니라 재사용 가능한 디자인 규칙에 집중하세요. "
+                "마지막 줄에는 이미지 생성 모델이 사용할 짧은 영문 스타일 프롬프트를 "
+                "GENERATION_PROMPT_EN: 뒤에 작성하세요. 문자·로고·인물 정체는 포함하지 마세요.",
                 mode="general",
             )
             analysis = str(result.get("analysis", ""))
         except Exception as exc:
             analysis = f"Vision 정성 분석을 수행하지 못했습니다: {exc}"
+        prompt_match = __import__("re").search(r"GENERATION_PROMPT_EN\s*:\s*(.+)", analysis, __import__("re").IGNORECASE)
+        generation_prompt = (prompt_match.group(1).strip() if prompt_match else
+                             f"{orientation} editorial layout, palette {', '.join(self._palette(paths))}, clean spacing")
+        palette = self._palette(paths)
         profile = MockupStyleProfile(
             profile_id=uuid.uuid4().hex,
             name=" ".join(str(name).split()) or "새 시안 스타일",
             reference_paths=[str(path) for path in paths],
             reference_hashes=[self._sha256(path) for path in paths],
-            palette=self._palette(paths), median_aspect_ratio=ratio,
+            palette=palette, median_aspect_ratio=ratio,
             orientation=orientation, vision_analysis=analysis,
+            generation_prompt=generation_prompt,
         )
         target = self.profile_dir / f"{profile.profile_id}.json"
         target.write_text(json.dumps(asdict(profile), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -122,6 +135,12 @@ class MockupDesignRuntime:
             try: profiles.append(MockupStyleProfile(**json.loads(path.read_text(encoding="utf-8"))))
             except (OSError, ValueError, TypeError, json.JSONDecodeError): continue
         return profiles
+
+    def generation_status(self) -> dict:
+        return self.generation_backend.status()
+
+    def prepare_generation_models(self, progress=None) -> dict:
+        return self.generation_backend.prepare(progress)
 
     @staticmethod
     def _font(size: int, bold: bool = False):
@@ -142,7 +161,8 @@ class MockupDesignRuntime:
             return fallback
 
     def render(self, profile_id: str, production_paths, *, instruction: str = "",
-               output_dir: str | Path = "data/mockup_outputs", basename: str = "mockup") -> dict:
+               output_dir: str | Path = "data/mockup_outputs", basename: str = "mockup",
+               backend: str = "auto", seed: int = 42) -> dict:
         profile = self.load_profile(profile_id)
         paths = self._validate_images(production_paths)
         ratio = max(0.55, min(1.9, profile.median_aspect_ratio))
@@ -151,10 +171,32 @@ class MockupDesignRuntime:
         else:
             width, height = max(900, int(1600 * ratio)), 1600
         palette = [self._hex(value) for value in profile.palette] or [(15, 23, 42), (34, 211, 238)]
-        with Image.open(paths[0]) as background_source:
-            background = ImageOps.fit(background_source.convert("RGB"), (width, height), method=Image.Resampling.LANCZOS)
-        background = background.filter(ImageFilter.GaussianBlur(max(12, width // 55)))
-        tint = Image.new("RGBA", (width, height), (*palette[0], 185))
+        use_generative = backend == "generative" or (
+            backend == "auto" and self.generation_backend.status().get("ready", False)
+        )
+        generation_error = ""
+        if use_generative:
+            try:
+                background = self.generation_backend.generate_background(
+                    reference_paths=profile.reference_paths,
+                    prompt=f"{profile.generation_prompt}. {instruction}",
+                    orientation=profile.orientation, seed=seed,
+                )
+                background = ImageOps.fit(background, (width, height), method=Image.Resampling.LANCZOS)
+                renderer_name = "sd15-ip-adapter-plus+preserved-photo-layout-v1"
+                tint_alpha = 75
+            except Exception as exc:
+                if backend == "generative":
+                    raise
+                generation_error = str(exc)
+                use_generative = False
+        if not use_generative:
+            with Image.open(paths[0]) as background_source:
+                background = ImageOps.fit(background_source.convert("RGB"), (width, height), method=Image.Resampling.LANCZOS)
+            background = background.filter(ImageFilter.GaussianBlur(max(12, width // 55)))
+            renderer_name = "pillow-layout-v1"
+            tint_alpha = 185
+        tint = Image.new("RGBA", (width, height), (*palette[0], tint_alpha))
         canvas = Image.alpha_composite(background.convert("RGBA"), tint)
         draw = ImageDraw.Draw(canvas, "RGBA")
         margin = int(min(width, height) * 0.065)
@@ -198,8 +240,12 @@ class MockupDesignRuntime:
         metadata = {
             "output": str(output_path), "profile_id": profile.profile_id,
             "references": profile.reference_hashes, "production_inputs": [self._sha256(path) for path in paths],
-            "width": width, "height": height, "renderer": "pillow-layout-v1",
-            "note": "정량 스타일 특성과 로컬 합성 레이아웃을 적용한 결과",
+            "width": width, "height": height, "renderer": renderer_name,
+            "generation_backend": "generative" if use_generative else "local",
+            "seed": int(seed),
+            "generation_fallback_reason": generation_error,
+            "note": ("IP-Adapter 참고 스타일 배경과 원본 사진 보존 합성을 적용한 결과"
+                     if use_generative else "정량 스타일 특성과 로컬 합성 레이아웃을 적용한 결과"),
         }
         output_path.with_suffix(".json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
         return metadata

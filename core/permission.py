@@ -165,6 +165,8 @@ class PermissionManager:
             Permission(id="git_push", name="Git Push", description="Git Push 실행", level=PermissionLevel.CONFIRM),
             Permission(id="mail_send", name="메일 전송", description="메일 전송", level=PermissionLevel.CONFIRM),
             Permission(id="browser", name="브라우저", description="브라우저 자동 조작", level=PermissionLevel.SYSTEM),
+            Permission(id="network_access", name="네트워크 접근", description="모델·데이터 다운로드 및 외부 API 접근",
+                       level=PermissionLevel.SYSTEM),
             Permission(id="windows_api", name="Windows API", description="Windows 시스템 API 접근",
                        level=PermissionLevel.SYSTEM),
             Permission(id="data_delete", name="데이터 삭제", description="메모리·지식그래프·스케줄·자동화 작업 등 파일이 아닌 데이터 삭제",

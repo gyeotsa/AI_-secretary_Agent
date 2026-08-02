@@ -9,7 +9,7 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QPushButton, QSplitter, QTextEdit,
-    QVBoxLayout, QWidget, QInputDialog, QMessageBox, QLineEdit,
+    QVBoxLayout, QWidget, QInputDialog, QMessageBox, QLineEdit, QComboBox,
 )
 
 from core.specialist_workspaces import SpecialistWorkspaceSpec
@@ -207,6 +207,8 @@ class MockupWorkspaceWindow(QMainWindow):
     prompt_submitted = pyqtSignal(str)
     analysis_done = pyqtSignal(object)
     render_done = pyqtSignal(object)
+    model_status_done = pyqtSignal(object)
+    progress_message = pyqtSignal(str)
     operation_failed = pyqtSignal(str)
 
     def __init__(self, spec: SpecialistWorkspaceSpec, parent=None, runtime=None):
@@ -221,8 +223,11 @@ class MockupWorkspaceWindow(QMainWindow):
         self.analysis_done.connect(self._on_analysis_done)
         self.render_done.connect(self._on_render_done)
         self.operation_failed.connect(self._on_failed)
+        self.model_status_done.connect(self._on_model_status)
+        self.progress_message.connect(lambda message: self.details.append(f"\n{message}"))
         self._build()
         self._reload_profiles()
+        self._on_model_status(self.runtime.generation_status())
 
     def _build(self):
         root = QWidget(); outer = QVBoxLayout(root)
@@ -262,6 +267,18 @@ class MockupWorkspaceWindow(QMainWindow):
             output_row = QHBoxLayout(); self.output_dir = QLineEdit(str(Path("data/mockup_outputs").resolve()))
             choose = QPushButton("출력 폴더"); choose.clicked.connect(self._choose_output_dir)
             output_row.addWidget(self.output_dir, 1); output_row.addWidget(choose); layout.addLayout(output_row)
+            self.backend_selector = QComboBox()
+            self.backend_selector.addItem("자동 · 생성형 우선", "auto")
+            self.backend_selector.addItem("생성형 · SD1.5 + IP-Adapter Plus", "generative")
+            self.backend_selector.addItem("빠른 로컬 합성", "local")
+            layout.addWidget(self.backend_selector)
+            model_row = QHBoxLayout()
+            self.model_status = QLabel("생성형 모델 상태 확인 중…")
+            self.model_status.setWordWrap(True); self.model_status.setObjectName("muted")
+            prepare = QPushButton("생성형 모델 준비")
+            prepare.clicked.connect(self._prepare_models)
+            model_row.addWidget(self.model_status, 1); model_row.addWidget(prepare)
+            layout.addLayout(model_row)
             render = QPushButton("학습 스타일로 시안 제작")
             render.clicked.connect(self._render); layout.addWidget(render)
         return panel
@@ -329,6 +346,27 @@ class MockupWorkspaceWindow(QMainWindow):
         directory = QFileDialog.getExistingDirectory(self, "시안 출력 폴더", self.output_dir.text())
         if directory: self.output_dir.setText(directory)
 
+    def _prepare_models(self):
+        self.details.append("\n생성형 모델 준비를 시작합니다. 최초 실행은 다운로드에 시간이 걸릴 수 있습니다.")
+        threading.Thread(target=self._prepare_models_worker, daemon=True).start()
+
+    def _prepare_models_worker(self):
+        try:
+            status = self.runtime.prepare_generation_models(self.progress_message.emit)
+            self.model_status_done.emit(status)
+        except Exception as exc:
+            self.operation_failed.emit(str(exc))
+
+    def _on_model_status(self, status):
+        if status.get("ready"):
+            self.model_status.setText(f"생성형 준비 완료 · CUDA · VRAM {status.get('vram_mb', 0)}MB")
+        else:
+            missing = []
+            if not status.get("base_ready"): missing.append("SD1.5")
+            if not status.get("adapter_ready"): missing.append("IP-Adapter")
+            if not status.get("cuda"): missing.append("CUDA")
+            self.model_status.setText("생성형 미준비 · " + ", ".join(missing))
+
     def _render(self):
         if not self.active_profile_id:
             QMessageBox.information(self, "시안 제작", "먼저 학습된 스타일을 선택해 주세요."); return
@@ -337,14 +375,15 @@ class MockupWorkspaceWindow(QMainWindow):
         self.details.append("\n시안을 렌더링하고 있습니다…")
         args = (
             self.active_profile_id, list(self.production_paths),
-            self.instruction.toPlainText(), self.output_dir.text(),
+            self.instruction.toPlainText(), self.output_dir.text(), self.backend_selector.currentData(),
         )
         threading.Thread(target=self._render_worker, args=args, daemon=True).start()
 
-    def _render_worker(self, profile_id, production_paths, instruction, output_dir):
+    def _render_worker(self, profile_id, production_paths, instruction, output_dir, backend):
         try:
             result = self.runtime.render(
                 profile_id, production_paths, instruction=instruction, output_dir=output_dir,
+                backend=backend,
             )
             self.render_done.emit(result)
         except Exception as exc: self.operation_failed.emit(str(exc))
@@ -353,8 +392,11 @@ class MockupWorkspaceWindow(QMainWindow):
         pixmap = QPixmap(result["output"])
         if not pixmap.isNull():
             self.preview.setPixmap(pixmap.scaled(610, 510, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        fallback = (f"생성형 자동 대체 사유: {result['generation_fallback_reason']}\n"
+                    if result.get("generation_fallback_reason") else "")
         self.details.append(
             f"\n생성 완료\n{result['output']}\n{result['width']}×{result['height']}\n"
+            f"렌더러: {result['renderer']}\n{fallback}"
             "입력 해시와 스타일 프로필이 같은 이름의 JSON에 기록되었습니다."
         )
 

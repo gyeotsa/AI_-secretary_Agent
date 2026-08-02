@@ -1689,3 +1689,15 @@ AI_-secretary_Agent/
 - synthetic 참고 시안 2장과 제작 사진으로 실제 PNG·provenance JSON 생성, 프로필 재로드, UI 입력 분리, 자연어 작업공간 라우팅을 검증했다. 대상 테스트 `26 passed`, 전체 `336 passed, 4 deselected`다.
 - 코드 커밋: `95fecec`.
 - 다음 해야 할 일: 사용자가 원하는 실제 시안 샘플로 레이아웃 유형을 분류한 뒤 해당 유형 전용 recipe(텍스트 위치, 로고, 컷아웃, 마스크, 폰트)를 추가한다. 고급 생성형 백엔드를 쓸지는 품질·VRAM·다운로드 용량을 비교 후 결정한다.
+
+## 2026-08-03 시안 제작 생성형 백엔드 연결
+
+- RTX 4060 Laptop 8GB에서 상주 메모리를 줄이기 위해 SDXL 대신 `Stable Diffusion 1.5 fp16 + IP-Adapter Plus SD1.5`를 선택했다. 참고 시안 여러 장은 contact sheet로 이미지 인코더에 전달하고 Vision 분석의 영문 스타일 요약과 제작 지시를 함께 조건으로 사용한다.
+- 생성형 모델은 앱 시작 때 로드하지 않는다. 시안 작업공간의 `생성형 모델 준비` 버튼 또는 `mockup_prepare_generation` Tool이 `data/models/mockup_generation`에 추론 파일만 최초 다운로드하며, 실제 생성 요청에서 lazy load하고 CPU offload를 적용한다. 모델 파일은 Git 및 설치 소스에 포함하지 않는다.
+- 제작용 원본 사진은 생성 모델에 다시 그리게 하지 않고, 생성된 스타일 배경 위에 Pillow 카드 레이아웃으로 합성한다. `auto`는 모델·CUDA가 준비되면 생성형을, 아니면 기존 로컬 합성을 선택한다. `generative`와 `local`을 UI 및 Tool argument로 명시할 수도 있다.
+- IP-Adapter load 이후 일반 attention slicing을 활성화하면 전용 attention processor가 덮어써져 tuple 오류가 발생하므로 사용하지 않는다. VAE slicing과 model CPU offload만 사용한다.
+- 현재 PC에 CUDA 빌드 `torch 2.11.0+cu128`, `torchvision 0.26.0+cu128`, NumPy 1.26.4를 맞췄다. 생성형 런타임은 `diffusers 0.37.1`, `accelerate 1.14.0`이다. 잘못 내려받은 중복 FP32/BIN과 미사용 safety-checker 약 7.9GB를 제거해 앱 모델 폴더를 약 4.54GB로 정리했다.
+- 실제 SD1.5/IP-Adapter 추론으로 24-step 768×512 PNG를 생성했다. 모델 로딩 포함 약 20초, GPU 추론 약 5.5초였고 출력은 `data/mockup_outputs/backend_smoke_test.png`에서 확인했다. 합성 계약 테스트는 Fake backend를 사용해 CI에서 모델 다운로드나 GPU를 요구하지 않는다.
+- 자동 모드에서 생성형 추론이 실패하면 사유를 provenance와 UI에 남기고 로컬 합성으로 복구한다. 사용자가 생성형을 명시한 경우에는 실패를 숨기지 않는다. 대상 테스트 `7 passed`, 전체 회귀 `339 passed, 4 deselected`를 통과했다.
+- 모델과 라이선스 원문: https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5 및 https://huggingface.co/h94/IP-Adapter . 공개 배포 전에는 각 라이선스 조건과 안전 필터 정책을 별도로 검토해야 한다.
+- 다음 해야 할 일: 실제 사용자 참고 시안으로 생성 품질을 평가하고, 텍스트·로고 위치와 인물/제품 컷아웃을 픽셀 단위로 재현해야 하는 유형에는 segmentation 및 ControlNet/템플릿 recipe를 추가한다. 현재 구현은 가중치 재학습이 아니라 reference-conditioned generation이다.
