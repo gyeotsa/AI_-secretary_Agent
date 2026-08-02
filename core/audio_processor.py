@@ -24,6 +24,16 @@ class AudioProcessor(QObject):
         self._is_speaking = False  # 자비스가 말하는 중인지
         self._sample_rate = 44100  # 기본 샘플 레이트
         self._chunk_size = 4096  # 한 번에 처리할 샘플 수 (음성 끊김 방지)
+        from core.voice_runtime import get_voice_duplex_controller
+        self.duplex = get_voice_duplex_controller()
+        self.duplex.interrupt_callback = self.cancel_playback
+
+    def cancel_playback(self):
+        self.duplex.cancel_event.set()
+        try:
+            sd.stop()
+        except Exception:
+            pass
         
     def play_and_analyze_tts(self, wav_path: str):
         """WAV 파일을 재생하면서 오디오 데이터를 분석합니다 (자비스 TTS용)"""
@@ -49,13 +59,15 @@ class AudioProcessor(QObject):
             sd.play(playback_data, sr, blocking=False)
             analysis_window = max(512, int(sr * 0.05))
             started_at = time.monotonic()
-            while True:
+            self.duplex.start_output()
+            while not self.duplex.cancel_event.is_set():
                 position = int((time.monotonic() - started_at) * sr)
                 if position >= len(analysis_data):
                     break
                 chunk = analysis_data[position:position + analysis_window]
                 if len(chunk):
                     amplitude, freq_bands = self._analyze_audio(chunk, sr)
+                    self.duplex.update_output(float(np.sqrt(np.mean(chunk * chunk))))
                     self.audio_update.emit(amplitude, freq_bands, True)
                 time.sleep(0.05)
             sd.wait()
@@ -65,6 +77,7 @@ class AudioProcessor(QObject):
         finally:
             self._is_speaking = False
             self._is_running = False
+            self.duplex.finish_output()
             # 마지막으로 0 레벨 신호 보내기
             self.audio_update.emit(0.0, [], False)
 
@@ -77,7 +90,10 @@ class AudioProcessor(QObject):
         try:
             self._is_speaking = True
             self._is_running = True
+            self.duplex.start_output()
             for sample_rate, channels, sample_width, chunk in pcm_chunks:
+                if self.duplex.cancel_event.is_set():
+                    break
                 if sample_width != 2:
                     raise ValueError(f"지원하지 않는 스트림 샘플 폭: {sample_width}")
                 current_format = (sample_rate, channels, sample_width)
@@ -114,6 +130,7 @@ class AudioProcessor(QObject):
                     samples = samples.reshape(-1, channels).mean(axis=1)
                 if len(samples):
                     amplitude, freq_bands = self._analyze_audio(samples, sample_rate)
+                    self.duplex.update_output(float(np.sqrt(np.mean(samples * samples))))
                     self.audio_update.emit(amplitude, freq_bands, True)
             if stream is None and buffered and stream_format is not None:
                 sample_rate, channels, _sample_width = stream_format
@@ -139,6 +156,7 @@ class AudioProcessor(QObject):
                     stream.close()
             self._is_speaking = False
             self._is_running = False
+            self.duplex.finish_output()
             self.audio_update.emit(0.0, [], False)
 
     @staticmethod

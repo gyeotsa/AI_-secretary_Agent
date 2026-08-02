@@ -122,6 +122,13 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "remote_apply_draft": "external_send",
     "cloud_sync_catalog": "cloud_read",
     "communication_read_summary": "cloud_read",
+    "screen_capture_region": "screen_capture",
+    "visual_analyze": "screen_read",
+    "video_sample_analyze": "screen_read",
+    "gpu_runtime_status": "screen_read",
+    "windows_list_handles": "windows_api",
+    "windows_accessibility_tree": "windows_api",
+    "windows_automation_policy": "windows_api",
 }
 
 
@@ -157,6 +164,12 @@ class PermissionManager:
             Permission(id="external_send", name="외부 전송",
                        description="메일·일정·Slack·Teams 내용을 외부 서비스에 실제 반영",
                        level=PermissionLevel.CONFIRM),
+            Permission(id="screen_capture", name="화면 캡처",
+                       description="전체 화면 또는 선택 영역을 이미지로 저장",
+                       level=PermissionLevel.SYSTEM),
+            Permission(id="screen_read", name="화면 분석",
+                       description="화면·이미지·영상 프레임의 OCR·표·차트 내용 분석",
+                       level=PermissionLevel.SYSTEM),
         ]
         self._load()
         self._request_callback: Optional[Callable[[Permission], bool]] = None

@@ -37,6 +37,7 @@ class HardwareManager:
     MAX_SPEECH_RMS_THRESHOLD = 0.003
 
     def __init__(self):
+        from core.voice_runtime import get_voice_duplex_controller
         self.running = False
         self.wakeword_thread = None
         self.clap_thread = None
@@ -53,6 +54,9 @@ class HardwareManager:
         self._stream_error = ""
         self._output_active = threading.Event()
         self._ignore_input_until = 0.0
+        self.duplex = get_voice_duplex_controller()
+        self._manual_stop = False
+        self._recovery_attempts = 0
         
         if SOUND_AVAILABLE:
             # GPU 사용 가능 여부 확인
@@ -281,7 +285,7 @@ class HardwareManager:
             return audio[:0]
         return audio[:min(len(audio), active_end + int(sample_rate * 0.2))]
 
-    def _transcribe_audio(self, audio: np.ndarray) -> dict:
+    def _transcribe_audio_unqueued(self, audio: np.ndarray) -> dict:
         normalized = self._normalize_audio(audio)
         if self.stt_engine == "faster-whisper":
             hotwords = self._whisper_hotwords()
@@ -330,6 +334,13 @@ class HardwareManager:
             suppress_blank=True,
         )
 
+    def _transcribe_audio(self, audio: np.ndarray) -> dict:
+        from core.gpu_scheduler import get_gpu_resource_queue
+        model_name = str(getattr(self, "whisper_model_name", ""))
+        requested = (3072 if model_name.startswith("large") else 1536) if getattr(self, "device", "cpu") == "cuda" else 0
+        with get_gpu_resource_queue().reserve("stt", requested, priority=1):
+            return self._transcribe_audio_unqueued(audio)
+
     def _trusted_transcription_text(self, result: dict) -> str:
         text = str(result.get("text", "")).strip()
         if not text or self.stt_engine != "faster-whisper":
@@ -348,6 +359,19 @@ class HardwareManager:
             )
             return ""
         return text
+
+    def _select_wake_candidate(self, result: dict) -> str:
+        """전사 후보를 호출어·음향 점수·Registry 어휘로 재평가합니다."""
+        from core.voice_runtime import SpeechCandidate, WakeWordCandidateEvaluator
+        alternatives = result.get("alternatives") or [result]
+        candidates = []
+        for item in alternatives:
+            segments = item.get("segments") or []
+            acoustic = (sum(float(segment.get("avg_logprob", 0.0)) for segment in segments) /
+                        len(segments)) if segments else 0.0
+            no_speech = max((float(segment.get("no_speech_prob", 0.0)) for segment in segments), default=0.0)
+            candidates.append(SpeechCandidate(str(item.get("text", "")), acoustic, no_speech))
+        return WakeWordCandidateEvaluator(Config.WAKE_WORD).select(candidates, self._speech_vocabulary()) or ""
 
     @staticmethod
     def list_input_devices():
@@ -393,6 +417,11 @@ class HardwareManager:
             return "이미 음성 감지가 실행 중입니다."
         
         self.running = True
+        self._manual_stop = False
+        self._recovery_attempts = getattr(self, "_recovery_attempts", 0)
+        if not hasattr(self, "duplex"):
+            from core.voice_runtime import get_voice_duplex_controller
+            self.duplex = get_voice_duplex_controller()
         self.on_text_detected = on_text_callback
         self.audio_processor = audio_processor
         self._stream_ready.clear()
@@ -424,7 +453,13 @@ class HardwareManager:
                         if overflowed:
                             print("[마이크] 입력 버퍼 overflow 감지")
                         rms = float(np.sqrt(np.mean(chunk * chunk)))
-                        if self._output_active.is_set() or time.monotonic() < self._ignore_input_until:
+                        if self._output_active.is_set():
+                            if self.duplex.observe_input(rms):
+                                print("[음성] 사용자 끼어들기 감지: TTS 재생 취소")
+                            wake_buffer = np.array([], dtype=np.float32)
+                            command_buffer = np.array([], dtype=np.float32)
+                            continue
+                        if time.monotonic() < self._ignore_input_until:
                             wake_buffer = np.array([], dtype=np.float32)
                             command_buffer = np.array([], dtype=np.float32)
                             command_wake_audio = np.array([], dtype=np.float32)
@@ -459,9 +494,9 @@ class HardwareManager:
                                 last_wake_check = now
                                 if sum(wake_voice_chunks) < 2:
                                     continue
-                                text = self._trusted_transcription_text(
-                                    self._transcribe_audio(wake_buffer)
-                                ).lower()
+                                wake_result = self._transcribe_audio(wake_buffer)
+                                text = (self._select_wake_candidate(wake_result) or
+                                        self._trusted_transcription_text(wake_result)).lower()
                                 wake_command = self.extract_wake_command(text)
                                 if wake_command is not None:
                                     print(f"[웨이크워드] 감지: {text}")
@@ -538,9 +573,19 @@ class HardwareManager:
                                 voiced_seconds = 0.0
             except Exception as exc:
                 self._stream_error = str(exc)
+                should_recover = self.running and self._stream_ready.is_set() and not self._manual_stop
                 self.running = False
                 self._stream_ready.set()
                 print(f"[마이크] 입력 장치 오류: {exc}")
+                if should_recover and self._recovery_attempts < 5:
+                    self._recovery_attempts += 1
+                    delay = min(4.0, 0.25 * (2 ** (self._recovery_attempts - 1)))
+                    def recover():
+                        time.sleep(delay)
+                        if not self._manual_stop and not self.running:
+                            print("[마이크] 장치 변경·절전 복귀 자동 재연결 시도")
+                            print(self.start_continuous_listen(self.on_text_detected, self.audio_processor))
+                    threading.Thread(target=recover, daemon=True).start()
         
         self.continuous_listen_thread = threading.Thread(target=continuous_detect, daemon=True)
         self.continuous_listen_thread.start()
@@ -556,6 +601,7 @@ class HardwareManager:
         if not self.running:
             return "음성 감지가 실행 중이지 않습니다."
         
+        self._manual_stop = True
         self.running = False
         if self.continuous_listen_thread:
             self.continuous_listen_thread.join(timeout=2)

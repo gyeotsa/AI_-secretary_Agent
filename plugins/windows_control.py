@@ -13,6 +13,7 @@ import pygetwindow
 
 from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema
 from core.tool_result import Artifact, Evidence, ToolRunResult, ToolRunStatus
+from core.windows_automation import WindowsAutomationRuntime
 
 
 class WindowsControlPlugin(BasePlugin):
@@ -25,6 +26,7 @@ class WindowsControlPlugin(BasePlugin):
         super().__init__()
         self.name = "windows_control"
         self.description = "Windows 앱 자동 검색·실행·UAC 상승·창 활성화"
+        self.automation = WindowsAutomationRuntime()
 
     def get_tools(self) -> List[ToolSchema]:
         return [
@@ -56,6 +58,14 @@ class WindowsControlPlugin(BasePlugin):
                 "type": "object", "properties": {
                     "aliases": {"type": "array", "items": {"type": "string"}, "minItems": 1},
                 }, "required": ["aliases"]}, ["windows_api"]),
+            ToolSchema("windows_list_handles", "창 Handle·PID·포커스 상태를 조회합니다", {
+                "type": "object", "properties": {}, "additionalProperties": False}, ["windows_api"]),
+            ToolSchema("windows_accessibility_tree", "창의 Windows UI Automation 접근성 트리를 조회합니다", {
+                "type": "object", "properties": {"handle": {"type": "integer", "minimum": 1},
+                    "max_depth": {"type": "integer", "minimum": 1, "maximum": 8}},
+                "required": ["handle"], "additionalProperties": False}, ["windows_api"]),
+            ToolSchema("windows_automation_policy", "API·CLI·COM·UIA 우선 자동화 정책을 조회합니다", {
+                "type": "object", "properties": {}, "additionalProperties": False}, ["windows_api"]),
         ]
 
     def get_intents(self):
@@ -321,6 +331,18 @@ class WindowsControlPlugin(BasePlugin):
 
     def execute_tool(self, name: str, data: Dict[str, Any]):
         try:
+            if name == "windows_list_handles":
+                windows = [item.__dict__ for item in self.automation.list_windows()]
+                return ToolRunResult.successful(tool_name=name, raw_output=json.dumps(windows, ensure_ascii=False),
+                    evidence=[Evidence("window_handles", f"표시된 창 {len(windows)}개의 Handle을 조회했습니다.", {"windows": windows})])
+            if name == "windows_accessibility_tree":
+                tree = self.automation.accessibility_tree(int(data["handle"]), int(data.get("max_depth", 4)))
+                return ToolRunResult.successful(tool_name=name, raw_output=json.dumps(tree, ensure_ascii=False),
+                    evidence=[Evidence("accessibility_tree", "UI Automation Control 트리를 조회했습니다.", tree)])
+            if name == "windows_automation_policy":
+                policy = self.automation.policy()
+                return ToolRunResult.successful(tool_name=name, raw_output=json.dumps(policy, ensure_ascii=False),
+                    evidence=[Evidence("automation_policy", "좌표 입력은 명시 승인 fallback으로 제한됩니다.", policy)])
             if name == "windows_add_app_aliases":
                 target = str(data.get("target", "")).strip()
                 raw_aliases = data.get("aliases") or []
