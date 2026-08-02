@@ -34,6 +34,8 @@ class WeatherPlugin(BasePlugin):
             [SlotSchema("location", "조회할 장소", "어느 지역의 날씨를 확인할까요, 보스?")],
             execution_hints=["날씨", "기온", "온도", "습도", "비"],
             follow_up_hints=["거기는", "그곳은", "지금은", "오늘은"],
+            freshness="live",
+            requires_sources=True,
         )]
 
     def extract_slots(self, intent_name: str, text: str,

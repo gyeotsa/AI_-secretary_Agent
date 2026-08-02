@@ -37,6 +37,7 @@ class AudioProcessor(QObject):
         
     def play_and_analyze_tts(self, wav_path: str):
         """WAV 파일을 재생하면서 오디오 데이터를 분석합니다 (자비스 TTS용)"""
+        completed = False
         try:
             self._is_speaking = True
             self._is_running = True
@@ -72,6 +73,7 @@ class AudioProcessor(QObject):
                     self.audio_update.emit(amplitude, freq_bands, True)
                 time.sleep(0.05)
             sd.wait()
+            completed = not self.duplex.cancel_event.is_set()
                 
         except Exception as e:
             print(f"[AudioProcessor] TTS 분석 오류: {e}")
@@ -81,6 +83,7 @@ class AudioProcessor(QObject):
             self.duplex.finish_output()
             # 마지막으로 0 레벨 신호 보내기
             self.audio_update.emit(0.0, [], False)
+        return completed
 
     def play_streaming_tts(self, pcm_chunks, prebuffer_seconds: float = 1.0):
         """Play GPT-SoVITS PCM with enough initial audio to prevent underflow."""
@@ -88,6 +91,7 @@ class AudioProcessor(QObject):
         pending = b""
         buffered = bytearray()
         stream_format = None
+        completed = False
         try:
             self._is_speaking = True
             self._is_running = True
@@ -125,15 +129,18 @@ class AudioProcessor(QObject):
                     continue
                 pcm = bytes(buffered)
                 buffered.clear()
-                stream.write(pcm)
                 samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
                 if channels > 1:
                     samples = samples.reshape(-1, channels).mean(axis=1)
                 if len(samples):
+                    # Publish the reference before the blocking device write starts;
+                    # otherwise the microphone sees the first playback block while
+                    # echo suppression still has an empty reference.
                     amplitude, freq_bands = self._analyze_audio(samples, sample_rate)
                     self.duplex.update_output(float(np.sqrt(np.mean(samples * samples))))
                     self.duplex.update_output_samples(samples)
                     self.audio_update.emit(amplitude, freq_bands, True)
+                stream.write(pcm)
             if stream is None and buffered and stream_format is not None:
                 sample_rate, channels, _sample_width = stream_format
                 stream = sd.RawOutputStream(
@@ -145,8 +152,12 @@ class AudioProcessor(QObject):
                 pcm = bytes(buffered)
                 buffered.clear()
                 stream.write(pcm)
-            if stream is None:
+            if stream is None and self.duplex.cancel_event.is_set():
+                completed = False
+            elif stream is None:
                 raise ValueError("GPT-SoVITS가 빈 음성 스트림을 반환했습니다.")
+            else:
+                completed = not self.duplex.cancel_event.is_set()
         except Exception as exc:
             print(f"[AudioProcessor] 스트리밍 TTS 오류: {exc}")
             raise
@@ -160,6 +171,7 @@ class AudioProcessor(QObject):
             self._is_running = False
             self.duplex.finish_output()
             self.audio_update.emit(0.0, [], False)
+        return completed
 
     @staticmethod
     def _read_tts_audio(media_path: str):

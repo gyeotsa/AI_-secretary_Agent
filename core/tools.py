@@ -1098,6 +1098,11 @@ class ToolExecutor:
                 error=raw.removeprefix("TTS 오류:").strip(),
                 raw_output=raw,
             )
+        if raw.lstrip().startswith("TTS 취소됨:"):
+            return ToolRunResult.cancelled(
+                tool_name="speak_text",
+                message=raw.removeprefix("TTS 취소됨:").strip(),
+            )
         if self.tts_settings.selected_custom_voice:
             provider = "gpt-sovits"
             voice = self.tts_settings.selected_custom_voice
@@ -1204,10 +1209,12 @@ class ToolExecutor:
                 return "TTS 오류: 커스텀 음성을 재생할 오디오 처리기가 없습니다."
             client = self._get_custom_tts_client(voice_id, profile)
             if profile.get("streaming_mode") and hasattr(audio_processor, "play_streaming_tts"):
-                audio_processor.play_streaming_tts(
+                completed = audio_processor.play_streaming_tts(
                     client.stream_pcm(text or f"네, {self.tts_settings.selected_address}."),
                     prebuffer_seconds=float(profile.get("prebuffer_seconds", 1.0)),
                 )
+                if completed is False:
+                    return "TTS 취소됨: 사용자 끼어들기로 음성 재생을 중단했습니다."
                 return f"음성으로 읽어드렸습니다: {text}"
             chunks = split_tts_text(
                 text or f"네, {self.tts_settings.selected_address}.",
@@ -1235,7 +1242,9 @@ class ToolExecutor:
                     raise value
                 media_paths.append(value)
                 # The producer synthesizes the next sentence while this one plays.
-                audio_processor.play_and_analyze_tts(value)
+                completed = audio_processor.play_and_analyze_tts(value)
+                if completed is False:
+                    return "TTS 취소됨: 사용자 끼어들기로 음성 재생을 중단했습니다."
             return f"음성으로 읽어드렸습니다: {text}"
         except Exception as exc:
             return f"TTS 오류: GPT-SoVITS 합성 실패: {exc}"

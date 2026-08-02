@@ -1035,8 +1035,15 @@ class Executor:
                 "완료로 확정하지 않았습니다."
             )
         else:
-            status = "failed"
-            response = f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
+            if resolution.freshness == "live" and resolution.requires_sources:
+                status = "awaiting_user"
+                response = (
+                    "실시간 출처에서 정보를 확인하지 못해 임의로 답하지 않겠습니다. "
+                    "조회 대상을 더 구체적으로 말씀해 주시면 다시 확인하겠습니다, 보스."
+                )
+            else:
+                status = "failed"
+                response = f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
         self.dialogue_state.transition_task(
             task_id, status, result=response,
             artifacts=[asdict(item) for item in tool_run.artifacts],
@@ -1045,7 +1052,15 @@ class Executor:
             retry_count=0,
             verification_status=tool_run.status.value,
         )
-        self.dialogue_state.delete_intent_state(task_id)
+        if status == "awaiting_user":
+            self.dialogue_state.save_intent_state(
+                task_id, session_id, resolution.intent_name, resolution.slots, goal,
+            )
+            self.dialogue_state.create(
+                session_id, goal, response, [], task_id, workspace_scope,
+            )
+        else:
+            self.dialogue_state.delete_intent_state(task_id)
         if tool_run.succeeded:
             self.dialogue_state.save_recent_intent(
                 session_id, resolution.intent_name, resolution.slots, goal,

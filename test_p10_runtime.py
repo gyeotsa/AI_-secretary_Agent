@@ -64,11 +64,22 @@ def test_duplex_ignores_echo_and_interrupts_sustained_near_end():
     interrupted = []
     duplex = VoiceDuplexController(lambda: interrupted.append(True))
     duplex.start_output()
+    duplex._output_started_at = 0.0
     duplex.update_output(0.02)
     assert not duplex.observe_input(0.025, now=1.0)
     assert not duplex.observe_input(0.05, now=2.0)
-    assert duplex.observe_input(0.05, now=2.3)
+    assert not duplex.observe_input(0.05, now=2.3)
+    assert duplex.observe_input(0.05, now=2.71)
     assert interrupted and duplex.cancel_event.is_set()
+
+
+def test_duplex_ignores_short_loud_tts_leakage():
+    duplex = VoiceDuplexController()
+    duplex.start_output()
+    duplex._output_started_at = 0.0
+    assert not duplex.observe_input(0.04, now=1.0)
+    assert not duplex.observe_input(0.04, now=1.4)
+    assert not duplex.cancel_event.is_set()
 
 
 def test_duplex_removes_correlated_tts_echo():

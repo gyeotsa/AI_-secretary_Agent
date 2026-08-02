@@ -59,7 +59,7 @@ class DialogueStateStore:
     ALLOWED_TRANSITIONS = {
         "queued": {"running", "awaiting_user", "cancelled", "expired"},
         "awaiting_user": {"running", "cancelled", "expired"},
-        "running": {"paused", "awaiting_approval", "completed", "partial", "failed", "unverified", "cancelled", "interrupted"},
+        "running": {"paused", "awaiting_user", "awaiting_approval", "completed", "partial", "failed", "unverified", "cancelled", "interrupted"},
         "awaiting_approval": {"running", "cancelled", "expired"},
         "paused": {"queued", "running", "cancelled", "interrupted"},
         "interrupted": {"queued", "running", "cancelled", "expired"},

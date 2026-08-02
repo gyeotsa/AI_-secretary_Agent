@@ -97,6 +97,16 @@ def test_successful_result_requires_evidence():
         )
 
 
+def test_cancelled_result_is_never_reported_as_success():
+    result = ToolRunResult.cancelled(
+        tool_name="speak_text",
+        message="사용자 끼어들기로 음성 재생을 중단했습니다.",
+    )
+    assert result.status == ToolRunStatus.CANCELLED
+    assert not result.succeeded
+    assert result.evidence[0].kind == "tool_cancelled"
+
+
 def test_executor_preserves_direct_typed_result_and_rejects_name_mismatch():
     executor = Executor.__new__(Executor)
     direct = ToolRunResult.successful(

@@ -54,12 +54,14 @@ class VoiceDuplexController:
         self._reference_rms = 0.0
         self._reference_samples = np.array([], dtype=np.float32)
         self._near_end_started: Optional[float] = None
+        self._output_started_at = 0.0
         self._lock = threading.Lock()
 
     def start_output(self) -> None:
         with self._lock:
             self.cancel_event.clear()
             self._near_end_started = None
+            self._output_started_at = time.monotonic()
             self.output_active.set()
 
     def update_output(self, rms: float) -> None:
@@ -90,12 +92,15 @@ class VoiceDuplexController:
         if not self.output_active.is_set():
             return False
         now = time.monotonic() if now is None else now
-        # Require input well above both the floor and estimated speaker leakage.
-        threshold = max(0.008, self._reference_rms * 1.8)
+        # Ignore speaker onset, then require an intentional sustained barge-in.
+        # Short residual echoes used to cancel TTS after only 250 ms.
+        if now >= self._output_started_at and now - self._output_started_at < 0.55:
+            return False
+        threshold = max(0.015, self._reference_rms * 2.2)
         with self._lock:
             if rms >= threshold:
                 self._near_end_started = self._near_end_started or now
-                if now - self._near_end_started >= 0.25:
+                if now - self._near_end_started >= 0.70:
                     self.cancel()
                     return True
             else:
@@ -114,6 +119,7 @@ class VoiceDuplexController:
             self._reference_rms = 0.0
             self._reference_samples = np.array([], dtype=np.float32)
             self._near_end_started = None
+            self._output_started_at = 0.0
 
 
 class DeviceRecoveryPolicy:

@@ -143,6 +143,23 @@ class ToolRunResult:
             artifacts=list(artifacts or []),
         )
 
+    @classmethod
+    def cancelled(
+        cls,
+        *,
+        tool_name: str,
+        message: str,
+        evidence: Optional[List[Evidence]] = None,
+        duration_ms: float = 0.0,
+    ) -> "ToolRunResult":
+        return cls(
+            tool_name=tool_name,
+            status=ToolRunStatus.CANCELLED,
+            raw_output=str(message),
+            duration_ms=max(0.0, float(duration_ms)),
+            evidence=list(evidence or [Evidence("tool_cancelled", str(message))]),
+        )
+
 
 def _extract_artifacts(raw_output: str) -> List[Artifact]:
     """Extract common path and URL artifacts from structured plugin output."""

@@ -1611,3 +1611,11 @@ AI_-secretary_Agent/
 - `hello를 읽어봐`가 일반 대화 모델로 전달돼 `[GAME]하로`를 생성한 문제를 해결했다. system_tools 플러그인에 `repeat_text` 도구와 `speech.repeat_text` intent를 선언해 사용자가 지정한 문자열을 LLM 변형 없이 그대로 화면에 반환하고, TTS 발음 계층에서만 변환한다.
 - TTS가 성공했더라도 읽은 본문에 `오류:`라는 단어가 있으면 실패로 기록하던 로그 판정을 `TTS 오류:` 접두어 검사로 좁혔다.
 - 실제 Executor에서 지역 없는 날씨 질문이 확인 질문으로 전환되고 `hello를 읽어봐`가 정확히 `hello`를 반환하는 것을 검증했다. 전체 테스트 결과는 `119 passed, 4 deselected`다.
+
+## 2026-08-02 TTS 자기 음성 오인 취소·실시간 정보 실패 계약·RAM 조사
+
+- 음성 끊김 로그의 직접 원인은 메모리 오류가 아니라 마이크가 재생 중인 TTS를 사용자 끼어들기로 잘못 판정해 `cancel_event`를 발생시킨 것이었다. 출력 시작 0.55초는 판정에서 제외하고, 출력 기준 에너지의 2.2배 이상·절대 RMS 0.015 이상인 입력이 0.70초 지속될 때만 끼어들기로 인정하도록 보수적으로 조정했다.
+- WAV 및 GPT-SoVITS 스트리밍 재생 함수가 실제 완주 여부를 bool로 반환한다. 취소된 재생은 더 이상 `음성으로 읽어드렸습니다`라는 성공 결과가 되지 않고 typed `ToolRunStatus.CANCELLED`로 전달된다.
+- 날씨 intent에 `freshness=live`, `requires_sources=True` 계약을 선언했다. 실시간 Tool이 실패하면 LLM이 임의 수치를 생성하는 일반 대화 경로로 빠지지 않고 동일 intent/slot을 `awaiting_user`로 보존해 더 구체적인 조회 대상을 받아 재시도한다. 이를 위해 running 작업의 정상적인 `awaiting_user` 전이를 허용했다.
+- 실제 Open-Meteo 네트워크 통합 테스트를 통과했다. 전체 회귀는 `305 passed, 4 deselected`, 별도 실시간 날씨 검증은 `1 passed, 3 deselected`다.
+- 시스템 RAM 조사 당시 물리 RAM 31.7GB 중 24.79GB(78.2%)가 사용 중이고 6.91GB가 사용 가능했다. 주요 Working Set은 Ollama llama-server 4.50GB, Chrome 합계 2.94GB, PyCharm 합계 2.50GB, Python 합계 2.28GB, ChatGPT 합계 1.85GB, NexonPlug 합계 1.77GB, Discord 합계 1.25GB였다. 자비스 Python 프로세스는 Working Set 2.10GB, Private 6.52GB였고 Ollama는 Working Set 4.50GB, Private 5.38GB였다. GPU는 8GB 중 약 3.05GB 사용으로 고갈 상태가 아니었다.
