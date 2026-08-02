@@ -1719,4 +1719,5 @@ AI_-secretary_Agent/
 - 기존 원형 HUD를 되살리지 않고 중앙 상태·Workspace 아래에 28-bar 수평 음성 파형을 배치했다. 비활성일 때는 얇은 기준선만 남고 실제 amplitude/frequency band를 받으면 중심 기준의 짧은 rounded bar가 반응한다.
 - `LISTENING`과 사용자 마이크 입력은 cyan gradient, `RESPONDING`과 비서 TTS 출력은 violet gradient로 표시한다. 실제 `audio_update`, 상태 기반 fallback, `set_soundbar_speaking`, reset 경로가 같은 위젯을 갱신한다. 미니 모드의 기존 compact soundbar도 유지한다.
 - offscreen 렌더에서 입력 cyan·출력 violet 파형과 네 모서리 투명 라운딩을 각각 확인하고 임시 캡처를 삭제했다. 창·상태 집중 테스트 `4 passed`, 전체 회귀 `339 passed, 4 deselected`를 통과했다.
+- 코드 커밋: `48a52ec`.
 - 다음 해야 할 일: 실제 마이크/TTS 재생 중 amplitude 범위를 관찰해 너무 작거나 포화되는 장치가 있으면 AGC 시각화 gain만 조절한다. 음성 처리 원본에는 영향을 주지 않는다.
