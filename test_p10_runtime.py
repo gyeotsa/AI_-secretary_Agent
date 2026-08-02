@@ -97,6 +97,19 @@ def test_multi_image_vision_preserves_order_and_hashes(tmp_path, monkeypatch):
     assert len(llm.messages[-1]["images"]) == 2
 
 
+def test_screen_region_capture_records_dimensions_and_hash(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.Config.API_CONFIG.ALLOWED_PATHS", [str(tmp_path)])
+    monkeypatch.setattr("core.vision_runtime.ImageGrab.grab",
+                        lambda **_kwargs: Image.new("RGB", (120, 80), "green"))
+    runtime = VisionRuntime.__new__(VisionRuntime)
+    from core.harness import SafetyLayer
+    runtime.safety = SafetyLayer()
+    frame = runtime.capture_region({"x": 10, "y": 20, "width": 120, "height": 80},
+                                   str(tmp_path / "region.png"))
+    assert (frame.width, frame.height) == (120, 80)
+    assert len(frame.sha256) == 64 and (tmp_path / "region.png").is_file()
+
+
 def test_video_frames_have_monotonic_timeline(tmp_path, monkeypatch):
     monkeypatch.setattr("config.Config.API_CONFIG.ALLOWED_PATHS", [str(tmp_path)])
     path = tmp_path / "sample.avi"
@@ -125,3 +138,5 @@ def test_windows_policy_never_silently_uses_coordinates(monkeypatch):
     plugin = WindowsControlPlugin()
     result = plugin.execute_tool("windows_automation_policy", {})
     assert result.succeeded and not result.evidence[0].data.get("coordinate_fallback_used", False)
+    schema = next(tool for tool in plugin.get_tools() if tool.name == "windows_coordinate_click")
+    assert schema.required_permissions == ["coordinate_control"]

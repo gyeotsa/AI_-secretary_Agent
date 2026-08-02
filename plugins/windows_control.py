@@ -66,6 +66,11 @@ class WindowsControlPlugin(BasePlugin):
                 "required": ["handle"], "additionalProperties": False}, ["windows_api"]),
             ToolSchema("windows_automation_policy", "API·CLI·COM·UIA 우선 자동화 정책을 조회합니다", {
                 "type": "object", "properties": {}, "additionalProperties": False}, ["windows_api"]),
+            ToolSchema("windows_coordinate_click", "구조화 자동화가 불가능할 때만 명시 승인 후 좌표를 클릭합니다", {
+                "type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"},
+                    "reason": {"type": "string", "minLength": 5}},
+                "required": ["x", "y", "reason"], "additionalProperties": False},
+                ["coordinate_control"], side_effect="execute"),
         ]
 
     def get_intents(self):
@@ -343,6 +348,18 @@ class WindowsControlPlugin(BasePlugin):
                 policy = self.automation.policy()
                 return ToolRunResult.successful(tool_name=name, raw_output=json.dumps(policy, ensure_ascii=False),
                     evidence=[Evidence("automation_policy", "좌표 입력은 명시 승인 fallback으로 제한됩니다.", policy)])
+            if name == "windows_coordinate_click":
+                x, y = int(data["x"]), int(data["y"])
+                width, height = ctypes.windll.user32.GetSystemMetrics(0), ctypes.windll.user32.GetSystemMetrics(1)
+                if not (0 <= x < width and 0 <= y < height):
+                    return ToolRunResult.failed(tool_name=name, error="클릭 좌표가 주 화면 범위를 벗어났습니다.")
+                ctypes.windll.user32.SetCursorPos(x, y)
+                ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)
+                ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)
+                return ToolRunResult(tool_name=name, status=ToolRunStatus.UNVERIFIED,
+                    raw_output=f"좌표 클릭 요청을 전달했습니다: ({x}, {y})",
+                    evidence=[Evidence("coordinate_fallback", "대상 UI 상태는 좌표만으로 검증할 수 없습니다.",
+                        {"x": x, "y": y, "reason": data["reason"], "explicit_fallback": True})])
             if name == "windows_add_app_aliases":
                 target = str(data.get("target", "")).strip()
                 raw_aliases = data.get("aliases") or []
@@ -420,10 +437,14 @@ class WindowsControlPlugin(BasePlugin):
                 if win.isMinimized:
                     win.restore()
                 win.activate()
+                handle = int(getattr(win, "_hWnd", 0) or 0)
+                verified = self.automation.focus(handle) if handle else None
                 return ToolRunResult.successful(
                     tool_name=name,
                     raw_output=f"창 활성화 성공: {win.title}",
-                    evidence=[Evidence("window_state","대상 창 복원·활성화 요청을 적용했습니다.",{"title":win.title,"minimized":bool(win.isMinimized)})],
+                    evidence=[Evidence("window_state","대상 창 Handle이 foreground인지 확인했습니다." if verified else "대상 창 복원·활성화 요청을 적용했습니다.",
+                        {"title":win.title,"handle":handle,"process_id":verified.process_id if verified else 0,
+                         "foreground":verified.foreground if verified else None,"minimized":bool(win.isMinimized)})],
                     artifacts=[Artifact("window",win.title)],
                 )
             if name == "windows_close_app":

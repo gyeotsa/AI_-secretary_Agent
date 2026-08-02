@@ -129,6 +129,7 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "windows_list_handles": "windows_api",
     "windows_accessibility_tree": "windows_api",
     "windows_automation_policy": "windows_api",
+    "windows_coordinate_click": "coordinate_control",
 }
 
 
@@ -170,6 +171,9 @@ class PermissionManager:
             Permission(id="screen_read", name="화면 분석",
                        description="화면·이미지·영상 프레임의 OCR·표·차트 내용 분석",
                        level=PermissionLevel.SYSTEM),
+            Permission(id="coordinate_control", name="화면 좌표 제어",
+                       description="API·CLI·COM·UI Automation으로 처리할 수 없을 때 좌표 클릭",
+                       level=PermissionLevel.CONFIRM),
         ]
         self._load()
         self._request_callback: Optional[Callable[[Permission], bool]] = None
