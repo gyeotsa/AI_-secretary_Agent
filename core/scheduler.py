@@ -29,6 +29,10 @@ class AutomationEngine:
         self.stop_event = threading.Event()
         self.job_results = {}  # job_id -> 결과
         self.result_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+        self._running_jobs = set()
+        self._job_lock = threading.Lock()
+        self._last_tick_monotonic = time.monotonic()
+        self._restored_jobs = 0
         
         self._init_db()
 
@@ -53,6 +57,8 @@ class AutomationEngine:
                 created_at TEXT NOT NULL
             )
         """)
+        cursor.execute("""CREATE TABLE IF NOT EXISTS scheduler_state (
+            key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)""")
         columns = {row[1] for row in cursor.execute("PRAGMA table_info(jobs)").fetchall()}
         if "action_type" not in columns:
             cursor.execute("ALTER TABLE jobs ADD COLUMN action_type TEXT NOT NULL DEFAULT 'llm'")
@@ -72,6 +78,11 @@ class AutomationEngine:
     def _execute_job(self, job_id: int, prompt: str, description: str,
                      action_type: str = "llm"):
         """작업 실행 (LLM 호출)"""
+        with self._job_lock:
+            if job_id in self._running_jobs:
+                print(f"[Automation] 중복 실행 억제: {job_id}")
+                return
+            self._running_jobs.add(job_id)
         print(f"[Automation] 작업 실행 중: {description} (ID: {job_id})")
         result_text = ""
         error_text = ""
@@ -107,6 +118,8 @@ class AutomationEngine:
         finally:
             # 결과 저장
             self._save_job_result(job_id, result_text, error_text, action_type, description)
+            with self._job_lock:
+                self._running_jobs.discard(job_id)
             
     def _save_job_result(self, job_id: int, result: str, error: str,
                          action_type: str = "llm", description: str = ""):
@@ -269,9 +282,41 @@ class AutomationEngine:
             
             for row in rows:
                 self._schedule_job(row[0], row[1], row[2], row[3], row[4], row[5])
+            self._restored_jobs = len(rows)
+            self._write_state("last_restore", json.dumps({"count": len(rows), "at": datetime.now().astimezone().isoformat()}))
                 
         except Exception as e:
             print(f"DB에서 작업 로드 오류: {e}")
+
+    def _write_state(self, key: str, value: str):
+        with sqlite3.connect(self.scheduler_db_path) as conn:
+            conn.execute("INSERT INTO scheduler_state(key,value,updated_at) VALUES(?,?,?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+                         (key, value, datetime.now().astimezone().isoformat()))
+
+    def runtime_diagnostics(self) -> dict:
+        thread_alive = bool(self.scheduler_thread and self.scheduler_thread.is_alive())
+        with sqlite3.connect(self.scheduler_db_path) as conn:
+            state = {row[0]: {"value": row[1], "updated_at": row[2]} for row in
+                     conn.execute("SELECT key,value,updated_at FROM scheduler_state").fetchall()}
+        return {"running": self.running, "thread_alive": thread_alive,
+                "scheduled_jobs": len(self.scheduled_jobs), "restored_jobs": self._restored_jobs,
+                "running_jobs": len(self._running_jobs), "state": state}
+
+    def soak_test(self, iterations: int = 1000) -> dict:
+        """Accelerated scheduler loop test without waiting wall-clock hours."""
+        iterations = max(1, min(int(iterations), 100_000))
+        failures = []
+        started = time.monotonic()
+        for index in range(iterations):
+            try:
+                self.scheduler.run_pending()
+            except Exception as exc:
+                failures.append({"iteration": index, "error": str(exc)})
+                break
+        return {"iterations": iterations, "failures": failures,
+                "duration_ms": (time.monotonic() - started) * 1000,
+                "scheduled_jobs": len(self.scheduler.jobs) if self.scheduler else 0}
             
     def list_jobs(self) -> str:
         """작업 목록 보기"""
@@ -413,10 +458,23 @@ class AutomationEngine:
             self._load_jobs_from_db()
             self.stop_event.clear()
             self.running = True
+            self._last_tick_monotonic = time.monotonic()
             
             def run_scheduler():
                 while self.running and not self.stop_event.is_set():
-                    self.scheduler.run_pending()
+                    now = time.monotonic()
+                    if now - self._last_tick_monotonic > 10:
+                        print("[Automation] 절전·장시간 중단 감지: DB 작업 복원")
+                        self._load_jobs_from_db()
+                    self._last_tick_monotonic = now
+                    try:
+                        self.scheduler.run_pending()
+                        self._write_state("heartbeat", json.dumps({
+                            "at": datetime.now().astimezone().isoformat(),
+                            "jobs": len(self.scheduled_jobs),
+                        }))
+                    except Exception as exc:
+                        print(f"[Automation] scheduler tick 오류: {exc}")
                     time.sleep(1)
                     
             self.scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)

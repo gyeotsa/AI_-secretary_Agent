@@ -130,6 +130,14 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "windows_accessibility_tree": "windows_api",
     "windows_automation_policy": "windows_api",
     "windows_coordinate_click": "coordinate_control",
+    "interruption_status": "proactive_read",
+    "interruption_update": "proactive_manage",
+    "proactive_pending_notifications": "proactive_read",
+    "proactive_create_proposal": "proactive_read",
+    "proactive_approve_proposal": "automation",
+    "proactive_proposal_status": "proactive_read",
+    "scheduler_runtime_health": "proactive_read",
+    "scheduler_accelerated_soak": "automation",
 }
 
 
@@ -174,6 +182,12 @@ class PermissionManager:
             Permission(id="coordinate_control", name="화면 좌표 제어",
                        description="API·CLI·COM·UI Automation으로 처리할 수 없을 때 좌표 클릭",
                        level=PermissionLevel.CONFIRM),
+            Permission(id="proactive_read", name="선제 알림 조회",
+                       description="보류 알림·근거·제안·Scheduler 상태 조회",
+                       level=PermissionLevel.SAFE),
+            Permission(id="proactive_manage", name="방해 제어 설정",
+                       description="집중·회의·전체화면·방해 금지 상태 저장",
+                       level=PermissionLevel.SYSTEM),
         ]
         self._load()
         self._request_callback: Optional[Callable[[Permission], bool]] = None
