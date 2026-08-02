@@ -1619,3 +1619,12 @@ AI_-secretary_Agent/
 - 날씨 intent에 `freshness=live`, `requires_sources=True` 계약을 선언했다. 실시간 Tool이 실패하면 LLM이 임의 수치를 생성하는 일반 대화 경로로 빠지지 않고 동일 intent/slot을 `awaiting_user`로 보존해 더 구체적인 조회 대상을 받아 재시도한다. 이를 위해 running 작업의 정상적인 `awaiting_user` 전이를 허용했다.
 - 실제 Open-Meteo 네트워크 통합 테스트를 통과했다. 전체 회귀는 `305 passed, 4 deselected`, 별도 실시간 날씨 검증은 `1 passed, 3 deselected`다.
 - 시스템 RAM 조사 당시 물리 RAM 31.7GB 중 24.79GB(78.2%)가 사용 중이고 6.91GB가 사용 가능했다. 주요 Working Set은 Ollama llama-server 4.50GB, Chrome 합계 2.94GB, PyCharm 합계 2.50GB, Python 합계 2.28GB, ChatGPT 합계 1.85GB, NexonPlug 합계 1.77GB, Discord 합계 1.25GB였다. 자비스 Python 프로세스는 Working Set 2.10GB, Private 6.52GB였고 Ollama는 Working Set 4.50GB, Private 5.38GB였다. GPU는 8GB 중 약 3.05GB 사용으로 고갈 상태가 아니었다.
+
+## 2026-08-02 런타임 정체성·호출어·대화 설정 영속화
+
+- `너의 호칭을 아니스로 변경해줘`가 일반 대화 LLM으로 들어가 말로만 동의하고 실제 설정은 바뀌지 않던 문제를 해결했다. `preferences` Plugin과 `set_runtime_preference` Tool을 추가해 이름·호출어·사용자 호칭·응답 스타일·응답 언어를 선언형 Intent/Slot 계약으로 저장한다.
+- 설정 키와 검증 규칙은 `core/assistant_settings.py`의 Registry가 단일 진실 공급원이다. 문장별 특수 분기가 아니라 설정 종류와 값 추출 후 공통 저장·재조회 계약을 사용한다.
+- 비서 이름을 변경하면 기본적으로 음성 호출어도 같은 값으로 즉시 동기화한다. 이후 `호출어를 ...로 바꿔줘`로 호출어만 별도 변경할 수도 있다. 마이크의 첫 단어 판정, Whisper 후보 평가·초기 프롬프트, 단독 호출어 채팅, 시작 안내가 매번 영구 설정을 읽는다.
+- 일반 대화·Tool 최종 응답·Action Reasoner·Context 대화 화자·멀티 에이전트 프롬프트와 상단 UI 이름도 같은 설정을 사용한다. 사용자 호칭과 응답 스타일 역시 기존 음성 프로필 값 위에 명시적 사용자 설정을 우선 적용한다.
+- 사용자가 이미 요청한 값에 따라 현재 DB의 `assistant_name`과 `wake_word`를 모두 `아니스`로 저장했다. 새 코드를 반영하려면 실행 중인 앱을 한 번 재시작해야 한다.
+- 사용자별 DB 값에 따라 테스트가 달라지지 않도록 마이크·GUI 회귀 테스트는 명시적 테스트 설정을 주입한다. 전체 결과는 `308 passed, 4 deselected`다.

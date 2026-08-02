@@ -594,8 +594,10 @@ class SessionManagerDialog(QDialog):
         session_id = current.data(Qt.ItemDataRole.UserRole)
         messages = self.memory_manager.load_session(session_id)
         lines = []
+        from core.assistant_settings import get_assistant_settings
+        assistant_name = get_assistant_settings().assistant_name
         for message in messages:
-            speaker = "나" if message["role"] == "user" else "자비스"
+            speaker = "나" if message["role"] == "user" else assistant_name
             lines.append(f"{speaker}\n{message['content']}")
         self.history.setPlainText("\n\n".join(lines) or "아직 대화 내용이 없습니다.")
 
@@ -1506,6 +1508,11 @@ class JarvisMainWindow(QWidget):
         else:
             self.workspace_label.setText("Workspace: 없음")
             self.workspace_label.setStyleSheet("color: #00a8cc; padding: 5px;")
+
+    def set_assistant_identity(self, name: str):
+        """Refresh user-visible identity without rebuilding or restarting the UI."""
+        normalized = " ".join(str(name or "").strip().split()) or "JARVIS"
+        self.title_label.setText(normalized.upper() if normalized.isascii() else normalized)
     
     def request_permission(self, permission_name: str, permission_description: str) -> bool:
         """권한 요청 대화상자를 보여주고 사용자 응답을 반환"""

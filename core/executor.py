@@ -899,8 +899,9 @@ class Executor:
         API 레벨에서 강제되므로 이 파싱 실패 자체가 원천적으로 줄어듭니다.
         """
         # Tool Selector 전용 system prompt로 잠깐 교체 (끝나면 finally에서 원복)
+        from core.assistant_settings import get_assistant_settings
         self.reasoning_llm.set_system_prompt(
-            "당신은 Jarvis의 Action Reasoner 겸 Tool Selector입니다.\n"
+            f"당신은 {get_assistant_settings().assistant_name}의 Action Reasoner 겸 Tool Selector입니다.\n"
             "주어진 Task를 수행하기 위해 도구가 필요하면 반드시 제공된 도구 중 하나를 호출하세요.\n"
             "도구 없이 바로 답할 수 있는 간단한 작업이나 이미 끝난 작업이면, 도구를 호출하지 말고 "
             "결과나 답변을 자연스러운 한국어 텍스트로 바로 답하세요.\n"
@@ -1290,7 +1291,9 @@ class Executor:
             ),
             {},
         )
-        assistant_name = str(selected_profile.get("assistant_name", "")).strip()
+        from core.assistant_settings import get_assistant_settings
+        runtime_settings = get_assistant_settings()
+        assistant_name = runtime_settings.assistant_name or str(selected_profile.get("assistant_name", "")).strip()
         conversation_service = getattr(self, "conversation_service", ConversationService(self.llm))
         return conversation_service.respond(
             message, history, assistant_name=assistant_name, voice_name=custom_voice,
@@ -1361,6 +1364,10 @@ class Executor:
             None,
         )
         style = str((profile or {}).get("conversation_style", "")).strip()
+        from core.assistant_settings import get_assistant_settings
+        configured_style = get_assistant_settings().get("response_style")
+        if configured_style:
+            style = " ".join(filter(None, [style, configured_style]))
         return voice_id, address, style
 
     def generate_response(self) -> str:
@@ -1401,7 +1408,9 @@ class Executor:
             f"상황에 맞게 적용하세요: {conversation_style}"
             if conversation_style else ""
         )
-        system_prompt = f"""당신은 Jarvis입니다.
+        from core.assistant_settings import get_assistant_settings
+        assistant_name = get_assistant_settings().assistant_name
+        system_prompt = f"""당신은 {assistant_name}입니다.
 전체 Context를 보고, 최종 답변을 한국어로 작성하세요!
 사용자 호칭은 반드시 '{address}'로 사용하고 다른 호칭으로 바꾸지 마세요.
 외부의 현재 사실(날씨, 일정, 메일, 웹 정보 등)은 성공한 Tool Observation에 있는 값만 사용하세요.

@@ -8,6 +8,7 @@ import math
 import json
 from pathlib import Path
 from config import Config
+from core.assistant_settings import get_assistant_settings
 
 
 try:
@@ -116,7 +117,7 @@ class HardwareManager:
     def extract_wake_command(text: str) -> str | None:
         """호출어가 첫 단어인 경우에만 뒤따르는 명령을 반환합니다."""
         normalized = text.strip().lower()
-        compact_wake_word = Config.WAKE_WORD.casefold()
+        compact_wake_word = get_assistant_settings().wake_word.casefold()
         if normalized.startswith(compact_wake_word) and len(normalized) > len(compact_wake_word):
             remainder = normalized[len(compact_wake_word):].lstrip(" ,.!?，。！？")
             if remainder:
@@ -125,7 +126,7 @@ class HardwareManager:
         if not match:
             return None
         first_word = re.sub(r"[^0-9a-zA-Z가-힣]", "", match.group(1))
-        if first_word != Config.WAKE_WORD:
+        if first_word != compact_wake_word:
             return None
         return (match.group(2) or "").strip()
 
@@ -151,7 +152,8 @@ class HardwareManager:
         return list(dict.fromkeys(vocabulary))[:100]
 
     def _whisper_prompt(self) -> str:
-        return Config.WHISPER_INITIAL_PROMPT[:300]
+        wake_word = get_assistant_settings().wake_word
+        return Config.WHISPER_INITIAL_PROMPT.replace(Config.WAKE_WORD, wake_word)[:300]
 
     @classmethod
     def _whisper_hotwords(cls, max_characters: int = 240) -> str:
@@ -371,7 +373,7 @@ class HardwareManager:
                         len(segments)) if segments else 0.0
             no_speech = max((float(segment.get("no_speech_prob", 0.0)) for segment in segments), default=0.0)
             candidates.append(SpeechCandidate(str(item.get("text", "")), acoustic, no_speech))
-        return WakeWordCandidateEvaluator(Config.WAKE_WORD).select(candidates, self._speech_vocabulary()) or ""
+        return WakeWordCandidateEvaluator(get_assistant_settings().wake_word).select(candidates, self._speech_vocabulary()) or ""
 
     @staticmethod
     def list_input_devices():
@@ -596,8 +598,9 @@ class HardwareManager:
             return "오류: 마이크 입력 장치 초기화 시간이 초과되었습니다."
         if self._stream_error:
             return f"오류: 마이크 입력 장치를 열 수 없습니다: {self._stream_error}"
+        wake_word = get_assistant_settings().wake_word
         return (f"[성공] 마이크 연결: {self.microphone_info['name']} "
-                f"(장치 {self.microphone_device}). '자비스'라고 불러주세요.")
+                f"(장치 {self.microphone_device}). '{wake_word}'라고 불러주세요.")
 
     def stop_continuous_listen(self) -> str:
         if not self.running:
@@ -620,7 +623,7 @@ class HardwareManager:
         self.running = True
         
         def detect_wakeword():
-            print("[마이크] 웨이크워드 감지 시작... '자비스' 라고 말하세요!")
+            print(f"[마이크] 웨이크워드 감지 시작... '{get_assistant_settings().wake_word}' 라고 말하세요!")
             info, native_rate = self._select_microphone()
             while self.running:
                 try:
@@ -645,10 +648,10 @@ class HardwareManager:
         self.wakeword_thread = threading.Thread(target=detect_wakeword, daemon=True)
         self.wakeword_thread.start()
         
-        return "[성공] 웨이크워드 감지가 시작되었습니다! '자비스' 라고 말해보세요."
+        return f"[성공] 웨이크워드 감지가 시작되었습니다! '{get_assistant_settings().wake_word}' 라고 말해보세요."
 
     def _on_wakeword_detected(self):
-        print("[자비스] 네? 어떤 도움이 필요하신가요?")
+        print(f"[{get_assistant_settings().assistant_name}] 네? 어떤 도움이 필요하신가요?")
 
     def stop_wakeword_detection(self) -> str:
         if not self.running:

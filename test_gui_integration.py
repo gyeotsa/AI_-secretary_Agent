@@ -1,6 +1,7 @@
 import os
 import threading
 import time
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -316,6 +317,7 @@ def test_standalone_wake_word_does_not_reach_planner():
     jarvis.session_id = "wake-chat-session"
     jarvis.last_response = ""
     jarvis._is_processing_ai = False
+    jarvis.assistant_settings = SimpleNamespace(wake_word="자비스")
 
     jarvis._on_user_input("자비스")
 

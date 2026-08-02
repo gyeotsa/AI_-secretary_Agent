@@ -58,7 +58,8 @@ class MultiAgentOrchestrator:
             context = self._build_context(user_query)
             
             # 시스템 프롬프트
-            system_prompt = """당신은 자비스 AI의 플래너 에이전트입니다.
+            from core.assistant_settings import get_assistant_settings
+            system_prompt = """당신은 {assistant_name} AI의 플래너 에이전트입니다.
 사용자의 요청을 분석하여 실행 가능한 작업 단계로 분해해야 합니다.
 
 각 작업은 다음 형식으로 반환해야 합니다:
@@ -72,7 +73,7 @@ class MultiAgentOrchestrator:
 ]
 
 도구를 사용하지 않는 경우 tool 필드는 생략할 수 있습니다.
-"""
+""".replace("{assistant_name}", get_assistant_settings().assistant_name)
             
             # 플래너 호출
             prompt = f"""{system_prompt}
@@ -204,14 +205,15 @@ class MultiAgentOrchestrator:
             context = self._build_context("결과 분석")
             scratchpad_context = self.scratchpad.get_context()
             
-            system_prompt = """당신은 자비스 AI의 반성 에이전트입니다.
+            from core.assistant_settings import get_assistant_settings
+            system_prompt = """당신은 {assistant_name} AI의 반성 에이전트입니다.
 실행 결과를 분석하고 다음을 확인해야 합니다:
 1. 목표가 달성되었는가?
 2. 개선할 점이 있는가?
 3. 다음에 유사한 작업을 할 때 참고할 점은 무엇인가?
 
 답변은 한국어로 작성하세요.
-"""
+""".replace("{assistant_name}", get_assistant_settings().assistant_name)
             
             prompt = f"""{system_prompt}
 

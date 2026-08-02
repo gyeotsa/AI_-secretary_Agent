@@ -25,6 +25,7 @@ from core.scheduler import get_automation_engine
 from core.proactive import ProactiveNotificationPolicy
 from core.response_presenter import present_channels
 from core.runtime_services import get_runtime_service_manager
+from core.assistant_settings import get_assistant_settings
 from ui.main_window import JarvisMainWindow
 
 
@@ -117,6 +118,8 @@ class JarvisApp:
         self.window.set_plugin_registry(self.tool_executor.plugin_registry)
         self.window.set_tts_settings_manager(self.tool_executor.tts_settings)
         self.user_profile = get_user_profile()
+        self.assistant_settings = get_assistant_settings()
+        self.window.set_assistant_identity(self.assistant_settings.assistant_name)
         self.rag_manager = get_rag_manager()
         self.hardware_manager = get_hardware_manager()
         self.workspace_manager = get_workspace_manager()
@@ -236,7 +239,10 @@ class JarvisApp:
         print("[마이크] 자동으로 음성 감지를 시작합니다...")
         self._start_continuous_listen()
         
-        print("\n자비스가 준비되었습니다! UI 하단 텍스트 상자에 질문을 입력하세요, 보스.")
+        print(
+            f"\n{self.assistant_settings.assistant_name}가 준비되었습니다! "
+            f"UI 하단 텍스트 상자에 질문을 입력하세요, {self.tool_executor.tts_settings.selected_address}."
+        )
     
     def _on_console_input(self, user_input: str):
         if user_input.lower() in ['exit', 'quit', '종료']:
@@ -303,7 +309,8 @@ class JarvisApp:
         self.window.show_user_text(text)
         self.state_machine.start_listening()
 
-        if text.strip().casefold() == Config.WAKE_WORD.casefold():
+        settings = getattr(self, "assistant_settings", None) or get_assistant_settings()
+        if text.strip().casefold() == settings.wake_word.casefold():
             response = self._personalize_address("네, 보스. 말씀하세요.")
             self.window.show_assistant_text(response)
             self.last_response = response
@@ -438,6 +445,8 @@ class JarvisApp:
             ).start()
     
     def _on_ai_response(self, response_text: str):
+        if hasattr(self.window, "set_assistant_identity"):
+            self.window.set_assistant_identity(get_assistant_settings().assistant_name)
         channels = present_channels(response_text, self._response_user_request)
         print("[DEBUG] _on_ai_response technical result:", channels.technical_text)
         response_text = channels.screen_text

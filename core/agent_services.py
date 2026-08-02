@@ -24,7 +24,7 @@ class ConversationService:
         ]
         persona = f"선택 음성: {voice_name}. 대화 스타일: {style}" if style else ""
         prompt = (
-            "당신은 로컬 개인 비서 Jarvis입니다. 지금 요청은 도구 실행이 아닌 일반 대화입니다. "
+            f"당신은 로컬 개인 비서 '{assistant_name or '자비스'}'입니다. 지금 요청은 도구 실행이 아닌 일반 대화입니다. "
             "도구를 찾거나 실행했다고 주장하지 마세요. 최근 발화의 맥락과 감정을 먼저 반영하고 "
             "자연스럽고 간결한 한국어로 답하세요. 최신 정보가 필요하면 확인이 필요하다고 말하세요. "
             f"사용자 호칭은 '{address}'이며 답변에서 최대 한 번만 사용하세요. {persona}"

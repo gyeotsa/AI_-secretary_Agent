@@ -2,9 +2,20 @@ import threading
 import time
 
 import numpy as np
+import pytest
+from types import SimpleNamespace
 
 import core.hardware as hardware
 import core.multimodal as multimodal
+
+
+@pytest.fixture(autouse=True)
+def _stable_wake_word(monkeypatch):
+    """Hardware tests must not depend on the user's persisted runtime identity."""
+    monkeypatch.setattr(
+        hardware, "get_assistant_settings",
+        lambda: SimpleNamespace(wake_word="자비스", assistant_name="자비스"),
+    )
 
 
 def test_default_stt_uses_faster_whisper_large_v3():

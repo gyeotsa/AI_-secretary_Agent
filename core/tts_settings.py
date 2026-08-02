@@ -205,6 +205,10 @@ class TTSSettingsManager:
 
     @property
     def selected_address(self) -> str:
+        from core.assistant_settings import get_assistant_settings
+        configured = get_assistant_settings().get("user_address")
+        if configured:
+            return configured
         return self.get_voice_address(self.selected_voice_id) if self.selected_voice_id else "보스"
 
     def personalize_address(self, text: str) -> str:

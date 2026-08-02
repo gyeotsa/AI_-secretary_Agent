@@ -4,6 +4,7 @@ from core.rag import get_rag
 from core.scratchpad import get_scratchpad
 import os
 import platform
+from core.assistant_settings import get_assistant_settings
 
 
 class ContextManager:
@@ -45,8 +46,9 @@ class ContextManager:
             conversation = self.memory.load_session(session_id)
             if conversation:
                 recent_messages = conversation[-10:]  # 최근 10개만
+                assistant_name = get_assistant_settings().assistant_name
                 conv_str = "\n".join([
-                    f"{'사용자' if msg['role'] == 'user' else '자비스'}: {msg['content']}"
+                    f"{'사용자' if msg['role'] == 'user' else assistant_name}: {msg['content']}"
                     for msg in recent_messages
                 ])
                 context_parts.append(f"\n[최근 대화]\n{conv_str}")

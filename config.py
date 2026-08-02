@@ -321,5 +321,12 @@ class Config:
             if user_profile.get("preferences"):
                 user_profile_section += f"- 선호사항: {user_profile.get('preferences')}\n"
         
-        return cls.SYSTEM_PROMPT_TEMPLATE.format(user_profile_section=user_profile_section)
+        prompt = cls.SYSTEM_PROMPT_TEMPLATE.format(user_profile_section=user_profile_section)
+        try:
+            from core.assistant_settings import get_assistant_settings
+            settings = get_assistant_settings()
+            prompt = prompt.replace("'자비스'", f"'{settings.assistant_name}'")
+        except Exception:
+            pass
+        return prompt
 

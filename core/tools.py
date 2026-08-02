@@ -2302,7 +2302,7 @@ def _get_legacy_tools_schema() -> list[dict]:
         },
         {
             "name": "start_wakeword_detection",
-            "description": "웨이크워드('자비스') 감지를 시작합니다",
+            "description": "현재 설정된 음성 호출어 감지를 시작합니다",
             "input_schema": {
                 "type": "object",
                 "properties": {},
