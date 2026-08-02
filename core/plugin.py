@@ -318,6 +318,9 @@ class PluginRegistry:
         self._cancellations[tool_name] = token
         try:
             for attempt in range(tool.max_retries + 1):
+                if attempt:
+                    from core.productization import METRICS
+                    METRICS.increment(f"plugin.{tool_name}.retry")
                 token.raise_if_cancelled()
                 future = self._executor.submit(self._invoke, plugin, tool, tool_input, token)
                 try:

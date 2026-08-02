@@ -57,6 +57,7 @@ class AnthropicClient(BaseLLMClient):
         return "\n\n".join(part for part in system_parts if part), api_messages
 
     def chat_with_tools(self, messages: List[Dict], allowed_tool_names=None) -> Tuple[str, List[Dict]]:
+        metric_started = time.perf_counter()
         try:
             system_prompt, api_messages = self._prepare_messages(messages)
             response = self.client.messages.create(
@@ -193,6 +194,7 @@ class OllamaClient(BaseLLMClient):
         return ollama_tools
 
     def chat_with_tools(self, messages: List[Dict], allowed_tool_names=None) -> Tuple[str, List[Dict]]:
+        metric_started = time.perf_counter()
         try:
             # 시스템 프롬프트를 메시지에 추가
             ollama_messages = []
@@ -228,6 +230,9 @@ class OllamaClient(BaseLLMClient):
             )
             response.raise_for_status()
             result = response.json()
+            from core.productization import METRICS
+            METRICS.increment(f"model.{self.model}.success")
+            METRICS.observe(f"model.{self.model}.latency", (time.perf_counter() - metric_started) * 1000)
 
             # Ollama 응답 처리
             if "message" in result:
@@ -260,6 +265,8 @@ class OllamaClient(BaseLLMClient):
 
             return "", []
         except requests.exceptions.ConnectionError:
+            from core.productization import METRICS
+            METRICS.increment(f"model.{self.model}.failure")
             return "오류: Ollama가 실행 중이지 않습니다. 'ollama serve'로 시작해주세요.", []
         except requests.exceptions.HTTPError as e:
             # tool calling 미지원 모델일 경우 fallback으로 chat 메서드 사용
@@ -280,6 +287,7 @@ class OllamaClient(BaseLLMClient):
             return f"오류가 발생했습니다: {str(e)}", []
 
     def chat(self, messages: List[Dict]) -> str:
+        metric_started = time.perf_counter()
         try:
             # 역할을 하나의 문자열로 평탄화하면 작은 로컬 모델이 최근 사용자
             # 발화와 과거 assistant 응답을 혼동하기 쉽다. Ollama의 chat
@@ -316,6 +324,9 @@ class OllamaClient(BaseLLMClient):
             )
             response.raise_for_status()
             result = response.json()
+            from core.productization import METRICS
+            METRICS.increment(f"model.{self.model}.success")
+            METRICS.observe(f"model.{self.model}.latency", (time.perf_counter() - metric_started) * 1000)
 
             if isinstance(result.get("message"), dict):
                 # 이모지 필터링 (Windows cp949 문제 해결)
@@ -327,6 +338,8 @@ class OllamaClient(BaseLLMClient):
 
             return ""
         except requests.exceptions.ConnectionError:
+            from core.productization import METRICS
+            METRICS.increment(f"model.{self.model}.failure")
             return "오류: Ollama가 실행 중이지 않습니다. 'ollama serve'로 시작해주세요."
         except requests.exceptions.HTTPError as e:
             # 오류 응답 자세히 보기

@@ -75,8 +75,16 @@ class GPUResourceQueue:
                     heapq.heappop(self._waiting)
                     self._active[request.request_id] = requested
                     device = "cuda" if self.budget_mb > 1024 else "cpu"
-                    return GPUAdmission(request.request_id, request.role, device, requested,
-                                        (time.monotonic() - started) * 1000)
+                    admission = GPUAdmission(request.request_id, request.role, device, requested,
+                                             (time.monotonic() - started) * 1000)
+                    try:
+                        from core.productization import METRICS
+                        METRICS.gauge("gpu.budget_mb", self.budget_mb)
+                        METRICS.gauge("gpu.reserved_mb", sum(self._active.values()))
+                        METRICS.observe("gpu.wait_latency", admission.waited_ms)
+                    except Exception:
+                        pass
+                    return admission
                 remaining = timeout - (time.monotonic() - started)
                 if remaining <= 0:
                     self._waiting = [item for item in self._waiting if item.request_id != request.request_id]
@@ -87,6 +95,11 @@ class GPUResourceQueue:
     def release(self, admission: GPUAdmission) -> None:
         with self._condition:
             self._active.pop(admission.request_id, None)
+            try:
+                from core.productization import METRICS
+                METRICS.gauge("gpu.reserved_mb", sum(self._active.values()))
+            except Exception:
+                pass
             self._condition.notify_all()
 
     @contextmanager

@@ -1800,7 +1800,7 @@ class ToolExecutor:
         except Exception as e:
             return ToolRunResult.failed(tool_name="capture_camera", error=f"카메라 캡처 오류: {e}")
 
-    def _request_tool_permissions(self, tool_name: str) -> tuple[bool, str]:
+    def _request_tool_permissions(self, tool_name: str, tool_input: Optional[dict] = None) -> tuple[bool, str]:
         """모든 진입점에서 동일하게 적용되는 중앙 권한 검사."""
         try:
             from core.permission import TOOL_PERMISSION_MAP, get_permission_manager
@@ -1813,16 +1813,40 @@ class ToolExecutor:
                     permission_ids.extend(schema.required_permissions)
                     break
             manager = get_permission_manager()
+            values = tool_input or {}
+            scoped_resource = None
+            for key, scope_type in (("path", "folder"), ("directory", "folder"),
+                                    ("app_name", "app"), ("domain", "domain"),
+                                    ("account", "account"), ("account_id", "account")):
+                if values.get(key):
+                    scoped_resource = (scope_type, str(values[key]))
+                    break
             for permission_id in dict.fromkeys(permission_ids):
-                if not manager.request_permission(permission_id):
+                allowed = (manager.request_scoped_permission(permission_id, *scoped_resource)
+                           if scoped_resource and hasattr(manager, "request_scoped_permission")
+                           else manager.request_permission(permission_id))
+                if not allowed:
                     return False, f"오류: 권한이 거부되었습니다: {permission_id}"
             return True, ""
         except Exception as exc:
             return False, f"오류: 권한 확인에 실패했습니다: {exc}"
 
     def execute_tool(self, tool_name: str, tool_input: dict):
+        from core.productization import METRICS, TRACE, SafeModeManager, new_correlation_ids, trace_context
         started_at = time.perf_counter()
-        granted, error = self._request_tool_permissions(tool_name)
+        ids = new_correlation_ids()
+        registry = getattr(self, "plugin_registry", None)
+        contract = registry.get_capability(tool_name) if registry is not None else None
+        if SafeModeManager().enabled() and contract and contract.side_effect != "read":
+            blocked = ToolRunResult.failed(tool_name=tool_name, error="안전 모드에서는 읽기 전용 도구만 실행할 수 있습니다.")
+            TRACE.emit("tool.blocked.safe_mode", tool_name=tool_name, **ids)
+            METRICS.increment("tool.safe_mode_blocked")
+            return blocked
+        try:
+            granted, error = self._request_tool_permissions(tool_name, tool_input)
+        except TypeError:
+            # Compatibility for embedded/test permission adapters that predate scoped inputs.
+            granted, error = self._request_tool_permissions(tool_name)
         if not granted:
             denied = ToolRunResult.failed(
                 tool_name=tool_name,
@@ -1831,9 +1855,12 @@ class ToolExecutor:
                 duration_ms=(time.perf_counter() - started_at) * 1000,
             )
             self._record_tool_run(tool_input, denied)
+            TRACE.emit("tool.permission_denied", tool_name=tool_name, **ids)
+            METRICS.increment("tool.permission_denied")
             return denied
         try:
-            raw_result = self.plugin_registry.execute_tool(tool_name, tool_input)
+            with trace_context(**ids):
+                raw_result = self.plugin_registry.execute_tool(tool_name, tool_input)
         except Exception as e:
             raw_result = ToolRunResult.failed(tool_name=tool_name, error=f"Plugin Runtime 오류: {e}")
         tool_run = self._adapt_tool_output(
@@ -1841,6 +1868,11 @@ class ToolExecutor:
             (time.perf_counter() - started_at) * 1000,
         )
         self._record_tool_run(tool_input, tool_run)
+        latency = (time.perf_counter() - started_at) * 1000
+        METRICS.increment("tool.success" if tool_run.succeeded else "tool.failure")
+        METRICS.observe(f"tool.{tool_name}.latency", latency)
+        TRACE.emit("tool.completed", tool_name=tool_name, status=tool_run.status.value,
+                   duration_ms=round(latency, 2), input=tool_input, **ids)
         return tool_run
 
     def _execute_legacy_tool(self, tool_name: str, tool_input: dict):

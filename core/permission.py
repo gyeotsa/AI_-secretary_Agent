@@ -138,6 +138,13 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "proactive_proposal_status": "proactive_read",
     "scheduler_runtime_health": "proactive_read",
     "scheduler_accelerated_soak": "automation",
+    "security_list_scoped_permissions": "proactive_read",
+    "security_set_scoped_permission": "proactive_manage",
+    "security_credential_store": "cloud_account",
+    "security_credential_delete": "cloud_account",
+    "runtime_metrics": "proactive_read",
+    "runtime_diagnostic_report": "proactive_read",
+    "runtime_safe_mode": "proactive_manage",
 }
 
 
@@ -191,6 +198,8 @@ class PermissionManager:
         ]
         self._load()
         self._request_callback: Optional[Callable[[Permission], bool]] = None
+        from core.productization import ScopedPermissionStore
+        self.scoped = ScopedPermissionStore(str(self.storage_path.with_name(self.storage_path.stem + "_scoped.json")))
 
     def _load(self):
         """기존 권한 상태 로드"""
@@ -264,6 +273,19 @@ class PermissionManager:
             return granted
         # 콜백이 없으면 CONFIRM은 거부, SYSTEM은 거부
         return False
+
+    def grant_scoped(self, permission_id: str, scope_type: str, scope_value: str,
+                     lifetime: str = "always", decision: str = "allow"):
+        if permission_id not in self.permissions:
+            raise KeyError(permission_id)
+        return self.scoped.grant(permission_id, scope_type, scope_value, lifetime, decision)
+
+    def request_scoped_permission(self, permission_id: str, scope_type: str, scope_value: str) -> bool:
+        decision = self.scoped.check(permission_id, scope_type, scope_value)
+        return self.request_permission(permission_id) if decision is None else decision
+
+    def list_scoped_permissions(self):
+        return self.scoped.list()
 
     def grant_permission(self, permission_id: str):
         """권한 직접 부여"""
