@@ -98,6 +98,11 @@ class PreferencesPlugin(BasePlugin):
             return slots
         if intent_name != "preferences.set_runtime":
             return slots
+        speech_style = ""
+        if "반말" in normalized and re.search(r"(?:대답|답변|응답|말투|말해|이야기|해\s*$)", normalized):
+            speech_style = "자연스러운 반말로 대답"
+        elif "존댓말" in normalized and re.search(r"(?:대답|답변|응답|말투|말해|이야기|해\s*$)", normalized):
+            speech_style = "자연스러운 존댓말로 대답"
         if re.search(r"(?:너의|네|비서)\s*(?:호칭|이름)", normalized):
             slots["setting"] = "assistant_name"
         elif re.search(r"(?:호출어|웨이크워드)", normalized):
@@ -130,10 +135,16 @@ class PreferencesPlugin(BasePlugin):
                     slots["value"] = match.group(1).strip()
                     break
         changes = {}
-        if re.search(r"(?:대답|응답|말투).{0,12}반말", normalized):
+        if speech_style:
+            changes["response_style"] = speech_style
+        elif re.search(r"(?:대답|응답|말투).{0,12}반말", normalized):
             changes["response_style"] = "자연스러운 반말로 대답"
         elif re.search(r"(?:대답|응답|말투).{0,12}존댓말", normalized):
             changes["response_style"] = "자연스러운 존댓말로 대답"
+        if speech_style and not slots.get("setting"):
+            slots["setting"] = "response_style"
+        if speech_style and slots.get("setting") == "response_style":
+            slots["value"] = speech_style
         if changes and slots.get("setting") != "response_style":
             slots["additional_changes"] = changes
         elif changes and not slots.get("value"):

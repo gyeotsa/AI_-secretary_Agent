@@ -236,12 +236,13 @@ class VectorRAGManager:
             return f"문서 추가 오류: {str(e)}"
 
     def add_text_document(self, text: str, *, doc_id: str, namespace: str | None = None,
-                          metadata: dict | None = None) -> str:
+                          metadata: dict | None = None, source_uri: str | None = None) -> str:
         """Index trusted in-memory text such as a consolidated Memory record."""
         content = str(text or "").strip()
         if not content:
             raise ValueError("RAG에 추가할 텍스트가 비어 있습니다.")
         target_namespace = str(namespace or self.namespace or "global")
+        source = str(source_uri or f"memory://{doc_id}")
         chunks = self.chunk_text(content)
         now = time.time()
         base_metadata = {
@@ -257,7 +258,7 @@ class VectorRAGManager:
             })
         key = f"{target_namespace}::{doc_id}"
         self.documents[key] = {
-            "chunks": chunks, "chunk_metadata": records, "source": f"memory://{doc_id}",
+            "chunks": chunks, "chunk_metadata": records, "source": source,
             "namespace": target_namespace, "doc_id": doc_id,
             "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
             "recorded_at": now, "metadata": base_metadata,
@@ -273,9 +274,10 @@ class VectorRAGManager:
             self.collection.add(
                 ids=ids, documents=chunks,
                 metadatas=[{
-                    "doc_id": doc_id, "source": f"memory://{doc_id}",
+                    "doc_id": doc_id, "source": source,
                     "namespace": target_namespace, "chunk_id": item["chunk_id"],
-                    "section": "memory", "recorded_at": now, "source_type": "memory",
+                    "section": "memory", "recorded_at": now,
+                    "source_type": str(item.get("source_type", "memory")),
                 } for item in records],
             )
         return doc_id

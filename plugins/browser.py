@@ -55,6 +55,18 @@ class BrowserPlugin(BasePlugin):
                     "force_refresh": {"type": "boolean", "default": False},
                 }, "required": ["query"], "additionalProperties": False,
             }, ["browser"], timeout_seconds=180, max_retries=1, cancellable=True),
+            ToolSchema("browser_research_and_apply_preference", "웹 조사 근거를 요약해 사용자 설정과 RAG에 검증 저장합니다", {
+                "type": "object", "properties": {
+                    "query": {"type": "string"},
+                    "setting": {"type": "string", "enum": ["response_style"]},
+                    "max_sources": {"type": "integer", "minimum": 2, "maximum": 8, "default": 5},
+                }, "required": ["query", "setting"], "additionalProperties": False,
+            }, ["browser"], side_effect="change", timeout_seconds=240, max_retries=1, cancellable=True),
+            ToolSchema("browser_learning_status", "웹 조사 학습이 설정과 RAG에 반영됐는지 확인합니다", {
+                "type": "object", "properties": {
+                    "setting": {"type": "string", "enum": ["response_style"]},
+                }, "required": ["setting"], "additionalProperties": False,
+            }, [], side_effect="read"),
             ToolSchema("browser_download", "로그인 세션을 유지한 브라우저에서 파일을 안전한 경로로 다운로드합니다", {
                 "type": "object", "properties": {
                     "url": {"type": "string"}, "path": {"type": "string"},
@@ -69,6 +81,27 @@ class BrowserPlugin(BasePlugin):
 
     def get_intents(self) -> List[IntentSchema]:
         return [
+            IntentSchema(
+                "web.learning_status",
+                "이전 웹 조사 학습의 설정 및 RAG 반영 상태 확인",
+                "browser_learning_status",
+                ["조사를 통해 학습했어", "웹 학습 상태", "조사 결과 반영됐어", "말투를 학습했어"],
+                [SlotSchema("setting", "확인할 설정", "어떤 학습 설정을 확인할지 알려주세요.")],
+                execution_hints=["학습했어", "반영됐어", "저장됐어", "기억했어"],
+                utterance_patterns=[r"(?:조사|검색|웹).{0,30}(?:학습|반영|저장|기억).{0,8}(?:했|됐|되었)"],
+                request_type="query",
+            ),
+            IntentSchema(
+                "web.research_and_apply_preference",
+                "외부 자료를 조사하고 검증된 요약을 설정과 RAG에 반영",
+                "browser_research_and_apply_preference",
+                ["웹 검색을 통해", "웹에서 조사", "검색해서 학습", "조사해서 반영", "조사하고 분석해서"],
+                [SlotSchema("query", "조사할 대상", "웹에서 조사할 대상을 알려주세요."),
+                 SlotSchema("setting", "반영할 설정", "조사 결과를 어디에 반영할지 알려주세요.")],
+                execution_hints=["학습", "반영", "기억", "적용"],
+                utterance_patterns=[r"(?:웹|검색|조사).{0,80}(?:학습|반영|기억|적용)"],
+                request_type="change", freshness="live", requires_sources=True,
+            ),
             IntentSchema(
                 "web.search",
                 "최신·외부 정보를 실제 웹에서 검색",
@@ -95,6 +128,28 @@ class BrowserPlugin(BasePlugin):
     def extract_slots(self, intent_name: str, text: str,
                       current_slots: Dict[str, Any]) -> Dict[str, Any]:
         slots = dict(current_slots)
+        if intent_name == "web.learning_status":
+            if re.search(r"(?:말투|응답\s*스타일|대답\s*방식)", text):
+                slots["setting"] = "response_style"
+            return slots
+        if intent_name == "web.research_and_apply_preference":
+            normalized = text.strip()
+            if re.search(r"(?:말투|응답\s*스타일|대답\s*방식)", normalized):
+                slots["setting"] = "response_style"
+            game = re.search(r"(.{1,50}?)라는\s*게임에서", normalized)
+            character = re.search(
+                r"(?:나오는|등장하는)\s*[\"'“”‘’]?([^\"'“”‘’]{1,20}?)[\"'“”‘’]?\s*라는\s*캐릭터",
+                normalized,
+            )
+            if game and character:
+                game_name = re.sub(r"^.*?(?:통해|에서)\s*", "", game.group(1)).strip(" ,:：")
+                character_name = character.group(1).strip()
+                slots["query"] = f"{game_name} {character_name} 캐릭터 성격 대사 말투 공식 자료"
+            else:
+                query = re.sub(r"^(?:웹\s*(?:검색)?을?\s*통해|웹에서|검색해서)\s*", "", normalized)
+                query = re.sub(r"(?:꼼꼼하게\s*)?(?:조사|분석).*$", "", query).strip(" ,.!?") or normalized
+                slots["query"] = query
+            return slots
         if intent_name != "web.search":
             return slots
         query = text.strip()
@@ -157,6 +212,10 @@ class BrowserPlugin(BasePlugin):
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
         if tool_name == "browser_research":
             return self._research_web(tool_input)
+        if tool_name == "browser_research_and_apply_preference":
+            return self._research_and_apply_preference(tool_input)
+        if tool_name == "browser_learning_status":
+            return self._learning_status(tool_input)
         if tool_name == "browser_download":
             return self._download(tool_input)
         if tool_name == "browser_profile_status":
@@ -299,6 +358,131 @@ class BrowserPlugin(BasePlugin):
                     "modified_at": source.modified_at}) for source in report.sources])
         except Exception as exc:
             return ToolRunResult.failed(tool_name="browser_research", error=f"Research 실행 실패: {exc}")
+
+    def _research_and_apply_preference(self, data):
+        query = str(data.get("query", "")).strip()
+        setting = str(data.get("setting", "")).strip()
+        research = self._research_web({"query": query, "max_sources": data.get("max_sources", 5)})
+        if not research.succeeded:
+            return ToolRunResult.failed(tool_name="browser_research_and_apply_preference", error=research.error)
+        try:
+            payload = json.loads(research.raw_output)
+            sources = payload.get("sources", [])
+            evidence_text = "\n\n".join(
+                f"[{item.get('source_id')}] {item.get('title')}\n{str(item.get('content', ''))[:1200]}"
+                for item in sources[:6]
+            )
+            from core.llm import get_llm_client
+            llm = get_llm_client("reasoning")
+            response = llm.chat([
+                {"role": "system", "content": (
+                    "웹 근거에서 확인되는 고수준 대화 특성만 추출하세요. 인물의 대사를 복제하거나 "
+                    "근거 없는 성격을 만들지 마세요. JSON 객체만 출력하세요: "
+                    '{"summary":"근거 요약","preference":"160자 이내의 재사용 가능한 한국어 응답 지침"}'
+                )},
+                {"role": "user", "content": f"조사 질문: {query}\n\n검증 방문 본문:\n{evidence_text}"},
+            ]).strip()
+            try:
+                match = re.search(r"\{.*\}", response, re.S)
+                learned = json.loads(match.group(0) if match else response)
+                summary = str(learned.get("summary", "")).strip()
+                preference = " ".join(str(learned.get("preference", "")).split())
+            except (TypeError, ValueError, json.JSONDecodeError):
+                compact_evidence = "\n".join(evidence_text.splitlines()[:18])[:5000]
+                fallback = llm.chat([
+                    {"role": "system", "content": (
+                        "제공된 웹 근거에서 확인되는 말투 특성만 120자 이내 한국어 한 문장으로 요약하세요. "
+                        "대사를 복제하거나 근거 없는 성격을 만들지 말고 설명 없이 문장만 출력하세요."
+                    )},
+                    {"role": "user", "content": f"조사 질문: {query}\n웹 근거:\n{compact_evidence}"},
+                ]).strip()
+                if not fallback or fallback.startswith(("오류", "Error", "HTTP")):
+                    raise ValueError("요약 모델이 유효한 응답을 반환하지 않았습니다.")
+                summary = fallback[:160]
+                preference = fallback[:160]
+            if not summary or not preference:
+                raise ValueError("웹 근거에서 적용 가능한 설정을 추출하지 못했습니다.")
+            self._validate_learned_preference(query, preference)
+            from core.assistant_settings import get_assistant_settings
+            saved = get_assistant_settings().set(setting, preference)
+            from core.rag import get_rag_manager
+            doc_id = "web-learning-" + hashlib.sha256((query + saved).encode("utf-8")).hexdigest()[:16]
+            source_lines = "\n".join(f"- {item.get('url')}" for item in sources)
+            rag_text = f"조사 주제: {query}\n검증 요약: {summary}\n적용 설정: {saved}\n출처:\n{source_lines}"
+            rag_manager = get_rag_manager()
+            rag_manager.add_text_document(
+                rag_text, doc_id=doc_id, namespace="global",
+                source_uri=f"web-learning://{doc_id}",
+                metadata={"source_type": "web", "kind": "learned_preference",
+                          "query": query, "expires_at": payload.get("expires_at", 0)},
+            )
+            recalled = rag_manager.search_docs(
+                query, top_k=10, metadata_filter={"source_type": "web"}, include_stale=True,
+            )
+            if not any(str(item.get("doc_id", "")) == doc_id for item in recalled):
+                raise RuntimeError("저장 직후 RAG 재조회 검증에 실패했습니다.")
+            return ToolRunResult.successful(
+                tool_name="browser_research_and_apply_preference",
+                raw_output=f"웹 출처 {len(sources)}개를 검증하고 응답 스타일에 반영했어. RAG 문서 ID: {doc_id}",
+                evidence=[Evidence("web_learning", "웹 조사 요약을 설정 저장소와 RAG에서 다시 확인했습니다.", {
+                    "query": query, "setting": setting, "saved": saved, "rag_doc_id": doc_id,
+                    "source_count": len(sources), "source_urls": [item.get("url") for item in sources],
+                    "rag_recalled": True,
+                })],
+                artifacts=[Artifact("knowledge", f"web-learning://{doc_id}", {"rag_doc_id": doc_id})],
+            )
+        except Exception as exc:
+            return ToolRunResult.failed(
+                tool_name="browser_research_and_apply_preference",
+                error=f"웹 조사 결과를 설정과 RAG에 반영하지 못했습니다: {exc}",
+            )
+
+    @staticmethod
+    def _validate_learned_preference(query: str, preference: str) -> None:
+        """Reject identity leakage and vague prose before it can overwrite runtime behavior."""
+        value = " ".join(str(preference or "").split())
+        if len(value) < 20 or len(value) > 180:
+            raise ValueError("추출된 말투 지침의 길이가 품질 기준을 충족하지 않습니다.")
+        identity = re.match(r"^(.+?)\s+([^\s]+)\s+캐릭터(?:\s|$)", str(query or "").strip())
+        if identity:
+            game_name, character_name = identity.groups()
+            if game_name in value or character_name in value:
+                raise ValueError("말투 지침에 게임·캐릭터 정체성 문장이 섞여 저장을 중단했습니다.")
+            if len(character_name) > 1 and re.search(
+                rf"(?:^|\s){re.escape(character_name[1:])}(?:은|는|이|가)", value,
+            ):
+                raise ValueError("캐릭터명이 잘린 저품질 문장을 감지해 저장을 중단했습니다.")
+        style_cues = ("말투", "반말", "존댓말", "어조", "표현", "대답", "답변", "밝", "솔직", "장난", "진지", "차분")
+        if sum(cue in value for cue in style_cues) < 2:
+            raise ValueError("응답 방식으로 사용할 만큼 구체적인 말투 특성이 부족합니다.")
+
+    def _learning_status(self, data):
+        setting = str(data.get("setting", "")).strip()
+        from core.assistant_settings import get_assistant_settings
+        from core.rag import get_rag_manager
+        current = get_assistant_settings().get(setting)
+        recalled = get_rag_manager().search_docs(
+            "조사 주제 검증 요약 적용 설정", top_k=10,
+            metadata_filter={"source_type": "web"}, include_stale=True,
+        )
+        learned = [item for item in recalled if str(item.get("source", "")).startswith("web-learning://")]
+        if not learned:
+            return ToolRunResult.successful(
+                tool_name="browser_learning_status",
+                raw_output="웹 조사 결과가 RAG에 저장된 기록은 아직 없어.",
+                evidence=[Evidence("web_learning_status", "웹 출처 RAG를 재조회했습니다.", {
+                    "setting": setting, "current": current, "rag_recalled": False,
+                })],
+            )
+        latest = learned[0]
+        return ToolRunResult.successful(
+            tool_name="browser_learning_status",
+            raw_output=f"웹 조사 학습이 반영되어 있어. 현재 설정은 '{current}'이고 RAG에서도 다시 조회됐어.",
+            evidence=[Evidence("web_learning_status", "설정 저장소와 웹 출처 RAG를 함께 재조회했습니다.", {
+                "setting": setting, "current": current, "rag_recalled": True,
+                "rag_doc_id": latest.get("doc_id"), "source": latest.get("source"),
+            })],
+        )
 
     def _download(self, data):
         from core.harness import SafetyLayer

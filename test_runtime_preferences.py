@@ -6,6 +6,7 @@ from core.plugin import PluginRegistry
 from core.tool_result import ToolRunStatus
 from core.voice_runtime import WakeWordCandidateEvaluator
 from plugins.preferences import PreferencesPlugin
+from main_qt import strip_leading_wake_word
 
 
 class MemoryProfile:
@@ -98,3 +99,28 @@ def test_direct_conversation_behavior_instruction_becomes_persistent_setting():
     assert resolution.ready
     assert resolution.slots["setting"] == "response_style"
     assert "반복하지 말고" in resolution.slots["value"]
+
+
+def test_response_style_understands_style_before_or_after_answer_verb():
+    plugin = PreferencesPlugin()
+    registry = PluginRegistry(); registry.register_plugin(plugin)
+    for utterance in ("아니스 지금부터 반말로 대답해", "나에게 대답할 때 반말로 해"):
+        resolution = IntentRouter(registry).resolve(utterance)
+        assert resolution.ready
+        assert resolution.slots["setting"] == "response_style"
+        assert resolution.slots["value"] == "자연스러운 반말로 대답"
+
+
+def test_leading_wake_word_is_removed_without_touching_subject_mentions():
+    assert strip_leading_wake_word("아니스 메모장 켜줘", "아니스") == "메모장 켜줘"
+    assert strip_leading_wake_word("아니스, 문서 작업모드 열어줘", "아니스") == "문서 작업모드 열어줘"
+    assert strip_leading_wake_word("아니스 캐릭터를 조사해줘", "아니스") == "캐릭터를 조사해줘"
+    assert strip_leading_wake_word("니케의 아니스를 조사해줘", "아니스") == "니케의 아니스를 조사해줘"
+    assert strip_leading_wake_word("아니스", "아니스") == "아니스"
+
+
+def test_banmal_style_applies_to_tool_result_before_address():
+    from core.agent_services import _apply_requested_style
+    assert _apply_requested_style("프로그램을 실행했습니다, 지휘관님.", "자연스러운 반말로 대답") == (
+        "프로그램을 실행했어, 지휘관님."
+    )

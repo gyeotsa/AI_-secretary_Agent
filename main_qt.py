@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import re
 import uuid
 import threading
 from pathlib import Path
@@ -28,6 +29,19 @@ from core.runtime_services import get_runtime_service_manager
 from core.assistant_settings import get_assistant_settings
 from core.specialist_workspaces import get_specialist_workspace_registry
 from core.memory_consolidator import ConversationMemoryConsolidator
+
+
+def strip_leading_wake_word(text: str, wake_word: str) -> str:
+    """Remove a configured wake word only when it prefixes a non-empty command."""
+    original = str(text or "")
+    wake_word = str(wake_word or "").strip()
+    if not wake_word:
+        return original.strip()
+    stripped = re.sub(
+        rf"^\s*{re.escape(wake_word)}(?:\s*[,،:：.!?]?\s+|\s*[,،:：.!?]+\s*)",
+        "", original, count=1, flags=re.IGNORECASE,
+    ).strip()
+    return stripped or original.strip()
 from ui.main_window import JarvisMainWindow
 
 
@@ -321,6 +335,14 @@ class JarvisApp:
         self.window.show_user_text(text)
         self.state_machine.start_listening()
 
+        settings = getattr(self, "assistant_settings", None) or get_assistant_settings()
+        wake_word = str(settings.wake_word or "").strip()
+        if wake_word:
+            stripped = strip_leading_wake_word(text, wake_word)
+            if stripped != str(text).strip():
+                text = stripped
+                print("[WakeWord] 실행 요청에서 호출어 제거:", text)
+
         workspace_registry = getattr(self, "specialist_workspaces", None)
         specialist = workspace_registry.match_open_command(text) if workspace_registry else None
         if specialist is not None:
@@ -331,7 +353,6 @@ class JarvisApp:
             self.state_machine.go_idle()
             return
 
-        settings = getattr(self, "assistant_settings", None) or get_assistant_settings()
         if text.strip().casefold() == settings.wake_word.casefold():
             response = self._personalize_address("네, 보스. 말씀하세요.")
             self.window.show_assistant_text(response)
@@ -555,8 +576,11 @@ class JarvisApp:
     def _personalize_address(self, text: str) -> str:
         settings = getattr(getattr(self, "tool_executor", None), "tts_settings", None)
         if settings is not None and hasattr(settings, "personalize_address"):
-            return settings.personalize_address(text)
-        return str(text)
+            text = settings.personalize_address(text)
+        from core.agent_services import _apply_requested_style
+        return _apply_requested_style(
+            str(text), get_assistant_settings().get("response_style")
+        )
 
     def _run_next_queued_task(self):
         if self._is_processing_ai or not hasattr(self.executor, "dialogue_state"):

@@ -182,7 +182,10 @@ def test_permission_manager_worker_to_gui_signal_round_trip(tmp_path):
     assert result == [True]
 
 
-def test_proactive_message_is_displayed_and_saved_without_user_input():
+def test_proactive_message_is_displayed_and_saved_without_user_input(monkeypatch):
+    monkeypatch.setattr("main_qt.get_assistant_settings", lambda: type(
+        "Settings", (), {"get": staticmethod(lambda _key: "자연스러운 존댓말로 대답")}
+    )())
     _app()
     jarvis = JarvisApp.__new__(JarvisApp)
     jarvis.window = _Window()
@@ -201,7 +204,10 @@ def test_proactive_message_is_displayed_and_saved_without_user_input():
     assert jarvis.messages[-1]["role"] == "assistant"
 
 
-def test_selected_voice_address_is_applied_at_gui_boundary():
+def test_selected_voice_address_is_applied_at_gui_boundary(monkeypatch):
+    monkeypatch.setattr("main_qt.get_assistant_settings", lambda: type(
+        "Settings", (), {"get": staticmethod(lambda _key: "자연스러운 존댓말로 대답")}
+    )())
     _app()
     jarvis = JarvisApp.__new__(JarvisApp)
     jarvis.window = _Window()
