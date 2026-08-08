@@ -48,6 +48,17 @@ def _image(path: Path, color, size=(400, 500), accent=(255, 255, 255)):
     return str(path)
 
 
+def _circular_sticker(path: Path, background, portrait_color, size=500):
+    image = Image.new("RGB", (size, size), "white")
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((10, 10, size - 10, size - 10), fill=background)
+    draw.ellipse((110, 55, size - 110, size - 90), fill=portrait_color)
+    draw.arc((35, 35, size - 35, size - 35), 0, 360, fill="white", width=7)
+    draw.rectangle((55, 335, size - 55, 440), fill=(255, 255, 255))
+    image.save(path)
+    return str(path)
+
+
 def test_learned_style_profile_and_rendered_output_are_persistent(tmp_path):
     refs = [_image(tmp_path / "ref1.png", (10, 25, 55)), _image(tmp_path / "ref2.png", (20, 35, 70))]
     products = [_image(tmp_path / "product1.png", (190, 80, 70), accent=(240, 220, 100))]
@@ -166,3 +177,43 @@ def test_auto_backend_falls_back_but_explicit_generative_reports_failure(tmp_pat
     import pytest
     with pytest.raises(RuntimeError, match="테스트 생성 실패"):
         runtime.render(profile.profile_id, products, output_dir=tmp_path / "out", backend="generative")
+
+
+def test_circular_references_become_structured_sticker_not_photo_cards(tmp_path):
+    refs = [
+        _circular_sticker(tmp_path / f"ref{index}.png", color, (80 + index * 20, 70, 60))
+        for index, color in enumerate(((130, 220, 210), (80, 100, 130), (220, 205, 190), (140, 235, 210)))
+    ]
+    product = _image(tmp_path / "person.png", (40, 80, 110), size=(700, 900), accent=(220, 180, 120))
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend(True))
+    profile = runtime.learn_style(refs, name="원형 응원 스티커")
+    assert profile.design_recipe["layout_family"] == "circular_sticker"
+    assert profile.design_recipe["evidence"]["circle_votes"] >= 3
+
+    result = runtime.render(
+        profile.profile_id, [product], instruction="밝고 힘찬 분위기",
+        visible_copy="배우님 화이팅!", output_dir=tmp_path / "out", backend="auto",
+    )
+    assert result["renderer"] == "structured-circular-sticker-v2"
+    assert result["visible_copy"] == "배우님 화이팅!"
+    assert result["composition_plan"][0]["shape"] == "circle"
+    assert result["quality_checks"] == {
+        "reference_pixels_reused": False, "production_assets_present": True,
+        "layout_family_matched": True, "unrequested_text_rendered": False,
+    }
+    with Image.open(result["output"]) as rendered:
+        assert rendered.size == (1600, 1600)
+        assert rendered.getpixel((0, 0)) == (255, 255, 255)
+        assert rendered.getpixel((800, 300)) != (255, 255, 255)
+
+
+def test_circular_sticker_does_not_render_instruction_as_copy(tmp_path):
+    refs = [_circular_sticker(tmp_path / f"ref{index}.png", (130, 220, 210), (70, 80, 90))
+            for index in range(3)]
+    product = _image(tmp_path / "person.png", (40, 80, 110), size=(700, 900))
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend())
+    profile = runtime.learn_style(refs)
+    result = runtime.render(profile.profile_id, [product], instruction="더 발랄한 색감으로 만들어줘",
+                            output_dir=tmp_path / "out", backend="local")
+    assert result["visible_copy"] == ""
+    assert result["quality_checks"]["unrequested_text_rendered"] is False

@@ -32,6 +32,7 @@ class MockupDesignPlugin(BasePlugin):
                 "type": "object", "properties": {
                     "profile_id": {"type": "string"}, "production_paths": image_array,
                     "instruction": {"type": "string", "default": ""},
+                    "visible_copy": {"type": "string", "default": ""},
                     "output_dir": {"type": "string"}, "basename": {"type": "string", "default": "mockup"},
                     "backend": {"type": "string", "enum": ["auto", "generative", "local"], "default": "auto"},
                     "seed": {"type": "integer", "minimum": 0, "maximum": 2147483647, "default": 42},
@@ -64,6 +65,7 @@ class MockupDesignPlugin(BasePlugin):
             if name == "mockup_render":
                 result = self._runtime().render(
                     data["profile_id"], data["production_paths"], instruction=data.get("instruction", ""),
+                    visible_copy=data.get("visible_copy", ""),
                     output_dir=data["output_dir"], basename=data.get("basename", "mockup"),
                     backend=data.get("backend", "auto"), seed=data.get("seed", 42),
                 )

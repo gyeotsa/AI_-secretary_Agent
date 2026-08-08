@@ -299,6 +299,9 @@ class MockupWorkspaceWindow(QMainWindow):
                 "이 문장은 이미지에 출력되지 않으며 생성 지시로만 사용됩니다."
             )
             layout.addWidget(self.instruction)
+            self.visible_copy = QLineEdit()
+            self.visible_copy.setPlaceholderText("이미지에 실제로 표시할 문구 (선택 사항 · 비워두면 글자를 넣지 않음)")
+            layout.addWidget(self.visible_copy)
             output_row = QHBoxLayout(); self.output_dir = QLineEdit(str(Path("data/mockup_outputs").resolve()))
             choose = QPushButton("출력 폴더"); choose.clicked.connect(self._choose_output_dir)
             output_row.addWidget(self.output_dir, 1); output_row.addWidget(choose); layout.addLayout(output_row)
@@ -402,7 +405,9 @@ class MockupWorkspaceWindow(QMainWindow):
         self.details.setPlainText(
             f"스타일: {profile.name}\n참고 이미지: {len(profile.reference_paths)}장\n"
             f"방향: {profile.orientation}\n대표 비율: {profile.median_aspect_ratio:.3f}\n"
-            f"색상: {', '.join(profile.palette)}\n\nVision 분석\n{profile.vision_analysis}"
+            f"색상: {', '.join(profile.palette)}\n"
+            f"구조 유형: {profile.design_recipe.get('layout_family', '분석 중')}\n\n"
+            f"구조·Vision 분석\n{profile.vision_analysis}"
         )
         self.preview.setText("스타일 분석을 완료했습니다. 이제 제작용 사진을 추가해 시안을 만들 수 있습니다.")
 
@@ -449,15 +454,16 @@ class MockupWorkspaceWindow(QMainWindow):
         self.details.append("\n시안을 렌더링하고 있습니다…")
         args = (
             self.active_profile_id, list(self.production_paths),
-            self.instruction.toPlainText(), self.output_dir.text(), self.backend_selector.currentData(),
+            self.instruction.toPlainText(), self.visible_copy.text(),
+            self.output_dir.text(), self.backend_selector.currentData(),
         )
         threading.Thread(target=self._render_worker, args=args, daemon=True).start()
 
-    def _render_worker(self, profile_id, production_paths, instruction, output_dir, backend):
+    def _render_worker(self, profile_id, production_paths, instruction, visible_copy, output_dir, backend):
         try:
             result = self.runtime.render(
                 profile_id, production_paths, instruction=instruction, output_dir=output_dir,
-                backend=backend, preview_only=True,
+                visible_copy=visible_copy, backend=backend, preview_only=True,
             )
             self.render_done.emit(result)
         except Exception as exc: self.operation_failed.emit(str(exc))

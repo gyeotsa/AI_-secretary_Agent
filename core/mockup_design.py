@@ -7,6 +7,8 @@ import time
 import shutil
 import tempfile
 import uuid
+import math
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from statistics import median
@@ -31,6 +33,7 @@ class MockupStyleProfile:
     vision_analysis: str
     generation_prompt: str = ""
     design_recipe: dict = field(default_factory=dict)
+    style_features: dict = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
 
 
@@ -93,19 +96,24 @@ class MockupDesignRuntime:
                 ratios.append(image.width / max(1, image.height))
         ratio = float(median(ratios))
         orientation = "landscape" if ratio > 1.08 else "portrait" if ratio < 0.92 else "square"
+        measurements = [self._measure_reference(path) for path in paths]
+        recipe = self._consensus_recipe(measurements, ratio, orientation)
         analysis = ""
         try:
             vision = self.vision or VisionRuntime()
             result = vision.analyze(
                 [str(path) for path in paths[:12]],
-                "이 이미지들은 같은 디자인 계열의 참고 시안입니다. 인물·제품의 정체가 아니라 "
-                "재사용 가능한 디자인 문법을 분석하세요. 캔버스 분할, 시선 흐름, 주 피사체의 크기와 위치, "
-                "보조 이미지 관계, 여백, 겹침, 프레임 형태, 배경 질감, 색상 대비, 타이포그래피의 존재와 "
-                "위계를 구체적으로 설명하세요. 마지막 줄에는 문자·로고·고유 인물을 제외한 영문 생성 프롬프트를 "
+                "각 이미지는 서로 다른 참고 시안입니다. 여러 장을 한 장의 콜라주로 해석하지 마세요. "
+                "인물의 정체가 아니라 모든 이미지에 반복되는 디자인 문법만 찾으세요. 이미지별 관찰과 공통점을 "
+                "분리하고, 캔버스 형태·주 피사체 마스크·테두리·문구 위치·사진 점유율을 설명하세요. "
+                f"컴퓨터 비전 계측 결과는 {json.dumps(measurements, ensure_ascii=False)} 입니다. 계측과 충돌하는 "
+                "추측은 하지 마세요. 마지막 줄에는 문자·로고·고유 인물을 제외한 영문 생성 프롬프트를 "
                 "`GENERATION_PROMPT_EN:` 뒤에 작성하세요.", mode="general")
             analysis = str(result.get("analysis", ""))
         except Exception as exc:
             analysis = f"Vision 정성 분석을 수행하지 못했습니다: {exc}"
+        structural_summary = self._recipe_summary(recipe)
+        analysis = f"[구조 계측 · 렌더링 기준]\n{structural_summary}\n\n[Vision 보조 분석]\n{analysis}"
         prompt_match = __import__("re").search(r"GENERATION_PROMPT_EN\s*:\s*(.+)", analysis, __import__("re").IGNORECASE)
         generation_prompt = (prompt_match.group(1).strip() if prompt_match else
                              f"{orientation} editorial layout, palette {', '.join(self._palette(paths))}, clean spacing")
@@ -123,7 +131,9 @@ class MockupDesignRuntime:
                 "priority": ["user_instruction", "production_asset_identity", "reference_design_language"],
                 "aspect_ratio": ratio,
                 "palette": palette,
+                **recipe,
             },
+            style_features={"references": measurements, "consensus": recipe},
         )
         target = self.profile_dir / f"{profile.profile_id}.json"
         target.write_text(json.dumps(asdict(profile), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -133,7 +143,24 @@ class MockupDesignRuntime:
         path = self.profile_dir / f"{profile_id}.json"
         if not path.is_file():
             raise ValueError(f"시안 스타일 프로필이 없습니다: {profile_id}")
-        return MockupStyleProfile(**json.loads(path.read_text(encoding="utf-8")))
+        profile = MockupStyleProfile(**json.loads(path.read_text(encoding="utf-8")))
+        if (not profile.design_recipe.get("layout_family")
+                or not profile.design_recipe.get("structural_summary")):
+            existing = [Path(value) for value in profile.reference_paths if Path(value).is_file()]
+            if existing:
+                measurements = [self._measure_reference(item) for item in existing]
+                recipe = self._consensus_recipe(
+                    measurements, profile.median_aspect_ratio, profile.orientation
+                )
+                profile.design_recipe.update(recipe)
+                if "[구조 계측 · 렌더링 기준]" not in profile.vision_analysis:
+                    profile.vision_analysis = (
+                        f"[구조 계측 · 렌더링 기준]\n{self._recipe_summary(recipe)}\n\n"
+                        f"[이전 Vision 분석 · 구조와 충돌하면 사용하지 않음]\n{profile.vision_analysis}"
+                    )
+                profile.style_features = {"references": measurements, "consensus": recipe}
+                path.write_text(json.dumps(asdict(profile), ensure_ascii=False, indent=2), encoding="utf-8")
+        return profile
 
     def list_profiles(self) -> list[MockupStyleProfile]:
         profiles = []
@@ -141,6 +168,79 @@ class MockupDesignRuntime:
             try: profiles.append(MockupStyleProfile(**json.loads(path.read_text(encoding="utf-8"))))
             except (OSError, ValueError, TypeError, json.JSONDecodeError): continue
         return profiles
+
+    @staticmethod
+    def _measure_reference(path: Path) -> dict:
+        """Measure reusable geometry. This deliberately ignores people and readable copy."""
+        with Image.open(path) as source:
+            image = source.convert("RGB")
+            width, height = image.size
+        circle = None
+        try:
+            import cv2
+            import numpy as np
+            array = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
+            array = cv2.medianBlur(array, 7)
+            minimum = min(width, height)
+            found = cv2.HoughCircles(
+                array, cv2.HOUGH_GRADIENT, dp=1.2, minDist=max(40, minimum // 3),
+                param1=100, param2=45, minRadius=int(minimum * .32), maxRadius=int(minimum * .52),
+            )
+            if found is not None:
+                candidates = sorted(found[0], key=lambda value: value[2], reverse=True)
+                x, y, radius = candidates[0]
+                centered = abs(float(x) / width - .5) < .12 and abs(float(y) / height - .5) < .12
+                if centered:
+                    circle = {"cx": round(float(x) / width, 3), "cy": round(float(y) / height, 3),
+                              "radius": round(float(radius) / minimum, 3)}
+        except (ImportError, OSError, ValueError):
+            circle = None
+        return {
+            "width": width, "height": height, "aspect_ratio": round(width / max(1, height), 4),
+            "square": abs(width / max(1, height) - 1.0) <= .08,
+            "large_center_circle": circle is not None, "circle": circle,
+        }
+
+    @staticmethod
+    def _consensus_recipe(measurements: list[dict], ratio: float, orientation: str) -> dict:
+        total = max(1, len(measurements))
+        circle_votes = sum(bool(item.get("large_center_circle")) for item in measurements)
+        square_votes = sum(bool(item.get("square")) for item in measurements)
+        circular = circle_votes / total >= .6 and square_votes / total >= .6
+        radii = [item["circle"]["radius"] for item in measurements if item.get("circle")]
+        recipe = {
+            "schema_version": 2,
+            "layout_family": "circular_sticker" if circular else "editorial_composite",
+            "canvas_shape": "square" if square_votes / total >= .6 else orientation,
+            "primary_frame": "circle" if circular else "freeform",
+            "primary_frame_radius": round(float(median(radii)), 3) if radii else None,
+            "subject_strategy": "single_hero_or_cluster",
+            "subject_scale": .78 if circular else .62,
+            "border_style": "dashed_inner_ring" if circular else "subtle_frame",
+            "text_policy": "explicit_copy_only",
+            "text_region": "lower_overlay" if circular else "layout_defined",
+            "reference_pixels_allowed_in_output": False,
+            "confidence": round(max(circle_votes, square_votes) / total, 3),
+            "evidence": {"reference_count": total, "circle_votes": circle_votes,
+                         "square_votes": square_votes},
+        }
+        recipe["structural_summary"] = MockupDesignRuntime._recipe_summary(recipe)
+        return recipe
+
+    @staticmethod
+    def _recipe_summary(recipe: dict) -> str:
+        evidence = recipe.get("evidence", {})
+        if recipe.get("layout_family") == "circular_sticker":
+            return (
+                f"참고 {evidence.get('reference_count', 0)}장 중 원형 구조 "
+                f"{evidence.get('circle_votes', 0)}장·정사각 캔버스 {evidence.get('square_votes', 0)}장. "
+                "큰 중앙 원 안에 제작 사진을 배치하고, 안쪽 점선 링과 하단 문구 영역을 사용한다. "
+                "참고 이미지 픽셀은 결과 배경으로 재사용하지 않으며 표시 문구는 별도 입력된 경우에만 넣는다."
+            )
+        return (
+            f"참고 {evidence.get('reference_count', 0)}장의 공통 비율과 색상을 사용하는 편집 구성. "
+            "제작 사진의 정체성을 보존하고 참고 이미지 픽셀은 결과에 복사하지 않는다."
+        )
 
     def _composition_plan(self, profile, paths: list[Path], instruction: str) -> list[dict]:
         """Ask the vision model for normalized placements; use a safe editorial fallback."""
@@ -225,7 +325,111 @@ class MockupDesignRuntime:
         except Exception:
             return fallback
 
+    @staticmethod
+    def _visible_copy(instruction: str) -> str:
+        """Only render copy that the user explicitly labels as visible text."""
+        value = str(instruction or "").strip()
+        patterns = (
+            r"(?:문구|텍스트|글자|카피)\s*[:：]\s*([^\n]+)",
+            r"[\"“](.+?)[\"”]\s*(?:라고|이라는?)\s*(?:써|적어|넣어|표시)",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, value, re.IGNORECASE)
+            if match:
+                return " ".join(match.group(1).split())[:120]
+        return ""
+
+    @staticmethod
+    def _accent_palette(palette: list[tuple[int, int, int]]) -> tuple[int, int, int]:
+        candidates = [color for color in palette if sum(color) < 705]
+        return max(candidates or palette or [(70, 160, 220)],
+                   key=lambda color: max(color) - min(color))
+
+    def _render_circular_sticker(self, paths: list[Path], palette, instruction: str,
+                                 visible_copy: str = "",
+                                 size: int = 1600) -> tuple[Image.Image, list[dict], str]:
+        """Preserve source photos while applying the learned circular sticker grammar."""
+        canvas = Image.new("RGBA", (size, size), (255, 255, 255, 255))
+        margin = int(size * .018); diameter = size - margin * 2
+        circle_mask = Image.new("L", (diameter, diameter), 0)
+        ImageDraw.Draw(circle_mask).ellipse((0, 0, diameter - 1, diameter - 1), fill=255)
+        plan = []
+        if len(paths) == 1:
+            with Image.open(paths[0]) as source:
+                hero = ImageOps.fit(source.convert("RGBA"), (diameter, diameter),
+                                    method=Image.Resampling.LANCZOS, centering=(.5, .45))
+            if hero.getchannel("A").getextrema()[0] < 255:
+                base = Image.new("RGBA", hero.size, (*self._accent_palette(palette), 255))
+                base.alpha_composite(hero); hero = base
+            canvas.paste(hero, (margin, margin), Image.composite(circle_mask, Image.new("L", circle_mask.size), hero.getchannel("A")))
+            plan.append({"index": 0, "shape": "circle", "role": "hero", "x": margin / size,
+                         "y": margin / size, "width": diameter / size, "height": diameter / size,
+                         "fit": "cover", "rotation": 0})
+        else:
+            background = Image.new("RGBA", (diameter, diameter), (*self._accent_palette(palette), 255))
+            canvas.paste(background, (margin, margin), circle_mask)
+            count = len(paths); orbit = diameter * .24
+            item_diameter = int(diameter * min(.48, .76 / math.sqrt(count)))
+            for index, path in enumerate(paths):
+                angle = -math.pi / 2 + 2 * math.pi * index / count
+                cx = size / 2 + math.cos(angle) * orbit
+                cy = size / 2 + math.sin(angle) * orbit * .82
+                x, y = int(cx - item_diameter / 2), int(cy - item_diameter / 2)
+                with Image.open(path) as source:
+                    portrait = ImageOps.fit(source.convert("RGBA"), (item_diameter, item_diameter),
+                                            method=Image.Resampling.LANCZOS, centering=(.5, .42))
+                mask = Image.new("L", portrait.size, 0); ImageDraw.Draw(mask).ellipse(
+                    (0, 0, item_diameter - 1, item_diameter - 1), fill=255)
+                canvas.paste(portrait, (x, y), mask)
+                ImageDraw.Draw(canvas).ellipse((x, y, x + item_diameter, y + item_diameter),
+                                               outline=(255, 255, 255, 235), width=max(5, size // 180))
+                plan.append({"index": index, "shape": "circle", "role": "cluster_subject",
+                             "x": x / size, "y": y / size, "width": item_diameter / size,
+                             "height": item_diameter / size, "fit": "cover", "rotation": 0})
+
+        draw = ImageDraw.Draw(canvas, "RGBA")
+        inset = int(size * .066); box = (inset, inset, size - inset, size - inset)
+        dash_count = 36
+        for index in range(dash_count):
+            start = index * 360 / dash_count + 1.5
+            draw.arc(box, start=start, end=start + 5.8, fill=(255, 255, 255, 245), width=max(7, size // 130))
+
+        visible_copy = " ".join(str(visible_copy or "").split())[:120] or self._visible_copy(instruction)
+        if visible_copy:
+            lines = [part.strip() for part in re.split(r"[|/]", visible_copy) if part.strip()]
+            if len(lines) == 1 and len(lines[0]) > 15:
+                words, built = lines[0].split(), []
+                current = ""
+                for word in words:
+                    candidate = f"{current} {word}".strip()
+                    if len(candidate) > 15 and current:
+                        built.append(current); current = word
+                    else: current = candidate
+                if current: built.append(current)
+                lines = built[:3]
+            band_top = int(size * (.66 if len(lines) <= 2 else .60))
+            draw.rectangle((margin, band_top, size - margin, int(size * .89)), fill=(255, 255, 255, 205))
+            available_w = int(size * .78); available_h = int(size * .22)
+            font_size = int(size * .075)
+            while font_size > 34:
+                font = self._font(font_size, bold=True)
+                boxes = [draw.textbbox((0, 0), line, font=font, stroke_width=2) for line in lines]
+                if max(box[2] for box in boxes) <= available_w and len(lines) * font_size * 1.16 <= available_h:
+                    break
+                font_size -= 4
+            total_h = int(len(lines) * font_size * 1.14); y = band_top + (int(size * .89) - band_top - total_h) // 2
+            accent = self._accent_palette(palette)
+            for index, line in enumerate(lines):
+                box_text = draw.textbbox((0, 0), line, font=font, stroke_width=2)
+                x = (size - (box_text[2] - box_text[0])) // 2
+                color = (*accent, 255) if index == len(lines) - 1 and len(lines) > 1 else (15, 15, 18, 255)
+                draw.text((x, y), line, font=font, fill=color, stroke_width=max(1, size // 500),
+                          stroke_fill=(255, 255, 255, 230))
+                y += int(font_size * 1.14)
+        return canvas, plan, visible_copy
+
     def render(self, profile_id: str, production_paths, *, instruction: str = "",
+               visible_copy: str = "",
                output_dir: str | Path = "data/mockup_outputs", basename: str = "mockup",
                backend: str = "auto", seed: int = 42, preview_only: bool = False) -> dict:
         profile = self.load_profile(profile_id)
@@ -236,6 +440,38 @@ class MockupDesignRuntime:
         else:
             width, height = max(900, int(1600 * ratio)), 1600
         palette = [self._hex(value) for value in profile.palette] or [(15, 23, 42), (34, 211, 238)]
+        if profile.design_recipe.get("layout_family") == "circular_sticker":
+            width = height = 1600
+            canvas, plan, visible_copy = self._render_circular_sticker(
+                paths, palette, instruction, visible_copy, width
+            )
+            output_root = (Path(tempfile.gettempdir()) / "jarvis_mockup_previews" if preview_only
+                           else Path(output_dir).expanduser().resolve())
+            output_root.mkdir(parents=True, exist_ok=True)
+            safe_name = "".join(character for character in basename if character.isalnum() or character in "-_ ").strip() or "mockup"
+            suffix = uuid.uuid4().hex if preview_only else time.strftime('%Y%m%d_%H%M%S')
+            output_path = output_root / f"{safe_name}_{suffix}.png"
+            canvas.convert("RGB").save(output_path, format="PNG", optimize=True)
+            metadata = {
+                "output": str(output_path), "profile_id": profile.profile_id,
+                "references": profile.reference_hashes,
+                "production_inputs": [self._sha256(path) for path in paths],
+                "width": width, "height": height, "renderer": "structured-circular-sticker-v2",
+                "generation_backend": "structured_local", "seed": int(seed),
+                "composition_plan": plan, "instruction": instruction.strip(),
+                "visible_copy": visible_copy, "preview_only": bool(preview_only),
+                "generation_fallback_reason": "", "style_recipe": profile.design_recipe,
+                "quality_checks": {
+                    "reference_pixels_reused": False, "production_assets_present": len(plan) == len(paths),
+                    "layout_family_matched": True, "unrequested_text_rendered": False,
+                },
+                "note": "참고 시안에서 계측한 원형 스티커 문법과 원본 제작 사진을 적용한 결과",
+            }
+            if not preview_only:
+                output_path.with_suffix(".json").write_text(
+                    json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            return metadata
         use_generative = backend == "generative" or (
             backend == "auto" and self.generation_backend.status().get("ready", False)
         )
