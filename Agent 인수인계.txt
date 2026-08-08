@@ -1,4 +1,15 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
+## 2026-08-08 Post-training 기반 선행 Runtime 개선
+
+- Post-training을 바로 실행하지 않고 실행 trajectory와 사용자 피드백을 먼저 축적하도록 `core/learning_runtime.py`를 추가했다. 민감정보를 마스킹하고 라우팅·Tool 요청·결과·최종 상태를 하나의 실행 ID로 연결한다.
+- Plugin Registry 메타데이터에서 요청별 Tool Loadout을 만들며, 일반 대화에는 Tool 스키마를 싣지 않고 명확한 Intent에는 해당 Tool만 노출한다. ReasoningPolicy는 단순 대화·단일 Tool·복합·위험 작업의 추론 수준을 분리한다.
+- RAG는 벡터/어휘 후보를 독립 검색해 RRF로 합치고 선택적 Cross-Encoder 재정렬과 retrieval confidence를 제공한다. 신뢰도가 낮은 후보는 Context에서 사실 근거로 사용하지 않는다.
+- 대용량 Tool 결과 offload, 최근 대화 예산, 작업 checkpoint를 위한 `core/context_lifecycle.py`를 추가했다. 외부 콘텐츠의 ANSI 제어문자와 명령형 prompt injection 격리도 공통 SafetyLayer에 추가했다.
+- 결정론적 애플리케이션 평가, 격리된 Skill 개선 후보, SFT/DPO/Verifier-RL JSONL 내보내기를 구현했다. 학습과 배포는 자동 실행하지 않으며 사람 검토와 95% 회귀 게이트를 요구한다.
+- `POST_TRAINING.md`, `training/post_training_config.json`, `test_post_training_runtime.py`에 운영 원칙과 검증을 기록했다.
+- 구현 커밋: `bc24b36` (`에이전트 평가와 학습 준비 런타임 구축`). 전체 회귀 테스트는 `371 passed, 4 deselected`를 통과했다.
+- 다음 해야 할 일: 실제 사용자 피드백 UI를 연결하고 충분한 승인 데이터가 쌓인 뒤 역할별 QLoRA 파일럿을 별도 브랜치에서 실행한다.
+
 ⚠️⚠️⚠️ **절대 지켜야 할 규칙 (반드시 읽고 따르세요!)** ⚠️⚠️⚠️
 1. **인수인계 매 회차마다 업데이트**: 대화 내용 중 결정 사항, 중요 사항, 변경 사항은 무조건 이 파일에 기록하세요.
 2. **코드 업데이트시 반드시 Agent가 Git 커밋 완료**: 코드 변경 후 **Agent가 직접 Git add/commit까지 완료**하세요! 사용자가 FORK로 푸시만 하면 됩니다. 이 파일에 커밋 주소도 함께 기록하세요.
