@@ -12,6 +12,7 @@ from .visualizer import AudioVisualizer
 from core.state_machine import State
 from core.specialist_workspaces import get_specialist_workspace_registry
 from .specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindow, MockupWorkspaceWindow
+from .knowledge_graph_workspace import KnowledgeGraphWindow
 
 MAIN_STYLE = """
 QWidget { color: #dce8f5; font-family: "Segoe UI"; font-size: 12px; }
@@ -1619,9 +1620,14 @@ class JarvisMainWindow(QWidget):
         window = self.specialist_windows.get(spec.key)
         if window is None:
             # Top-level ownership lets workspaces participate in normal Windows Z-order.
-            window = (MockupWorkspaceWindow(spec) if spec.key == "mockup"
-                      else SpecialistWorkspaceWindow(spec))
-            window.prompt_submitted.connect(self.specialist_prompt_submitted.emit)
+            if spec.key == "mockup":
+                window = MockupWorkspaceWindow(spec)
+            elif spec.key == "knowledge_graph":
+                window = KnowledgeGraphWindow()
+            else:
+                window = SpecialistWorkspaceWindow(spec)
+            if hasattr(window, "prompt_submitted"):
+                window.prompt_submitted.connect(self.specialist_prompt_submitted.emit)
             self.specialist_windows[spec.key] = window
         window.show()
         window.raise_()
@@ -1630,7 +1636,7 @@ class JarvisMainWindow(QWidget):
 
     def show_specialist_result(self, text: str):
         for window in self.specialist_windows.values():
-            if window.isVisible():
+            if window.isVisible() and hasattr(window, "show_result"):
                 window.show_result(text)
 
     def show_task_manager(self):

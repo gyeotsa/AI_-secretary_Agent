@@ -9,6 +9,7 @@ from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
 from plugins.photoshop import PhotoshopPlugin
 from ui.specialist_workspaces import SpecialistWorkspaceWindow
+from ui.knowledge_graph_workspace import KnowledgeGraphWindow
 from ui.main_window import JarvisMainWindow
 
 
@@ -16,6 +17,8 @@ def test_natural_commands_route_to_declared_specialist_workspace():
     registry = get_specialist_workspace_registry()
     assert registry.match_open_command("문서 작업모드 실행해줘").key == "document"
     assert registry.match_open_command("포토샵 전문가 작업공간 열어줘").key == "photoshop"
+    assert registry.match_open_command("지식 그래프 열어줘").key == "knowledge_graph"
+    assert registry.match_open_command("그래프 뷰 실행해줘").key == "knowledge_graph"
     assert registry.match_open_command("포토샵에서 사진을 보정해줘") is None
 
 
@@ -55,3 +58,13 @@ def test_main_window_opens_both_specialist_workspaces():
     assert not document.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     assert not photoshop.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     photoshop.close(); document.close(); main.close()
+
+
+def test_main_window_opens_native_knowledge_graph_workspace():
+    app = QApplication.instance() or QApplication([])
+    main = JarvisMainWindow()
+    graph = main.open_specialist_workspace("knowledge_graph")
+    assert isinstance(graph, KnowledgeGraphWindow)
+    assert not graph.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    assert "전체" in graph.stats.text()
+    graph.close(); main.close()

@@ -73,3 +73,37 @@ def test_obsidian_plugin_contracts_are_registry_compatible():
     names = {tool.name for tool in plugin.get_tools()}
     assert {"obsidian_explore", "obsidian_sync_to_rag", "obsidian_lint"} <= names
     assert {intent.tool_name for intent in plugin.get_intents()} <= names
+
+
+def test_vault_builds_filterable_global_and_local_graph(tmp_path):
+    vault = ObsidianVault(tmp_path / "vault", settings_path=tmp_path / "settings.json")
+    preference = vault.upsert_record(_record())
+    project = vault.upsert_record(_record(
+        record_id="project9", subject="그래프 UI", content="지식 그래프 작업공간을 구현해",
+    ))
+    # Add an explicit cross-note link to prove topology is produced from Markdown.
+    relative = preference.relative_to(vault.root / "wiki").with_suffix("").as_posix()
+    project.write_text(project.read_text(encoding="utf-8") + f"\n- [[{relative}|관련 선호]]\n", encoding="utf-8")
+
+    graph = vault.build_graph(query="그래프", min_importance=0.1)
+    assert any(node["relative_path"] == project.relative_to(vault.root).as_posix() for node in graph["nodes"])
+    assert graph["facets"]["types"]
+
+    local = vault.build_graph(center=project.relative_to(vault.root).as_posix(), depth=1)
+    ids = {node["id"] for node in local["nodes"]}
+    assert project.relative_to(vault.root).with_suffix("").as_posix() in ids
+    assert preference.relative_to(vault.root).with_suffix("").as_posix() in ids
+    assert local["edges"]
+
+
+def test_vault_note_preview_rejects_paths_outside_vault(tmp_path):
+    vault = ObsidianVault(tmp_path / "vault", settings_path=tmp_path / "settings.json")
+    note = vault.upsert_record(_record())
+    preview = vault.read_note(note.relative_to(vault.root))
+    assert preview["title"] == "응답 말투"
+    try:
+        vault.read_note("../outside.md")
+    except ObsidianVaultError:
+        pass
+    else:
+        raise AssertionError("Vault 외부 문서가 열렸습니다.")

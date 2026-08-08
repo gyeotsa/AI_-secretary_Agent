@@ -9,8 +9,10 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import quote
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -278,6 +280,145 @@ managed_by: anis
     def _notes(self, include_raw: bool = False) -> list[Path]:
         roots = [self.root / "wiki"] + ([self.root / "raw"] if include_raw else [])
         return sorted(path for root in roots for path in root.rglob("*.md") if path.is_file())
+
+    @staticmethod
+    def _parse_note(content: str) -> tuple[dict[str, Any], str, str]:
+        """Return JSON-compatible frontmatter, title and body without requiring YAML."""
+        metadata: dict[str, Any] = {}
+        body = content
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) == 3:
+                body = parts[2].lstrip()
+                for line in parts[1].splitlines():
+                    if ":" not in line:
+                        continue
+                    key, raw = line.split(":", 1)
+                    try:
+                        metadata[key.strip()] = json.loads(raw.strip())
+                    except (json.JSONDecodeError, TypeError):
+                        metadata[key.strip()] = raw.strip()
+        heading = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
+        return metadata, heading.group(1).strip() if heading else "", body
+
+    def read_note(self, relative_path: str | Path) -> dict[str, Any]:
+        relative = Path(str(relative_path).replace("\\", "/"))
+        path = self._inside(self.root / relative)
+        if path.suffix.casefold() != ".md" or not path.is_file():
+            raise ObsidianVaultError("존재하는 Markdown 문서만 열 수 있습니다.")
+        content = path.read_text(encoding="utf-8", errors="replace")
+        metadata, title, body = self._parse_note(content)
+        return {
+            "path": str(path), "relative_path": path.relative_to(self.root).as_posix(),
+            "title": title or path.stem, "metadata": metadata, "body": body,
+            "content": content,
+        }
+
+    def open_note(self, relative_path: str | Path | None = None) -> str:
+        target = self.root if not relative_path else self._inside(self.root / Path(relative_path))
+        if target != self.root and not target.is_file():
+            raise ObsidianVaultError("열려는 Vault 문서를 찾을 수 없습니다.")
+        uri = "obsidian://open?path=" + quote(str(target))
+        os.startfile(uri)
+        return uri
+
+    def build_graph(self, *, query: str = "", types: Iterable[str] = (),
+                    actions: Iterable[str] = (), topics: Iterable[str] = (),
+                    min_importance: float = 0.0, center: str | None = None,
+                    depth: int = 2, max_nodes: int = 300,
+                    include_raw: bool = False) -> dict[str, Any]:
+        """Build a bounded Cytoscape-compatible graph from Vault notes and wikilinks."""
+        max_nodes = max(1, min(int(max_nodes), 1000))
+        depth = max(0, min(int(depth), 5))
+        wanted_types = {str(item).casefold() for item in types if str(item).strip()}
+        wanted_actions = {str(item).casefold() for item in actions if str(item).strip()}
+        wanted_topics = {str(item).casefold() for item in topics if str(item).strip()}
+        query_tokens = set(re.findall(r"[0-9A-Za-z가-힣]+", str(query).casefold()))
+        note_data: dict[Path, dict[str, Any]] = {}
+        aliases: dict[str, Path] = {}
+        for path in self._notes(include_raw=include_raw):
+            content = path.read_text(encoding="utf-8", errors="replace")
+            metadata, title, body = self._parse_note(content)
+            relative = path.relative_to(self.root).as_posix()
+            topic_values = metadata.get("topics", [])
+            if isinstance(topic_values, str):
+                topic_values = [topic_values]
+            item = {
+                "path": path.resolve(), "relative_path": relative,
+                "id": relative.removesuffix(".md"), "label": title or path.stem,
+                "type": str(metadata.get("type", "note")),
+                "action": str(metadata.get("action", "reference")),
+                "importance": float(metadata.get("importance", 0.5) or 0.5),
+                "confidence": float(metadata.get("confidence", 0.0) or 0.0),
+                "topics": [str(value) for value in topic_values],
+                "updated": str(metadata.get("updated", "")),
+                "rag_index": metadata.get("rag_index", not relative.startswith("raw/")) is not False,
+                "body": body, "links": list(dict.fromkeys(self.WIKILINK.findall(content))),
+            }
+            note_data[path.resolve()] = item
+            aliases[item["id"].casefold()] = path.resolve()
+            aliases[path.stem.casefold()] = path.resolve()
+
+        def resolve(link: str) -> Path | None:
+            normalized = link.strip().replace("\\", "/").removesuffix(".md").casefold()
+            return aliases.get(normalized) or aliases.get(Path(normalized).name)
+
+        adjacency: dict[Path, set[Path]] = {path: set() for path in note_data}
+        all_edges: set[tuple[Path, Path]] = set()
+        for source, item in note_data.items():
+            for link in item["links"]:
+                target = resolve(link)
+                if target and target != source:
+                    adjacency[source].add(target); adjacency[target].add(source)
+                    all_edges.add((source, target))
+
+        allowed = set(note_data)
+        if center:
+            center_key = str(center).replace("\\", "/").removesuffix(".md").casefold()
+            seed = aliases.get(center_key) or aliases.get(Path(center_key).name)
+            if seed:
+                allowed, frontier = {seed}, [(seed, 0)]
+                while frontier:
+                    current, current_depth = frontier.pop(0)
+                    if current_depth >= depth:
+                        continue
+                    for neighbor in adjacency[current]:
+                        if neighbor not in allowed:
+                            allowed.add(neighbor); frontier.append((neighbor, current_depth + 1))
+
+        def visible(item: dict[str, Any]) -> bool:
+            haystack = f"{item['label']} {item['body']} {' '.join(item['topics'])}".casefold()
+            return (
+                (not query_tokens or query_tokens <= set(re.findall(r"[0-9A-Za-z가-힣]+", haystack)))
+                and (not wanted_types or item["type"].casefold() in wanted_types)
+                and (not wanted_actions or item["action"].casefold() in wanted_actions)
+                and (not wanted_topics or bool(wanted_topics & {x.casefold() for x in item["topics"]}))
+                and item["importance"] >= float(min_importance)
+            )
+
+        selected = [path for path in allowed if visible(note_data[path])]
+        selected.sort(key=lambda path: (-note_data[path]["importance"], -len(adjacency[path]), note_data[path]["label"]))
+        selected = selected[:max_nodes]
+        selected_set = set(selected)
+        nodes = []
+        for path in selected:
+            item = note_data[path]
+            nodes.append({key: item[key] for key in (
+                "id", "label", "relative_path", "type", "action", "importance",
+                "confidence", "topics", "updated", "rag_index"
+            )} | {"degree": len(adjacency[path])})
+        edges = [{"id": f"e{index}", "source": note_data[source]["id"],
+                  "target": note_data[target]["id"], "type": "wikilink"}
+                 for index, (source, target) in enumerate(sorted(all_edges, key=lambda pair: (str(pair[0]), str(pair[1]))))
+                 if source in selected_set and target in selected_set]
+        facets = {
+            "types": sorted({item["type"] for item in note_data.values()}),
+            "actions": sorted({item["action"] for item in note_data.values()}),
+            "topics": sorted({topic for item in note_data.values() for topic in item["topics"]}),
+        }
+        return {"nodes": nodes, "edges": edges, "facets": facets,
+                "stats": {"visible_nodes": len(nodes), "visible_edges": len(edges),
+                          "total_notes": len(note_data)}, "center": center, "depth": depth}
 
     def _resolve_link(self, link: str) -> Optional[Path]:
         normalized = link.strip().replace("\\", "/").removesuffix(".md")

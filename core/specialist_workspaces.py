@@ -35,6 +35,11 @@ class SpecialistWorkspaceRegistry:
                 "mockup_design", ("mockup_design", "vision", "image_renderer"),
                 ("시안 작업", "시안 제작", "시안 전문가", "목업 작업", "목업 제작", "mockup"),
             ),
+            "knowledge_graph": SpecialistWorkspaceSpec(
+                "knowledge_graph", "Knowledge Graph", "Obsidian 기억의 연결·중요도·RAG 상태 탐색",
+                "knowledge", ("obsidian", "rag_knowledge", "knowledge_memory"),
+                ("지식 그래프", "기억 그래프", "knowledge graph", "그래프 뷰", "옵시디언 그래프"),
+            ),
         }
 
     def all(self) -> tuple[SpecialistWorkspaceSpec, ...]:
@@ -45,7 +50,11 @@ class SpecialistWorkspaceRegistry:
 
     def match_open_command(self, text: str) -> SpecialistWorkspaceSpec | None:
         value = " ".join(str(text or "").casefold().split())
-        open_action = re.search(r"(?:모드|작업\s*공간|워크스페이스|전문가).{0,12}(?:실행|열|시작|켜)|(?:실행|열|시작|켜).{0,12}(?:모드|작업\s*공간|워크스페이스|전문가)", value)
+        open_action = re.search(
+            r"(?:모드|작업\s*공간|워크스페이스|전문가|그래프(?:\s*뷰)?).{0,12}(?:실행|열|시작|켜)"
+            r"|(?:실행|열|시작|켜).{0,12}(?:모드|작업\s*공간|워크스페이스|전문가|그래프(?:\s*뷰)?)",
+            value,
+        )
         if not open_action:
             return None
         matches = [spec for spec in self.all() if any(hint.casefold() in value for hint in spec.utterance_hints)]
