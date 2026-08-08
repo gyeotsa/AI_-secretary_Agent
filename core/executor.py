@@ -1074,11 +1074,21 @@ class Executor:
             )
         else:
             if resolution.freshness == "live" and resolution.requires_sources:
-                status = "awaiting_user"
-                response = (
-                    "실시간 출처에서 정보를 확인하지 못해 임의로 답하지 않겠습니다. "
-                    "조회 대상을 더 구체적으로 말씀해 주시면 다시 확인하겠습니다, 보스."
-                )
+                if resolution.tool_name == "browser_research_and_apply_preference":
+                    status = "failed"
+                    reason = str(tool_run.error or result).removeprefix("오류: ").strip()
+                    reason = reason.removeprefix(
+                        "웹 조사 결과를 설정과 RAG에 반영하지 못했습니다: "
+                    ).strip()
+                    response = (
+                        "웹 자료 검색은 끝났지만 말투 학습 품질 검증에 실패했습니다. "
+                        f"이유: {reason}"
+                    )
+                else:
+                    status = "awaiting_user"
+                    response = (
+                        "실시간 자료 검색에 실패했습니다. 다른 검색어로 다시 시도할 수 있습니다, 보스."
+                    )
             else:
                 status = "failed"
                 response = f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"

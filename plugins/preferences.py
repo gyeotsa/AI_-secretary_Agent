@@ -54,14 +54,15 @@ class PreferencesPlugin(BasePlugin):
             "set_runtime_preference",
             ["너의 호칭", "네 호칭", "너의 이름", "네 이름", "비서 이름", "호출어", "웨이크워드",
              "나를 부를", "내 호칭", "사용자 호칭", "응답 스타일", "말투를", "응답 언어",
-             "반말로", "존댓말로", "대답은 반말", "대답은 존댓말", "따라하지마",
+             "반말로", "반말을", "반말 사용", "존댓말로", "존댓말을", "대답은 반말", "대답은 존댓말", "따라하지마",
              "따라 하지마", "짧게 답해", "간결하게 답해", "자세히 답해"],
             slots,
-            execution_hints=["변경", "바꿔", "설정", "지정", "불러", "따라", "답해", "대답"],
+            execution_hints=["변경", "바꿔", "설정", "지정", "불러", "따라", "답해", "대답", "사용", "말해"],
             utterance_patterns=[
                 r"(?:너의|네|비서)\s*(?:호칭|이름).{0,30}(?:변경|바꿔|설정)",
                 r"(?:호출어|웨이크워드).{0,30}(?:변경|바꿔|설정)",
                 r"(?:나를|내|사용자)\s*(?:부를|호칭).{0,30}(?:변경|바꿔|설정)",
+                r"(?:호칭.{0,20}님.{0,20})?(?:반말|존댓말)(?:로|을)?.{0,20}(?:사용|말해|대답|답해)",
             ],
             request_type="change",
         ), IntentSchema(
@@ -99,9 +100,13 @@ class PreferencesPlugin(BasePlugin):
         if intent_name != "preferences.set_runtime":
             return slots
         speech_style = ""
-        if "반말" in normalized and re.search(r"(?:대답|답변|응답|말투|말해|이야기|해\s*$)", normalized):
-            speech_style = "자연스러운 반말로 대답"
-        elif "존댓말" in normalized and re.search(r"(?:대답|답변|응답|말투|말해|이야기|해\s*$)", normalized):
+        if "반말" in normalized and re.search(r"(?:대답|답변|응답|말투|말해|이야기|사용|해|줘)", normalized):
+            speech_style = (
+                "호칭에는 님을 붙이고 나머지는 자연스러운 반말로 대답"
+                if "호칭" in normalized and "님" in normalized
+                else "자연스러운 반말로 대답"
+            )
+        elif "존댓말" in normalized and re.search(r"(?:대답|답변|응답|말투|말해|이야기|사용|해|줘)", normalized):
             speech_style = "자연스러운 존댓말로 대답"
         if re.search(r"(?:너의|네|비서)\s*(?:호칭|이름)", normalized):
             slots["setting"] = "assistant_name"

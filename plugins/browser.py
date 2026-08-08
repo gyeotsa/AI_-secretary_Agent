@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import ipaddress
 import socket
 import time
+from urllib.request import Request, urlopen
 
 from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema
 from core.tool_result import Artifact, Evidence, ToolRunResult
@@ -67,6 +68,13 @@ class BrowserPlugin(BasePlugin):
                     "setting": {"type": "string", "enum": ["response_style"]},
                 }, "required": ["setting"], "additionalProperties": False,
             }, [], side_effect="read"),
+            ToolSchema("browser_learn_video_preference", "YouTube 자막을 실제 분석해 응답 스타일과 RAG에 반영합니다", {
+                "type": "object", "properties": {
+                    "url": {"type": "string"},
+                    "setting": {"type": "string", "enum": ["response_style"]},
+                    "subject": {"type": "string"},
+                }, "required": ["url", "setting", "subject"], "additionalProperties": False,
+            }, ["browser"], side_effect="change", timeout_seconds=240, max_retries=0, cancellable=True),
             ToolSchema("browser_download", "로그인 세션을 유지한 브라우저에서 파일을 안전한 경로로 다운로드합니다", {
                 "type": "object", "properties": {
                     "url": {"type": "string"}, "path": {"type": "string"},
@@ -81,6 +89,19 @@ class BrowserPlugin(BasePlugin):
 
     def get_intents(self) -> List[IntentSchema]:
         return [
+            IntentSchema(
+                "web.video_learning",
+                "사용자가 제공한 YouTube 영상의 실제 자막을 분석해 설정과 RAG에 반영",
+                "browser_learn_video_preference",
+                ["영상을 보고 학습", "영상으로 학습", "유튜브에서 학습", "영상 분석해서 반영"],
+                [SlotSchema("url", "분석할 YouTube URL", "학습할 YouTube 링크를 알려주세요."),
+                 SlotSchema("setting", "반영할 설정", "영상에서 무엇을 학습할지 알려주세요."),
+                 SlotSchema("subject", "학습할 화자", "영상에서 누구의 말투를 학습할지 알려주세요.")],
+                execution_hints=["학습", "반영", "분석", "보고"],
+                follow_up_hints=["이 영상", "이 링크", "더 제대로", "다시 학습", "추가 학습"],
+                utterance_patterns=[r"(?:youtube\.com|youtu\.be).{0,80}(?:학습|반영|분석|보고)|(?:영상|유튜브).{0,80}(?:학습|반영)"],
+                request_type="change", freshness="live", requires_sources=True,
+            ),
             IntentSchema(
                 "web.learning_status",
                 "이전 웹 조사 학습의 설정 및 RAG 반영 상태 확인",
@@ -128,6 +149,15 @@ class BrowserPlugin(BasePlugin):
     def extract_slots(self, intent_name: str, text: str,
                       current_slots: Dict[str, Any]) -> Dict[str, Any]:
         slots = dict(current_slots)
+        if intent_name == "web.video_learning":
+            url = re.search(r"https?://(?:www\.)?(?:youtube\.com/watch\?[^\s]+|youtu\.be/[^\s]+)", text)
+            if url:
+                slots["url"] = url.group(0).rstrip(".,!?)]}")
+            slots["setting"] = "response_style"
+            subject = re.search(r"([A-Za-z0-9가-힣]{1,30}?)(?:가|이)?\s*(?:등장하는|나오는)", text)
+            if subject:
+                slots["subject"] = subject.group(1)
+            return slots
         if intent_name == "web.learning_status":
             if re.search(r"(?:말투|응답\s*스타일|대답\s*방식)", text):
                 slots["setting"] = "response_style"
@@ -136,14 +166,9 @@ class BrowserPlugin(BasePlugin):
             normalized = text.strip()
             if re.search(r"(?:말투|응답\s*스타일|대답\s*방식)", normalized):
                 slots["setting"] = "response_style"
-            game = re.search(r"(.{1,50}?)라는\s*게임에서", normalized)
-            character = re.search(
-                r"(?:나오는|등장하는)\s*[\"'“”‘’]?([^\"'“”‘’]{1,20}?)[\"'“”‘’]?\s*라는\s*캐릭터",
-                normalized,
-            )
-            if game and character:
-                game_name = re.sub(r"^.*?(?:통해|에서)\s*", "", game.group(1)).strip(" ,:：")
-                character_name = character.group(1).strip()
+            subject = self._extract_learning_subject(normalized)
+            if subject:
+                game_name, character_name = subject
                 slots["query"] = f"{game_name} {character_name} 캐릭터 성격 대사 말투 공식 자료"
             else:
                 query = re.sub(r"^(?:웹\s*(?:검색)?을?\s*통해|웹에서|검색해서)\s*", "", normalized)
@@ -165,6 +190,28 @@ class BrowserPlugin(BasePlugin):
                 query = f"{previous}\n후속 질문: {query}"
             slots["query"] = query
         return slots
+
+    @staticmethod
+    def _extract_learning_subject(text: str):
+        normalized = " ".join(str(text or "").split())
+        game = re.search(r"(.{1,70}?)\s*라는\s*게임(?:에서|에)", normalized)
+        character = re.search(
+            r"(?:나오는|등장하는|등장한|주인공[^,.!?]{0,20}?인)\s*"
+            r"[\"'“”‘’]?([^\"'“”‘’,.!?]{1,20}?)[\"'“”‘’]?\s*라는\s*캐릭터",
+            normalized,
+        )
+        if not character:
+            character = re.search(
+                r"[\"'“”‘’]([^\"'“”‘’]{1,20})[\"'“”‘’]\s*라는\s*캐릭터",
+                normalized,
+            )
+        if not (game and character):
+            return None
+        game_name = re.sub(
+            r"^.*?(?:웹\s*(?:검색)?을?\s*통해|웹에서|검색해서)\s*", "", game.group(1),
+        ).strip(" ,:：")
+        character_name = character.group(1).strip(" \"'“”‘’")
+        return (game_name, character_name) if game_name and character_name else None
 
     @staticmethod
     def _validate_url(url: str) -> str:
@@ -216,6 +263,8 @@ class BrowserPlugin(BasePlugin):
             return self._research_and_apply_preference(tool_input)
         if tool_name == "browser_learning_status":
             return self._learning_status(tool_input)
+        if tool_name == "browser_learn_video_preference":
+            return self._learn_video_preference(tool_input)
         if tool_name == "browser_download":
             return self._download(tool_input)
         if tool_name == "browser_profile_status":
@@ -320,9 +369,21 @@ class BrowserPlugin(BasePlugin):
     @staticmethod
     def _search_candidates(query: str, limit: int):
         if DDGS is None: raise RuntimeError("DDGS 검색 라이브러리가 설치되지 않았습니다.")
+        queries = [query, f"{query} official 공식"]
+        identity = re.match(r"^(.+?)\s+([^\s]+)\s+캐릭터(?:\s|$)", query)
+        if identity:
+            game_name, character_name = identity.groups()
+            queries[1:1] = [
+                f'"{character_name}" "{game_name}" 대사 대화',
+                f'"{character_name}" "{game_name}" 성격 말투',
+            ]
         with DDGS() as ddgs:
-            rows = list(ddgs.text(query, max_results=limit))
-            rows.extend(ddgs.text(f"{query} official 공식", max_results=min(limit, 5)))
+            rows = []
+            for search_query in queries:
+                try:
+                    rows.extend(ddgs.text(search_query, max_results=limit))
+                except Exception:
+                    continue
         seen, results = set(), []
         for row in rows:
             url = str(row.get("href", "")).strip()
@@ -330,7 +391,29 @@ class BrowserPlugin(BasePlugin):
                 seen.add(url)
                 results.append({"url": url, "title": str(row.get("title", "")),
                                 "snippet": str(row.get("body", ""))})
+        if identity:
+            game_name, character_name = identity.groups()
+            results.sort(
+                key=lambda item: BrowserPlugin._candidate_learning_score(
+                    item, game_name, character_name,
+                ),
+                reverse=True,
+            )
         return results
+
+    @staticmethod
+    def _candidate_learning_score(candidate: Dict[str, str], game_name: str, character_name: str) -> int:
+        title = str(candidate.get("title", "")).casefold()
+        text = f"{title} {candidate.get('snippet', '')}".casefold()
+        game_tokens = {
+            token for token in re.findall(r"[A-Za-z0-9가-힣]+", game_name.casefold())
+            if len(token) >= 2
+        }
+        score = 5 if character_name.casefold() in title else 2 if character_name.casefold() in text else 0
+        score += min(3, sum(token in text for token in game_tokens))
+        score += 2 * sum(cue in text for cue in ("말투", "대사", "대화", "성격", "보이스", "voice", "dialogue"))
+        score -= sum(cue in title for cue in ("티어", "육성", "스킬", "장비", "큐브", "오버로드"))
+        return score
 
     def _get_research_agent(self):
         if self._research_agent is None:
@@ -362,14 +445,21 @@ class BrowserPlugin(BasePlugin):
     def _research_and_apply_preference(self, data):
         query = str(data.get("query", "")).strip()
         setting = str(data.get("setting", "")).strip()
-        research = self._research_web({"query": query, "max_sources": data.get("max_sources", 5)})
+        research = self._research_web({
+            "query": query, "max_sources": data.get("max_sources", 5),
+            "force_refresh": bool(data.get("force_refresh", True)),
+        })
         if not research.succeeded:
             return ToolRunResult.failed(tool_name="browser_research_and_apply_preference", error=research.error)
         try:
             payload = json.loads(research.raw_output)
-            sources = payload.get("sources", [])
+            sources = self._relevant_learning_sources(query, payload.get("sources", []))
+            if len(sources) < 2:
+                raise ValueError(
+                    f"검색 페이지는 방문했지만 학습 대상과 직접 관련된 출처가 {len(sources)}개뿐이라 저장하지 않았습니다."
+                )
             evidence_text = "\n\n".join(
-                f"[{item.get('source_id')}] {item.get('title')}\n{str(item.get('content', ''))[:1200]}"
+                f"[{item.get('source_id')}] {item.get('title')}\n{self._learning_excerpt(query, item)}"
                 for item in sources[:6]
             )
             from core.llm import get_llm_client
@@ -402,6 +492,7 @@ class BrowserPlugin(BasePlugin):
                 preference = fallback[:160]
             if not summary or not preference:
                 raise ValueError("웹 근거에서 적용 가능한 설정을 추출하지 못했습니다.")
+            preference = self._normalize_learned_preference(query, preference)
             self._validate_learned_preference(query, preference)
             from core.assistant_settings import get_assistant_settings
             saved = get_assistant_settings().set(setting, preference)
@@ -438,6 +529,24 @@ class BrowserPlugin(BasePlugin):
             )
 
     @staticmethod
+    def _normalize_learned_preference(query: str, preference: str) -> str:
+        """Turn a subject-led description into a reusable behavior instruction."""
+        value = " ".join(str(preference or "").split()).strip(" .")
+        identity = re.match(r"^(.+?)\s+([^\s]+)\s+캐릭터(?:\s|$)", str(query or "").strip())
+        if not identity:
+            return value
+        game_name, character_name = identity.groups()
+        value = re.sub(re.escape(game_name), "", value, flags=re.IGNORECASE).strip(" ,:：-'\"")
+        value = re.sub(
+            rf"^(?:캐릭터\s*)?{re.escape(character_name)}"
+            r"(?:의\s*말투(?:는|가)?|의|는|은|처럼|같이|답게)?\s*[:：,-]?\s*",
+            "", value, flags=re.IGNORECASE,
+        ).strip()
+        if value and not re.search(r"(?:대답|답변|말해|사용|유지|표현)(?:해|한다|하세요|한다)$", value):
+            value = value.rstrip("다") + "게 대답해"
+        return value
+
+    @staticmethod
     def _validate_learned_preference(query: str, preference: str) -> None:
         """Reject identity leakage and vague prose before it can overwrite runtime behavior."""
         value = " ".join(str(preference or "").split())
@@ -452,9 +561,58 @@ class BrowserPlugin(BasePlugin):
                 rf"(?:^|\s){re.escape(character_name[1:])}(?:은|는|이|가)", value,
             ):
                 raise ValueError("캐릭터명이 잘린 저품질 문장을 감지해 저장을 중단했습니다.")
-        style_cues = ("말투", "반말", "존댓말", "어조", "표현", "대답", "답변", "밝", "솔직", "장난", "진지", "차분")
+        style_cues = (
+            "말투", "반말", "존댓말", "어조", "표현", "대답", "답변", "밝", "솔직", "장난",
+            "진지", "차분", "친근", "유쾌", "활달", "직설", "간결", "질문", "감탄", "농담", "자신감",
+        )
         if sum(cue in value for cue in style_cues) < 2:
             raise ValueError("응답 방식으로 사용할 만큼 구체적인 말투 특성이 부족합니다.")
+
+    @staticmethod
+    def _relevant_learning_sources(query: str, sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        identity = re.match(r"^(.+?)\s+([^\s]+)\s+캐릭터(?:\s|$)", str(query or "").strip())
+        if not identity:
+            return list(sources)
+        game_name, character_name = identity.groups()
+        game_tokens = {
+            token for token in re.findall(r"[A-Za-z0-9가-힣]+", game_name.casefold())
+            if len(token) >= 2
+        }
+        relevant = []
+        style_cues = ("말투", "대사", "대화", "성격", "어조", "스토리", "보이스", "목소리")
+        guide_cues = ("공략", "육성", "티어", "스킬", "장비", "큐브", "오버로드")
+        for source in sources:
+            title = str(source.get("title", "")).casefold()
+            haystack = f"{title} {source.get('content', '')}".casefold()
+            game_hits = sum(token in haystack for token in game_tokens)
+            character = character_name.casefold()
+            if character not in haystack or game_hits < 1:
+                continue
+            positions = [match.start() for match in re.finditer(re.escape(character), haystack)]
+            nearby = " ".join(haystack[max(0, pos - 500):pos + 900] for pos in positions[:8])
+            style_hits = sum(cue in nearby for cue in style_cues)
+            score = style_hits + (2 if character in title else 0) + (1 if game_hits else 0)
+            score -= min(2, sum(cue in title for cue in guide_cues))
+            if style_hits >= 1 and score >= 3:
+                relevant.append((score, source))
+        relevant.sort(key=lambda item: item[0], reverse=True)
+        return [source for _score, source in relevant]
+
+    @staticmethod
+    def _learning_excerpt(query: str, source: Dict[str, Any], limit: int = 1800) -> str:
+        content = str(source.get("content", ""))
+        identity = re.match(r"^(.+?)\s+([^\s]+)\s+캐릭터(?:\s|$)", str(query or "").strip())
+        character = identity.group(2) if identity else ""
+        cues = (character, "말투", "대사", "대화", "성격", "어조", "스토리", "보이스", "목소리")
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        selected = []
+        for index, line in enumerate(lines):
+            if any(cue and cue.casefold() in line.casefold() for cue in cues):
+                selected.extend(lines[max(0, index - 1):min(len(lines), index + 2)])
+            if sum(len(item) for item in selected) >= limit:
+                break
+        excerpt = "\n".join(dict.fromkeys(selected)).strip()
+        return (excerpt or content[:limit])[:limit]
 
     def _learning_status(self, data):
         setting = str(data.get("setting", "")).strip()
@@ -483,6 +641,182 @@ class BrowserPlugin(BasePlugin):
                 "rag_doc_id": latest.get("doc_id"), "source": latest.get("source"),
             })],
         )
+
+    @staticmethod
+    def _youtube_transcript(url: str):
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").casefold()
+        if host not in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
+            raise ValueError("YouTube URL만 영상 학습에 사용할 수 있습니다.")
+        try:
+            import yt_dlp
+        except ImportError as exc:
+            raise RuntimeError("yt-dlp가 설치되지 않아 영상 정보를 확인할 수 없습니다.") from exc
+        options = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True}
+        with yt_dlp.YoutubeDL(options) as downloader:
+            info = downloader.extract_info(url, download=False)
+        tracks = info.get("subtitles") or {}
+        automatic = info.get("automatic_captions") or {}
+        candidates = []
+        for language in ("ko", "ko-KR"):
+            candidates.extend(tracks.get(language, []))
+            candidates.extend(automatic.get(language, []))
+        if not candidates:
+            for language, formats in {**automatic, **tracks}.items():
+                if str(language).casefold().startswith("ko"):
+                    candidates.extend(formats)
+        preferred = next((item for item in candidates if item.get("ext") == "json3"), None)
+        preferred = preferred or next((item for item in candidates if item.get("ext") == "vtt"), None)
+        if not preferred or not preferred.get("url"):
+            raise ValueError("영상에 분석 가능한 한국어 자막이 없습니다.")
+        request = Request(preferred["url"], headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(request, timeout=30) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+        if preferred.get("ext") == "json3":
+            payload = json.loads(raw)
+            lines = [
+                "".join(str(segment.get("utf8", "")) for segment in event.get("segs", []))
+                for event in payload.get("events", []) if event.get("segs")
+            ]
+        else:
+            lines = [
+                re.sub(r"<[^>]+>", "", line).strip()
+                for line in raw.splitlines()
+                if line.strip() and "-->" not in line and not line.startswith(("WEBVTT", "Kind:", "Language:"))
+            ]
+        transcript = "\n".join(dict.fromkeys(line for line in lines if line and not line.isdigit())).strip()
+        if len(transcript) < 80:
+            raise ValueError("한국어 자막 분량이 너무 짧아 말투를 분석할 수 없습니다.")
+        return transcript, str(info.get("title", "YouTube 영상")), str(info.get("webpage_url") or url)
+
+    def _learn_video_preference(self, data):
+        url = str(data.get("url", "")).strip()
+        setting = str(data.get("setting", "response_style")).strip()
+        subject = str(data.get("subject", "")).strip()
+        try:
+            transcript, title, canonical_url = self._youtube_transcript(url)
+            speaker_corpus = self._local_speaker_corpus(subject)
+            if not speaker_corpus:
+                raise ValueError(
+                    f"'{subject}' 화자만 분리된 학습 문장이 없어 영상 속 여러 인물의 말투를 구분할 수 없습니다."
+                )
+            from core.llm import get_llm_client
+            response = get_llm_client("reasoning").chat([
+                {"role": "system", "content": (
+                    "화자 분리 문장을 주 근거로, 영상 전체 자막은 보조 맥락으로만 사용해 고수준 말투 특성을 분석하세요. "
+                    "대사를 복제하거나 다른 화자의 특징을 섞지 마세요. JSON만 출력하세요: "
+                    '{"summary":"근거 요약","preference":"120자 이내의 자연스러운 한국어 응답 행동 지침"}'
+                )},
+                {"role": "user", "content": (
+                    f"대상: {subject}\n영상: {title}\n\n화자 분리 문장:\n{speaker_corpus[:5000]}"
+                    f"\n\n영상 전체 자막(보조 자료):\n{transcript[:3000]}"
+                )},
+            ]).strip()
+            try:
+                match = re.search(r"\{.*\}", response, re.S)
+                learned = json.loads(match.group(0) if match else response)
+                summary = " ".join(str(learned.get("summary", "")).split())
+                preference = " ".join(str(learned.get("preference", "")).split())
+            except (TypeError, ValueError, json.JSONDecodeError):
+                fallback = get_llm_client("reasoning").chat([
+                    {"role": "system", "content": (
+                        "화자 분리 문장에서 확인되는 말투만 120자 이내의 한국어 행동 지침 한 문장으로 요약하세요. "
+                        "대사를 복제하거나 이름을 넣지 말고 설명 없이 문장만 출력하세요."
+                    )},
+                    {"role": "user", "content": f"대상: {subject}\n화자 분리 문장:\n{speaker_corpus[:3500]}"},
+                ]).strip()
+                if not fallback or fallback.startswith(("오류", "Error", "HTTP")):
+                    raise ValueError("영상 말투 요약 모델이 유효한 응답을 반환하지 않았습니다.")
+                summary = fallback[:160]
+                preference = fallback[:160]
+            if not summary or not preference:
+                raise ValueError("영상 근거에서 적용 가능한 말투 지침을 추출하지 못했습니다.")
+            query = f"YouTube {subject} 캐릭터 말투"
+            preference = self._normalize_learned_preference(query, preference)
+            try:
+                self._validate_learned_preference(query, preference)
+            except ValueError:
+                preference = self._corpus_style_instruction(speaker_corpus)
+                self._validate_learned_preference(query, preference)
+            from core.assistant_settings import get_assistant_settings
+            saved = get_assistant_settings().set(setting, preference)
+            from core.rag import get_rag_manager
+            doc_id = "web-learning-" + hashlib.sha256((canonical_url + saved).encode("utf-8")).hexdigest()[:16]
+            rag = get_rag_manager()
+            rag.add_text_document(
+                f"영상: {title}\n대상: {subject}\n검증 요약: {summary}\n적용 설정: {saved}\n출처: {canonical_url}",
+                doc_id=doc_id, namespace="global", source_uri=f"web-learning://{doc_id}",
+                metadata={"source_type": "web", "kind": "learned_preference", "query": canonical_url},
+            )
+            recalled = rag.search_docs(subject, top_k=10, metadata_filter={"source_type": "web"}, include_stale=True)
+            if not any(str(item.get("doc_id", "")) == doc_id for item in recalled):
+                raise RuntimeError("저장 직후 RAG 재조회 검증에 실패했습니다.")
+            return ToolRunResult.successful(
+                tool_name="browser_learn_video_preference",
+                raw_output=f"영상의 한국어 자막을 실제 분석해 말투 설정과 RAG에 반영했어. 현재 지침: {saved}",
+                evidence=[Evidence("video_learning", "영상 자막·설정 저장·RAG 재조회를 확인했습니다.", {
+                    "url": canonical_url, "title": title, "transcript_chars": len(transcript),
+                    "speaker_corpus_chars": len(speaker_corpus), "setting": setting,
+                    "saved": saved, "rag_doc_id": doc_id,
+                })], artifacts=[Artifact("url", canonical_url), Artifact("knowledge", f"web-learning://{doc_id}")],
+            )
+        except Exception as exc:
+            return ToolRunResult.failed(
+                tool_name="browser_learn_video_preference",
+                error=f"영상을 실제 분석해 학습하지 못했습니다: {exc}",
+            )
+
+    @staticmethod
+    def _local_speaker_corpus(subject: str) -> str:
+        root = Path("data") / "voice_training"
+        if not root.is_dir() or not subject:
+            return ""
+        normalized = re.sub(r"\W+", "", subject).casefold()
+        speaker_dir = next(
+            (path for path in root.iterdir() if path.is_dir()
+             and re.sub(r"\W+", "", path.name).casefold() == normalized),
+            None,
+        )
+        if speaker_dir is None:
+            return ""
+        priorities = (
+            f"{subject}.quality.curated.list", f"{subject}.bright.list",
+            f"{subject}.aligned.list", f"{subject}.quality.list", f"{subject}.list",
+        )
+        files = []
+        for name in priorities:
+            match = next((path for path in speaker_dir.glob("*.list") if path.name.casefold() == name.casefold()), None)
+            if match:
+                files.append(match)
+        if not files:
+            files = list(speaker_dir.glob("*.list"))
+        lines = []
+        for path in files:
+            for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                parts = raw.split("|", 3)
+                text = parts[3].strip() if len(parts) == 4 else ""
+                if text and text not in lines:
+                    lines.append(text)
+                if len(lines) >= 160:
+                    return "\n".join(lines)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _corpus_style_instruction(corpus: str) -> str:
+        lines = [line.strip() for line in str(corpus or "").splitlines() if line.strip()]
+        if not lines:
+            raise ValueError("화자 분리 문장이 비어 있어 말투 지침을 만들 수 없습니다.")
+        text = " ".join(lines)
+        traits = []
+        if any(token in text for token in ("농담", "놀러", "심심", "진짜", "뭐야", "어우", "오?")):
+            traits.append("밝고 장난스러운")
+        if sum(line.count("?") for line in lines) / max(1, len(lines)) >= 0.08:
+            traits.append("질문과 감탄을 자연스럽게 섞는")
+        serious = any(token in text for token in ("걱정", "지키", "포기", "힘내", "위험", "잘못"))
+        address = "호칭에는 님을 붙이고, " if "님" in text else ""
+        tone = " ".join(traits[:2]) or "친근하고 솔직한"
+        ending = " 중요한 상황에서는 차분하고 진지하게 말해." if serious else ""
+        return f"{address}{tone} 자연스러운 반말로 대답해.{ending}".strip()
 
     def _download(self, data):
         from core.harness import SafetyLayer

@@ -68,7 +68,7 @@ def test_compound_address_and_speech_style_are_both_applied(monkeypatch):
     assert resolution.slots["setting"] == "user_address"
     assert resolution.slots["value"] == "지휘관님"
     assert resolution.slots["additional_changes"] == {
-        "response_style": "자연스러운 반말로 대답"
+        "response_style": "호칭에는 님을 붙이고 나머지는 자연스러운 반말로 대답"
     }
 
     settings = AssistantSettings(MemoryProfile())
@@ -76,7 +76,7 @@ def test_compound_address_and_speech_style_are_both_applied(monkeypatch):
     result = plugin.execute_tool(resolution.tool_name, resolution.slots)
     assert result.succeeded
     assert settings.get("user_address") == "지휘관님"
-    assert settings.get("response_style") == "자연스러운 반말로 대답"
+    assert settings.get("response_style") == "호칭에는 님을 붙이고 나머지는 자연스러운 반말로 대답"
 
 
 def test_profile_question_is_not_misrouted_to_repeat_text(monkeypatch):
@@ -104,11 +104,15 @@ def test_direct_conversation_behavior_instruction_becomes_persistent_setting():
 def test_response_style_understands_style_before_or_after_answer_verb():
     plugin = PreferencesPlugin()
     registry = PluginRegistry(); registry.register_plugin(plugin)
-    for utterance in ("아니스 지금부터 반말로 대답해", "나에게 대답할 때 반말로 해"):
+    for utterance in ("아니스 지금부터 반말로 대답해", "나에게 대답할 때 반말로 해", "반말로 말해줘"):
         resolution = IntentRouter(registry).resolve(utterance)
         assert resolution.ready
         assert resolution.slots["setting"] == "response_style"
         assert resolution.slots["value"] == "자연스러운 반말로 대답"
+
+    detailed = IntentRouter(registry).resolve("아니스는 기본적으로 호칭만 님을 붙이고 반말을 사용해")
+    assert detailed.ready and detailed.slots["setting"] == "response_style"
+    assert detailed.slots["value"] == "호칭에는 님을 붙이고 나머지는 자연스러운 반말로 대답"
 
 
 def test_leading_wake_word_is_removed_without_touching_subject_mentions():
@@ -124,3 +128,23 @@ def test_banmal_style_applies_to_tool_result_before_address():
     assert _apply_requested_style("프로그램을 실행했습니다, 지휘관님.", "자연스러운 반말로 대답") == (
         "프로그램을 실행했어, 지휘관님."
     )
+
+
+def test_banmal_style_does_not_mix_honorific_connectors():
+    from core.agent_services import _apply_requested_style
+    assert _apply_requested_style(
+        "조회 대상을 더 구체적으로 말씀해 주시면 다시 확인하겠습니다, 지휘관님.",
+        "자연스러운 반말로 대답",
+    ) == "조회 대상을 더 구체적으로 말해 주면 다시 확인할게, 지휘관님."
+
+
+def test_banmal_style_normalizes_common_mixed_endings():
+    from core.agent_services import _apply_requested_style
+    assert _apply_requested_style(
+        "알겠습니다, 지휘관님. 영상을 봤어요. 더 필요한 건가요?",
+        "자연스러운 반말로 대답",
+    ) == "알겠어, 지휘관님. 영상을 봤어. 더 필요한 거야?"
+    assert _apply_requested_style(
+        "아직 학습하지 않았어요. 추가할 내용은 없으시나요?",
+        "자연스러운 반말로 대답",
+    ) == "아직 학습하지 않았어. 추가할 내용은 없어?"

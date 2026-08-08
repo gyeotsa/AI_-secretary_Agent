@@ -104,7 +104,7 @@ class HardwareManager:
             download_root=Config.WHISPER_CACHE_DIR,
         )
 
-    def set_output_active(self, active: bool, cooldown: float = 0.5) -> None:
+    def set_output_active(self, active: bool, cooldown: float = 1.2) -> None:
         """TTS 출력이 마이크 명령으로 되먹임되지 않도록 입력 처리를 잠시 멈춥니다."""
         if active:
             self._output_active.set()

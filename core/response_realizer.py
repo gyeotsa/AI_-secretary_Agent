@@ -38,7 +38,10 @@ def protected_facts(canonical: str) -> list[str]:
 class ResponseRealizer:
     """Use an LLM only as a wording layer over an already verified result."""
 
-    EXCLUDED_TOOLS = {"repeat_text", "speak_text", "listen"}
+    EXCLUDED_TOOLS = {
+        "repeat_text", "speak_text", "listen", "browser_learning_status",
+        "browser_learn_video_preference",
+    }
 
     def __init__(self, llm):
         self.llm = llm
