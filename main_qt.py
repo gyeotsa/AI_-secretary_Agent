@@ -497,12 +497,14 @@ class JarvisApp:
             ).start()
     
     def _on_ai_response(self, response_text: str):
+        from core.korean_naturalizer import light_polish_korean
         if hasattr(self.window, "set_assistant_identity"):
             self.window.set_assistant_identity(get_assistant_settings().assistant_name)
         channels = present_channels(response_text, self._response_user_request)
         print("[DEBUG] _on_ai_response technical result:", channels.technical_text)
         response_text = channels.screen_text
         response_text = self._personalize_address(response_text)
+        response_text = light_polish_korean(response_text)
         print("[DEBUG] User-facing response:", response_text)
         # 이모지는 제거하되 상세정보 요청 시 경로와 PID 문법은 보존한다.
         import re

@@ -6,6 +6,10 @@ from typing import List, Optional
 import re
 
 from core.plan_runtime import PlanDAG, PlanStep
+from core.agent_prompt_policy import agent_response_policy
+from core.korean_naturalizer import (
+    analyze_korean_naturalness, korean_writing_guidance, light_polish_korean,
+)
 
 
 class ConversationService:
@@ -41,6 +45,7 @@ class ConversationService:
             "프롬프트 예시, user/assistant 역할표시, 다른 언어 설명을 답변에 노출하지 마세요. "
             f"사용자 호칭은 '{address}'이며 답변에서 최대 한 번만 사용하세요. {persona}{memory_prompt}"
         )
+        prompt += "\n" + agent_response_policy() + "\n" + korean_writing_guidance(style)
         messages = [{"role": "system", "content": prompt}, *recent,
                     {"role": "user", "content": message}]
         response = str(self.llm.chat(messages) or "").strip()
@@ -50,6 +55,8 @@ class ConversationService:
             or ("반말" in style and re.search(r"(?:습니다|세요|해요|까요|입니다)", response))
             or (re.search(r"(?:해|어|아|여|워)\s*봐[.!?]*$", message.strip()) and "세요" in response)
         )
+        naturalness = analyze_korean_naturalness(response)
+        needs_repair = needs_repair or (len(response) >= 180 and naturalness.score >= 4)
         if response and needs_repair:
             response = str(self.llm.chat([
                 {"role": "system", "content": (
@@ -61,6 +68,7 @@ class ConversationService:
             ]) or "").strip()
         response = _sanitize_response(response, message)
         response = _apply_requested_style(response, style)
+        response = light_polish_korean(response)
         return response or f"응, 듣고 있어. 무슨 이야기부터 해볼까, {address}?"
 
 

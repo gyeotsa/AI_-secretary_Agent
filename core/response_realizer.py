@@ -7,6 +7,8 @@ from pathlib import PurePath
 from typing import Iterable
 
 from core.agent_services import _apply_requested_style, _sanitize_response
+from core.agent_prompt_policy import agent_response_policy
+from core.korean_naturalizer import korean_writing_guidance, light_polish_korean
 
 
 _EMAIL = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
@@ -78,6 +80,7 @@ class ResponseRealizer:
             f"응답 말투 설정: {style or '간결하고 자연스러운 존댓말'}. "
             "설명, 머리말, JSON, 역할 표시는 출력하지 마세요."
         )
+        system += "\n" + agent_response_policy() + "\n" + korean_writing_guidance(style)
         try:
             candidate = self.llm.chat([
                 {"role": "system", "content": system},
@@ -85,6 +88,7 @@ class ResponseRealizer:
             ])
             candidate = _sanitize_response(candidate, user_request)
             candidate = _apply_requested_style(candidate, style).strip()
+            candidate = light_polish_korean(candidate)
         except Exception:
             return fallback
         return candidate if self._valid(candidate, fallback, facts) else fallback
