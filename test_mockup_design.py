@@ -86,7 +86,52 @@ def test_mockup_workspace_and_model_role_are_registered():
 def test_mockup_plugin_exposes_two_stage_contract():
     names = {tool.name for tool in MockupDesignPlugin().get_tools()}
     assert names == {"mockup_learn_style", "mockup_render", "mockup_list_styles",
-                     "mockup_generation_status", "mockup_prepare_generation"}
+                     "mockup_delete_style", "mockup_generation_status", "mockup_prepare_generation"}
+
+
+def test_profile_can_be_deleted_without_deleting_reference(tmp_path):
+    ref = Path(_image(tmp_path / "reference.png", (10, 20, 30)))
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend())
+    profile = runtime.learn_style([str(ref)])
+    assert runtime.delete_profile(profile.profile_id) is True
+    assert runtime.delete_profile(profile.profile_id) is False
+    assert ref.is_file()
+
+
+def test_preview_is_not_finally_saved_until_user_confirms(tmp_path):
+    ref = _image(tmp_path / "ref.png", (10, 20, 30))
+    product = _image(tmp_path / "product.png", (180, 90, 50))
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend())
+    profile = runtime.learn_style([ref])
+    output_dir = tmp_path / "final"
+    preview = runtime.render(profile.profile_id, [product], instruction="따뜻한 광고 시안",
+                             output_dir=output_dir, backend="local", preview_only=True)
+    assert Path(preview["output"]).is_file()
+    assert not output_dir.exists()
+    assert not Path(preview["output"]).with_suffix(".json").exists()
+    saved = runtime.save_preview(preview["output"], output_dir / "confirmed.png", preview)
+    assert Path(saved["output"]).is_file()
+    assert Path(saved["output"]).with_suffix(".json").is_file()
+
+
+def test_instruction_is_metadata_not_implicit_visible_title(tmp_path):
+    ref = _image(tmp_path / "ref.png", (10, 20, 30))
+    product = _image(tmp_path / "product.png", (180, 90, 50))
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend())
+    profile = runtime.learn_style([ref])
+    result = runtime.render(profile.profile_id, [product], instruction="이 문장을 이미지에 쓰지 말고 분위기만 반영",
+                            output_dir=tmp_path / "out", backend="local")
+    assert result["instruction"] == "이 문장을 이미지에 쓰지 말고 분위기만 반영"
+    assert result["composition_plan"]
+
+
+def test_manual_edit_creates_new_non_destructive_preview(tmp_path):
+    source = Path(_image(tmp_path / "source.png", (10, 20, 30), size=(400, 500)))
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend())
+    edited = runtime.transform_preview(source, "rotate_left")
+    assert Path(edited["output"]).is_file()
+    assert Image.open(edited["output"]).size == (500, 400)
+    assert Image.open(source).size == (400, 500)
 
 
 def test_generative_backend_preserves_production_layout_and_records_provenance(tmp_path):

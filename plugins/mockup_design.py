@@ -40,6 +40,10 @@ class MockupDesignPlugin(BasePlugin):
             ToolSchema("mockup_list_styles", "저장된 시안 스타일 프로필을 조회합니다", {
                 "type": "object", "properties": {}, "additionalProperties": False,
             }, side_effect="read"),
+            ToolSchema("mockup_delete_style", "저장된 시안 스타일 프로필 하나를 삭제합니다", {
+                "type": "object", "properties": {"profile_id": {"type": "string"}},
+                "required": ["profile_id"], "additionalProperties": False,
+            }, ["filesystem_write"], side_effect="change"),
             ToolSchema("mockup_generation_status", "생성형 시안 모델의 설치 및 GPU 준비 상태를 조회합니다", {
                 "type": "object", "properties": {}, "additionalProperties": False,
             }, side_effect="read"),
@@ -73,6 +77,15 @@ class MockupDesignPlugin(BasePlugin):
                 return ToolRunResult.successful(
                     tool_name=name, raw_output=json.dumps(profiles, ensure_ascii=False),
                     evidence=[Evidence("mockup_style_catalog", f"스타일 프로필 {len(profiles)}개를 조회했습니다.", {"profiles": profiles})],
+                )
+            if name == "mockup_delete_style":
+                deleted = self._runtime().delete_profile(data["profile_id"])
+                if not deleted:
+                    return ToolRunResult.failed(tool_name=name, error="해당 스타일 프로필이 없습니다.")
+                return ToolRunResult.successful(
+                    tool_name=name, raw_output="선택한 시안 스타일 프로필을 삭제했습니다.",
+                    evidence=[Evidence("mockup_style_deleted", "원본 참고 이미지는 유지했습니다.",
+                                       {"profile_id": data["profile_id"]})],
                 )
             if name == "mockup_generation_status":
                 status = self._runtime().generation_status()

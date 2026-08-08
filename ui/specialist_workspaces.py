@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QPushButton, QSplitter, QTextEdit,
     QVBoxLayout, QWidget, QInputDialog, QMessageBox, QLineEdit, QComboBox,
+    QSlider,
 )
 
 from core.specialist_workspaces import SpecialistWorkspaceSpec
@@ -238,6 +239,9 @@ class MockupWorkspaceWindow(QMainWindow):
         self.runtime = runtime or MockupDesignRuntime()
         self.reference_paths, self.production_paths = [], []
         self.active_profile_id = ""
+        self.preview_history = []
+        self.preview_index = -1
+        self.preview_metadata = {}
         self.setWindowTitle("JARVIS · 시안 제작 전문가")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
         self.resize(1320, 820)
@@ -279,13 +283,21 @@ class MockupWorkspaceWindow(QMainWindow):
             self.reference_list = listing
             self.profile_list = QListWidget(); self.profile_list.setMaximumHeight(150)
             self.profile_list.currentItemChanged.connect(self._select_profile)
-            layout.addWidget(QLabel("저장된 스타일 프로필")); layout.addWidget(self.profile_list)
+            profile_row = QHBoxLayout()
+            profile_row.addWidget(QLabel("저장된 스타일 프로필"), 1)
+            delete_profile = QPushButton("선택 프로필 삭제")
+            delete_profile.clicked.connect(self._delete_profile)
+            profile_row.addWidget(delete_profile)
+            layout.addLayout(profile_row); layout.addWidget(self.profile_list)
             analyze = QPushButton("참고 시안 분석·학습")
             analyze.clicked.connect(self._learn_style); layout.addWidget(analyze)
         else:
             self.production_list = listing
             self.instruction = QTextEdit(); self.instruction.setMaximumHeight(105)
-            self.instruction.setPlaceholderText("시안 제목과 구체적인 제작 지시를 입력하세요. 첫 줄은 결과 이미지 제목으로 사용됩니다.")
+            self.instruction.setPlaceholderText(
+                "원하는 구성·분위기·색감·배치 등 제작 지시를 자유롭게 입력하세요. "
+                "이 문장은 이미지에 출력되지 않으며 생성 지시로만 사용됩니다."
+            )
             layout.addWidget(self.instruction)
             output_row = QHBoxLayout(); self.output_dir = QLineEdit(str(Path("data/mockup_outputs").resolve()))
             choose = QPushButton("출력 폴더"); choose.clicked.connect(self._choose_output_dir)
@@ -313,7 +325,46 @@ class MockupWorkspaceWindow(QMainWindow):
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter); self.preview.setWordWrap(True)
         layout.addWidget(self.preview, 3)
         self.details = QTextEdit(); self.details.setReadOnly(True); layout.addWidget(self.details, 2)
+        edit_row = QHBoxLayout()
+        self.edit_instruction = QLineEdit()
+        self.edit_instruction.setPlaceholderText("현재 시안을 어떻게 바꿀지 AI에게 지시하세요")
+        ai_edit = QPushButton("AI 수정")
+        ai_edit.clicked.connect(self._edit_with_ai)
+        edit_row.addWidget(self.edit_instruction, 1); edit_row.addWidget(ai_edit)
+        layout.addLayout(edit_row)
+        tools = QHBoxLayout()
+        for label, operation in (("↶", "rotate_left"), ("↷", "rotate_right"),
+                                 ("좌우 반전", "flip_horizontal"), ("상하 반전", "flip_vertical")):
+            button = QPushButton(label); button.clicked.connect(lambda _checked=False, op=operation: self._manual_edit(op))
+            tools.addWidget(button)
+        self.undo_button = QPushButton("실행 취소"); self.undo_button.clicked.connect(self._undo_preview)
+        self.redo_button = QPushButton("다시 실행"); self.redo_button.clicked.connect(self._redo_preview)
+        tools.addWidget(self.undo_button); tools.addWidget(self.redo_button); layout.addLayout(tools)
+        adjust = QHBoxLayout()
+        self.adjust_kind = QComboBox()
+        self.adjust_kind.addItem("밝기", "brightness"); self.adjust_kind.addItem("대비", "contrast")
+        self.adjust_kind.addItem("채도", "saturation"); self.adjust_kind.addItem("선명도", "sharpness")
+        self.adjust_value = QSlider(Qt.Orientation.Horizontal)
+        self.adjust_value.setRange(25, 200); self.adjust_value.setValue(100)
+        apply_adjust = QPushButton("조정 적용"); apply_adjust.clicked.connect(self._apply_adjustment)
+        adjust.addWidget(self.adjust_kind); adjust.addWidget(self.adjust_value, 1); adjust.addWidget(apply_adjust)
+        layout.addLayout(adjust)
+        save_row = QHBoxLayout(); save_row.addStretch(1)
+        self.save_preview_button = QPushButton("미리보기 저장")
+        self.save_preview_button.setEnabled(False); self.save_preview_button.clicked.connect(self._save_preview)
+        save_row.addWidget(self.save_preview_button); layout.addLayout(save_row)
         return panel
+
+    def _delete_profile(self):
+        item = self.profile_list.currentItem()
+        if item is None:
+            QMessageBox.information(self, "스타일 삭제", "삭제할 스타일 프로필을 선택해 주세요."); return
+        profile_id = item.data(Qt.ItemDataRole.UserRole)
+        if QMessageBox.question(self, "스타일 삭제", "선택한 스타일 프로필을 삭제할까요?\n원본 이미지는 삭제하지 않습니다.") != QMessageBox.StandardButton.Yes:
+            return
+        self.runtime.delete_profile(profile_id)
+        if self.active_profile_id == profile_id: self.active_profile_id = ""
+        self._reload_profiles(); self.details.append("\n선택한 스타일 프로필을 삭제했습니다.")
 
     def _add_images(self, learning: bool):
         files, _ = QFileDialog.getOpenFileNames(
@@ -406,22 +457,79 @@ class MockupWorkspaceWindow(QMainWindow):
         try:
             result = self.runtime.render(
                 profile_id, production_paths, instruction=instruction, output_dir=output_dir,
-                backend=backend,
+                backend=backend, preview_only=True,
             )
             self.render_done.emit(result)
         except Exception as exc: self.operation_failed.emit(str(exc))
 
     def _on_render_done(self, result):
+        self._push_preview(result)
+
+    def _push_preview(self, result):
+        self.preview_history = self.preview_history[:self.preview_index + 1]
+        self.preview_history.append(dict(result)); self.preview_index = len(self.preview_history) - 1
+        self.preview_metadata = dict(result)
         pixmap = QPixmap(result["output"])
         if not pixmap.isNull():
             self.preview.setPixmap(pixmap.scaled(610, 510, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         fallback = (f"생성형 자동 대체 사유: {result['generation_fallback_reason']}\n"
                     if result.get("generation_fallback_reason") else "")
         self.details.append(
-            f"\n생성 완료\n{result['output']}\n{result['width']}×{result['height']}\n"
+            f"\n임시 미리보기 생성 완료\n{result['width']}×{result['height']}\n"
             f"렌더러: {result['renderer']}\n{fallback}"
-            "입력 해시와 스타일 프로필이 같은 이름의 JSON에 기록되었습니다."
+            "아직 최종 폴더에 저장되지 않았습니다. 결과를 확인한 뒤 저장 버튼을 눌러 주세요."
         )
+        self.save_preview_button.setEnabled(True)
+        self._update_history_buttons()
+
+    def _edit_with_ai(self):
+        if self.preview_index < 0: QMessageBox.information(self, "AI 수정", "먼저 시안 미리보기를 만들어 주세요."); return
+        instruction = self.edit_instruction.text().strip()
+        if not instruction: QMessageBox.information(self, "AI 수정", "수정 지시를 입력해 주세요."); return
+        self.details.append("\nAI가 현재 미리보기를 수정하고 있습니다…")
+        threading.Thread(target=self._ai_edit_worker, args=(self.preview_history[self.preview_index]["output"], instruction), daemon=True).start()
+
+    def _ai_edit_worker(self, path, instruction):
+        try: self.render_done.emit(self.runtime.edit_preview(path, instruction))
+        except Exception as exc: self.operation_failed.emit(str(exc))
+
+    def _manual_edit(self, operation, value=1.0):
+        if self.preview_index < 0: return
+        try: self._push_preview(self.runtime.transform_preview(self.preview_history[self.preview_index]["output"], operation, value))
+        except Exception as exc: self._on_failed(str(exc))
+
+    def _apply_adjustment(self):
+        self._manual_edit(self.adjust_kind.currentData(), self.adjust_value.value() / 100.0)
+        self.adjust_value.setValue(100)
+
+    def _undo_preview(self):
+        if self.preview_index > 0:
+            self.preview_index -= 1; self._show_history_preview()
+
+    def _redo_preview(self):
+        if self.preview_index + 1 < len(self.preview_history):
+            self.preview_index += 1; self._show_history_preview()
+
+    def _show_history_preview(self):
+        result = self.preview_history[self.preview_index]; self.preview_metadata = dict(result)
+        pixmap = QPixmap(result["output"])
+        self.preview.setPixmap(pixmap.scaled(610, 510, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self._update_history_buttons()
+
+    def _update_history_buttons(self):
+        self.undo_button.setEnabled(self.preview_index > 0)
+        self.redo_button.setEnabled(self.preview_index + 1 < len(self.preview_history))
+
+    def _save_preview(self):
+        if self.preview_index < 0: return
+        default_dir = Path(self.output_dir.text()).expanduser()
+        default_dir.mkdir(parents=True, exist_ok=True)
+        filename, _ = QFileDialog.getSaveFileName(self, "시안 저장", str(default_dir / "mockup.png"), "PNG 이미지 (*.png)")
+        if not filename: return
+        try:
+            result = self.runtime.save_preview(self.preview_history[self.preview_index]["output"], filename, self.preview_metadata)
+            self.details.append(f"\n최종 저장 완료: {result['output']}")
+        except Exception as exc: self._on_failed(str(exc))
 
     def _on_failed(self, message: str):
         self.details.append(f"\n오류: {message}")
