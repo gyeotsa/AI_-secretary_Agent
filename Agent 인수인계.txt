@@ -1,4 +1,14 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
+## 2026-08-08 Obsidian Knowledge Vault 연결
+
+- Obsidian을 단순 뷰어로 사용하고 아니스가 Markdown Vault의 분류·원자 노트·Wikilink·RAG 동기화를 관리하는 `core/obsidian_vault.py`와 `obsidian` Plugin을 추가했다.
+- 모든 대화는 감사·재컴파일용 `raw/conversations`에 보관하지만 기본 RAG에서 제외한다. 명시적 기억, 선호, 설정, 프로젝트 결정만 `wiki/`에 승격되고, 일반 질문·명령·잡담은 정규화한 패턴이 3회 이상 반복될 때만 활성 지식이 된다.
+- 각 기억은 중요도, 신뢰도, epistemic status, action, topic, source, workspace를 frontmatter로 보유한다. 주제와 action Map of Content를 만들고 `obsidian_explore`가 최대 깊이 3의 BFS로 Wikilink를 실제 탐색한다.
+- `obsidian_sync_to_rag`는 wiki만 하이브리드 RAG에 넣고, `obsidian_lint`는 깨진 링크·고아·얇은·중복 페이지를 점검한다. 민감정보는 Vault 자동 저장에서도 차단한다.
+- 기본 Vault는 `data/AnisKnowledgeVault`이고 설치된 Obsidian 앱은 URI로 열 수 있다. 다른 Vault는 Plugin 설정 Tool 또는 `OBSIDIAN_VAULT_PATH`로 연결한다.
+- 구현 커밋: `1570003` (`옵시디언 지식 볼트와 그래프 기억 연결`). 새 테스트를 기본 pytest 목록에 포함했고 전체 `383 passed, 4 deselected`를 통과했다.
+- 다음 해야 할 일: 실제 사용 후 중요도 임계값과 반복 승격 기준(현재 3회)을 사용자 데이터에 맞게 조정하고, 필요하면 Vault 상태·린트 결과 UI를 추가한다.
+
 ## 2026-08-08 Post-training 기반 선행 Runtime 개선
 
 - Post-training을 바로 실행하지 않고 실행 trajectory와 사용자 피드백을 먼저 축적하도록 `core/learning_runtime.py`를 추가했다. 민감정보를 마스킹하고 라우팅·Tool 요청·결과·최종 상태를 하나의 실행 ID로 연결한다.
