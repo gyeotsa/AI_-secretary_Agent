@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "automatic_training": false,
+  "human_review_required": true,
+  "minimum_examples": {
+    "sft": 500,
+    "dpo": 200,
+    "verifier_rl": 300
+  },
+  "split_by": "session_id",
+  "splits": {
+    "train": 0.8,
+    "validation": 0.1,
+    "test": 0.1
+  },
+  "adapter_roles": [
+    "conversation",
+    "tool_selection",
+    "code"
+  ],
+  "method": {
+    "sft": "qlora_4bit",
+    "preference": "dpo",
+    "agent": "verifier_reward_only"
+  },
+  "release_gate": {
+    "minimum_application_pass_rate": 0.95,
+    "allow_security_regression": false,
+    "allow_tool_success_regression": false
+  }
+}

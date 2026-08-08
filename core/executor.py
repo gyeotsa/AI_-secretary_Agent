@@ -26,6 +26,10 @@ from core.plan_runtime import PlanCoordinator, PlanDAG, PlanRunResult, PlanStep
 from core.agent_services import ConversationService, PlanningService, ResponseComposer
 from core.assistant_settings import get_assistant_settings
 from core.response_realizer import ResponseRealizer
+from core.learning_runtime import get_learning_runtime, record_runtime_event
+from core.tool_loadout import ToolLoadoutSelector
+from core.reasoning_policy import ReasoningPolicy
+from core.evaluation_runtime import seed_core_evaluation_cases
 
 
 @dataclass
@@ -103,6 +107,10 @@ class Executor:
         self.response_composer = ResponseComposer()
         self.conversation_service = ConversationService(self.llm)
         self.current_plan: Optional[PlanDAG] = None
+        self.learning_runtime = get_learning_runtime()
+        seed_core_evaluation_cases(self.learning_runtime)
+        self.tool_loadout = ToolLoadoutSelector(self.tool_executor.plugin_registry)
+        self.reasoning_policy = ReasoningPolicy()
 
     def initialize(self, goal: str, session_id: Optional[str] = None):
         """초기화: Goal 설정, Scratchpad 초기화, Context 빌드"""
@@ -126,6 +134,39 @@ class Executor:
         return self.execute_turn(goal, session_id, conversation_history, progress_callback, existing_task_id).response
 
     def execute_turn(self, goal: str, session_id: Optional[str] = None,
+                     conversation_history: Optional[List[Dict[str, str]]] = None,
+                     progress_callback: Optional[Callable[[str], None]] = None,
+                     existing_task_id: Optional[str] = None) -> ExecutionOutcome:
+        """Record one complete, privacy-redacted trajectory around the runtime turn."""
+        session_key = session_id or "default"
+        learning_runtime = getattr(self, "learning_runtime", None)
+        if learning_runtime is None:
+            learning_runtime = get_learning_runtime()
+            self.learning_runtime = learning_runtime
+        trajectory_id = learning_runtime.begin(
+            goal, session_id=session_key, workspace=self._workspace_scope(),
+            metadata={"existing_task_id": existing_task_id or ""},
+        )
+        try:
+            outcome = self._execute_turn_impl(
+                goal, session_id, conversation_history, progress_callback, existing_task_id
+            )
+            learning_runtime.finish(
+                trajectory_id, status=outcome.status, response=outcome.response,
+                metadata={"task_id": outcome.task_id, "retry_count": outcome.retry_count,
+                          "completed_steps": outcome.completed_steps,
+                          "failed_steps": outcome.failed_steps},
+            )
+            return outcome
+        except Exception as exc:
+            learning_runtime.event("runtime_exception", {"error": str(exc)}, trajectory_id)
+            learning_runtime.finish(
+                trajectory_id, status="failed", response="",
+                metadata={"exception": type(exc).__name__},
+            )
+            raise
+
+    def _execute_turn_impl(self, goal: str, session_id: Optional[str] = None,
                      conversation_history: Optional[List[Dict[str, str]]] = None,
                      progress_callback: Optional[Callable[[str], None]] = None,
                      existing_task_id: Optional[str] = None) -> ExecutionOutcome:
@@ -173,6 +214,30 @@ class Executor:
         if is_new_request:
             goal = re.sub(r"^새 작업\s*[:：]\s*", "", goal, flags=re.I)
         direct_resolution = self.intent_router.resolve(goal)
+        tool_loadout = getattr(self, "tool_loadout", None)
+        if tool_loadout is None:
+            tool_loadout = ToolLoadoutSelector(self.intent_router.registry)
+            self.tool_loadout = tool_loadout
+        reasoning_policy = getattr(self, "reasoning_policy", None)
+        if reasoning_policy is None:
+            reasoning_policy = ReasoningPolicy()
+            self.reasoning_policy = reasoning_policy
+        loadout = tool_loadout.select(goal, direct_resolution)
+        effort = reasoning_policy.decide(
+            direct_resolution, required_tool_count=len(loadout.tool_names),
+            has_pending_task=False,
+            risky=any(
+                (contract := self.intent_router.registry.get_capability(name))
+                and contract.side_effect in {"external_send"}
+                for name in loadout.tool_names
+            ),
+        )
+        record_runtime_event(
+            "routing_decision", intent=direct_resolution.intent_name,
+            confidence=direct_resolution.confidence, alternatives=direct_resolution.alternatives,
+            loadout=list(loadout.tool_names), loadout_reason=loadout.reason,
+            reasoning_level=effort.level, use_planner=effort.use_planner,
+        )
         if direct_resolution.matched:
             print(
                 f"[Router] intent={direct_resolution.intent_name} "
@@ -990,8 +1055,11 @@ class Executor:
     def _allowed_tools_for_goal(self, goal: str) -> Optional[List[str]]:
         if not hasattr(self, "intent_router"):
             return None
+        if not hasattr(self, "tool_loadout"):
+            self.tool_loadout = ToolLoadoutSelector(self.intent_router.registry)
         resolution = self.intent_router.resolve(goal)
-        return [resolution.tool_name] if resolution.matched and resolution.tool_name else None
+        loadout = self.tool_loadout.select(goal, resolution)
+        return list(loadout.tool_names)
 
     def _tool_domain_error(self, action: Dict[str, Any]) -> Optional[str]:
         if action.get("action_type") != "use_tool":
@@ -1141,7 +1209,14 @@ class Executor:
 
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
         """Tool 실행"""
-        return self.tool_executor.execute_tool(tool_name, tool_input)
+        record_runtime_event("tool_requested", tool_name=tool_name, tool_input=tool_input)
+        result = self.tool_executor.execute_tool(tool_name, tool_input)
+        record_runtime_event(
+            "tool_completed", tool_name=tool_name,
+            status=(result.status.value if isinstance(result, ToolRunResult) else "legacy"),
+            result=(result.to_dict() if isinstance(result, ToolRunResult) else result),
+        )
+        return result
 
     def verify_execution(self, task: Task, tool_name: str, tool_input: Dict[str, Any], result: str) -> bool:
         """실행 결과 검증: ToolVerifier를 사용해 정교하게 확인"""

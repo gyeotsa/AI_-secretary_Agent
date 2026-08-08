@@ -162,12 +162,24 @@ P11 선제 알림은 중요도와 발생 이유를 원장에 기록합니다. �
 6. 화면 응답, TTS 문장, 개발자 로그를 분리합니다.
 7. 기능 존재와 실제 E2E 완료를 구분해 문서에 표시합니다.
 
+## 평가·학습 준비 Runtime
+
+모든 대화 턴은 개인정보를 마스킹한 trajectory로 기록되며 라우팅, 제한된 Tool Loadout,
+도구 실행 결과와 검증 상태가 하나의 실행 ID로 연결됩니다. 사용자 피드백은 즉시 모델을
+바꾸지 않고 검토 대기 데이터로 저장됩니다. `python scripts/export_post_training_data.py`로
+SFT·DPO·Verifier-RL 후보를 내보낼 수 있지만 자동 학습과 자동 배포는 금지되어 있습니다.
+
+RAG는 BM25 성격의 어휘 검색과 벡터 검색을 독립 수행한 뒤 RRF로 병합하고, 선택적으로
+Cross-Encoder로 재정렬합니다. 신뢰도가 기준보다 낮으면 문서 내용을 사실로 단정하지
+않고 확인 또는 실시간 검색으로 전환합니다.
+
 ## 문서
 
 - [AGENT_RUNTIME_ROADMAP.md](AGENT_RUNTIME_ROADMAP.md): Codex급 에이전트로 가기 위한 통합 개선 계획
 - [PROJECT_REVIEW.md](PROJECT_REVIEW.md): 현재 구현의 검토 결과와 기술 부채
 - [PLUGIN_ROADMAP.md](PLUGIN_ROADMAP.md): Plugin 연결 현황과 확장 순서
 - [MODEL_ROUTING.md](MODEL_ROUTING.md): 역할별 모델과 GPU 정책
+- [POST_TRAINING.md](POST_TRAINING.md): 평가 데이터, QLoRA·DPO·Verifier-RL 진입 기준
 - [DEPLOYMENT.md](DEPLOYMENT.md): Windows 설치본과 배포 제한
 - [Level2 리팩토링 10단계.txt](Level2%20리팩토링%2010단계.txt): 2026-07-22 기반 리팩터링 기록
 - [Agent 인수인계.txt](Agent%20인수인계.txt): 작업 이력과 필수 운영 규칙

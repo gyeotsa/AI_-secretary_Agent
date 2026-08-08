@@ -37,13 +37,14 @@ class ConversationService:
         prompt = (
             f"당신은 로컬 개인 비서 '{assistant_name or '자비스'}'입니다. 지금 요청은 도구 실행이 아닌 일반 대화입니다. "
             "도구를 찾거나 실행했다고 주장하지 마세요. URL이나 영상을 실제로 열지 않았다면 봤거나 학습했다고 말하지 마세요. "
+            "실제로 실행하지 않은 외부 작업을 완료했다고 절대 주장하지 마세요. "
             "사용자가 웃기·인사하기처럼 직접 수행할 수 있는 표현을 요청하면 명령을 되돌리지 말고 짧게 직접 반응하세요. "
             "최근 발화의 맥락과 감정을 먼저 반영하고 "
             "자연스럽고 간결한 한국어로 답하세요. 최신 정보가 필요하면 확인이 필요하다고 말하세요. "
             "사용자의 이메일·전화번호·주소·이름 같은 개인 식별정보는 제공된 대화나 저장된 "
             "프로필에 실제 값이 없으면 절대 만들어내지 말고 모른다고 답하세요. "
             "프롬프트 예시, user/assistant 역할표시, 다른 언어 설명을 답변에 노출하지 마세요. "
-            f"사용자 호칭은 '{address}'이며 답변에서 최대 한 번만 사용하세요. {persona}{memory_prompt}"
+            f"사용자 호칭은 반드시 '{address}'로 사용하고 답변에서 최대 한 번만 사용하세요. {persona}{memory_prompt}"
         )
         prompt += "\n" + agent_response_policy() + "\n" + korean_writing_guidance(style)
         messages = [{"role": "system", "content": prompt}, *recent,
@@ -62,6 +63,7 @@ class ConversationService:
                 {"role": "system", "content": (
                     f"아래 초안을 사용자의 질문에 대한 자연스러운 한국어 답변으로 한 번만 고쳐 써. "
                     f"역할표시·예시·외국어를 넣지 말고, 사용자 호칭은 '{address}'로 최대 한 번만 써. "
+                    "실제로 실행하지 않은 외부 작업을 완료했다고 절대 주장하지 마세요. "
                     f"적용할 스타일: {style or '간결하고 자연스러운 말투'}"
                 )},
                 {"role": "user", "content": f"질문: {message}\n초안: {response}"},
@@ -69,6 +71,20 @@ class ConversationService:
         response = _sanitize_response(response, message)
         response = _apply_requested_style(response, style)
         response = light_polish_korean(response)
+        execution_request = re.search(
+            r"(?:생성|작성|수정|변경|삭제|저장|전송|발송|실행|설치|등록|예약|열기|닫기|만들|고쳐|지워|보내).{0,24}(?:해\s*줘|해주세요|줄래|줘|주세요)",
+            message, re.I | re.S,
+        )
+        completion_claim = re.search(
+            r"(?:생성|작성|수정|변경|삭제|저장|전송|발송|실행|설치|등록|예약)"
+            r"(?:을|를|이|가|은|는)?\s*(?:완료|성공|했어|했습니다|됐어|되었습니다)",
+            response, re.I,
+        )
+        if execution_request and completion_claim:
+            return (
+                "아직 실제 작업을 실행하지 않았습니다. 이 요청은 현재 실행 가능한 도구 계약으로 "
+                "연결되지 않았으므로 완료로 보고하지 않겠습니다."
+            )
         return response or f"응, 듣고 있어. 무슨 이야기부터 해볼까, {address}?"
 
 

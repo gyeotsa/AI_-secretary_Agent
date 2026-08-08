@@ -5,6 +5,7 @@ from core.scratchpad import get_scratchpad
 import os
 import platform
 from core.assistant_settings import get_assistant_settings
+from core.context_lifecycle import ContextLifecycleManager
 
 
 class ContextManager:
@@ -22,6 +23,7 @@ class ContextManager:
         self.memory = get_memory()
         self.rag = get_rag()
         self.scratchpad = get_scratchpad()
+        self.lifecycle = ContextLifecycleManager()
 
     def get_full_context(self, user_query: str = "", session_id: Optional[str] = None) -> str:
         """
@@ -45,7 +47,7 @@ class ContextManager:
         if session_id:
             conversation = self.memory.load_session(session_id)
             if conversation:
-                recent_messages = conversation[-10:]  # 최근 10개만
+                recent_messages = self.lifecycle.compact_messages(conversation)
                 assistant_name = get_assistant_settings().assistant_name
                 conv_str = "\n".join([
                     f"{'사용자' if msg['role'] == 'user' else assistant_name}: {msg['content']}"
@@ -55,8 +57,9 @@ class ContextManager:
 
         # 3. RAG 문서 (사용자 쿼리와 관련된 것)
         if user_query:
-            rag_docs = self.rag.search_docs(user_query)
-            if rag_docs:
+            retrieval = self.rag.search_with_confidence(user_query)
+            rag_docs = retrieval["results"]
+            if retrieval["answerable"]:
                 rag_str = "\n".join([
                     (
                         f"근거 [{doc.get('chunk_id') or doc.get('citation', {}).get('chunk_id', i + 1)}] "
@@ -69,6 +72,11 @@ class ContextManager:
                     "\n[관련 문서와 인용 근거]\n"
                     "문서 기반 주장을 답변에 사용할 때 해당 [근거 ID]를 함께 표시하세요.\n"
                     + rag_str
+                )
+            elif rag_docs:
+                context_parts.append(
+                    "\n[RAG 검색 상태]\n관련 후보는 있으나 신뢰도가 낮습니다. "
+                    "이 자료만으로 사실을 단정하지 말고 사용자에게 확인하거나 실시간 검색을 사용하세요."
                 )
 
         # 4. Scratchpad (현재 작업 상태)

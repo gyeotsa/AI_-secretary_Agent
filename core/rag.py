@@ -361,15 +361,100 @@ class VectorRAGManager:
     
     def search_docs(self, query: str, top_k: int = 3, metadata_filter: dict | None = None,
                     include_stale: bool = False) -> list:
-        """검색 결과를 dict 리스트로 반환 (기존 str 대신)"""
+        """Hybrid retrieval: vector + lexical RRF, optional cross-encoder reranking."""
         self.sync_index()
         if not self.documents:
             return []
         
         if self.use_vector_rag:
-            return self._vector_search(query, top_k, metadata_filter, include_stale)
+            return self._hybrid_search(query, top_k, metadata_filter, include_stale)
         else:
-            return self._simple_search(query, top_k, metadata_filter, include_stale)
+            results = self._simple_search(query, top_k, metadata_filter, include_stale)
+            return self._attach_confidence(results, query)
+
+    def search_with_confidence(self, query: str, top_k: int = 3,
+                               metadata_filter: dict | None = None,
+                               include_stale: bool = False,
+                               threshold: float = 0.42) -> dict:
+        results = self.search_docs(query, top_k, metadata_filter, include_stale)
+        confidence = float(results[0].get("retrieval_confidence", 0.0)) if results else 0.0
+        return {
+            "results": results,
+            "confidence": confidence,
+            "answerable": bool(results and confidence >= threshold),
+            "reason": "근거가 충분합니다." if results and confidence >= threshold
+                      else "검색 근거가 부족하여 추측하지 않습니다.",
+        }
+
+    def _all_lexical_candidates(self, query: str) -> list[dict]:
+        tokens = set(re.findall(r"[0-9a-zA-Z가-힣]+", query.casefold()))
+        candidates = []
+        for document in self.documents.values():
+            if document.get("namespace", "global") not in {"global", self.namespace}:
+                continue
+            for record in document.get("chunk_metadata", []):
+                words = set(re.findall(r"[0-9a-zA-Z가-힣]+", str(record.get("content", "")).casefold()))
+                exact = len(tokens & words)
+                partial = sum(1 for token in tokens if len(token) >= 2 and any(token in word for word in words))
+                if exact or partial:
+                    candidates.append({**record, "source": document.get("source", ""),
+                                       "lexical_score": exact * 2 + partial})
+        return sorted(candidates, key=lambda item: item["lexical_score"], reverse=True)
+
+    def _hybrid_search(self, query: str, top_k: int, metadata_filter=None,
+                       include_stale=False) -> list:
+        """Merge independent vector and lexical rankings with reciprocal-rank fusion."""
+        fetch_k = max(top_k * 5, 20)
+        namespace_filter = {"$or": [{"namespace": value} for value in sorted({"global", self.namespace})]}
+        try:
+            raw = self.collection.query(query_texts=[query], n_results=fetch_k, where=namespace_filter)
+            vector = [
+                {"content": content, "source": meta.get("source", ""), **meta,
+                 "vector_distance": float(distance)}
+                for content, meta, distance in zip(
+                    raw.get("documents", [[]])[0], raw.get("metadatas", [[]])[0],
+                    raw.get("distances", [[1.0] * fetch_k])[0],
+                )
+            ]
+        except Exception as exc:
+            print(f"[RAG] Vector 후보 검색 오류: {exc}")
+            vector = []
+        lexical = self._all_lexical_candidates(query)[:fetch_k]
+        fused: dict[str, dict] = {}
+        for channel, ranking in (("vector", vector), ("lexical", lexical)):
+            for rank, item in enumerate(ranking, 1):
+                key = str(item.get("chunk_id") or hashlib.sha256(
+                    str(item.get("content", "")).encode("utf-8")
+                ).hexdigest())
+                merged = fused.setdefault(key, dict(item, rrf_score=0.0, retrieval_channels=[]))
+                merged.update({k: v for k, v in item.items() if k not in merged})
+                merged["rrf_score"] += 1.0 / (60 + rank)
+                merged["retrieval_channels"].append(channel)
+        candidates = list(fused.values())
+        if self.reranker and candidates:
+            scores = self.reranker.predict([(query, item.get("content", "")) for item in candidates])
+            for item, score in zip(candidates, scores):
+                item["reranker_score"] = float(score)
+            candidates.sort(key=lambda item: (item["reranker_score"], item["rrf_score"]), reverse=True)
+        else:
+            candidates.sort(key=lambda item: item["rrf_score"], reverse=True)
+        for item in candidates:
+            item["score"] = float(item.get("reranker_score", 0.0)) + float(item["rrf_score"] * 100)
+        filtered = self._filter_and_rerank(query, candidates, max(top_k * 2, top_k), metadata_filter, include_stale)
+        return self._attach_confidence(filtered[:top_k], query)
+
+    @staticmethod
+    def _attach_confidence(results: list[dict], query: str) -> list[dict]:
+        if not results:
+            return results
+        query_tokens = set(re.findall(r"[0-9a-zA-Z가-힣]+", query.casefold()))
+        for index, item in enumerate(results):
+            content_tokens = set(re.findall(r"[0-9a-zA-Z가-힣]+", str(item.get("content", "")).casefold()))
+            coverage = len(query_tokens & content_tokens) / max(1, len(query_tokens))
+            channels = len(set(item.get("retrieval_channels", []))) / 2
+            rank_prior = 1 / (index + 1)
+            item["retrieval_confidence"] = round(min(1.0, coverage * 0.55 + channels * 0.3 + rank_prior * 0.15), 4)
+        return results
     
     def _vector_search(self, query: str, top_k: int, metadata_filter=None, include_stale=False) -> list:
         """Vector DB 기반 검색 + Reranker"""

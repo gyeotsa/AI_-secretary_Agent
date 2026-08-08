@@ -78,6 +78,9 @@ class APIConfig:
     MAX_TOKENS: int = field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "4096")))
     TEMPERATURE: float = field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0.7")))
     DB_PATH: str = field(default_factory=lambda: os.getenv("DB_PATH", _default_data_path("assistant.db")))
+    LEARNING_DB_PATH: str = field(
+        default_factory=lambda: os.getenv("LEARNING_DB_PATH", _default_data_path("learning.db"))
+    )
     RAG_EMBEDDING_MODEL_PATH: str = field(
         default_factory=lambda: os.getenv(
             "RAG_EMBEDDING_MODEL_PATH",
@@ -201,6 +204,11 @@ class Config:
     @property
     def DB_PATH(cls):
         return cls.API_CONFIG.DB_PATH
+
+    @classmethod
+    @property
+    def LEARNING_DB_PATH(cls):
+        return cls.API_CONFIG.LEARNING_DB_PATH
 
     @classmethod
     @property

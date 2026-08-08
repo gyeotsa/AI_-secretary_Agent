@@ -1,5 +1,6 @@
 import os
 import shlex
+import re
 from config import Config
 
 
@@ -69,4 +70,23 @@ class SafetyLayer:
     @staticmethod
     def sanitize_input(text: str) -> str:
         """기본적인 입력 정화"""
-        return text.strip()
+        # Terminal escape/control sequences must not cross the LLM/tool boundary.
+        text = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", str(text))
+        return "".join(ch for ch in text if ch in "\n\t" or ord(ch) >= 32).strip()
+
+    @staticmethod
+    def isolate_untrusted_content(text: str, source: str = "external") -> tuple[str, list[str]]:
+        """Quarantine command-like instructions embedded in web/RAG/tool content."""
+        safe = SafetyLayer.sanitize_input(text)
+        patterns = (
+            r"ignore (?:all |the )?(?:previous|prior) instructions",
+            r"(?:system|developer) prompt", r"reveal .*?(?:secret|token|password)",
+            r"(?:이전|위의) (?:지시|명령).*?(?:무시|따르)",
+            r"시스템 프롬프트", r"(?:비밀번호|토큰|API\s*키).*?(?:출력|공개)",
+        )
+        warnings = []
+        for pattern in patterns:
+            if re.search(pattern, safe, re.I):
+                warnings.append(pattern)
+                safe = re.sub(pattern, f"[격리된 {source} 지시문]", safe, flags=re.I)
+        return safe, warnings
