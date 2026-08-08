@@ -6,6 +6,7 @@ import queue
 import re
 import math
 import json
+import subprocess
 from pathlib import Path
 from config import Config
 from core.assistant_settings import get_assistant_settings
@@ -14,23 +15,47 @@ from core.assistant_settings import get_assistant_settings
 try:
     import sounddevice as sd
     import librosa
-    import torch
     from scipy.signal import resample_poly
     SOUND_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     SOUND_AVAILABLE = False
 
-try:
-    from faster_whisper import WhisperModel as FasterWhisperModel
-    FASTER_WHISPER_AVAILABLE = True
-except ImportError:
-    FASTER_WHISPER_AVAILABLE = False
+FasterWhisperModel = None
 
-try:
-    import whisper
-    OPENAI_WHISPER_AVAILABLE = True
-except ImportError:
-    OPENAI_WHISPER_AVAILABLE = False
+whisper = None
+
+
+def _cuda_device_count() -> int:
+    """Check NVIDIA devices without importing CTranslate2/PyTorch DLLs."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=4, check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return len([line for line in result.stdout.splitlines() if line.strip()]) if result.returncode == 0 else 0
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return 0
+
+
+def _load_faster_whisper_class():
+    global FasterWhisperModel
+    if FasterWhisperModel is None:
+        from faster_whisper import WhisperModel
+        FasterWhisperModel = WhisperModel
+    return FasterWhisperModel
+
+
+def _load_openai_whisper():
+    """Load the heavyweight Torch fallback only after faster-whisper actually failed."""
+    global whisper
+    if whisper is None:
+        try:
+            import whisper as whisper_module
+        except (ImportError, OSError) as exc:
+            raise RuntimeError(f"OpenAI Whisper/Torch fallback을 불러오지 못했습니다: {exc}") from exc
+        whisper = whisper_module
+    return whisper
 
 
 class HardwareManager:
@@ -63,42 +88,44 @@ class HardwareManager:
             # GPU 사용 가능 여부 확인
             requested_device = Config.WHISPER_DEVICE
             if requested_device == "auto":
-                requested_device = "cuda" if torch.cuda.is_available() else "cpu"
-            if requested_device == "cuda" and torch.cuda.is_available():
+                requested_device = "cuda" if _cuda_device_count() > 0 else "cpu"
+            if requested_device == "cuda" and _cuda_device_count() > 0:
                 self.device = "cuda"
-                print(f"[GPU] CUDA를 사용합니다! (GPU: {torch.cuda.get_device_name(0)})")
-            elif requested_device == "mps" and torch.backends.mps.is_available():
-                self.device = "mps"
-                print("[GPU] Apple Silicon MPS를 사용합니다!")
+                print("[GPU] CUDA를 사용합니다! (faster-whisper/CTranslate2)")
             else:
                 self.device = "cpu"
                 print("[CPU] GPU를 사용할 수 없어 CPU를 사용합니다.")
             
             self.stt_engine = Config.STT_ENGINE
             self.whisper_model_name = Config.WHISPER_MODEL
-            self.whisper_model = self._load_stt_model()
+            try:
+                self.whisper_model = self._load_stt_model()
+            except Exception as exc:
+                self.whisper_model = None
+                self.stt_engine = "unavailable"
+                print(f"[STT] 초기화를 건너뜁니다. 텍스트 기능은 계속 사용할 수 있습니다: {exc}")
 
     def _load_stt_model(self):
-        if self.stt_engine == "faster-whisper" and FASTER_WHISPER_AVAILABLE:
+        if self.stt_engine == "faster-whisper":
             compute_type = Config.WHISPER_COMPUTE_TYPE if self.device == "cuda" else "int8"
             print(
                 f"[STT] faster-whisper 모델 로딩: {self.whisper_model_name} "
                 f"(device={self.device}, compute={compute_type})"
             )
             try:
-                return FasterWhisperModel(
+                model_class = _load_faster_whisper_class()
+                return model_class(
                     self.whisper_model_name,
                     device=self.device,
                     compute_type=compute_type,
                 )
             except Exception as exc:
                 print(f"[STT] faster-whisper 초기화 실패, OpenAI Whisper fallback: {exc}")
-        if not OPENAI_WHISPER_AVAILABLE:
-            raise RuntimeError("faster-whisper와 openai-whisper를 모두 초기화할 수 없습니다.")
+        fallback = _load_openai_whisper()
         self.stt_engine = "openai-whisper"
         self.whisper_model_name = Config.WHISPER_FALLBACK_MODEL
         print(f"[STT] OpenAI Whisper fallback 로딩: {self.whisper_model_name}")
-        return whisper.load_model(
+        return fallback.load_model(
             self.whisper_model_name,
             device=self.device,
             download_root=Config.WHISPER_CACHE_DIR,
@@ -414,6 +441,8 @@ class HardwareManager:
         """호출어로 시작하는 음성 명령을 지속적으로 감지합니다."""
         if not SOUND_AVAILABLE:
             return "오류: sounddevice, whisper가 설치되지 않았습니다."
+        if getattr(self, "whisper_model", None) is None:
+            return "오류: STT 모델을 초기화하지 못했습니다. 텍스트 입력은 계속 사용할 수 있습니다."
         
         if self.running:
             return "이미 음성 감지가 실행 중입니다."
@@ -616,6 +645,8 @@ class HardwareManager:
     def start_wakeword_detection(self) -> str:
         if not SOUND_AVAILABLE:
             return "오류: sounddevice, whisper가 설치되지 않았습니다."
+        if getattr(self, "whisper_model", None) is None:
+            return "오류: STT 모델을 초기화하지 못했습니다."
         
         if self.running:
             return "웨이크워드 감지가 이미 실행 중입니다."

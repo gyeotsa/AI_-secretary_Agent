@@ -41,13 +41,12 @@ except ImportError:
     edge_tts = None
 
 try:
-    import whisper
     import sounddevice as sd
     import numpy as np
     import scipy.io.wavfile as wav
 
     WHISPER_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     WHISPER_AVAILABLE = False
 
 

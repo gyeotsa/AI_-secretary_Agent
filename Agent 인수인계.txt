@@ -1819,3 +1819,12 @@ AI_-secretary_Agent/
 - `read_note()`는 Vault 밖 경로를 거부하며 `open_note()`도 실제 Vault 문서만 연다. 그래프 API·라우팅·UI 집중 테스트는 `14 passed`; 실제 오프스크린 창 생성도 `graph_ui_ok`로 확인했다.
 - 전체 GUI 회귀를 함께 실행한 첫 시도는 변경 코드가 아니라 기존 `torch/lib/c10.dll`의 Windows DLL 초기화 오류(WinError 1114)로 수집 전에 중단됐다. 독립 그래프 테스트는 새 프로세스에서 정상 통과했다.
 - 새 프로세스 전체 회귀 재실행은 `386 passed, 4 deselected`로 통과했다. 코드 커밋: `dd79d7e`.
+
+## 2026-08-08 Torch c10.dll 시작 오류 복구
+
+- Knowledge Graph WebEngine 가능성을 시험하는 동안 로컬 `.venv`의 PyQt가 6.11에서 6.10으로 내려갔고, Windows에서 `PyQt6.QtWidgets`를 먼저 로드한 뒤 Torch 2.11 CUDA를 가져오면 `c10.dll`이 WinError 1114로 실패하는 조합을 재현했다. Torch 파일 손상이 아니라 Qt DLL 로딩 순서·버전 충돌이었다.
+- 사용하지 않는 `PyQt6-WebEngine`과 `PyQt6-WebEngine-Qt6`을 제거하고 `.venv`를 원래 `PyQt6 6.11.0 / PyQt6-Qt6 6.11.1`로 복원했다. `PyQt → torch`와 `ui.main_window → torch` 조합 모두 CUDA 사용 가능 상태로 확인했다.
+- `core/tools.py`는 실제로 사용하지 않던 `openai-whisper`를 모듈 import 시 불러오지 않는다. 마이크 녹음 도구는 sounddevice/numpy 준비 여부만 확인한다.
+- `core/hardware.py`는 CUDA 장치 확인에 Torch/CTranslate2를 먼저 import하지 않고 `nvidia-smi`를 사용한다. faster-whisper와 OpenAI Whisper/Torch 폴백은 실제 STT 모델 초기화 시점에만 불러온다.
+- 선택 STT DLL이 실패해도 메인 앱을 종료하지 않고 텍스트 기능을 유지하며, 마이크 시작 시 명확한 비활성 사유를 반환한다. 정상 환경에서는 기존처럼 faster-whisper CUDA 경로를 사용한다.
+- 실제 `main_qt.py` 실행에서 Vector RAG CUDA, faster-whisper `large-v3` CUDA, 마이크 장치, Anis TTS, GUI 준비 상태를 모두 확인한 뒤 테스트 프로세스만 종료했다. 전체 회귀는 `386 passed, 4 deselected`를 통과했다.
