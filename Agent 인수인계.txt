@@ -1828,3 +1828,4 @@ AI_-secretary_Agent/
 - `core/hardware.py`는 CUDA 장치 확인에 Torch/CTranslate2를 먼저 import하지 않고 `nvidia-smi`를 사용한다. faster-whisper와 OpenAI Whisper/Torch 폴백은 실제 STT 모델 초기화 시점에만 불러온다.
 - 선택 STT DLL이 실패해도 메인 앱을 종료하지 않고 텍스트 기능을 유지하며, 마이크 시작 시 명확한 비활성 사유를 반환한다. 정상 환경에서는 기존처럼 faster-whisper CUDA 경로를 사용한다.
 - 실제 `main_qt.py` 실행에서 Vector RAG CUDA, faster-whisper `large-v3` CUDA, 마이크 장치, Anis TTS, GUI 준비 상태를 모두 확인한 뒤 테스트 프로세스만 종료했다. 전체 회귀는 `386 passed, 4 deselected`를 통과했다.
+- 복구 커밋: `a81d905`.
