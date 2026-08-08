@@ -96,3 +96,8 @@
   전달된다. P6에서 레거시 구현도 `legacy_runtime` Plugin으로 편입되어 스키마 조회와
   실행이 Registry를 우회할 수 없다. 입출력 JSON Schema, 이름 충돌 차단, timeout,
   재시도, 취소와 진단 상태 계약도 중앙에서 강제한다.
+# Obsidian Knowledge Vault
+
+- `obsidian` Plugin이 로컬 Markdown Vault 설정·상태·열기·링크 탐색·RAG 동기화·린트를 제공한다.
+- 전체 대화 원문은 `raw/`에 보존하되 RAG에서 제외하고, 장기 기억과 반복 패턴만 `wiki/`로 승격한다.
+- `[[wikilinks]]`는 Tool이 제한 깊이 BFS로 명시적으로 탐색하며 주제·행동 Map of Content를 함께 유지한다.

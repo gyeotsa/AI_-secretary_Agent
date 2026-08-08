@@ -38,10 +38,11 @@ class ConversationMemoryConsolidator:
         "command", "이름", "wake_word", "자비스_이름", "wake_word_detection",
     }
 
-    def __init__(self, llm=None, store=None, rag=None):
+    def __init__(self, llm=None, store=None, rag=None, vault=None):
         self.llm = llm
         self.store = store or get_knowledge_memory()
         self.rag = rag
+        self.vault = vault
 
     def should_consider(self, user_text: str) -> bool:
         value = " ".join(str(user_text or "").split())
@@ -138,6 +139,10 @@ class ConversationMemoryConsolidator:
                         doc_id=f"memory-{record_id}", namespace=namespace,
                         metadata={"source_type": "memory", "kind": candidate.kind.value, "record_id": record_id},
                     )
+                if self.vault is not None:
+                    record = self.store.get(record_id)
+                    if record is not None:
+                        self.vault.upsert_record(record)
             except MemoryPolicyError:
                 continue
         return record_ids
@@ -171,6 +176,10 @@ class ConversationMemoryConsolidator:
                         doc_id=f"memory-{record_id}", namespace=namespace,
                         metadata={"source_type": "memory", "kind": candidate.kind.value, "record_id": record_id},
                     )
+                if self.vault is not None:
+                    record = self.store.get(record_id)
+                    if record is not None:
+                        self.vault.upsert_record(record)
             except MemoryPolicyError:
                 continue
         return record_ids

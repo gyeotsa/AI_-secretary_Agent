@@ -29,6 +29,7 @@ from core.runtime_services import get_runtime_service_manager
 from core.assistant_settings import get_assistant_settings
 from core.specialist_workspaces import get_specialist_workspace_registry
 from core.memory_consolidator import ConversationMemoryConsolidator
+from core.obsidian_vault import get_obsidian_vault
 
 
 def strip_leading_wake_word(text: str, wake_word: str) -> str:
@@ -138,8 +139,10 @@ class JarvisApp:
         self.specialist_workspaces = get_specialist_workspace_registry()
         self.window.set_assistant_identity(self.assistant_settings.assistant_name)
         self.rag_manager = get_rag_manager()
+        self.obsidian_vault = get_obsidian_vault(rag=self.rag_manager)
         self.memory_consolidator = ConversationMemoryConsolidator(
             llm=get_llm_client("reasoning"), rag=self.rag_manager,
+            vault=self.obsidian_vault,
         )
         threading.Thread(
             target=lambda: self.memory_consolidator.bootstrap_profile(self.user_profile),
@@ -547,6 +550,7 @@ class JarvisApp:
         # 대화 저장
         self.memory.save_message(self.session_id, "user", self.messages[-2]["content"])
         self.memory.save_message(self.session_id, "assistant", response_text)
+        self._archive_obsidian_exchange_async(self._response_user_request, response_text)
         self._consolidate_memory_async(self._response_user_request)
         
         # 자동으로 음성 응답 (RESPONDING 상태로)
@@ -572,6 +576,20 @@ class JarvisApp:
                     print(f"[Memory] 대화에서 장기 기억 {len(record_ids)}건을 축적했습니다.")
             except Exception as exc:
                 print(f"[Memory] 대화 기억 축적 오류: {exc}")
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _archive_obsidian_exchange_async(self, user_text: str, assistant_text: str):
+        """Keep complete chat only in the non-indexed raw layer for audit/recompilation."""
+        vault = getattr(self, "obsidian_vault", None)
+        if vault is None or not str(user_text or "").strip():
+            return
+
+        def run():
+            try:
+                vault.archive_exchange(self.session_id, user_text, assistant_text)
+            except Exception as exc:
+                print(f"[Obsidian] 대화 원문 보관 오류: {exc}")
 
         threading.Thread(target=run, daemon=True).start()
 

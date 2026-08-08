@@ -81,6 +81,9 @@ class APIConfig:
     LEARNING_DB_PATH: str = field(
         default_factory=lambda: os.getenv("LEARNING_DB_PATH", _default_data_path("learning.db"))
     )
+    OBSIDIAN_VAULT_PATH: str = field(
+        default_factory=lambda: os.getenv("OBSIDIAN_VAULT_PATH", _default_data_path("AnisKnowledgeVault"))
+    )
     RAG_EMBEDDING_MODEL_PATH: str = field(
         default_factory=lambda: os.getenv(
             "RAG_EMBEDDING_MODEL_PATH",
@@ -209,6 +212,11 @@ class Config:
     @property
     def LEARNING_DB_PATH(cls):
         return cls.API_CONFIG.LEARNING_DB_PATH
+
+    @classmethod
+    @property
+    def OBSIDIAN_VAULT_PATH(cls):
+        return cls.API_CONFIG.OBSIDIAN_VAULT_PATH
 
     @classmethod
     @property

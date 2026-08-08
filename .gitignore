@@ -50,6 +50,8 @@ data/models/
 data/logs/
 data/diagnostics/
 data/browser_profiles/
+data/AnisKnowledgeVault/
+data/obsidian_settings.json
 
 # IDE
 .vscode/
