@@ -12,8 +12,8 @@ class MockupDesignPlugin(BasePlugin):
     def __init__(self):
         super().__init__()
         self.name = "mockup_design"
-        self.version = "1.1.0"
-        self.description = "참고 스타일 생성형 배경과 원본 사진 보존 합성을 지원하는 시안 제작 Runtime"
+        self.version = "1.2.0"
+        self.description = "구조 학습·원본 보존 재렌더링·비파괴 보정을 지원하는 시안 제작 Runtime"
         self.runtime = None
 
     def _runtime(self):

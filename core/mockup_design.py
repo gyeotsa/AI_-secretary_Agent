@@ -347,8 +347,10 @@ class MockupDesignRuntime:
 
     def _render_circular_sticker(self, paths: list[Path], palette, instruction: str,
                                  visible_copy: str = "",
+                                 edit_state: dict | None = None,
                                  size: int = 1600) -> tuple[Image.Image, list[dict], str]:
         """Preserve source photos while applying the learned circular sticker grammar."""
+        edit_state = dict(edit_state or {})
         canvas = Image.new("RGBA", (size, size), (255, 255, 255, 255))
         margin = int(size * .018); diameter = size - margin * 2
         circle_mask = Image.new("L", (diameter, diameter), 0)
@@ -359,14 +361,16 @@ class MockupDesignRuntime:
                 hero = ImageOps.fit(source.convert("RGBA"), (diameter, diameter),
                                     method=Image.Resampling.LANCZOS, centering=(.5, .45))
             if hero.getchannel("A").getextrema()[0] < 255:
-                base = Image.new("RGBA", hero.size, (*self._accent_palette(palette), 255))
+                base_color = self._hex(edit_state.get("background_color", ""), self._accent_palette(palette))
+                base = Image.new("RGBA", hero.size, (*base_color, 255))
                 base.alpha_composite(hero); hero = base
             canvas.paste(hero, (margin, margin), Image.composite(circle_mask, Image.new("L", circle_mask.size), hero.getchannel("A")))
             plan.append({"index": 0, "shape": "circle", "role": "hero", "x": margin / size,
                          "y": margin / size, "width": diameter / size, "height": diameter / size,
                          "fit": "cover", "rotation": 0})
         else:
-            background = Image.new("RGBA", (diameter, diameter), (*self._accent_palette(palette), 255))
+            base_color = self._hex(edit_state.get("background_color", ""), self._accent_palette(palette))
+            background = Image.new("RGBA", (diameter, diameter), (*base_color, 255))
             canvas.paste(background, (margin, margin), circle_mask)
             count = len(paths); orbit = diameter * .24
             item_diameter = int(diameter * min(.48, .76 / math.sqrt(count)))
@@ -389,12 +393,18 @@ class MockupDesignRuntime:
 
         draw = ImageDraw.Draw(canvas, "RGBA")
         inset = int(size * .066); box = (inset, inset, size - inset, size - inset)
-        dash_count = 36
-        for index in range(dash_count):
-            start = index * 360 / dash_count + 1.5
-            draw.arc(box, start=start, end=start + 5.8, fill=(255, 255, 255, 245), width=max(7, size // 130))
+        border_color = (*self._hex(edit_state.get("border_color", ""), (255, 255, 255)), 245)
+        if edit_state.get("border_style") == "solid":
+            draw.ellipse(box, outline=border_color, width=max(7, size // 130))
+        else:
+            dash_count = 36
+            for index in range(dash_count):
+                start = index * 360 / dash_count + 1.5
+                draw.arc(box, start=start, end=start + 5.8, fill=border_color, width=max(7, size // 130))
 
-        visible_copy = " ".join(str(visible_copy or "").split())[:120] or self._visible_copy(instruction)
+        visible_copy = " ".join(str(edit_state.get("visible_copy", visible_copy) or "").split())[:120] or self._visible_copy(instruction)
+        if edit_state.get("remove_copy"):
+            visible_copy = ""
         if visible_copy:
             lines = [part.strip() for part in re.split(r"[|/]", visible_copy) if part.strip()]
             if len(lines) == 1 and len(lines[0]) > 15:
@@ -430,6 +440,7 @@ class MockupDesignRuntime:
 
     def render(self, profile_id: str, production_paths, *, instruction: str = "",
                visible_copy: str = "",
+               edit_state: dict | None = None,
                output_dir: str | Path = "data/mockup_outputs", basename: str = "mockup",
                backend: str = "auto", seed: int = 42, preview_only: bool = False) -> dict:
         profile = self.load_profile(profile_id)
@@ -443,7 +454,7 @@ class MockupDesignRuntime:
         if profile.design_recipe.get("layout_family") == "circular_sticker":
             width = height = 1600
             canvas, plan, visible_copy = self._render_circular_sticker(
-                paths, palette, instruction, visible_copy, width
+                paths, palette, instruction, visible_copy, edit_state, width
             )
             output_root = (Path(tempfile.gettempdir()) / "jarvis_mockup_previews" if preview_only
                            else Path(output_dir).expanduser().resolve())
@@ -460,6 +471,8 @@ class MockupDesignRuntime:
                 "generation_backend": "structured_local", "seed": int(seed),
                 "composition_plan": plan, "instruction": instruction.strip(),
                 "visible_copy": visible_copy, "preview_only": bool(preview_only),
+                "production_sources": [str(path) for path in paths],
+                "edit_state": dict(edit_state or {}),
                 "generation_fallback_reason": "", "style_recipe": profile.design_recipe,
                 "quality_checks": {
                     "reference_pixels_reused": False, "production_assets_present": len(plan) == len(paths),
@@ -552,6 +565,9 @@ class MockupDesignRuntime:
             "seed": int(seed),
             "composition_plan": plan,
             "instruction": instruction.strip(),
+            "visible_copy": visible_copy.strip(),
+            "production_sources": [str(path) for path in paths],
+            "edit_state": dict(edit_state or {}),
             "preview_only": bool(preview_only),
             "generation_fallback_reason": generation_error,
             "note": ("IP-Adapter 참고 스타일 배경과 원본 사진 보존 합성을 적용한 결과"
@@ -579,29 +595,55 @@ class MockupDesignRuntime:
         )
         return result
 
-    def edit_preview(self, preview_path: str | Path, instruction: str, *, seed: int = 42) -> dict:
-        """Regenerate an existing draft with a natural-language edit instruction."""
-        source = Path(preview_path).expanduser().resolve()
-        if not source.is_file() or not instruction.strip():
-            raise ValueError("수정할 미리보기와 구체적인 수정 지시가 필요합니다.")
-        if not self.generation_backend.status().get("ready", False):
-            raise RuntimeError("AI 프롬프트 수정에는 생성형 시안 모델 준비가 필요합니다.")
-        with Image.open(source) as original:
-            size = original.size
-            orientation = "landscape" if size[0] > size[1] else "portrait" if size[0] < size[1] else "square"
-        edited = self.generation_backend.generate_background(
-            reference_paths=[str(source)],
-            prompt=("Edit the supplied design while preserving its composition and recognizable subjects. "
-                    "The following user instruction has highest priority: " + instruction.strip()),
-            orientation=orientation, seed=seed,
+    @staticmethod
+    def _merge_structured_edit(current: dict, instruction: str) -> tuple[dict, list[str]]:
+        state, applied = dict(current or {}), []
+        value = " ".join(str(instruction).split())
+        colors = {
+            "빨간": "#e5484d", "레드": "#e5484d", "파란": "#2878d0", "블루": "#2878d0",
+            "보라": "#8b4cc2", "퍼플": "#8b4cc2", "민트": "#8cecd2", "초록": "#38a169",
+            "노란": "#f2c94c", "옐로": "#f2c94c", "검정": "#111111", "블랙": "#111111",
+            "흰색": "#ffffff", "화이트": "#ffffff", "분홍": "#ec6f9e", "핑크": "#ec6f9e",
+        }
+        color_mentions = [(match.start(), match.group(0))
+                          for match in re.finditer(r"#[0-9a-fA-F]{6}\b", value)]
+        color_mentions.extend((value.index(name), color) for name, color in colors.items() if name in value)
+        for position, requested_color in sorted(color_mentions):
+            prefix = value[:position]
+            background_at = max(prefix.rfind("배경"), prefix.rfind("바탕"))
+            border_at = max(prefix.rfind("테두리"), prefix.rfind("점선"), prefix.rfind("라인"))
+            target = "border_color" if border_at > background_at else "background_color"
+            state[target] = requested_color; applied.append(target)
+        if re.search(r"실선", value): state["border_style"] = "solid"; applied.append("border_style")
+        elif re.search(r"점선", value): state["border_style"] = "dashed"; applied.append("border_style")
+        copy_match = re.search(r"(?:문구|텍스트|글자|카피)(?:를|는|은)?\s*[\"“']?(.+?)[\"”']?\s*(?:로\s*)?(?:바꿔|변경|수정|넣어|써|적어)", value)
+        if copy_match:
+            state["visible_copy"] = copy_match.group(1).strip(" '\"“”")
+            state.pop("remove_copy", None)
+            applied.append("visible_copy")
+        if re.search(r"(?:문구|텍스트|글자|카피).{0,8}(?:없애|삭제|빼줘)", value):
+            state["remove_copy"] = True; applied.append("remove_copy")
+        return state, list(dict.fromkeys(applied))
+
+    def edit_preview(self, metadata: dict, instruction: str, *, seed: int = 42) -> dict:
+        """Re-render from source assets; never feed an edited raster back into diffusion."""
+        if not isinstance(metadata, dict) or not instruction.strip():
+            raise ValueError("수정할 미리보기 정보와 구체적인 수정 지시가 필요합니다.")
+        profile_id = str(metadata.get("profile_id", ""))
+        sources = metadata.get("production_sources") or []
+        if not profile_id or not sources:
+            raise ValueError("이전 방식으로 만든 결과에는 원본 연결 정보가 없습니다. 원본 사진으로 시안을 한 번 다시 만들어 주세요.")
+        state, applied = self._merge_structured_edit(metadata.get("edit_state", {}), instruction)
+        combined_instruction = "\n".join(filter(None, [metadata.get("instruction", ""), instruction.strip()]))
+        result = self.render(
+            profile_id, sources, instruction=combined_instruction,
+            visible_copy=str(metadata.get("visible_copy", "")), edit_state=state,
+            backend="local", seed=seed, preview_only=True,
         )
-        edited = ImageOps.fit(edited, size, method=Image.Resampling.LANCZOS)
-        preview_root = Path(tempfile.gettempdir()) / "jarvis_mockup_previews"
-        preview_root.mkdir(parents=True, exist_ok=True)
-        target = preview_root / f"edited_{uuid.uuid4().hex}.png"
-        edited.save(target, "PNG", optimize=True)
-        return {"output": str(target), "preview_only": True, "instruction": instruction.strip(),
-                "renderer": "ai-image-edit", "width": size[0], "height": size[1]}
+        result.update({"renderer": "source-preserving-structured-edit-v2",
+                       "edit_instruction": instruction.strip(), "applied_edit_fields": applied,
+                       "revision": int(metadata.get("revision", 0)) + 1})
+        return result
 
     def transform_preview(self, preview_path: str | Path, operation: str, value: float = 1.0) -> dict:
         """Apply a non-destructive manual operation and return a new temporary draft."""
@@ -627,3 +669,25 @@ class MockupDesignRuntime:
         return {"output": str(target), "preview_only": True, "operation": operation,
                 "renderer": "pillow-nondestructive-editor",
                 "width": image.width, "height": image.height}
+
+    def adjust_preview(self, base_path: str | Path, adjustments: dict[str, float]) -> dict:
+        """Apply all four controls once to a stable base, avoiding cumulative degradation."""
+        source = Path(base_path).expanduser().resolve()
+        if not source.is_file():
+            raise ValueError("조정할 미리보기 원본이 없습니다.")
+        from PIL import ImageEnhance
+        values = {name: max(0.0, min(2.0, float(adjustments.get(name, 1.0))))
+                  for name in ("brightness", "contrast", "saturation", "sharpness")}
+        with Image.open(source) as opened:
+            image = opened.convert("RGB")
+            image = ImageEnhance.Brightness(image).enhance(values["brightness"])
+            image = ImageEnhance.Contrast(image).enhance(values["contrast"])
+            image = ImageEnhance.Color(image).enhance(values["saturation"])
+            image = ImageEnhance.Sharpness(image).enhance(values["sharpness"])
+        preview_root = Path(tempfile.gettempdir()) / "jarvis_mockup_previews"
+        preview_root.mkdir(parents=True, exist_ok=True)
+        target = preview_root / f"adjusted_{uuid.uuid4().hex}.png"
+        image.save(target, "PNG", optimize=True)
+        return {"output": str(target), "preview_only": True, "operation": "combined_adjustment",
+                "renderer": "pillow-live-adjustment-v2", "adjustment_base": str(source),
+                "adjustments": values, "width": image.width, "height": image.height}

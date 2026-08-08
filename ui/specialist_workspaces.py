@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import threading
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget,
@@ -232,6 +232,7 @@ class MockupWorkspaceWindow(QMainWindow):
     model_status_done = pyqtSignal(object)
     progress_message = pyqtSignal(str)
     operation_failed = pyqtSignal(str)
+    adjustment_done = pyqtSignal(object)
 
     def __init__(self, spec: SpecialistWorkspaceSpec, parent=None, runtime=None):
         super().__init__(parent)
@@ -242,6 +243,7 @@ class MockupWorkspaceWindow(QMainWindow):
         self.preview_history = []
         self.preview_index = -1
         self.preview_metadata = {}
+        self._adjustment_serial = 0
         self.setWindowTitle("JARVIS · 시안 제작 전문가")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
         self.resize(1320, 820)
@@ -251,6 +253,7 @@ class MockupWorkspaceWindow(QMainWindow):
         self.operation_failed.connect(self._on_failed)
         self.model_status_done.connect(self._on_model_status)
         self.progress_message.connect(lambda message: self.details.append(f"\n{message}"))
+        self.adjustment_done.connect(self._on_adjustment_done)
         self._build()
         self._reload_profiles()
         self._on_model_status(self.runtime.generation_status())
@@ -343,15 +346,17 @@ class MockupWorkspaceWindow(QMainWindow):
         self.undo_button = QPushButton("실행 취소"); self.undo_button.clicked.connect(self._undo_preview)
         self.redo_button = QPushButton("다시 실행"); self.redo_button.clicked.connect(self._redo_preview)
         tools.addWidget(self.undo_button); tools.addWidget(self.redo_button); layout.addLayout(tools)
-        adjust = QHBoxLayout()
-        self.adjust_kind = QComboBox()
-        self.adjust_kind.addItem("밝기", "brightness"); self.adjust_kind.addItem("대비", "contrast")
-        self.adjust_kind.addItem("채도", "saturation"); self.adjust_kind.addItem("선명도", "sharpness")
-        self.adjust_value = QSlider(Qt.Orientation.Horizontal)
-        self.adjust_value.setRange(25, 200); self.adjust_value.setValue(100)
-        apply_adjust = QPushButton("조정 적용"); apply_adjust.clicked.connect(self._apply_adjustment)
-        adjust.addWidget(self.adjust_kind); adjust.addWidget(self.adjust_value, 1); adjust.addWidget(apply_adjust)
-        layout.addLayout(adjust)
+        self.adjustment_sliders, self.adjustment_labels = {}, {}
+        for title, operation in (("밝기", "brightness"), ("대비", "contrast"),
+                                 ("채도", "saturation"), ("선명도", "sharpness")):
+            row = QHBoxLayout(); name = QLabel(title); name.setFixedWidth(42)
+            slider = QSlider(Qt.Orientation.Horizontal); slider.setRange(0, 100); slider.setValue(50)
+            value_label = QLabel("50%"); value_label.setObjectName("muted"); value_label.setFixedWidth(34)
+            self.adjustment_sliders[operation] = slider; self.adjustment_labels[operation] = value_label
+            slider.valueChanged.connect(lambda value, op=operation: self._schedule_live_adjustment(op, value))
+            row.addWidget(name); row.addWidget(slider, 1); row.addWidget(value_label); layout.addLayout(row)
+        self.adjustment_timer = QTimer(self); self.adjustment_timer.setSingleShot(True)
+        self.adjustment_timer.setInterval(120); self.adjustment_timer.timeout.connect(self._apply_live_adjustments)
         save_row = QHBoxLayout(); save_row.addStretch(1)
         self.save_preview_button = QPushButton("미리보기 저장")
         self.save_preview_button.setEnabled(False); self.save_preview_button.clicked.connect(self._save_preview)
@@ -480,33 +485,79 @@ class MockupWorkspaceWindow(QMainWindow):
             self.preview.setPixmap(pixmap.scaled(610, 510, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         fallback = (f"생성형 자동 대체 사유: {result['generation_fallback_reason']}\n"
                     if result.get("generation_fallback_reason") else "")
+        applied = result.get("applied_edit_fields") or []
+        edit_note = (f"원본 기반 수정 항목: {', '.join(applied)}\n" if applied else
+                     ("원본과 구조를 보존해 다시 렌더링했습니다. 인식된 구조 변경 항목은 없습니다.\n"
+                      if result.get("renderer") == "source-preserving-structured-edit-v2" else ""))
         self.details.append(
             f"\n임시 미리보기 생성 완료\n{result['width']}×{result['height']}\n"
-            f"렌더러: {result['renderer']}\n{fallback}"
+            f"렌더러: {result['renderer']}\n{fallback}{edit_note}"
             "아직 최종 폴더에 저장되지 않았습니다. 결과를 확인한 뒤 저장 버튼을 눌러 주세요."
         )
         self.save_preview_button.setEnabled(True)
         self._update_history_buttons()
+        if hasattr(self, "adjustment_sliders") and any(slider.value() != 50 for slider in self.adjustment_sliders.values()):
+            self._adjustment_serial += 1; self.adjustment_timer.start()
 
     def _edit_with_ai(self):
         if self.preview_index < 0: QMessageBox.information(self, "AI 수정", "먼저 시안 미리보기를 만들어 주세요."); return
         instruction = self.edit_instruction.text().strip()
         if not instruction: QMessageBox.information(self, "AI 수정", "수정 지시를 입력해 주세요."); return
         self.details.append("\nAI가 현재 미리보기를 수정하고 있습니다…")
-        threading.Thread(target=self._ai_edit_worker, args=(self.preview_history[self.preview_index]["output"], instruction), daemon=True).start()
+        threading.Thread(target=self._ai_edit_worker, args=(dict(self.preview_history[self.preview_index]), instruction), daemon=True).start()
 
-    def _ai_edit_worker(self, path, instruction):
-        try: self.render_done.emit(self.runtime.edit_preview(path, instruction))
+    def _ai_edit_worker(self, metadata, instruction):
+        try: self.render_done.emit(self.runtime.edit_preview(metadata, instruction))
         except Exception as exc: self.operation_failed.emit(str(exc))
 
     def _manual_edit(self, operation, value=1.0):
         if self.preview_index < 0: return
-        try: self._push_preview(self.runtime.transform_preview(self.preview_history[self.preview_index]["output"], operation, value))
+        try:
+            current = dict(self.preview_history[self.preview_index])
+            result = self.runtime.transform_preview(current["output"], operation, value)
+            result = {**current, **result, "adjustment_base": result["output"], "adjustments": {}}
+            self._push_preview(result)
         except Exception as exc: self._on_failed(str(exc))
 
-    def _apply_adjustment(self):
-        self._manual_edit(self.adjust_kind.currentData(), self.adjust_value.value() / 100.0)
-        self.adjust_value.setValue(100)
+    def _schedule_live_adjustment(self, operation, value):
+        self.adjustment_labels[operation].setText(f"{value}%")
+        if self.preview_index >= 0:
+            self._adjustment_serial += 1
+            self.adjustment_timer.start()
+
+    def _adjustment_values(self):
+        return {name: slider.value() / 50.0 for name, slider in self.adjustment_sliders.items()}
+
+    def _apply_live_adjustments(self):
+        if self.preview_index < 0: return
+        current = dict(self.preview_history[self.preview_index])
+        base = current.get("adjustment_base") or current["output"]
+        serial, values = self._adjustment_serial, self._adjustment_values()
+        threading.Thread(target=self._adjustment_worker,
+                         args=(base, values, current, serial), daemon=True).start()
+
+    def _adjustment_worker(self, base, values, metadata, serial):
+        try:
+            adjusted = self.runtime.adjust_preview(base, values)
+            self.adjustment_done.emit({**metadata, **adjusted, "_serial": serial})
+        except Exception as exc: self.operation_failed.emit(str(exc))
+
+    def _on_adjustment_done(self, result):
+        if int(result.pop("_serial", -1)) != self._adjustment_serial: return
+        current = self.preview_history[self.preview_index] if self.preview_index >= 0 else {}
+        same_adjustment = (current.get("renderer") == "pillow-live-adjustment-v2"
+                           and current.get("adjustment_base") == result.get("adjustment_base"))
+        if same_adjustment:
+            self.preview_history[self.preview_index] = dict(result)
+        else:
+            self.preview_history = self.preview_history[:self.preview_index + 1]
+            self.preview_history.append(dict(result)); self.preview_index = len(self.preview_history) - 1
+        self.preview_metadata = dict(result)
+        pixmap = QPixmap(result["output"])
+        if not pixmap.isNull():
+            self.preview.setPixmap(pixmap.scaled(610, 510, Qt.AspectRatioMode.KeepAspectRatio,
+                                                 Qt.TransformationMode.SmoothTransformation))
+        self.save_preview_button.setEnabled(True); self._update_history_buttons()
 
     def _undo_preview(self):
         if self.preview_index > 0:

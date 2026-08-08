@@ -1,4 +1,6 @@
 import os
+import hashlib
+import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -217,3 +219,67 @@ def test_circular_sticker_does_not_render_instruction_as_copy(tmp_path):
                             output_dir=tmp_path / "out", backend="local")
     assert result["visible_copy"] == ""
     assert result["quality_checks"]["unrequested_text_rendered"] is False
+
+
+def test_structured_ai_edits_always_rerender_from_original_sources(tmp_path):
+    refs = [_circular_sticker(tmp_path / f"ref{index}.png", (130, 220, 210), (70, 80, 90))
+            for index in range(3)]
+    product = _image(tmp_path / "person.png", (40, 80, 110), size=(700, 900))
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(),
+                                  generation_backend=FailingGenerationBackend(ready=True))
+    profile = runtime.learn_style(refs)
+    original = runtime.render(profile.profile_id, [product], visible_copy="응원합니다!",
+                              output_dir=tmp_path / "out", backend="auto", preview_only=True)
+    first = runtime.edit_preview(original, "점선을 실선으로 바꾸고 테두리를 파란색으로 바꿔줘")
+    second = runtime.edit_preview(first, "조금 더 정돈된 느낌으로 수정해줘")
+    assert first["renderer"] == second["renderer"] == "source-preserving-structured-edit-v2"
+    assert first["production_inputs"] == second["production_inputs"] == original["production_inputs"]
+    assert first["production_sources"] == second["production_sources"]
+    assert first["edit_state"]["border_style"] == second["edit_state"]["border_style"] == "solid"
+    assert first["edit_state"]["border_color"] == second["edit_state"]["border_color"] == "#2878d0"
+    assert second["revision"] == 2
+    # Unknown prose cannot trigger another diffusion generation or mutate the subject.
+    assert Path(first["output"]).read_bytes() == Path(second["output"]).read_bytes()
+
+
+def test_live_adjustment_is_repeatable_from_stable_base(tmp_path):
+    source = Path(_image(tmp_path / "base.png", (80, 100, 120), size=(500, 500)))
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend())
+    values = {"brightness": 1.4, "contrast": .8, "saturation": 1.2, "sharpness": 1.0}
+    first = runtime.adjust_preview(source, values)
+    second = runtime.adjust_preview(source, values)
+    assert first["adjustment_base"] == second["adjustment_base"] == str(source.resolve())
+    assert hashlib.sha256(Path(first["output"]).read_bytes()).digest() == hashlib.sha256(
+        Path(second["output"]).read_bytes()).digest()
+
+
+def test_adjustment_sliders_use_percent_range_and_keep_selected_value(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    spec = get_specialist_workspace_registry().get("mockup")
+    window = MockupWorkspaceWindow(spec, runtime=MockupDesignRuntime(
+        tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend()))
+    assert set(window.adjustment_sliders) == {"brightness", "contrast", "saturation", "sharpness"}
+    for slider in window.adjustment_sliders.values():
+        assert (slider.minimum(), slider.maximum(), slider.value()) == (0, 100, 50)
+    window.adjustment_sliders["brightness"].setValue(73)
+    assert window.adjustment_sliders["brightness"].value() == 73
+    assert window.adjustment_labels["brightness"].text() == "73%"
+    window.close(); assert app is not None
+
+
+def test_slider_movement_applies_preview_without_button_or_reset(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    spec = get_specialist_workspace_registry().get("mockup")
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend())
+    window = MockupWorkspaceWindow(spec, runtime=runtime)
+    source = _image(tmp_path / "preview.png", (80, 100, 120), size=(500, 500))
+    window._push_preview({"output": source, "preview_only": True, "renderer": "test",
+                          "width": 500, "height": 500, "generation_fallback_reason": ""})
+    window.adjustment_sliders["contrast"].setValue(72)
+    deadline = time.monotonic() + 3
+    while window.preview_metadata.get("renderer") != "pillow-live-adjustment-v2" and time.monotonic() < deadline:
+        app.processEvents(); time.sleep(.02)
+    assert window.preview_metadata["renderer"] == "pillow-live-adjustment-v2"
+    assert window.preview_metadata["adjustments"]["contrast"] == 1.44
+    assert window.adjustment_sliders["contrast"].value() == 72
+    window.close()
