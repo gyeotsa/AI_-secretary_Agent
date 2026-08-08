@@ -1778,3 +1778,12 @@ AI_-secretary_Agent/
 - ConversationService와 검증된 Tool 결과의 ResponseRealizer 프롬프트에 자연스러운 한국어 지침을 공통 연결했다. 사용자가 저장한 말투·호칭을 최우선으로 두고, 수치·날짜·고유명사·인용·파일명·코드·검증된 도구 결과를 변경하지 못하게 했다.
 - `asgeirtj/system_prompts_leaks` 원문은 시스템 프롬프트나 RAG에 넣지 않았다. 대신 일반 대화/도구 실행 분리, 검증 전 성공 주장 금지, 최신 정보 재검증, 꼭 필요한 질문만 하기, 내부 라우팅 정보 비노출 원칙을 프로젝트 소유 `core/agent_prompt_policy.py`로 작성해 두 응답 경로에 연결했다.
 - 출처와 라이선스, 실제 사용 범위를 `THIRD_PARTY_NOTICES.md`에 기록했다. 자연화 및 정책 집중 테스트 13개가 통과했고 새 테스트 파일을 기본 pytest 목록에 추가했다.
+
+## 2026-08-08 누적형 말투 학습 확장
+
+- `core/style_learning.py`에 사실 RAG와 분리된 `StyleLearningStore`를 추가했다. 각 말투 학습 기록은 대상, 재사용 가능한 행동 지침, 출처 유형, 출처 URI, 근거 요약, 신뢰도, 활성 상태와 생성 시간을 JSON으로 유지한다. 동일 근거는 해시 ID로 중복 제거하며 최근·고신뢰 기록을 합성해 응답 프롬프트에 제공한다.
+- `browser_research_and_apply_preference`와 `browser_learn_video_preference`가 기존 `response_style` 및 RAG 저장에 더해 구조화된 말투 기록도 남긴다. 웹 학습은 관련 출처 수에 따라 신뢰도를 계산하고, 영상 학습은 실제 자막·화자 분리 근거와 URL을 기록한다.
+- 사용자가 직접 준 문장과 대화 예시를 처리하는 `style_learning` 플러그인을 추가했다. `learn_response_style_from_examples`, `list_learned_response_styles`, `set_learned_response_style_active` 도구로 학습·조회·활성화를 수행하며, 다양한 예시 형식을 Router가 억지로 파싱하지 않고 전체 근거를 말투 분석 모델에 전달한다.
+- 직접 제공된 예시에서는 사실·주제·명령을 저장하지 않고 호칭, 높임 수준, 문장 길이, 질문·감탄, 장난기와 진지함 전환 같은 관찰 가능한 말투 특징만 추출한다. 시스템 프롬프트 무시, 권한 우회, 도구 실행, 비밀번호·API 키, 파일 삭제·전송 같은 내용은 말투 지침으로 저장할 수 없다.
+- `korean_writing_guidance()`는 활성 학습 기록을 런타임에 조회하므로 앱을 다시 빌드하지 않아도 다음 응답부터 반영된다. 사용자가 직접 지정한 현재 `response_style`이 최우선이고, 누적 학습 프로필은 그 아래 보조 지침으로 적용된다.
+- 운영 파일 `data/style_learning_profiles.json`은 Git에서 제외했다. 브라우저 테스트는 임시 저장소를 주입해 실제 사용자 학습 파일을 오염시키지 않는다.

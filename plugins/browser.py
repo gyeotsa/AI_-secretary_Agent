@@ -496,6 +496,12 @@ class BrowserPlugin(BasePlugin):
             self._validate_learned_preference(query, preference)
             from core.assistant_settings import get_assistant_settings
             saved = get_assistant_settings().set(setting, preference)
+            from core.style_learning import get_style_learning_store
+            style_record = get_style_learning_store().add(
+                subject=query, directive=saved, source_type="web_research",
+                source_uris=[item.get("url") for item in sources if item.get("url")],
+                evidence_summary=summary, confidence=min(0.95, 0.55 + len(sources) * 0.07),
+            )
             from core.rag import get_rag_manager
             doc_id = "web-learning-" + hashlib.sha256((query + saved).encode("utf-8")).hexdigest()[:16]
             source_lines = "\n".join(f"- {item.get('url')}" for item in sources)
@@ -518,7 +524,7 @@ class BrowserPlugin(BasePlugin):
                 evidence=[Evidence("web_learning", "웹 조사 요약을 설정 저장소와 RAG에서 다시 확인했습니다.", {
                     "query": query, "setting": setting, "saved": saved, "rag_doc_id": doc_id,
                     "source_count": len(sources), "source_urls": [item.get("url") for item in sources],
-                    "rag_recalled": True,
+                    "rag_recalled": True, "style_record_id": style_record.record_id,
                 })],
                 artifacts=[Artifact("knowledge", f"web-learning://{doc_id}", {"rag_doc_id": doc_id})],
             )
@@ -740,6 +746,11 @@ class BrowserPlugin(BasePlugin):
                 self._validate_learned_preference(query, preference)
             from core.assistant_settings import get_assistant_settings
             saved = get_assistant_settings().set(setting, preference)
+            from core.style_learning import get_style_learning_store
+            style_record = get_style_learning_store().add(
+                subject=subject or title, directive=saved, source_type="youtube_transcript",
+                source_uris=[canonical_url], evidence_summary=summary, confidence=0.85,
+            )
             from core.rag import get_rag_manager
             doc_id = "web-learning-" + hashlib.sha256((canonical_url + saved).encode("utf-8")).hexdigest()[:16]
             rag = get_rag_manager()
@@ -757,7 +768,7 @@ class BrowserPlugin(BasePlugin):
                 evidence=[Evidence("video_learning", "영상 자막·설정 저장·RAG 재조회를 확인했습니다.", {
                     "url": canonical_url, "title": title, "transcript_chars": len(transcript),
                     "speaker_corpus_chars": len(speaker_corpus), "setting": setting,
-                    "saved": saved, "rag_doc_id": doc_id,
+                    "saved": saved, "rag_doc_id": doc_id, "style_record_id": style_record.record_id,
                 })], artifacts=[Artifact("url", canonical_url), Artifact("knowledge", f"web-learning://{doc_id}")],
             )
         except Exception as exc:

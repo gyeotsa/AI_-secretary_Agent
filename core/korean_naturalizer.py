@@ -99,10 +99,17 @@ def light_polish_korean(text: str) -> str:
 
 def korean_writing_guidance(style: str = "") -> str:
     """Prompt fragment shared by conversation and verified-result realizers."""
+    learned = ""
+    try:
+        from core.style_learning import get_style_learning_store
+        learned = get_style_learning_store().effective_directive()
+    except Exception:
+        learned = ""
     return (
         "자연스러운 한국어로 답하세요. 영어식 번역투, 같은 종결어미의 연속 반복, "
         "기계적인 첫째·둘째 나열, 불필요한 결론 문구와 문두 접속사 남발을 피하세요. "
         "짧게 답할 수 있는 질문은 짧게 답하고, 사용자가 요청하지 않은 배경 설명을 붙이지 마세요. "
         "사실·수치·날짜·고유명사·직접 인용·파일명·코드·도구 결과는 바꾸지 마세요. "
-        f"사용자가 정한 말투와 호칭을 가장 우선하세요: {style or '간결하고 자연스러운 한국어'}."
+        f"사용자가 정한 말투와 호칭을 가장 우선하세요: {style or '간결하고 자연스러운 한국어'}. "
+        + (f"검증된 말투 학습 프로필도 반영하세요: {learned}." if learned else "")
     )

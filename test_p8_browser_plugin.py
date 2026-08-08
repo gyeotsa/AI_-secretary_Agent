@@ -7,6 +7,12 @@ from plugins.browser import BrowserPlugin
 from core.assistant_settings import AssistantSettings
 from core.intent_router import IntentRouter
 from core.plugin import PluginRegistry
+from core.style_learning import StyleLearningStore
+
+
+@pytest.fixture(autouse=True)
+def isolate_style_learning_store(monkeypatch, tmp_path):
+    monkeypatch.setattr("core.style_learning._style_learning_store", StyleLearningStore(tmp_path / "styles.json"))
 
 
 def test_browser_research_returns_visited_sources_and_claim_evidence(monkeypatch):
