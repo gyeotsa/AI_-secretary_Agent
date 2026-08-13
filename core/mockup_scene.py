@@ -147,6 +147,51 @@ def scene_changed(before: dict, after: dict) -> bool:
     return left != right
 
 
+def build_evidence_fallback_plan(style_features: dict, *, asset_count: int,
+                                 visible_copy: str = "") -> dict:
+    """Build a usable neutral plan only from measured profile evidence.
+
+    This is an availability fallback for a model that returned no parseable
+    scene JSON. It does not select a named design template.
+    """
+    features = style_features if isinstance(style_features, dict) else {}
+    consensus = features.get("consensus", {}) if isinstance(features.get("consensus"), dict) else {}
+    references = features.get("references", []) if isinstance(features.get("references"), list) else []
+    ratios = [float(item["aspect_ratio"]) for item in references
+              if isinstance(item, dict) and item.get("aspect_ratio")]
+    ratio = sorted(ratios)[len(ratios) // 2] if ratios else 1.0
+    scale = max(.5, min(.88, float(consensus.get("subject_scale", .72) or .72)))
+    shape = "ellipse" if consensus.get("primary_frame") == "circle" else "rounded"
+    assets = []
+    if asset_count == 1:
+        assets.append({"index": 0, "x": round((1 - scale) / 2, 4), "y": .06,
+                       "width": scale, "height": scale, "shape": shape, "fit": "cover",
+                       "focal_x": .5, "focal_y": .42, "rotation": 0, "z": 1})
+    else:
+        columns = 2 if asset_count <= 4 else 3
+        rows = (asset_count + columns - 1) // columns
+        width = .84 / columns; height = min(.68 / rows, width)
+        for index in range(asset_count):
+            column, row = index % columns, index // columns
+            assets.append({"index": index, "x": .08 + column * (.84 / columns),
+                           "y": .06 + row * (.7 / rows), "width": width - .025,
+                           "height": height - .025, "shape": shape, "fit": "contain",
+                           "focal_x": .5, "focal_y": .45, "rotation": 0, "z": index + 1})
+    texts = []
+    copy = " ".join(str(visible_copy or "").split())[:160]
+    if copy:
+        texts.append({"content": copy, "x": .15, "y": .76, "width": .7, "height": .15,
+                      "font_size": .06, "color": "#111111", "background": "#ffffffcc",
+                      "align": "center", "padding": .018, "z": 10})
+    raw = {"canvas": {"aspect_ratio": ratio, "background": "#ffffff"}, "assets": assets,
+           "decorations": [], "texts": texts,
+           "rationale": "Vision JSON 실패 시 학습 자료의 측정값으로 구성한 복구 설계도"}
+    normalized = normalize_scene_plan(raw, asset_count=asset_count, visible_copy=copy)
+    normalized["initial_plan_fallback"] = True
+    normalized, _ = enforce_measured_style_evidence(normalized, features)
+    return normalized
+
+
 def enforce_measured_style_evidence(plan: dict, style_features: dict) -> tuple[dict, list[str]]:
     """Enforce only high-confidence measurements, never a named visual template."""
     result = deepcopy(plan); enforced = []

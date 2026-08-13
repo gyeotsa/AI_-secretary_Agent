@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw
 from PyQt6.QtWidgets import QApplication, QListWidgetItem
 
 from core.mockup_design import MockupDesignRuntime
-from core.mockup_scene import enforce_measured_style_evidence
+from core.mockup_scene import build_evidence_fallback_plan, enforce_measured_style_evidence
 from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
 from plugins.mockup_design import MockupDesignPlugin
@@ -91,6 +91,11 @@ class InvalidReviewVision(FakeVision):
         if "1차 설계도" in prompt or "품질 검토" in prompt:
             return {"analysis": "JSON이 아닌 검토 의견"}
         return super().analyze(paths, prompt, mode)
+
+
+class AlwaysInvalidVision:
+    def analyze(self, paths, prompt, mode="general"):
+        return {"analysis": "장면을 설명한 일반 문장만 반환"}
 
 
 def _image(path: Path, color, size=(400, 500), accent=(255, 255, 255)):
@@ -183,6 +188,25 @@ def test_invalid_quality_review_keeps_valid_initial_plan(tmp_path):
     result = runtime.render(profile.profile_id, [_image(tmp_path / "product.png", (90, 100, 110))],
                             backend="local", output_dir=tmp_path / "out")
     assert result["scene_plan"]["assets"][0]["index"] == 0
+
+
+def test_invalid_initial_json_uses_measured_evidence_fallback(tmp_path):
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=AlwaysInvalidVision(),
+                                  generation_backend=FakeGenerationBackend())
+    refs = [_circular_sticker(tmp_path / f"ref{i}.png", (130, 220, 210), (70, 80, 90))
+            for i in range(4)]
+    profile = runtime.learn_style(refs)
+    result = runtime.render(profile.profile_id, [_image(tmp_path / "product.png", (90, 100, 110))],
+                            visible_copy="응원합니다", backend="auto", output_dir=tmp_path / "out")
+    assert result["scene_plan"]["initial_plan_fallback"] is True
+    assert result["scene_plan"]["assets"][0]["shape"] == "ellipse"
+    assert result["scene_plan"]["texts"][0]["content"] == "응원합니다"
+    assert result["generation_backend"] == "model_planned_local"
+
+
+def test_evidence_fallback_supports_multiple_production_assets_without_omission():
+    plan = build_evidence_fallback_plan({}, asset_count=5)
+    assert [asset["index"] for asset in plan["assets"]] == [0, 1, 2, 3, 4]
 
 
 def test_mockup_workspace_and_model_role_are_registered():

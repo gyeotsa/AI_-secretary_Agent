@@ -17,9 +17,9 @@ from statistics import median
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from core.vision_runtime import VisionRuntime
-from core.mockup_scene import (ScenePlanError, extract_json_object, normalize_scene_plan,
-                               enforce_measured_style_evidence, restore_required_elements,
-                               scene_changed)
+from core.mockup_scene import (ScenePlanError, build_evidence_fallback_plan, extract_json_object,
+                               normalize_scene_plan, enforce_measured_style_evidence,
+                               restore_required_elements, scene_changed)
 
 
 SUPPORTED_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
@@ -642,7 +642,14 @@ class MockupDesignRuntime:
 원래 요청의 디자인 판단은 유지하되 오류만 교정하여 JSON 객체 하나만 다시 반환하세요."""
             raise ScenePlanError(f"AI가 {stage} 설계도를 3회 교정했지만 유효하게 만들지 못했습니다: {last_error}")
 
-        plan = request_valid_plan(prompt, "초기")
+        try:
+            plan = request_valid_plan(prompt, "초기")
+        except ScenePlanError:
+            if previous_plan is not None:
+                raise
+            plan = build_evidence_fallback_plan(
+                profile.style_features, asset_count=len(paths), visible_copy=visible_copy,
+            )
         if previous_plan is not None and not scene_changed(previous_plan, plan):
             for revision_attempt in range(2):
                 retry_prompt = f"""사용자의 수정 명령을 반영하는 편집 설계도에서 실제 변경점이 발견되지 않았습니다.
