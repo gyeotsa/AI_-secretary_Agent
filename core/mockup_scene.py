@@ -184,6 +184,38 @@ def scene_changed(before: dict, after: dict) -> bool:
     return left != right
 
 
+def infer_edit_scopes(instruction: str) -> set[str]:
+    """Identify the visual groups explicitly targeted by an edit request."""
+    text = " ".join(str(instruction or "").lower().split())
+    scopes = set()
+    if any(word in text for word in ("문구", "텍스트", "글자", "글씨", "카피", "폰트")):
+        scopes.add("texts")
+    if any(word in text for word in ("배경", "캔버스")):
+        scopes.add("canvas")
+    if any(word in text for word in (
+        "사진", "이미지", "인물", "사람", "얼굴", "머리", "전신", "상반신",
+        "원형", "원 형태", "프레임", "틀", "크롭", "잘리", "잘라",
+    )):
+        scopes.add("assets")
+    if any(word in text for word in ("테두리", "점선", "실선", "장식", "라인")):
+        scopes.add("decorations")
+    return scopes
+
+
+def merge_scoped_scene_edit(before: dict, candidate: dict, instruction: str) -> tuple[dict, set[str]]:
+    """Use explicit edit targets as a write mask over the previous plan."""
+    scopes = infer_edit_scopes(instruction)
+    if not scopes:
+        return deepcopy(candidate), scopes
+    merged = deepcopy(before)
+    for key in scopes:
+        if key in candidate:
+            merged[key] = deepcopy(candidate[key])
+    merged["rationale"] = str(candidate.get("rationale", before.get("rationale", "")))
+    merged["edit_scopes"] = sorted(scopes)
+    return merged, scopes
+
+
 def build_evidence_fallback_plan(style_features: dict, *, asset_count: int,
                                  visible_copy: str = "") -> dict:
     """Build a usable neutral plan only from measured profile evidence.
@@ -281,7 +313,20 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
             if asset.get("fit") != "contain":
                 asset["fit"] = "contain"; applied.append(f"assets[{index}].fit=contain")
             asset["focal_x"], asset["focal_y"] = .5, .5
-    center_copy = any(word in text for word in ("문구", "텍스트", "글자")) and any(
+    circular_frame = any(word in text for word in ("원형", "원 형태", "동그랗"))
+    if circular_frame:
+        for index, asset in enumerate(result.get("assets", [])):
+            width, height = float(asset.get("width", .8)), float(asset.get("height", .8))
+            side = min(width, height)
+            center_x = float(asset.get("x", 0)) + width / 2
+            center_y = float(asset.get("y", 0)) + height / 2
+            asset.update({"shape": "ellipse", "width": side, "height": side,
+                          "x": round(max(0, min(1 - side, center_x - side / 2)), 4),
+                          "y": round(max(0, min(1 - side, center_y - side / 2)), 4)})
+            if any(word in text for word in ("원 형태가 아니", "원형으로", "동그랗게")):
+                asset["fit"] = "cover"
+            applied.append(f"assets[{index}].circular_frame")
+    center_copy = any(word in text for word in ("문구", "텍스트", "글자", "글씨")) and any(
         word in text for word in ("정중앙", "가운데", "중앙")
     )
     if center_copy:
@@ -302,7 +347,7 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
     color_map = {"파란": "#2878d0", "파랑": "#2878d0", "빨간": "#e5484d", "빨강": "#e5484d",
                  "검정": "#111111", "검은": "#111111", "흰색": "#ffffff", "하얀": "#ffffff",
                  "초록": "#38a169", "노란": "#f2c94c", "보라": "#8b4cc2"}
-    copy_targeted = any(word in text for word in ("문구", "텍스트", "글자"))
+    copy_targeted = any(word in text for word in ("문구", "텍스트", "글자", "글씨"))
     if copy_targeted:
         requested = next((color for word, color in color_map.items() if word in text), None)
         for index, item in enumerate(result.get("texts", [])):
@@ -314,6 +359,12 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
                 item["width"] = min(.85, max(float(item.get("width", .5)), .5))
                 item["height"] = min(.24, max(float(item.get("height", .12)), .12))
                 applied.append(f"texts[{index}].size")
+            half_size = any(word in text for word in ("절반", "반으로")) and any(
+                word in text for word in ("줄여", "작게", "축소")
+            )
+            if half_size:
+                item["font_size"] = round(max(.015, float(item.get("font_size", .055)) * .5), 4)
+                applied.append(f"texts[{index}].size_half")
     if applied:
         result["enforced_user_constraints"] = applied
     return result, applied

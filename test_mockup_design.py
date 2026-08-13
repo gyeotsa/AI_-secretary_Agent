@@ -1,6 +1,7 @@
 import os
 import hashlib
 import time
+from copy import deepcopy
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -10,7 +11,7 @@ from PyQt6.QtWidgets import QApplication, QListWidgetItem
 
 from core.mockup_design import MockupDesignRuntime
 from core.mockup_scene import (build_evidence_fallback_plan, enforce_explicit_user_constraints,
-                               enforce_measured_style_evidence)
+                               enforce_measured_style_evidence, merge_scoped_scene_edit)
 from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
 from plugins.mockup_design import MockupDesignPlugin
@@ -242,6 +243,39 @@ def test_explicit_text_size_and_color_constraints_are_applied():
     assert result["texts"][0]["color"] == "#2878d0"
     assert result["texts"][0]["font_size"] > .04
     assert applied
+
+
+def test_sequential_edit_preserves_previous_text_change_when_only_frame_is_targeted():
+    previous = {
+        "canvas": {"aspect_ratio": 1, "background": "#ffffff"},
+        "assets": [{"index": 0, "x": .1, "y": .1, "width": .8, "height": .7,
+                    "shape": "rounded", "fit": "contain", "focal_x": .5,
+                    "focal_y": .5, "rotation": 0, "z": 1}],
+        "decorations": [],
+        "texts": [{"content": "테스트", "x": .2, "y": .3, "width": .6,
+                   "height": .2, "font_size": .1, "color": "#111111",
+                   "background": "transparent", "align": "center", "padding": 0, "z": 2}],
+        "rationale": "previous",
+    }
+    candidate = deepcopy(previous)
+    candidate["assets"][0]["shape"] = "ellipse"
+    candidate["texts"][0]["font_size"] = .2
+    command = "현재 양쪽이 잘려 원 형태가 아니야. 잘리지 않게 원형으로 만들어줘."
+    merged, scopes = merge_scoped_scene_edit(previous, candidate, command)
+    merged, applied = enforce_explicit_user_constraints(merged, command)
+    assert scopes == {"assets"}
+    assert merged["texts"][0]["font_size"] == .1
+    assert merged["assets"][0]["shape"] == "ellipse"
+    assert merged["assets"][0]["width"] == merged["assets"][0]["height"]
+    assert merged["assets"][0]["fit"] == "cover"
+    assert applied
+
+
+def test_half_text_size_is_applied_without_model_replanning():
+    plan = {"assets": [], "texts": [{"content": "테스트", "font_size": .2}]}
+    result, applied = enforce_explicit_user_constraints(plan, "글씨 크기를 절반으로 줄여줘")
+    assert result["texts"][0]["font_size"] == .1
+    assert "texts[0].size_half" in applied
 
 
 def test_learned_subject_scale_repairs_oversized_asset():

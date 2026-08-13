@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 from core.vision_runtime import VisionRuntime
 from core.mockup_scene import (SCENE_PLAN_JSON_SCHEMA, ScenePlanError, build_evidence_fallback_plan, extract_json_object,
                                normalize_scene_plan, enforce_explicit_user_constraints,
-                               enforce_measured_style_evidence,
+                               enforce_measured_style_evidence, merge_scoped_scene_edit,
                                restore_required_elements, scene_changed)
 
 
@@ -718,6 +718,9 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         reviewed, _ = enforce_explicit_user_constraints(
             reviewed, " ".join(part for part in (instruction, edit_instruction) if part)
         )
+        if previous_plan is not None:
+            reviewed, _ = merge_scoped_scene_edit(previous_plan, reviewed, edit_instruction)
+            reviewed, _ = enforce_explicit_user_constraints(reviewed, edit_instruction)
         return reviewed
 
     @staticmethod
