@@ -17,7 +17,7 @@ from statistics import median
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from core.vision_runtime import VisionRuntime
-from core.mockup_scene import (ScenePlanError, build_evidence_fallback_plan, extract_json_object,
+from core.mockup_scene import (SCENE_PLAN_JSON_SCHEMA, ScenePlanError, build_evidence_fallback_plan, extract_json_object,
                                normalize_scene_plan, enforce_explicit_user_constraints,
                                enforce_measured_style_evidence,
                                restore_required_elements, scene_changed)
@@ -636,7 +636,11 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             last_error, last_answer = None, ""
             current_prompt = request_prompt
             for attempt in range(3):
-                response = vision.analyze(evidence_paths, current_prompt, mode="general")
+                try:
+                    response = vision.analyze(evidence_paths, current_prompt, mode="general",
+                                              json_schema=SCENE_PLAN_JSON_SCHEMA)
+                except TypeError:  # compatibility with injected/custom vision adapters
+                    response = vision.analyze(evidence_paths, current_prompt, mode="general")
                 last_answer = str(response.get("analysis", ""))
                 try:
                     raw = extract_json_object(last_answer)
@@ -679,10 +683,12 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 plan = build_evidence_fallback_plan(
                     profile.style_features, asset_count=len(paths), visible_copy=visible_copy,
                 )
+        if previous_plan is not None:
+            plan, _ = enforce_explicit_user_constraints(plan, edit_instruction)
         if previous_plan is not None and not scene_changed(previous_plan, plan):
             for revision_attempt in range(2):
                 retry_prompt = f"""사용자의 수정 명령을 반영하는 편집 설계도에서 실제 변경점이 발견되지 않았습니다.
-수정 명령: {instruction}
+수정 명령: {edit_instruction}
 현재 설계도: {json.dumps(previous_plan, ensure_ascii=False)}
 직전 무효 응답: {json.dumps(plan, ensure_ascii=False)}
 사용자가 지정한 대상과 속성을 찾아 최소 한 가지 이상의 관련 필드를 실제로 변경하세요.
@@ -899,6 +905,21 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             raise ValueError("이전 결과에 AI 디자인 설계도가 없습니다. 새 파이프라인으로 시안을 다시 생성해 주세요.")
         profile = self.load_profile(profile_id)
         paths = self._validate_images(sources)
+        deterministic_plan, explicit_fields = enforce_explicit_user_constraints(previous_plan, instruction)
+        if explicit_fields and scene_changed(previous_plan, deterministic_plan):
+            deterministic_plan, _ = enforce_measured_style_evidence(
+                deterministic_plan, profile.style_features
+            )
+            result = self.render(
+                profile_id, sources, instruction=str(metadata.get("instruction", "")),
+                visible_copy=str(metadata.get("visible_copy", "")), scene_plan=deterministic_plan,
+                backend="auto", seed=seed, preview_only=True,
+            )
+            result.update({"renderer": "structured-scene-patch-v4",
+                           "edit_instruction": instruction.strip(),
+                           "applied_edit_fields": explicit_fields,
+                           "revision": int(metadata.get("revision", 0)) + 1})
+            return result
         revised_plan = self._request_scene_plan(
             profile, paths, str(metadata.get("instruction", "")),
             str(metadata.get("visible_copy", "")), previous_plan, instruction.strip(),

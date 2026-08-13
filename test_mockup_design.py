@@ -226,6 +226,35 @@ def test_explicit_visibility_and_center_requests_override_learned_defaults():
     assert applied
 
 
+def test_visual_change_detection_ignores_internal_provenance_only():
+    before = {"canvas": {"aspect_ratio": 1}, "assets": [], "texts": [],
+              "enforced_user_constraints": ["old"]}
+    after = {"canvas": {"aspect_ratio": 1}, "assets": [], "texts": [],
+             "quality_review_fallback": "internal"}
+    from core.mockup_scene import scene_changed
+    assert scene_changed(before, after) is False
+
+
+def test_explicit_text_size_and_color_constraints_are_applied():
+    plan = {"assets": [], "texts": [{"content": "테스트", "x": .4, "y": .4, "width": .1,
+                                      "height": .04, "font_size": .04, "color": "#111111"}]}
+    result, applied = enforce_explicit_user_constraints(plan, "문구를 더 크게 하고 파란색으로 바꿔줘")
+    assert result["texts"][0]["color"] == "#2878d0"
+    assert result["texts"][0]["font_size"] > .04
+    assert applied
+
+
+def test_learned_subject_scale_repairs_oversized_asset():
+    plan = {"canvas": {"aspect_ratio": 1}, "assets": [{"index": 0, "x": 0, "y": 0,
+            "width": 1, "height": 1, "shape": "ellipse", "fit": "contain"}], "texts": []}
+    features = {"references": [{"aspect_ratio": 1}] * 4,
+                "consensus": {"confidence": 1, "subject_scale": .78, "primary_frame": "circle",
+                              "evidence": {"reference_count": 4}}}
+    result, enforced = enforce_measured_style_evidence(plan, features)
+    assert (result["assets"][0]["x"], result["assets"][0]["width"]) == (.11, .78)
+    assert "assets[0].learned_subject_occupancy" in enforced
+
+
 def test_invalid_ai_edit_can_apply_only_explicit_safe_constraints(tmp_path):
     runtime = MockupDesignRuntime(tmp_path / "styles", vision=AlwaysInvalidVision(),
                                   generation_backend=FakeGenerationBackend())
@@ -237,7 +266,7 @@ def test_invalid_ai_edit_can_apply_only_explicit_safe_constraints(tmp_path):
     original["scene_plan"]["assets"][0]["fit"] = "cover"
     edited = runtime.edit_preview(original, "얼굴과 머리가 모두 보이고 문구는 중앙에 오게 해줘")
     assert edited["scene_plan"]["assets"][0]["fit"] == "contain"
-    assert edited["scene_plan"]["edit_plan_fallback"]
+    assert edited["renderer"] == "structured-scene-patch-v4"
 
 
 def test_mockup_workspace_and_model_role_are_registered():
@@ -417,8 +446,8 @@ def test_ai_edits_revise_scene_plan_and_rerender_from_original_sources(tmp_path)
     profile = runtime.learn_style(refs)
     original = runtime.render(profile.profile_id, [product], visible_copy="응원합니다!",
                               output_dir=tmp_path / "out", backend="auto", preview_only=True)
-    first = runtime.edit_preview(original, "점선을 실선으로 바꾸고 테두리를 파란색으로 바꿔줘")
-    assert first["renderer"] == "ai-scene-plan-edit-v3"
+    first = runtime.edit_preview(original, "문구를 더 크게 하고 파란색으로 바꿔줘")
+    assert first["renderer"] == "structured-scene-patch-v4"
     assert first["production_inputs"] == original["production_inputs"]
     assert first["production_sources"] == original["production_sources"]
     assert first["scene_plan"] != original["scene_plan"]

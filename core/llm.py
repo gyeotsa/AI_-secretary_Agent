@@ -288,6 +288,9 @@ class OllamaClient(BaseLLMClient):
             return f"오류가 발생했습니다: {str(e)}", []
 
     def chat(self, messages: List[Dict]) -> str:
+        return self.chat_structured(messages)
+
+    def chat_structured(self, messages: List[Dict], json_schema: Optional[Dict] = None) -> str:
         metric_started = time.perf_counter()
         try:
             # 역할을 하나의 문자열로 평탄화하면 작은 로컬 모델이 최근 사용자
@@ -318,6 +321,8 @@ class OllamaClient(BaseLLMClient):
                     "num_predict": self.profile.max_tokens
                 }
             }
+            if json_schema:
+                payload["format"] = json_schema
 
             response = requests.post(
                 f"{self.base_url}/api/chat",

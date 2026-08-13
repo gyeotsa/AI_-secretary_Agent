@@ -10,6 +10,38 @@ class ScenePlanError(ValueError):
     pass
 
 
+SCENE_PLAN_JSON_SCHEMA = {
+    "type": "object",
+    "required": ["canvas", "assets", "decorations", "texts", "rationale"],
+    "properties": {
+        "canvas": {"type": "object", "required": ["aspect_ratio", "background"],
+                   "properties": {"aspect_ratio": {"type": "number"},
+                                  "background": {"type": "string"}}},
+        "assets": {"type": "array", "items": {"type": "object",
+                   "required": ["index", "x", "y", "width", "height", "shape", "fit",
+                                "focal_x", "focal_y", "rotation", "z"],
+                   "properties": {"index": {"type": "integer"}, "x": {"type": "number"},
+                                  "y": {"type": "number"}, "width": {"type": "number"},
+                                  "height": {"type": "number"},
+                                  "shape": {"enum": ["rectangle", "rounded", "ellipse"]},
+                                  "fit": {"enum": ["cover", "contain"]},
+                                  "focal_x": {"type": "number"}, "focal_y": {"type": "number"},
+                                  "rotation": {"type": "number"}, "z": {"type": "integer"}}}},
+        "decorations": {"type": "array", "items": {"type": "object"}},
+        "texts": {"type": "array", "items": {"type": "object",
+                  "required": ["content", "x", "y", "width", "height", "font_size", "color",
+                               "background", "align", "padding", "z"],
+                  "properties": {"content": {"type": "string"}, "x": {"type": "number"},
+                                 "y": {"type": "number"}, "width": {"type": "number"},
+                                 "height": {"type": "number"}, "font_size": {"type": "number"},
+                                 "color": {"type": "string"}, "background": {"type": "string"},
+                                 "align": {"enum": ["left", "center", "right"]},
+                                 "padding": {"type": "number"}, "z": {"type": "integer"}}}},
+        "rationale": {"type": "string"},
+    },
+}
+
+
 def extract_json_object(text: str) -> dict:
     """Extract one JSON object without accepting prose as a successful plan."""
     value = str(text or "").strip()
@@ -143,7 +175,12 @@ def restore_required_elements(raw: dict, baseline: dict, *, asset_count: int,
 
 def scene_changed(before: dict, after: dict) -> bool:
     left, right = deepcopy(before), deepcopy(after)
-    left.pop("rationale", None); right.pop("rationale", None)
+    ignored = {"rationale", "restored_required_elements", "enforced_measured_evidence",
+               "enforced_user_constraints", "quality_review_fallback", "quality_review_rejected",
+               "initial_plan_fallback", "edit_plan_fallback"}
+    for mapping in (left, right):
+        for key in ignored:
+            mapping.pop(key, None)
     return left != right
 
 
@@ -215,7 +252,8 @@ def enforce_measured_style_evidence(plan: dict, style_features: dict) -> tuple[d
         primary_frame = consensus.get("primary_frame")
         if len(assets) == 1 and learned_scale >= .55:
             asset = assets[0]
-            if float(asset.get("width", 0)) * float(asset.get("height", 0)) < learned_scale ** 2 * .7:
+            area = float(asset.get("width", 0)) * float(asset.get("height", 0))
+            if area < learned_scale ** 2 * .7 or area > learned_scale ** 2 * 1.3:
                 asset.update({"x": round((1 - learned_scale) / 2, 4), "y": .06, "width": learned_scale,
                               "height": min(.88, learned_scale)})
                 enforced.append("assets[0].learned_subject_occupancy")
@@ -255,7 +293,27 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
             item["x"] = round(frame_x + (frame_w - width) / 2, 4)
             item["y"] = round(frame_y + (frame_h - height) / 2, 4)
             item["background"] = "transparent"
+            if float(item.get("font_size", 0)) < .05:
+                item["font_size"] = .055
+            if width < .35:
+                item["width"] = .5
+                item["x"] = round(frame_x + (frame_w - .5) / 2, 4)
             applied.append(f"texts[{index}].primary_frame_center")
+    color_map = {"파란": "#2878d0", "파랑": "#2878d0", "빨간": "#e5484d", "빨강": "#e5484d",
+                 "검정": "#111111", "검은": "#111111", "흰색": "#ffffff", "하얀": "#ffffff",
+                 "초록": "#38a169", "노란": "#f2c94c", "보라": "#8b4cc2"}
+    copy_targeted = any(word in text for word in ("문구", "텍스트", "글자"))
+    if copy_targeted:
+        requested = next((color for word, color in color_map.items() if word in text), None)
+        for index, item in enumerate(result.get("texts", [])):
+            if requested and item.get("color") != requested:
+                item["color"] = requested; applied.append(f"texts[{index}].color")
+            if any(word in text for word in ("더 크게", "크게", "키워", "키워줘")):
+                old = float(item.get("font_size", .055))
+                item["font_size"] = round(min(.16, max(.055, old * 1.5)), 4)
+                item["width"] = min(.85, max(float(item.get("width", .5)), .5))
+                item["height"] = min(.24, max(float(item.get("height", .12)), .12))
+                applied.append(f"texts[{index}].size")
     if applied:
         result["enforced_user_constraints"] = applied
     return result, applied

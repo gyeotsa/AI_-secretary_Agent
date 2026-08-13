@@ -98,7 +98,8 @@ class VisionRuntime:
     def _encode(path: str) -> str:
         return base64.b64encode(Path(path).read_bytes()).decode("ascii")
 
-    def analyze(self, paths: Iterable[str], prompt: str, *, mode: str = "general") -> Dict[str, Any]:
+    def analyze(self, paths: Iterable[str], prompt: str, *, mode: str = "general",
+                json_schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         paths = [str(Path(path).resolve()) for path in paths]
         if not paths or len(paths) > 12:
             raise ValueError("분석 이미지는 1~12개여야 합니다.")
@@ -120,7 +121,9 @@ class VisionRuntime:
             {"role": "user", "content": f"{instruction}\n사용자 요청: {prompt}",
              "images": [self._encode(path) for path in paths]}]
         with self.gpu.reserve("vision", min(4096, 1024 + len(paths) * 256), priority=5) as admission:
-            response = self.llm.chat(messages).strip()
+            structured = getattr(self.llm, "chat_structured", None)
+            response = (structured(messages, json_schema=json_schema) if json_schema and structured
+                        else self.llm.chat(messages)).strip()
         if not response:
             raise RuntimeError("Vision 모델이 빈 응답을 반환했습니다.")
         return {"analysis": response, "mode": mode, "frame_count": len(paths),
