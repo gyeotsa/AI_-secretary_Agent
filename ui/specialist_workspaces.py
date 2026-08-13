@@ -411,7 +411,7 @@ class MockupWorkspaceWindow(QMainWindow):
             f"스타일: {profile.name}\n참고 이미지: {len(profile.reference_paths)}장\n"
             f"방향: {profile.orientation}\n대표 비율: {profile.median_aspect_ratio:.3f}\n"
             f"색상: {', '.join(profile.palette)}\n"
-            f"구조 유형: {profile.design_recipe.get('layout_family', '분석 중')}\n\n"
+            "생성 방식: AI 학습 기반 가변 장면 설계\n\n"
             f"구조·Vision 분석\n{profile.vision_analysis}"
         )
         self.preview.setText("스타일 분석을 완료했습니다. 이제 제작용 사진을 추가해 시안을 만들 수 있습니다.")
@@ -486,9 +486,9 @@ class MockupWorkspaceWindow(QMainWindow):
         fallback = (f"생성형 자동 대체 사유: {result['generation_fallback_reason']}\n"
                     if result.get("generation_fallback_reason") else "")
         applied = result.get("applied_edit_fields") or []
-        edit_note = (f"원본 기반 수정 항목: {', '.join(applied)}\n" if applied else
-                     ("원본과 구조를 보존해 다시 렌더링했습니다. 인식된 구조 변경 항목은 없습니다.\n"
-                      if result.get("renderer") == "source-preserving-structured-edit-v2" else ""))
+        edit_note = ("AI가 수정 명령에 맞춰 디자인 설계도를 갱신하고 원본 제작 이미지를 다시 배치했습니다.\n"
+                     if result.get("renderer") == "ai-scene-plan-edit-v3" else
+                     (f"적용된 수정 항목: {', '.join(applied)}\n" if applied else ""))
         self.details.append(
             f"\n임시 미리보기 생성 완료\n{result['width']}×{result['height']}\n"
             f"렌더러: {result['renderer']}\n{fallback}{edit_note}"

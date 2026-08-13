@@ -16,6 +16,7 @@ from statistics import median
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from core.vision_runtime import VisionRuntime
+from core.mockup_scene import extract_json_object, normalize_scene_plan, scene_changed
 
 
 SUPPORTED_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
@@ -438,7 +439,7 @@ class MockupDesignRuntime:
                 y += int(font_size * 1.14)
         return canvas, plan, visible_copy
 
-    def render(self, profile_id: str, production_paths, *, instruction: str = "",
+    def _legacy_render(self, profile_id: str, production_paths, *, instruction: str = "",
                visible_copy: str = "",
                edit_state: dict | None = None,
                output_dir: str | Path = "data/mockup_outputs", basename: str = "mockup",
@@ -577,6 +578,181 @@ class MockupDesignRuntime:
             output_path.with_suffix(".json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
         return metadata
 
+    def _request_scene_plan(self, profile: MockupStyleProfile, paths: list[Path], instruction: str,
+                            visible_copy: str, previous_plan: dict | None = None,
+                            edit_instruction: str = "") -> dict:
+        vision = self.vision or VisionRuntime()
+        source_context = (
+            f"학습된 스타일 분석:\n{profile.vision_analysis}\n\n"
+            f"학습 데이터의 측정 특징:\n{json.dumps(profile.style_features, ensure_ascii=False)}\n"
+            f"사용자 제작 지시: {instruction or '없음'}\n"
+            f"이미지에 실제 표시할 문구: {visible_copy or '없음'}\n"
+        )
+        if previous_plan is None:
+            task = "참고 이미지들의 공통 디자인 언어를 학습해 제작용 이미지로 새로운 시안을 설계하세요."
+        else:
+            task = (
+                "기존 설계도를 사용자의 수정 명령에 맞게 수정하세요. 명령하지 않은 피사체 정체성, "
+                "구도, 문구는 보존하세요. 기존 설계도:\n"
+                f"{json.dumps(previous_plan, ensure_ascii=False)}\n수정 명령: {edit_instruction}"
+            )
+        prompt = f"""{task}
+{source_context}
+첫 {len(profile.reference_paths[:8])}장은 서로 독립된 학습용 시안이고, 마지막 {len(paths)}장은 제작용 원본입니다.
+학습용 픽셀이나 인물을 결과에 복사하지 말고 형태, 공간, 계층, 색, 타이포그래피 관계만 추론하세요.
+원형 스티커 같은 미리 정해진 템플릿을 가정하지 마세요. 사용자 명령이 학습 스타일보다 우선합니다.
+제작용 이미지는 모두 정확히 한 번씩 assets에 포함하고 얼굴이나 핵심 피사체가 잘리지 않도록 focal_x/focal_y를 정하세요.
+표시 문구가 '없음'이면 texts는 빈 배열이어야 합니다. 지시문 자체를 이미지 문구로 쓰지 마세요.
+설명 없이 JSON 객체 하나만 반환하세요. 아래는 값 예시가 아니라 필드의 형식 정의입니다. 좌표와 속성은 반드시 실제 이미지를 분석해 새로 결정하세요.
+- canvas: aspect_ratio(number 0.55~1.9), background(hex color)
+- assets: 제작 이미지마다 index, x, y, width, height(모두 정규화 좌표), shape(rectangle/rounded/ellipse), fit(cover/contain), focal_x, focal_y, rotation, z
+- decorations: 필요할 때만 type(rectangle/ellipse/line), x, y, width, height, fill, stroke, stroke_width, dash, z
+- texts: 표시 문구가 있을 때만 content, x, y, width, height, font_size, color, background, align, padding, z
+- rationale: 어떤 참고 이미지의 어떤 공통 특징과 사용자 지시가 각 결정의 근거인지 구체적으로 작성
+최상위 키는 canvas, assets, decorations, texts, rationale 다섯 개만 사용하세요."""
+        response = vision.analyze(
+            [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]], prompt, mode="general"
+        )
+        plan = normalize_scene_plan(
+            extract_json_object(str(response.get("analysis", ""))),
+            asset_count=len(paths), visible_copy=visible_copy,
+        )
+        review_prompt = f"""당신은 상업 디자인 아트 디렉터입니다. 참고 이미지, 제작 원본, 사용자 지시와 아래 1차 설계도를 비교해 결함을 교정하세요.
+1차 설계도: {json.dumps(plan, ensure_ascii=False)}
+사용자 지시: {instruction or '없음'}
+표시 문구: {visible_copy or '없음'}
+검사 항목: 참고 자료의 반복되는 캔버스 비율과 시각 문법, 피사체 크기와 정체성 보존, 얼굴·머리·몸의 의도치 않은 잘림, 빈 공간의 균형, 문구와 얼굴의 충돌, 문구 가독성, 사용자 수정 명령의 실제 반영.
+미리 정한 원형·카드 템플릿을 적용하지 말고 보이는 참고 자료를 근거로 판단하세요. cover는 의도적인 크롭일 때만 쓰고 전체 보존 요청에는 contain을 쓰세요.
+결함을 고친 최종 설계도를 JSON 객체 하나로만 반환하세요. 최상위 키는 canvas, assets, decorations, texts, rationale입니다."""
+        reviewed = vision.analyze(
+            [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]], review_prompt, mode="general"
+        )
+        return normalize_scene_plan(
+            extract_json_object(str(reviewed.get("analysis", ""))),
+            asset_count=len(paths), visible_copy=visible_copy,
+        )
+
+    @staticmethod
+    def _rgba(value: str, fallback=(0, 0, 0, 0)):
+        text = str(value or "")
+        if text == "transparent": return (0, 0, 0, 0)
+        try:
+            raw = text.lstrip("#")
+            if len(raw) == 6: raw += "ff"
+            return tuple(int(raw[index:index + 2], 16) for index in (0, 2, 4, 6))
+        except (TypeError, ValueError):
+            return fallback
+
+    def _render_scene_plan(self, plan: dict, paths: list[Path], *, background=None,
+                           long_edge: int = 1600) -> Image.Image:
+        ratio = float(plan["canvas"]["aspect_ratio"])
+        width, height = ((long_edge, max(900, int(long_edge / ratio))) if ratio >= 1 else
+                         (max(900, int(long_edge * ratio)), long_edge))
+        if background is None:
+            canvas = Image.new("RGBA", (width, height), self._rgba(plan["canvas"]["background"], (255, 255, 255, 255)))
+        else:
+            canvas = ImageOps.fit(background.convert("RGBA"), (width, height), Image.Resampling.LANCZOS)
+        draw = ImageDraw.Draw(canvas, "RGBA")
+
+        def box(item):
+            x, y = int(item["x"] * width), int(item["y"] * height)
+            w, h = max(1, int(item["width"] * width)), max(1, int(item["height"] * height))
+            return x, y, min(width, x + w), min(height, y + h)
+
+        for item in sorted((d for d in plan["decorations"] if d["z"] < 0), key=lambda d: d["z"]):
+            self._draw_scene_decoration(draw, item, box(item), width)
+        for item in sorted(plan["assets"], key=lambda asset: asset["z"]):
+            x1, y1, x2, y2 = box(item); cell = (max(1, x2-x1), max(1, y2-y1))
+            with Image.open(paths[item["index"]]) as opened:
+                source = opened.convert("RGBA")
+                alpha_bbox = source.getchannel("A").getbbox()
+                if alpha_bbox and alpha_bbox != (0, 0, source.width, source.height):
+                    source = source.crop(alpha_bbox)
+                if item["fit"] == "contain":
+                    placed = ImageOps.contain(source, cell, Image.Resampling.LANCZOS)
+                    layer = Image.new("RGBA", cell, (0, 0, 0, 0))
+                    layer.alpha_composite(placed, ((cell[0]-placed.width)//2, (cell[1]-placed.height)//2))
+                else:
+                    layer = ImageOps.fit(source, cell, Image.Resampling.LANCZOS,
+                                         centering=(item["focal_x"], item["focal_y"]))
+            if item["rotation"]:
+                layer = layer.rotate(item["rotation"], Image.Resampling.BICUBIC, expand=False)
+            mask = layer.getchannel("A")
+            if item["shape"] in {"rounded", "ellipse"}:
+                shape_mask = Image.new("L", cell, 0); shape_draw = ImageDraw.Draw(shape_mask)
+                if item["shape"] == "ellipse": shape_draw.ellipse((0, 0, cell[0]-1, cell[1]-1), fill=255)
+                else: shape_draw.rounded_rectangle((0, 0, cell[0]-1, cell[1]-1), radius=max(8, min(cell)//12), fill=255)
+                mask = Image.composite(mask, Image.new("L", cell, 0), shape_mask)
+            canvas.paste(layer, (x1, y1), mask); draw = ImageDraw.Draw(canvas, "RGBA")
+        for item in sorted((d for d in plan["decorations"] if d["z"] >= 0), key=lambda d: d["z"]):
+            self._draw_scene_decoration(draw, item, box(item), width)
+        for item in sorted(plan["texts"], key=lambda text: text["z"]):
+            self._draw_scene_text(draw, item, box(item), width, height)
+        return canvas
+
+    def _draw_scene_decoration(self, draw, item, bounds, width):
+        fill, stroke = self._rgba(item["fill"]), self._rgba(item["stroke"])
+        stroke_width = max(1, int(item["stroke_width"] * width))
+        if item["type"] == "line":
+            draw.line((bounds[0], bounds[1], bounds[2], bounds[3]), fill=stroke, width=stroke_width)
+        elif item["type"] == "ellipse":
+            draw.ellipse(bounds, fill=fill, outline=stroke, width=stroke_width)
+        else:
+            draw.rectangle(bounds, fill=fill, outline=stroke, width=stroke_width)
+
+    def _draw_scene_text(self, draw, item, bounds, width, height):
+        x1, y1, x2, y2 = bounds
+        background = self._rgba(item["background"])
+        if background[3]: draw.rectangle(bounds, fill=background)
+        padding = int(item["padding"] * min(width, height)); x1 += padding; y1 += padding; x2 -= padding; y2 -= padding
+        font_size = max(14, int(item["font_size"] * min(width, height)))
+        content = item["content"]
+        while font_size > 14:
+            font = self._font(font_size, bold=True); measured = draw.textbbox((0, 0), content, font=font)
+            if measured[2] - measured[0] <= max(1, x2-x1) and measured[3] - measured[1] <= max(1, y2-y1): break
+            font_size -= 2
+        measured = draw.textbbox((0, 0), content, font=font); text_w, text_h = measured[2]-measured[0], measured[3]-measured[1]
+        x = x1 if item["align"] == "left" else x2-text_w if item["align"] == "right" else x1+(x2-x1-text_w)//2
+        y = y1 + (y2-y1-text_h)//2 - measured[1]
+        draw.text((x, y), content, font=font, fill=self._rgba(item["color"], (17, 17, 17, 255)))
+
+    def render(self, profile_id: str, production_paths, *, instruction: str = "",
+               visible_copy: str = "", edit_state: dict | None = None,
+               output_dir: str | Path = "data/mockup_outputs", basename: str = "mockup",
+               backend: str = "auto", seed: int = 42, preview_only: bool = False,
+               scene_plan: dict | None = None) -> dict:
+        """Render exclusively from a model-authored scene plan, never a named template."""
+        profile = self.load_profile(profile_id); paths = self._validate_images(production_paths)
+        plan = scene_plan or self._request_scene_plan(profile, paths, instruction, visible_copy)
+        use_generative = backend == "generative" or (backend == "auto" and self.generation_backend.status().get("ready", False))
+        background, generation_error = None, ""
+        if use_generative:
+            try:
+                background = self.generation_backend.generate_background(
+                    reference_paths=profile.reference_paths,
+                    prompt=f"{profile.generation_prompt}. {instruction}. {plan.get('rationale', '')}",
+                    orientation=profile.orientation, seed=seed)
+            except Exception as exc:
+                if backend == "generative": raise
+                generation_error, use_generative = str(exc), False
+        canvas = self._render_scene_plan(plan, paths, background=background)
+        output_root = (Path(tempfile.gettempdir()) / "jarvis_mockup_previews" if preview_only else Path(output_dir).expanduser().resolve())
+        output_root.mkdir(parents=True, exist_ok=True)
+        safe_name = "".join(c for c in basename if c.isalnum() or c in "-_ ").strip() or "mockup"
+        suffix = uuid.uuid4().hex if preview_only else time.strftime('%Y%m%d_%H%M%S')
+        output_path = output_root / f"{safe_name}_{suffix}.png"; canvas.convert("RGB").save(output_path, "PNG", optimize=True)
+        metadata = {
+            "output": str(output_path), "profile_id": profile.profile_id, "references": profile.reference_hashes,
+            "production_inputs": [self._sha256(path) for path in paths], "production_sources": [str(path) for path in paths],
+            "width": canvas.width, "height": canvas.height, "renderer": "ai-scene-plan-renderer-v3",
+            "generation_backend": "generative" if use_generative else "model_planned_local",
+            "seed": int(seed), "scene_plan": plan, "composition_plan": plan["assets"],
+            "instruction": instruction.strip(), "visible_copy": visible_copy.strip(), "preview_only": bool(preview_only),
+            "generation_fallback_reason": generation_error, "style_recipe": profile.design_recipe,
+        }
+        if not preview_only: output_path.with_suffix(".json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        return metadata
+
     def save_preview(self, preview_path: str | Path, destination: str | Path,
                      metadata: dict | None = None) -> dict:
         source = Path(preview_path).expanduser().resolve()
@@ -626,22 +802,31 @@ class MockupDesignRuntime:
         return state, list(dict.fromkeys(applied))
 
     def edit_preview(self, metadata: dict, instruction: str, *, seed: int = 42) -> dict:
-        """Re-render from source assets; never feed an edited raster back into diffusion."""
+        """Let the model revise the editable scene plan, then re-render from sources."""
         if not isinstance(metadata, dict) or not instruction.strip():
             raise ValueError("수정할 미리보기 정보와 구체적인 수정 지시가 필요합니다.")
         profile_id = str(metadata.get("profile_id", ""))
         sources = metadata.get("production_sources") or []
         if not profile_id or not sources:
             raise ValueError("이전 방식으로 만든 결과에는 원본 연결 정보가 없습니다. 원본 사진으로 시안을 한 번 다시 만들어 주세요.")
-        state, applied = self._merge_structured_edit(metadata.get("edit_state", {}), instruction)
-        combined_instruction = "\n".join(filter(None, [metadata.get("instruction", ""), instruction.strip()]))
-        result = self.render(
-            profile_id, sources, instruction=combined_instruction,
-            visible_copy=str(metadata.get("visible_copy", "")), edit_state=state,
-            backend="local", seed=seed, preview_only=True,
+        previous_plan = metadata.get("scene_plan")
+        if not isinstance(previous_plan, dict):
+            raise ValueError("이전 결과에 AI 디자인 설계도가 없습니다. 새 파이프라인으로 시안을 다시 생성해 주세요.")
+        profile = self.load_profile(profile_id)
+        paths = self._validate_images(sources)
+        revised_plan = self._request_scene_plan(
+            profile, paths, str(metadata.get("instruction", "")),
+            str(metadata.get("visible_copy", "")), previous_plan, instruction.strip(),
         )
-        result.update({"renderer": "source-preserving-structured-edit-v2",
-                       "edit_instruction": instruction.strip(), "applied_edit_fields": applied,
+        if not scene_changed(previous_plan, revised_plan):
+            raise ValueError("수정 명령이 설계도에 반영되지 않았습니다. AI가 변경할 대상을 식별하지 못했으므로 결과를 덮어쓰지 않았습니다.")
+        result = self.render(
+            profile_id, sources, instruction=str(metadata.get("instruction", "")),
+            visible_copy=str(metadata.get("visible_copy", "")), scene_plan=revised_plan,
+            backend="auto", seed=seed, preview_only=True,
+        )
+        result.update({"renderer": "ai-scene-plan-edit-v3",
+                       "edit_instruction": instruction.strip(), "applied_edit_fields": ["scene_plan"],
                        "revision": int(metadata.get("revision", 0)) + 1})
         return result
 

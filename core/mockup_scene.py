@@ -1,0 +1,119 @@
+"""Model-authored, pattern-agnostic scene plans for reference-driven mockups."""
+from __future__ import annotations
+
+import json
+import re
+from copy import deepcopy
+
+
+class ScenePlanError(ValueError):
+    pass
+
+
+def extract_json_object(text: str) -> dict:
+    """Extract one JSON object without accepting prose as a successful plan."""
+    value = str(text or "").strip()
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", value, re.IGNORECASE)
+    candidates = [fenced.group(1)] if fenced else []
+    start, end = value.find("{"), value.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(value[start:end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            continue
+    raise ScenePlanError("Vision 모델이 유효한 디자인 설계도(JSON)를 반환하지 않았습니다.")
+
+
+def _number(value, low: float, high: float, default: float) -> float:
+    try:
+        return max(low, min(high, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _color(value, default="transparent") -> str:
+    text = str(value or "").strip()
+    if text == "transparent" or re.fullmatch(r"#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?", text):
+        return text
+    return default
+
+
+def normalize_scene_plan(raw: dict, *, asset_count: int, visible_copy: str = "") -> dict:
+    """Validate the model plan while keeping visual decisions model-authored."""
+    if not isinstance(raw, dict):
+        raise ScenePlanError("디자인 설계도가 객체 형식이 아닙니다.")
+    canvas = raw.get("canvas") if isinstance(raw.get("canvas"), dict) else {}
+    result = {
+        "schema_version": 3,
+        "canvas": {
+            "aspect_ratio": _number(canvas.get("aspect_ratio"), .55, 1.9, 1.0),
+            "background": _color(canvas.get("background"), "#ffffff"),
+        },
+        "assets": [], "decorations": [], "texts": [],
+        "rationale": str(raw.get("rationale", "")).strip()[:1200],
+    }
+    seen = set()
+    for item in raw.get("assets", []):
+        if not isinstance(item, dict):
+            continue
+        try: index = int(item.get("index"))
+        except (TypeError, ValueError): continue
+        if index < 0 or index >= asset_count or index in seen:
+            continue
+        seen.add(index)
+        result["assets"].append({
+            "index": index,
+            "x": _number(item.get("x"), 0, .98, .1), "y": _number(item.get("y"), 0, .98, .1),
+            "width": _number(item.get("width"), .05, 1, .8),
+            "height": _number(item.get("height"), .05, 1, .8),
+            "shape": str(item.get("shape", "rectangle")) if str(item.get("shape")) in
+                     {"rectangle", "rounded", "ellipse"} else "rectangle",
+            "fit": "contain" if item.get("fit") == "contain" else "cover",
+            "focal_x": _number(item.get("focal_x"), 0, 1, .5),
+            "focal_y": _number(item.get("focal_y"), 0, 1, .5),
+            "rotation": _number(item.get("rotation"), -30, 30, 0),
+            "z": int(_number(item.get("z"), -20, 20, 0)),
+        })
+    if seen != set(range(asset_count)):
+        missing = sorted(set(range(asset_count)) - seen)
+        raise ScenePlanError(f"AI 설계도에 제작용 이미지 배치가 누락되었습니다: {missing}")
+    for item in raw.get("decorations", []):
+        if not isinstance(item, dict) or item.get("type") not in {"rectangle", "ellipse", "line"}:
+            continue
+        result["decorations"].append({
+            "type": item["type"], "x": _number(item.get("x"), 0, 1, 0),
+            "y": _number(item.get("y"), 0, 1, 0), "width": _number(item.get("width"), 0, 1, 1),
+            "height": _number(item.get("height"), 0, 1, 1),
+            "fill": _color(item.get("fill")), "stroke": _color(item.get("stroke")),
+            "stroke_width": _number(item.get("stroke_width"), 0, .05, .005),
+            "dash": bool(item.get("dash", False)), "z": int(_number(item.get("z"), -20, 20, -1)),
+        })
+    requested_copy = " ".join(str(visible_copy or "").split())[:160]
+    if requested_copy:
+        matching = [item for item in raw.get("texts", []) if isinstance(item, dict)]
+        if not matching:
+            raise ScenePlanError("표시 문구가 요청되었지만 AI 설계도에 텍스트 영역이 없습니다.")
+        item = matching[0]
+        result["texts"] = [{
+            "content": requested_copy,
+            "x": _number(item.get("x"), 0, .95, .15), "y": _number(item.get("y"), 0, .95, .72),
+            "width": _number(item.get("width"), .1, 1, .7),
+            "height": _number(item.get("height"), .04, .5, .16),
+            "font_size": _number(item.get("font_size"), .015, .2, .065),
+            "color": _color(item.get("color"), "#111111"),
+            "background": _color(item.get("background")),
+            "align": str(item.get("align")) if item.get("align") in {"left", "center", "right"} else "center",
+            "padding": _number(item.get("padding"), 0, .1, .018),
+            "z": int(_number(item.get("z"), -20, 20, 10)),
+        }]
+    return result
+
+
+def scene_changed(before: dict, after: dict) -> bool:
+    left, right = deepcopy(before), deepcopy(after)
+    left.pop("rationale", None); right.pop("rationale", None)
+    return left != right

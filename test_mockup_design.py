@@ -17,6 +17,29 @@ from ui.specialist_workspaces import MockupWorkspaceWindow
 
 class FakeVision:
     def analyze(self, paths, prompt, mode="general"):
+        if ('최상위 키는 canvas, assets' in prompt or
+                '최상위 키는 canvas, assets, decorations, texts, rationale' in prompt):
+            import json, re
+            if "1차 설계도:" in prompt:
+                start = prompt.index("1차 설계도:") + len("1차 설계도:")
+                end = prompt.index("\n사용자 지시:", start)
+                return {"analysis": prompt[start:end].strip()}
+            match = re.search(r"마지막 (\d+)장은 제작용", prompt)
+            count = int(match.group(1)) if match else 1
+            changed = "기존 설계도를 사용자의 수정 명령" in prompt
+            copy_match = (re.search(r"이미지에 실제 표시할 문구: (.+)", prompt) or
+                          re.search(r"표시 문구: (.+)", prompt))
+            copy = copy_match.group(1).strip() if copy_match and copy_match.group(1).strip() != "없음" else ""
+            return {"analysis": json.dumps({
+                "canvas": {"aspect_ratio": 1, "background": "#ffffff"},
+                "assets": [{"index": i, "x": .08, "y": .08, "width": .84, "height": .76,
+                            "shape": "rounded" if changed else "ellipse", "fit": "contain",
+                            "focal_x": .5, "focal_y": .42, "rotation": 0, "z": i} for i in range(count)],
+                "decorations": [],
+                "texts": ([{"content": copy, "x": .18, "y": .72, "width": .64, "height": .12,
+                             "font_size": .055, "color": "#111111", "background": "#ffffffcc",
+                             "align": "center", "padding": .015, "z": 10}] if copy else []),
+                "rationale": "reference-driven plan"}, ensure_ascii=False)}
         return {"analysis": "큰 제목, 짙은 배경, 밝은 강조색과 둥근 사진 카드가 반복됩니다."}
 
 
@@ -156,7 +179,7 @@ def test_generative_backend_preserves_production_layout_and_records_provenance(t
     result = runtime.render(profile.profile_id, products, output_dir=tmp_path / "out", backend="auto")
     assert Path(result["output"]).is_file()
     assert result["generation_backend"] == "generative"
-    assert "ip-adapter" in result["renderer"]
+    assert result["renderer"] == "ai-scene-plan-renderer-v3"
 
 
 def test_generation_model_prepare_contract(tmp_path):
@@ -174,14 +197,14 @@ def test_auto_backend_falls_back_but_explicit_generative_reports_failure(tmp_pat
         tmp_path / "styles", vision=FakeVision(), generation_backend=FailingGenerationBackend(ready=True))
     profile = runtime.learn_style(refs)
     result = runtime.render(profile.profile_id, products, output_dir=tmp_path / "out", backend="auto")
-    assert result["generation_backend"] == "local"
+    assert result["generation_backend"] == "model_planned_local"
     assert result["generation_fallback_reason"] == "테스트 생성 실패"
     import pytest
     with pytest.raises(RuntimeError, match="테스트 생성 실패"):
         runtime.render(profile.profile_id, products, output_dir=tmp_path / "out", backend="generative")
 
 
-def test_circular_references_become_structured_sticker_not_photo_cards(tmp_path):
+def test_reference_style_is_rendered_from_ai_scene_plan_not_named_template(tmp_path):
     refs = [
         _circular_sticker(tmp_path / f"ref{index}.png", color, (80 + index * 20, 70, 60))
         for index, color in enumerate(((130, 220, 210), (80, 100, 130), (220, 205, 190), (140, 235, 210)))
@@ -196,16 +219,13 @@ def test_circular_references_become_structured_sticker_not_photo_cards(tmp_path)
         profile.profile_id, [product], instruction="밝고 힘찬 분위기",
         visible_copy="배우님 화이팅!", output_dir=tmp_path / "out", backend="auto",
     )
-    assert result["renderer"] == "structured-circular-sticker-v2"
+    assert result["renderer"] == "ai-scene-plan-renderer-v3"
     assert result["visible_copy"] == "배우님 화이팅!"
-    assert result["composition_plan"][0]["shape"] == "circle"
-    assert result["quality_checks"] == {
-        "reference_pixels_reused": False, "production_assets_present": True,
-        "layout_family_matched": True, "unrequested_text_rendered": False,
-    }
+    assert result["composition_plan"][0]["shape"] == "ellipse"
+    assert result["scene_plan"]["texts"][0]["content"] == result["visible_copy"]
     with Image.open(result["output"]) as rendered:
         assert rendered.size == (1600, 1600)
-        assert rendered.getpixel((0, 0)) == (255, 255, 255)
+        assert rendered.getpixel((0, 0)) == (30, 80, 120)
         assert rendered.getpixel((800, 300)) != (255, 255, 255)
 
 
@@ -218,10 +238,10 @@ def test_circular_sticker_does_not_render_instruction_as_copy(tmp_path):
     result = runtime.render(profile.profile_id, [product], instruction="더 발랄한 색감으로 만들어줘",
                             output_dir=tmp_path / "out", backend="local")
     assert result["visible_copy"] == ""
-    assert result["quality_checks"]["unrequested_text_rendered"] is False
+    assert result["scene_plan"]["texts"] == []
 
 
-def test_structured_ai_edits_always_rerender_from_original_sources(tmp_path):
+def test_ai_edits_revise_scene_plan_and_rerender_from_original_sources(tmp_path):
     refs = [_circular_sticker(tmp_path / f"ref{index}.png", (130, 220, 210), (70, 80, 90))
             for index in range(3)]
     product = _image(tmp_path / "person.png", (40, 80, 110), size=(700, 900))
@@ -231,15 +251,14 @@ def test_structured_ai_edits_always_rerender_from_original_sources(tmp_path):
     original = runtime.render(profile.profile_id, [product], visible_copy="응원합니다!",
                               output_dir=tmp_path / "out", backend="auto", preview_only=True)
     first = runtime.edit_preview(original, "점선을 실선으로 바꾸고 테두리를 파란색으로 바꿔줘")
-    second = runtime.edit_preview(first, "조금 더 정돈된 느낌으로 수정해줘")
-    assert first["renderer"] == second["renderer"] == "source-preserving-structured-edit-v2"
-    assert first["production_inputs"] == second["production_inputs"] == original["production_inputs"]
-    assert first["production_sources"] == second["production_sources"]
-    assert first["edit_state"]["border_style"] == second["edit_state"]["border_style"] == "solid"
-    assert first["edit_state"]["border_color"] == second["edit_state"]["border_color"] == "#2878d0"
-    assert second["revision"] == 2
-    # Unknown prose cannot trigger another diffusion generation or mutate the subject.
-    assert Path(first["output"]).read_bytes() == Path(second["output"]).read_bytes()
+    assert first["renderer"] == "ai-scene-plan-edit-v3"
+    assert first["production_inputs"] == original["production_inputs"]
+    assert first["production_sources"] == original["production_sources"]
+    assert first["scene_plan"] != original["scene_plan"]
+    assert first["revision"] == 1
+    import pytest
+    with pytest.raises(ValueError, match="설계도에 반영되지 않았습니다"):
+        runtime.edit_preview(first, "조금 더 정돈된 느낌으로 수정해줘")
 
 
 def test_live_adjustment_is_repeatable_from_stable_base(tmp_path):
