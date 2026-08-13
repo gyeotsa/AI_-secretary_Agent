@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw
 from PyQt6.QtWidgets import QApplication, QListWidgetItem
 
 from core.mockup_design import MockupDesignRuntime
+from core.mockup_scene import enforce_measured_style_evidence
 from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
 from plugins.mockup_design import MockupDesignPlugin
@@ -82,6 +83,13 @@ class ReviewDropsAssetVision(FakeVision):
     def analyze(self, paths, prompt, mode="general"):
         if "1차 설계도:" in prompt:
             return {"analysis": '{"canvas":{"aspect_ratio":1,"background":"#ddeeff"},"assets":[],"decorations":[],"texts":[],"rationale":"review dropped source"}'}
+        return super().analyze(paths, prompt, mode)
+
+
+class InvalidReviewVision(FakeVision):
+    def analyze(self, paths, prompt, mode="general"):
+        if "1차 설계도" in prompt or "품질 검토" in prompt:
+            return {"analysis": "JSON이 아닌 검토 의견"}
         return super().analyze(paths, prompt, mode)
 
 
@@ -168,6 +176,15 @@ def test_quality_review_cannot_delete_valid_production_assets(tmp_path):
     assert result["scene_plan"]["canvas"]["background"] == "#ddeeff"
 
 
+def test_invalid_quality_review_keeps_valid_initial_plan(tmp_path):
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=InvalidReviewVision(),
+                                  generation_backend=FakeGenerationBackend())
+    profile = runtime.learn_style([_image(tmp_path / "ref.png", (10, 20, 30))])
+    result = runtime.render(profile.profile_id, [_image(tmp_path / "product.png", (90, 100, 110))],
+                            backend="local", output_dir=tmp_path / "out")
+    assert result["scene_plan"]["assets"][0]["index"] == 0
+
+
 def test_mockup_workspace_and_model_role_are_registered():
     registry = get_specialist_workspace_registry()
     assert registry.match_open_command("시안 제작 전문가 작업공간 열어줘").key == "mockup"
@@ -232,9 +249,10 @@ def test_generative_backend_preserves_production_layout_and_records_provenance(t
     backend = FakeGenerationBackend(ready=True)
     runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=backend)
     profile = runtime.learn_style(refs, name="생성형 스타일")
-    result = runtime.render(profile.profile_id, products, output_dir=tmp_path / "out", backend="auto")
+    result = runtime.render(profile.profile_id, products, output_dir=tmp_path / "out", backend="generative")
     assert Path(result["output"]).is_file()
     assert result["generation_backend"] == "generative"
+    assert result["reference_pixels_sent_to_generator"] is True
     assert result["renderer"] == "ai-scene-plan-renderer-v3"
 
 
@@ -254,10 +272,48 @@ def test_auto_backend_falls_back_but_explicit_generative_reports_failure(tmp_pat
     profile = runtime.learn_style(refs)
     result = runtime.render(profile.profile_id, products, output_dir=tmp_path / "out", backend="auto")
     assert result["generation_backend"] == "model_planned_local"
-    assert result["generation_fallback_reason"] == "테스트 생성 실패"
+    assert result["generation_fallback_reason"] == ""
+    assert result["reference_pixels_sent_to_generator"] is False
     import pytest
     with pytest.raises(RuntimeError, match="테스트 생성 실패"):
         runtime.render(profile.profile_id, products, output_dir=tmp_path / "out", backend="generative")
+
+
+def test_repeated_reference_ratio_overrides_unsupported_ai_canvas_ratio():
+    plan = {"canvas": {"aspect_ratio": 1.9, "background": "#ffffff"}, "assets": [],
+            "decorations": [], "texts": [], "rationale": "wide guess"}
+    features = {"references": [{"aspect_ratio": value} for value in (1.0, 1.002, .998, 1.0)]}
+    repaired, enforced = enforce_measured_style_evidence(plan, features)
+    assert repaired["canvas"]["aspect_ratio"] == 1.0
+    assert enforced == ["canvas.aspect_ratio"]
+
+
+def test_high_confidence_learned_composition_repairs_tiny_off_center_subject_and_text():
+    plan = {"canvas": {"aspect_ratio": 1.9, "background": "#ffffff"},
+            "assets": [{"index": 0, "x": .77, "y": .72, "width": .34, "height": .37,
+                        "shape": "rounded", "fit": "cover"}],
+            "decorations": [],
+            "texts": [{"content": "테스트", "x": .5, "y": .47, "width": .31, "height": .28,
+                       "font_size": .2}], "rationale": "weak plan"}
+    features = {"references": [{"aspect_ratio": 1.0}] * 4,
+                "consensus": {"confidence": 1.0, "subject_scale": .78, "primary_frame": "circle",
+                              "text_region": "lower_overlay", "evidence": {"reference_count": 4}}}
+    repaired, enforced = enforce_measured_style_evidence(plan, features)
+    assert {key: repaired["assets"][0][key] for key in ("x", "y", "width", "height", "shape")} == {
+        "x": .11, "y": .06, "width": .78, "height": .78, "shape": "ellipse"}
+    assert repaired["texts"][0]["x"] == .25
+    assert repaired["texts"][0]["y"] == .72
+    assert repaired["texts"][0]["font_size"] == .085
+    assert "assets[0].learned_subject_occupancy" in enforced
+
+
+def test_inconsistent_reference_ratios_do_not_force_a_template():
+    plan = {"canvas": {"aspect_ratio": 1.6, "background": "#ffffff"}, "assets": [],
+            "decorations": [], "texts": [], "rationale": "mixed references"}
+    features = {"references": [{"aspect_ratio": value} for value in (.75, 1.0, 1.5, 1.8)]}
+    repaired, enforced = enforce_measured_style_evidence(plan, features)
+    assert repaired["canvas"]["aspect_ratio"] == 1.6
+    assert enforced == []
 
 
 def test_reference_style_is_rendered_from_ai_scene_plan_not_named_template(tmp_path):
@@ -281,7 +337,7 @@ def test_reference_style_is_rendered_from_ai_scene_plan_not_named_template(tmp_p
     assert result["scene_plan"]["texts"][0]["content"] == result["visible_copy"]
     with Image.open(result["output"]) as rendered:
         assert rendered.size == (1600, 1600)
-        assert rendered.getpixel((0, 0)) == (30, 80, 120)
+        assert rendered.getpixel((0, 0)) == (255, 255, 255)
         assert rendered.getpixel((800, 300)) != (255, 255, 255)
 
 
@@ -313,7 +369,7 @@ def test_ai_edits_revise_scene_plan_and_rerender_from_original_sources(tmp_path)
     assert first["scene_plan"] != original["scene_plan"]
     assert first["revision"] == 1
     import pytest
-    with pytest.raises(ValueError, match="설계도에 반영되지 않았습니다"):
+    with pytest.raises(ValueError, match="수정 반영|반영되지 않았습니다"):
         runtime.edit_preview(first, "조금 더 정돈된 느낌으로 수정해줘")
 
 

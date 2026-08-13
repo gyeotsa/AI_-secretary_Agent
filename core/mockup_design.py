@@ -9,6 +9,7 @@ import tempfile
 import uuid
 import math
 import re
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from statistics import median
@@ -17,7 +18,8 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from core.vision_runtime import VisionRuntime
 from core.mockup_scene import (ScenePlanError, extract_json_object, normalize_scene_plan,
-                               restore_required_elements, scene_changed)
+                               enforce_measured_style_evidence, restore_required_elements,
+                               scene_changed)
 
 
 SUPPORTED_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
@@ -641,6 +643,19 @@ class MockupDesignRuntime:
             raise ScenePlanError(f"AI가 {stage} 설계도를 3회 교정했지만 유효하게 만들지 못했습니다: {last_error}")
 
         plan = request_valid_plan(prompt, "초기")
+        if previous_plan is not None and not scene_changed(previous_plan, plan):
+            for revision_attempt in range(2):
+                retry_prompt = f"""사용자의 수정 명령을 반영하는 편집 설계도에서 실제 변경점이 발견되지 않았습니다.
+수정 명령: {instruction}
+현재 설계도: {json.dumps(previous_plan, ensure_ascii=False)}
+직전 무효 응답: {json.dumps(plan, ensure_ascii=False)}
+사용자가 지정한 대상과 속성을 찾아 최소 한 가지 이상의 관련 필드를 실제로 변경하세요.
+요청하지 않은 피사체·텍스트·구조는 보존하고, 설명 없이 변경된 전체 JSON 설계도만 반환하세요."""
+                plan = request_valid_plan(retry_prompt, f"수정 반영 재시도 {revision_attempt + 1}", baseline=previous_plan)
+                if scene_changed(previous_plan, plan):
+                    break
+            if not scene_changed(previous_plan, plan):
+                raise ScenePlanError("수정 명령의 대상과 변경 속성을 식별하지 못했습니다.")
         review_prompt = f"""당신은 상업 디자인 아트 디렉터입니다. 참고 이미지, 제작 원본, 사용자 지시와 아래 1차 설계도를 비교해 결함을 교정하세요.
 1차 설계도: {json.dumps(plan, ensure_ascii=False)}
 사용자 지시: {instruction or '없음'}
@@ -648,7 +663,17 @@ class MockupDesignRuntime:
 검사 항목: 참고 자료의 반복되는 캔버스 비율과 시각 문법, 피사체 크기와 정체성 보존, 얼굴·머리·몸의 의도치 않은 잘림, 빈 공간의 균형, 문구와 얼굴의 충돌, 문구 가독성, 사용자 수정 명령의 실제 반영.
 미리 정한 원형·카드 템플릿을 적용하지 말고 보이는 참고 자료를 근거로 판단하세요. cover는 의도적인 크롭일 때만 쓰고 전체 보존 요청에는 contain을 쓰세요.
 결함을 고친 최종 설계도를 JSON 객체 하나로만 반환하세요. 최상위 키는 canvas, assets, decorations, texts, rationale입니다."""
-        return request_valid_plan(review_prompt, "품질 검토", baseline=plan)
+        try:
+            reviewed = request_valid_plan(review_prompt, "품질 검토", baseline=plan)
+        except ScenePlanError as exc:
+            reviewed = deepcopy(plan)
+            reviewed["quality_review_fallback"] = str(exc)
+        # A review may improve a revision, but it must not erase the user's edit.
+        if previous_plan is not None and not scene_changed(previous_plan, reviewed):
+            reviewed = plan
+            reviewed["quality_review_rejected"] = "사용자 수정 사항을 되돌려 1차 수정 설계를 유지했습니다."
+        reviewed, _ = enforce_measured_style_evidence(reviewed, profile.style_features)
+        return reviewed
 
     @staticmethod
     def _rgba(value: str, fallback=(0, 0, 0, 0)):
@@ -742,7 +767,9 @@ class MockupDesignRuntime:
         """Render exclusively from a model-authored scene plan, never a named template."""
         profile = self.load_profile(profile_id); paths = self._validate_images(production_paths)
         plan = scene_plan or self._request_scene_plan(profile, paths, instruction, visible_copy)
-        use_generative = backend == "generative" or (backend == "auto" and self.generation_backend.status().get("ready", False))
+        # IP-Adapter can reproduce people/text from reference sheets. Automatic
+        # mode therefore uses the model-authored vector/raster scene only.
+        use_generative = backend == "generative"
         background, generation_error = None, ""
         if use_generative:
             try:
@@ -764,6 +791,7 @@ class MockupDesignRuntime:
             "production_inputs": [self._sha256(path) for path in paths], "production_sources": [str(path) for path in paths],
             "width": canvas.width, "height": canvas.height, "renderer": "ai-scene-plan-renderer-v3",
             "generation_backend": "generative" if use_generative else "model_planned_local",
+            "reference_pixels_sent_to_generator": bool(use_generative),
             "seed": int(seed), "scene_plan": plan, "composition_plan": plan["assets"],
             "instruction": instruction.strip(), "visible_copy": visible_copy.strip(), "preview_only": bool(preview_only),
             "generation_fallback_reason": generation_error, "style_recipe": profile.design_recipe,

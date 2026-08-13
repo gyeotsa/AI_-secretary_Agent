@@ -145,3 +145,46 @@ def scene_changed(before: dict, after: dict) -> bool:
     left, right = deepcopy(before), deepcopy(after)
     left.pop("rationale", None); right.pop("rationale", None)
     return left != right
+
+
+def enforce_measured_style_evidence(plan: dict, style_features: dict) -> tuple[dict, list[str]]:
+    """Enforce only high-confidence measurements, never a named visual template."""
+    result = deepcopy(plan); enforced = []
+    references = style_features.get("references", []) if isinstance(style_features, dict) else []
+    ratios = [float(item["aspect_ratio"]) for item in references if isinstance(item, dict) and item.get("aspect_ratio")]
+    if len(ratios) >= 2:
+        ordered = sorted(ratios); measured = ordered[len(ordered) // 2]
+        tolerance = max(.04, measured * .06)
+        agreement = sum(abs(value - measured) <= tolerance for value in ratios) / len(ratios)
+        proposed = float(result.get("canvas", {}).get("aspect_ratio", measured))
+        if agreement >= .75 and abs(proposed - measured) > tolerance:
+            result.setdefault("canvas", {})["aspect_ratio"] = round(measured, 4)
+            enforced.append("canvas.aspect_ratio")
+    consensus = style_features.get("consensus", {}) if isinstance(style_features, dict) else {}
+    confidence = float(consensus.get("confidence", 0) or 0)
+    evidence = consensus.get("evidence", {}) if isinstance(consensus, dict) else {}
+    reference_count = int(evidence.get("reference_count", len(references)) or 0)
+    if confidence >= .8 and reference_count >= 3:
+        assets = result.get("assets", [])
+        learned_scale = float(consensus.get("subject_scale", 0) or 0)
+        primary_frame = consensus.get("primary_frame")
+        if len(assets) == 1 and learned_scale >= .55:
+            asset = assets[0]
+            if float(asset.get("width", 0)) * float(asset.get("height", 0)) < learned_scale ** 2 * .7:
+                asset.update({"x": round((1 - learned_scale) / 2, 4), "y": .06, "width": learned_scale,
+                              "height": min(.88, learned_scale), "fit": "cover"})
+                enforced.append("assets[0].learned_subject_occupancy")
+            if primary_frame == "circle" and asset.get("shape") != "ellipse":
+                asset["shape"] = "ellipse"
+                enforced.append("assets[0].learned_primary_frame")
+        if consensus.get("text_region") == "lower_overlay":
+            for index, item in enumerate(result.get("texts", [])):
+                if float(item.get("y", 0)) < .6 or float(item.get("height", 0)) > .22:
+                    text_width = min(.82, max(.5, float(item.get("width", .7))))
+                    item.update({"x": round((1 - text_width) / 2, 4), "y": .72, "width": text_width,
+                                 "height": min(.18, max(.08, float(item.get("height", .12)))),
+                                 "font_size": min(.085, max(.035, float(item.get("font_size", .055))))})
+                    enforced.append(f"texts[{index}].learned_text_region")
+    if enforced:
+        result["enforced_measured_evidence"] = enforced
+    return result, enforced
