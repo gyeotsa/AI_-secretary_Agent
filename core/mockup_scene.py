@@ -113,6 +113,34 @@ def normalize_scene_plan(raw: dict, *, asset_count: int, visible_copy: str = "")
     return result
 
 
+def restore_required_elements(raw: dict, baseline: dict, *, asset_count: int,
+                              visible_copy: str = "") -> tuple[dict, list[str]]:
+    """Restore mandatory source/text elements dropped by a model review.
+
+    The model still authors every visual value. Restoration only copies the last
+    valid model-authored element; it never invents a template or placement.
+    """
+    repaired = deepcopy(raw) if isinstance(raw, dict) else {}
+    restored = []
+    candidate_assets = repaired.get("assets") if isinstance(repaired.get("assets"), list) else []
+    present = set()
+    for item in candidate_assets:
+        try: present.add(int(item.get("index")))
+        except (AttributeError, TypeError, ValueError): continue
+    baseline_assets = {int(item["index"]): deepcopy(item) for item in baseline.get("assets", [])}
+    for index in range(asset_count):
+        if index not in present and index in baseline_assets:
+            candidate_assets.append(baseline_assets[index]); restored.append(f"asset:{index}")
+    repaired["assets"] = candidate_assets
+    requested_copy = " ".join(str(visible_copy or "").split())[:160]
+    candidate_texts = repaired.get("texts") if isinstance(repaired.get("texts"), list) else []
+    if requested_copy and not any(isinstance(item, dict) for item in candidate_texts):
+        if baseline.get("texts"):
+            candidate_texts = [deepcopy(baseline["texts"][0])]; restored.append("text")
+    repaired["texts"] = candidate_texts
+    return repaired, restored
+
+
 def scene_changed(before: dict, after: dict) -> bool:
     left, right = deepcopy(before), deepcopy(after)
     left.pop("rationale", None); right.pop("rationale", None)

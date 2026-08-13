@@ -16,7 +16,8 @@ from statistics import median
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from core.vision_runtime import VisionRuntime
-from core.mockup_scene import ScenePlanError, extract_json_object, normalize_scene_plan, scene_changed
+from core.mockup_scene import (ScenePlanError, extract_json_object, normalize_scene_plan,
+                               restore_required_elements, scene_changed)
 
 
 SUPPORTED_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
@@ -612,16 +613,23 @@ class MockupDesignRuntime:
 최상위 키는 canvas, assets, decorations, texts, rationale 다섯 개만 사용하세요."""
         evidence_paths = [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]]
 
-        def request_valid_plan(request_prompt: str, stage: str) -> dict:
+        def request_valid_plan(request_prompt: str, stage: str, baseline: dict | None = None) -> dict:
             last_error, last_answer = None, ""
             current_prompt = request_prompt
             for attempt in range(3):
                 response = vision.analyze(evidence_paths, current_prompt, mode="general")
                 last_answer = str(response.get("analysis", ""))
                 try:
-                    return normalize_scene_plan(
-                        extract_json_object(last_answer), asset_count=len(paths), visible_copy=visible_copy,
-                    )
+                    raw = extract_json_object(last_answer)
+                    restored = []
+                    if baseline is not None:
+                        raw, restored = restore_required_elements(
+                            raw, baseline, asset_count=len(paths), visible_copy=visible_copy,
+                        )
+                    normalized = normalize_scene_plan(raw, asset_count=len(paths), visible_copy=visible_copy)
+                    if restored:
+                        normalized["restored_required_elements"] = restored
+                    return normalized
                 except ScenePlanError as exc:
                     last_error = exc
                     current_prompt = f"""이전 {stage} 응답이 검증에 실패했습니다.
@@ -640,7 +648,7 @@ class MockupDesignRuntime:
 검사 항목: 참고 자료의 반복되는 캔버스 비율과 시각 문법, 피사체 크기와 정체성 보존, 얼굴·머리·몸의 의도치 않은 잘림, 빈 공간의 균형, 문구와 얼굴의 충돌, 문구 가독성, 사용자 수정 명령의 실제 반영.
 미리 정한 원형·카드 템플릿을 적용하지 말고 보이는 참고 자료를 근거로 판단하세요. cover는 의도적인 크롭일 때만 쓰고 전체 보존 요청에는 contain을 쓰세요.
 결함을 고친 최종 설계도를 JSON 객체 하나로만 반환하세요. 최상위 키는 canvas, assets, decorations, texts, rationale입니다."""
-        return request_valid_plan(review_prompt, "품질 검토")
+        return request_valid_plan(review_prompt, "품질 검토", baseline=plan)
 
     @staticmethod
     def _rgba(value: str, fallback=(0, 0, 0, 0)):

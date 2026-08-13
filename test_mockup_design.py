@@ -78,6 +78,13 @@ class MissingAssetOnceVision(FakeVision):
         return super().analyze(paths, prompt, mode)
 
 
+class ReviewDropsAssetVision(FakeVision):
+    def analyze(self, paths, prompt, mode="general"):
+        if "1차 설계도:" in prompt:
+            return {"analysis": '{"canvas":{"aspect_ratio":1,"background":"#ddeeff"},"assets":[],"decorations":[],"texts":[],"rationale":"review dropped source"}'}
+        return super().analyze(paths, prompt, mode)
+
+
 def _image(path: Path, color, size=(400, 500), accent=(255, 255, 255)):
     image = Image.new("RGB", size, color)
     draw = ImageDraw.Draw(image)
@@ -148,6 +155,17 @@ def test_missing_production_asset_in_ai_plan_is_repaired_automatically(tmp_path)
                             backend="local", output_dir=tmp_path / "out")
     assert vision.failed_once is True
     assert [item["index"] for item in result["scene_plan"]["assets"]] == [0]
+
+
+def test_quality_review_cannot_delete_valid_production_assets(tmp_path):
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=ReviewDropsAssetVision(),
+                                  generation_backend=FakeGenerationBackend())
+    profile = runtime.learn_style([_image(tmp_path / "ref.png", (10, 20, 30))])
+    result = runtime.render(profile.profile_id, [_image(tmp_path / "product.png", (90, 100, 110))],
+                            backend="local", output_dir=tmp_path / "out")
+    assert [item["index"] for item in result["scene_plan"]["assets"]] == [0]
+    assert result["scene_plan"]["restored_required_elements"] == ["asset:0"]
+    assert result["scene_plan"]["canvas"]["background"] == "#ddeeff"
 
 
 def test_mockup_workspace_and_model_role_are_registered():
