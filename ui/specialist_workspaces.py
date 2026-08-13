@@ -512,6 +512,7 @@ class MockupWorkspaceWindow(QMainWindow):
         except Exception as exc: self.operation_failed.emit(str(exc))
 
     def _on_render_done(self, result):
+        self._ai_edit_in_progress = False
         self._push_preview(result)
 
     def _push_preview(self, result):
@@ -541,6 +542,8 @@ class MockupWorkspaceWindow(QMainWindow):
         if self.preview_index < 0: QMessageBox.information(self, "AI 수정", "먼저 시안 미리보기를 만들어 주세요."); return
         instruction = self.edit_instruction.text().strip()
         if not instruction: QMessageBox.information(self, "AI 수정", "수정 지시를 입력해 주세요."); return
+        self._ai_edit_in_progress = True
+        self.save_preview_button.setEnabled(False)
         self.details.append("\nAI가 현재 미리보기를 수정하고 있습니다…")
         threading.Thread(target=self._ai_edit_worker, args=(dict(self.preview_history[self.preview_index]), instruction), daemon=True).start()
 
@@ -627,6 +630,10 @@ class MockupWorkspaceWindow(QMainWindow):
         except Exception as exc: self._on_failed(str(exc))
 
     def _on_failed(self, message: str):
+        if getattr(self, "_ai_edit_in_progress", False):
+            self._ai_edit_in_progress = False
+            self.details.append("\n수정에 실패해 이전 미리보기를 그대로 유지했습니다. 저장하면 수정 전 결과가 저장됩니다.")
+        self.save_preview_button.setEnabled(self.preview_index >= 0)
         self.details.append(f"\n오류: {message}")
         QMessageBox.warning(self, "시안 제작", message)
 

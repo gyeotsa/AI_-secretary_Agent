@@ -213,14 +213,16 @@ def test_evidence_fallback_supports_multiple_production_assets_without_omission(
 
 
 def test_explicit_visibility_and_center_requests_override_learned_defaults():
-    plan = {"assets": [{"index": 0, "fit": "cover", "focal_x": .3, "focal_y": .8}],
+    plan = {"assets": [{"index": 0, "x": .11, "y": .06, "width": .78, "height": .78,
+                        "fit": "cover", "focal_x": .3, "focal_y": .8}],
             "texts": [{"content": "테스트", "x": .2, "y": .72, "width": .5, "height": .18}]}
     result, applied = enforce_explicit_user_constraints(
         plan, "사진 속 인물의 얼굴이 모두 보이게 하고 문구는 스티커 중앙에 작성해줘"
     )
     assert result["assets"][0]["fit"] == "contain"
     assert (result["assets"][0]["focal_x"], result["assets"][0]["focal_y"]) == (.5, .5)
-    assert (result["texts"][0]["x"], result["texts"][0]["y"]) == (.25, .41)
+    assert (result["texts"][0]["x"], result["texts"][0]["y"]) == (.25, .36)
+    assert result["texts"][0]["background"] == "transparent"
     assert applied
 
 

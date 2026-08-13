@@ -249,9 +249,13 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
     if center_copy:
         for index, item in enumerate(result.get("texts", [])):
             width, height = float(item.get("width", .7)), float(item.get("height", .15))
-            item["x"] = round((1 - width) / 2, 4)
-            item["y"] = round((1 - height) / 2, 4)
-            applied.append(f"texts[{index}].canvas_center")
+            frame = result.get("assets", [{}])[0] if result.get("assets") else {}
+            frame_x, frame_y = float(frame.get("x", 0)), float(frame.get("y", 0))
+            frame_w, frame_h = float(frame.get("width", 1)), float(frame.get("height", 1))
+            item["x"] = round(frame_x + (frame_w - width) / 2, 4)
+            item["y"] = round(frame_y + (frame_h - height) / 2, 4)
+            item["background"] = "transparent"
+            applied.append(f"texts[{index}].primary_frame_center")
     if applied:
         result["enforced_user_constraints"] = applied
     return result, applied
