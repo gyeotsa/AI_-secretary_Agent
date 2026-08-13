@@ -187,6 +187,7 @@ Cross-Encoder로 재정렬합니다. 신뢰도가 기준보다 낮으면 문서 
 - [POST_TRAINING.md](POST_TRAINING.md): 평가 데이터, QLoRA·DPO·Verifier-RL 진입 기준
 - [OBSIDIAN_KNOWLEDGE.md](OBSIDIAN_KNOWLEDGE.md): Obsidian Vault 기억 계층과 링크·RAG 구조
 - Knowledge Graph 작업공간: 전문가 목록 또는 “지식 그래프 열어줘”로 Vault 연결 구조를 시각적으로 탐색
+- Knowledge Graph는 노드 반발력·링크 장력 기반으로 움직이며 드래그, 관계 강조, 확대·이동, 일시정지와 재배치를 지원
 - [DEPLOYMENT.md](DEPLOYMENT.md): Windows 설치본과 배포 제한
 - [Level2 리팩토링 10단계.txt](Level2%20리팩토링%2010단계.txt): 2026-07-22 기반 리팩터링 기록
 - [Agent 인수인계.txt](Agent%20인수인계.txt): 작업 이력과 필수 운영 규칙
