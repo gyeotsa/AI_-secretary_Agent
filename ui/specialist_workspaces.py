@@ -286,6 +286,15 @@ class MockupWorkspaceWindow(QMainWindow):
             self.reference_list = listing
             self.profile_list = QListWidget(); self.profile_list.setMaximumHeight(150)
             self.profile_list.currentItemChanged.connect(self._select_profile)
+            self.active_profile_card = QFrame(); self.active_profile_card.setObjectName("activeProfileCard")
+            active_layout = QVBoxLayout(self.active_profile_card); active_layout.setContentsMargins(12, 9, 12, 9)
+            active_caption = QLabel("현재 적용할 스타일"); active_caption.setObjectName("muted")
+            self.active_profile_label = QLabel("선택되지 않음")
+            self.active_profile_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #f59e0b;")
+            self.active_profile_meta = QLabel("아래 목록에서 스타일을 클릭해 주세요.")
+            self.active_profile_meta.setObjectName("muted"); self.active_profile_meta.setWordWrap(True)
+            active_layout.addWidget(active_caption); active_layout.addWidget(self.active_profile_label)
+            active_layout.addWidget(self.active_profile_meta); layout.addWidget(self.active_profile_card)
             profile_row = QHBoxLayout()
             profile_row.addWidget(QLabel("저장된 스타일 프로필"), 1)
             delete_profile = QPushButton("선택 프로필 삭제")
@@ -320,8 +329,9 @@ class MockupWorkspaceWindow(QMainWindow):
             prepare.clicked.connect(self._prepare_models)
             model_row.addWidget(self.model_status, 1); model_row.addWidget(prepare)
             layout.addLayout(model_row)
-            render = QPushButton("학습 스타일로 시안 제작")
-            render.clicked.connect(self._render); layout.addWidget(render)
+            self.render_button = QPushButton("스타일을 먼저 선택해 주세요")
+            self.render_button.setEnabled(False)
+            self.render_button.clicked.connect(self._render); layout.addWidget(self.render_button)
         return panel
 
     def _preview_panel(self):
@@ -422,9 +432,37 @@ class MockupWorkspaceWindow(QMainWindow):
             item = QListWidgetItem(f"{profile.name} · 참고 {len(profile.reference_paths)}장")
             item.setData(Qt.ItemDataRole.UserRole, profile.profile_id); self.profile_list.addItem(item)
             if profile.profile_id == selected_id: self.profile_list.setCurrentItem(item)
+        if not self.active_profile_id:
+            self._update_active_profile_card(None)
 
     def _select_profile(self, current, _previous=None):
-        if current: self.active_profile_id = current.data(Qt.ItemDataRole.UserRole)
+        if current:
+            self.active_profile_id = current.data(Qt.ItemDataRole.UserRole)
+            try: profile = self.runtime.load_profile(self.active_profile_id)
+            except Exception: profile = None
+            self._update_active_profile_card(profile)
+        else:
+            self.active_profile_id = ""; self._update_active_profile_card(None)
+
+    def _update_active_profile_card(self, profile):
+        selected = profile is not None
+        self.active_profile_label.setText(profile.name if selected else "선택되지 않음")
+        self.active_profile_label.setStyleSheet(
+            "font-size: 15px; font-weight: 700; color: #67e8f9;" if selected else
+            "font-size: 15px; font-weight: 700; color: #f59e0b;"
+        )
+        self.active_profile_meta.setText(
+            f"참고 이미지 {len(profile.reference_paths)}장 · 클릭한 이 스타일이 다음 생성에 사용됩니다."
+            if selected else "아래 목록에서 스타일을 클릭해 주세요."
+        )
+        self.active_profile_card.setStyleSheet(
+            "QFrame#activeProfileCard { background: #0d2633; border: 1px solid #22d3ee; border-radius: 10px; }"
+            if selected else
+            "QFrame#activeProfileCard { background: #211b12; border: 1px solid #a16207; border-radius: 10px; }"
+        )
+        if hasattr(self, "render_button"):
+            self.render_button.setEnabled(selected)
+            self.render_button.setText("선택한 스타일로 시안 제작" if selected else "스타일을 먼저 선택해 주세요")
 
     def _choose_output_dir(self):
         directory = QFileDialog.getExistingDirectory(self, "시안 출력 폴더", self.output_dir.text())

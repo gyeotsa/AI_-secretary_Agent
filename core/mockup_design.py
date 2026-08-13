@@ -16,7 +16,7 @@ from statistics import median
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from core.vision_runtime import VisionRuntime
-from core.mockup_scene import extract_json_object, normalize_scene_plan, scene_changed
+from core.mockup_scene import ScenePlanError, extract_json_object, normalize_scene_plan, scene_changed
 
 
 SUPPORTED_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
@@ -610,13 +610,29 @@ class MockupDesignRuntime:
 - texts: 표시 문구가 있을 때만 content, x, y, width, height, font_size, color, background, align, padding, z
 - rationale: 어떤 참고 이미지의 어떤 공통 특징과 사용자 지시가 각 결정의 근거인지 구체적으로 작성
 최상위 키는 canvas, assets, decorations, texts, rationale 다섯 개만 사용하세요."""
-        response = vision.analyze(
-            [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]], prompt, mode="general"
-        )
-        plan = normalize_scene_plan(
-            extract_json_object(str(response.get("analysis", ""))),
-            asset_count=len(paths), visible_copy=visible_copy,
-        )
+        evidence_paths = [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]]
+
+        def request_valid_plan(request_prompt: str, stage: str) -> dict:
+            last_error, last_answer = None, ""
+            current_prompt = request_prompt
+            for attempt in range(3):
+                response = vision.analyze(evidence_paths, current_prompt, mode="general")
+                last_answer = str(response.get("analysis", ""))
+                try:
+                    return normalize_scene_plan(
+                        extract_json_object(last_answer), asset_count=len(paths), visible_copy=visible_copy,
+                    )
+                except ScenePlanError as exc:
+                    last_error = exc
+                    current_prompt = f"""이전 {stage} 응답이 검증에 실패했습니다.
+검증 오류: {exc}
+이전 응답: {last_answer}
+제작용 이미지 인덱스는 0부터 {len(paths) - 1}까지이며 모두 assets에 정확히 한 번 포함해야 합니다.
+표시 문구가 있으면 texts에 해당 문구의 영역을 반드시 포함하고, 없으면 texts를 빈 배열로 두세요.
+원래 요청의 디자인 판단은 유지하되 오류만 교정하여 JSON 객체 하나만 다시 반환하세요."""
+            raise ScenePlanError(f"AI가 {stage} 설계도를 3회 교정했지만 유효하게 만들지 못했습니다: {last_error}")
+
+        plan = request_valid_plan(prompt, "초기")
         review_prompt = f"""당신은 상업 디자인 아트 디렉터입니다. 참고 이미지, 제작 원본, 사용자 지시와 아래 1차 설계도를 비교해 결함을 교정하세요.
 1차 설계도: {json.dumps(plan, ensure_ascii=False)}
 사용자 지시: {instruction or '없음'}
@@ -624,13 +640,7 @@ class MockupDesignRuntime:
 검사 항목: 참고 자료의 반복되는 캔버스 비율과 시각 문법, 피사체 크기와 정체성 보존, 얼굴·머리·몸의 의도치 않은 잘림, 빈 공간의 균형, 문구와 얼굴의 충돌, 문구 가독성, 사용자 수정 명령의 실제 반영.
 미리 정한 원형·카드 템플릿을 적용하지 말고 보이는 참고 자료를 근거로 판단하세요. cover는 의도적인 크롭일 때만 쓰고 전체 보존 요청에는 contain을 쓰세요.
 결함을 고친 최종 설계도를 JSON 객체 하나로만 반환하세요. 최상위 키는 canvas, assets, decorations, texts, rationale입니다."""
-        reviewed = vision.analyze(
-            [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]], review_prompt, mode="general"
-        )
-        return normalize_scene_plan(
-            extract_json_object(str(reviewed.get("analysis", ""))),
-            asset_count=len(paths), visible_copy=visible_copy,
-        )
+        return request_valid_plan(review_prompt, "품질 검토")
 
     @staticmethod
     def _rgba(value: str, fallback=(0, 0, 0, 0)):

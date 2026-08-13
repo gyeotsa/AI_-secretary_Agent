@@ -65,6 +65,19 @@ class FailingGenerationBackend(FakeGenerationBackend):
         raise RuntimeError("테스트 생성 실패")
 
 
+class MissingAssetOnceVision(FakeVision):
+    def __init__(self):
+        self.failed_once = False
+
+    def analyze(self, paths, prompt, mode="general"):
+        if '최상위 키는 canvas, assets' in prompt and not self.failed_once:
+            self.failed_once = True
+            return {"analysis": '{"canvas":{"aspect_ratio":1,"background":"#ffffff"},"assets":[],"decorations":[],"texts":[],"rationale":"invalid"}'}
+        if "검증에 실패했습니다" in prompt:
+            return {"analysis": '{"canvas":{"aspect_ratio":1,"background":"#ffffff"},"assets":[{"index":0,"x":0.1,"y":0.1,"width":0.8,"height":0.8,"shape":"rounded","fit":"contain","focal_x":0.5,"focal_y":0.5,"rotation":0,"z":0}],"decorations":[],"texts":[],"rationale":"repaired"}'}
+        return super().analyze(paths, prompt, mode)
+
+
 def _image(path: Path, color, size=(400, 500), accent=(255, 255, 255)):
     image = Image.new("RGB", size, color)
     draw = ImageDraw.Draw(image)
@@ -110,6 +123,31 @@ def test_reference_and_production_inputs_stay_separate_in_ui(tmp_path):
     assert window.production_paths == [product]
     assert window.reference_list is not window.production_list
     window.close(); assert app is not None
+
+
+def test_active_style_card_and_render_button_make_selection_explicit(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend())
+    profile = runtime.learn_style([_image(tmp_path / "ref.png", (10, 20, 30))], name="선택 테스트")
+    window = MockupWorkspaceWindow(get_specialist_workspace_registry().get("mockup"), runtime=runtime)
+    assert window.active_profile_id == ""
+    assert not window.render_button.isEnabled()
+    window.profile_list.setCurrentRow(0)
+    assert window.active_profile_id == profile.profile_id
+    assert window.render_button.isEnabled()
+    assert "선택 테스트" in window.active_profile_label.text()
+    assert "참고 이미지 1장" in window.active_profile_meta.text()
+    window.close(); assert app is not None
+
+
+def test_missing_production_asset_in_ai_plan_is_repaired_automatically(tmp_path):
+    vision = MissingAssetOnceVision()
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=vision, generation_backend=FakeGenerationBackend())
+    profile = runtime.learn_style([_image(tmp_path / "ref.png", (10, 20, 30))])
+    result = runtime.render(profile.profile_id, [_image(tmp_path / "product.png", (80, 90, 100))],
+                            backend="local", output_dir=tmp_path / "out")
+    assert vision.failed_once is True
+    assert [item["index"] for item in result["scene_plan"]["assets"]] == [0]
 
 
 def test_mockup_workspace_and_model_role_are_registered():
