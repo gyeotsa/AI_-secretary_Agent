@@ -9,7 +9,8 @@ from PIL import Image, ImageDraw
 from PyQt6.QtWidgets import QApplication, QListWidgetItem
 
 from core.mockup_design import MockupDesignRuntime
-from core.mockup_scene import build_evidence_fallback_plan, enforce_measured_style_evidence
+from core.mockup_scene import (build_evidence_fallback_plan, enforce_explicit_user_constraints,
+                               enforce_measured_style_evidence)
 from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
 from plugins.mockup_design import MockupDesignPlugin
@@ -18,7 +19,9 @@ from ui.specialist_workspaces import MockupWorkspaceWindow
 
 class FakeVision:
     def analyze(self, paths, prompt, mode="general"):
-        if ('최상위 키는 canvas, assets' in prompt or
+        if ('필수 최상위 키는 canvas, assets' in prompt or
+                'canvas, assets, decorations, texts, rationale 키를 가진 JSON' in prompt or
+                '전체 JSON 설계도만 반환' in prompt or
                 '최상위 키는 canvas, assets, decorations, texts, rationale' in prompt):
             import json, re
             if "1차 설계도:" in prompt:
@@ -209,6 +212,32 @@ def test_evidence_fallback_supports_multiple_production_assets_without_omission(
     assert [asset["index"] for asset in plan["assets"]] == [0, 1, 2, 3, 4]
 
 
+def test_explicit_visibility_and_center_requests_override_learned_defaults():
+    plan = {"assets": [{"index": 0, "fit": "cover", "focal_x": .3, "focal_y": .8}],
+            "texts": [{"content": "테스트", "x": .2, "y": .72, "width": .5, "height": .18}]}
+    result, applied = enforce_explicit_user_constraints(
+        plan, "사진 속 인물의 얼굴이 모두 보이게 하고 문구는 스티커 중앙에 작성해줘"
+    )
+    assert result["assets"][0]["fit"] == "contain"
+    assert (result["assets"][0]["focal_x"], result["assets"][0]["focal_y"]) == (.5, .5)
+    assert (result["texts"][0]["x"], result["texts"][0]["y"]) == (.25, .41)
+    assert applied
+
+
+def test_invalid_ai_edit_can_apply_only_explicit_safe_constraints(tmp_path):
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=AlwaysInvalidVision(),
+                                  generation_backend=FakeGenerationBackend())
+    refs = [_circular_sticker(tmp_path / f"ref{i}.png", (130, 220, 210), (70, 80, 90))
+            for i in range(4)]
+    profile = runtime.learn_style(refs)
+    original = runtime.render(profile.profile_id, [_image(tmp_path / "person.png", (90, 100, 110))],
+                              visible_copy="테스트", backend="auto", preview_only=True)
+    original["scene_plan"]["assets"][0]["fit"] = "cover"
+    edited = runtime.edit_preview(original, "얼굴과 머리가 모두 보이고 문구는 중앙에 오게 해줘")
+    assert edited["scene_plan"]["assets"][0]["fit"] == "contain"
+    assert edited["scene_plan"]["edit_plan_fallback"]
+
+
 def test_mockup_workspace_and_model_role_are_registered():
     registry = get_specialist_workspace_registry()
     assert registry.match_open_command("시안 제작 전문가 작업공간 열어줘").key == "mockup"
@@ -325,9 +354,9 @@ def test_high_confidence_learned_composition_repairs_tiny_off_center_subject_and
     repaired, enforced = enforce_measured_style_evidence(plan, features)
     assert {key: repaired["assets"][0][key] for key in ("x", "y", "width", "height", "shape")} == {
         "x": .11, "y": .06, "width": .78, "height": .78, "shape": "ellipse"}
-    assert repaired["texts"][0]["x"] == .25
-    assert repaired["texts"][0]["y"] == .72
-    assert repaired["texts"][0]["font_size"] == .085
+    assert repaired["texts"][0]["x"] == .5
+    assert repaired["texts"][0]["y"] == .47
+    assert repaired["texts"][0]["font_size"] == .2
     assert "assets[0].learned_subject_occupancy" in enforced
 
 
@@ -392,9 +421,8 @@ def test_ai_edits_revise_scene_plan_and_rerender_from_original_sources(tmp_path)
     assert first["production_sources"] == original["production_sources"]
     assert first["scene_plan"] != original["scene_plan"]
     assert first["revision"] == 1
-    import pytest
-    with pytest.raises(ValueError, match="수정 반영|반영되지 않았습니다"):
-        runtime.edit_preview(first, "조금 더 정돈된 느낌으로 수정해줘")
+    second = runtime.edit_preview(first, "조금 더 정돈된 느낌으로 수정해줘")
+    assert second["revision"] == 2
 
 
 def test_live_adjustment_is_repeatable_from_stable_base(tmp_path):

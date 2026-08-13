@@ -165,7 +165,7 @@ def build_evidence_fallback_plan(style_features: dict, *, asset_count: int,
     assets = []
     if asset_count == 1:
         assets.append({"index": 0, "x": round((1 - scale) / 2, 4), "y": .06,
-                       "width": scale, "height": scale, "shape": shape, "fit": "cover",
+                       "width": scale, "height": scale, "shape": shape, "fit": "contain",
                        "focal_x": .5, "focal_y": .42, "rotation": 0, "z": 1})
     else:
         columns = 2 if asset_count <= 4 else 3
@@ -217,19 +217,41 @@ def enforce_measured_style_evidence(plan: dict, style_features: dict) -> tuple[d
             asset = assets[0]
             if float(asset.get("width", 0)) * float(asset.get("height", 0)) < learned_scale ** 2 * .7:
                 asset.update({"x": round((1 - learned_scale) / 2, 4), "y": .06, "width": learned_scale,
-                              "height": min(.88, learned_scale), "fit": "cover"})
+                              "height": min(.88, learned_scale)})
                 enforced.append("assets[0].learned_subject_occupancy")
             if primary_frame == "circle" and asset.get("shape") != "ellipse":
                 asset["shape"] = "ellipse"
                 enforced.append("assets[0].learned_primary_frame")
-        if consensus.get("text_region") == "lower_overlay":
-            for index, item in enumerate(result.get("texts", [])):
-                if float(item.get("y", 0)) < .6 or float(item.get("height", 0)) > .22:
-                    text_width = min(.82, max(.5, float(item.get("width", .7))))
-                    item.update({"x": round((1 - text_width) / 2, 4), "y": .72, "width": text_width,
-                                 "height": min(.18, max(.08, float(item.get("height", .12)))),
-                                 "font_size": min(.085, max(.035, float(item.get("font_size", .055))))})
-                    enforced.append(f"texts[{index}].learned_text_region")
+        # Text placement is not forced from the learned profile because an
+        # explicit user placement request must take priority.
     if enforced:
         result["enforced_measured_evidence"] = enforced
     return result, enforced
+
+
+def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dict, list[str]]:
+    """Apply only unambiguous, domain-wide layout constraints from user wording."""
+    result = deepcopy(plan); applied = []
+    text = " ".join(str(instruction or "").lower().split())
+    subject_words = ("얼굴", "머리", "인물", "사람", "전신", "상반신")
+    visibility_words = ("전부", "모두", "전체", "안 잘리", "안잘리", "보이", "나오", "포함")
+    preserve_subject = any(word in text for word in subject_words) and any(
+        word in text for word in visibility_words
+    )
+    if preserve_subject:
+        for index, asset in enumerate(result.get("assets", [])):
+            if asset.get("fit") != "contain":
+                asset["fit"] = "contain"; applied.append(f"assets[{index}].fit=contain")
+            asset["focal_x"], asset["focal_y"] = .5, .5
+    center_copy = any(word in text for word in ("문구", "텍스트", "글자")) and any(
+        word in text for word in ("정중앙", "가운데", "중앙")
+    )
+    if center_copy:
+        for index, item in enumerate(result.get("texts", [])):
+            width, height = float(item.get("width", .7)), float(item.get("height", .15))
+            item["x"] = round((1 - width) / 2, 4)
+            item["y"] = round((1 - height) / 2, 4)
+            applied.append(f"texts[{index}].canvas_center")
+    if applied:
+        result["enforced_user_constraints"] = applied
+    return result, applied

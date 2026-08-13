@@ -18,7 +18,8 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from core.vision_runtime import VisionRuntime
 from core.mockup_scene import (ScenePlanError, build_evidence_fallback_plan, extract_json_object,
-                               normalize_scene_plan, enforce_measured_style_evidence,
+                               normalize_scene_plan, enforce_explicit_user_constraints,
+                               enforce_measured_style_evidence,
                                restore_required_elements, scene_changed)
 
 
@@ -613,6 +614,22 @@ class MockupDesignRuntime:
 - texts: 표시 문구가 있을 때만 content, x, y, width, height, font_size, color, background, align, padding, z
 - rationale: 어떤 참고 이미지의 어떤 공통 특징과 사용자 지시가 각 결정의 근거인지 구체적으로 작성
 최상위 키는 canvas, assets, decorations, texts, rationale 다섯 개만 사용하세요."""
+        operation = (f"기존 설계도: {json.dumps(previous_plan, ensure_ascii=False)}\n"
+                     f"이번 수정 명령: {edit_instruction}\n요청한 부분만 변경하세요."
+                     if previous_plan is not None else
+                     "참고 이미지의 공통 디자인 문법으로 새 설계도를 작성하세요.")
+        prompt = f"""당신은 이미지 편집 장면 설계자입니다.
+{operation}
+앞의 {len(profile.reference_paths[:8])}장은 스타일 참고 이미지이고 마지막 {len(paths)}장은 결과에 배치할 제작 원본입니다.
+측정된 스타일 특성: {json.dumps(profile.style_features, ensure_ascii=False)}
+사용자 제작 지시: {instruction or '없음'}
+실제 표시 문구: {visible_copy or '없음'}
+제작 원본 index 0부터 {len(paths) - 1}까지 각각 정확히 한 번 assets에 포함하세요.
+x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 이하여야 합니다.
+얼굴·머리·사용자가 보존하라고 한 신체가 잘리면 안 됩니다. 전체 보존 요청에는 fit=contain을 사용하세요.
+사용자 지시는 학습 스타일보다 우선합니다. 사용자가 문구를 중앙에 요청하면 하단 배치를 강제하지 마세요.
+참고 이미지의 픽셀이나 인물을 결과에 복제하지 마세요. 표시 문구가 없으면 texts는 빈 배열입니다.
+설명이나 Markdown 없이 canvas, assets, decorations, texts, rationale 키를 가진 JSON 객체 하나만 반환하세요."""
         evidence_paths = [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]]
 
         def request_valid_plan(request_prompt: str, stage: str, baseline: dict | None = None) -> dict:
@@ -642,14 +659,26 @@ class MockupDesignRuntime:
 원래 요청의 디자인 판단은 유지하되 오류만 교정하여 JSON 객체 하나만 다시 반환하세요."""
             raise ScenePlanError(f"AI가 {stage} 설계도를 3회 교정했지만 유효하게 만들지 못했습니다: {last_error}")
 
+        plan = previous_plan or {}
+
+        review_prompt = f"""이미지 레이아웃을 검토하고 전체 JSON 설계도만 반환하세요.
+설계도: {json.dumps(plan, ensure_ascii=False)}
+사용자 지시: {instruction or '없음'}
+이번 수정 명령: {edit_instruction or '없음'}
+표시 문구: {visible_copy or '없음'}
+얼굴·머리·요청 신체의 잘림, 제작 이미지 누락, 왼쪽 위 좌표 범위, 문구 위치와 가독성, 수정 명령의 실제 반영을 검사하세요. 사용자 지시가 학습 스타일보다 우선합니다."""
         try:
             plan = request_valid_plan(prompt, "초기")
         except ScenePlanError:
             if previous_plan is not None:
-                raise
-            plan = build_evidence_fallback_plan(
-                profile.style_features, asset_count=len(paths), visible_copy=visible_copy,
-            )
+                plan, explicit = enforce_explicit_user_constraints(previous_plan, edit_instruction)
+                if not explicit or not scene_changed(previous_plan, plan):
+                    raise
+                plan["edit_plan_fallback"] = "Vision 설계 실패 후 명확한 사용자 제약만 적용했습니다."
+            else:
+                plan = build_evidence_fallback_plan(
+                    profile.style_features, asset_count=len(paths), visible_copy=visible_copy,
+                )
         if previous_plan is not None and not scene_changed(previous_plan, plan):
             for revision_attempt in range(2):
                 retry_prompt = f"""사용자의 수정 명령을 반영하는 편집 설계도에서 실제 변경점이 발견되지 않았습니다.
@@ -680,6 +709,9 @@ class MockupDesignRuntime:
             reviewed = plan
             reviewed["quality_review_rejected"] = "사용자 수정 사항을 되돌려 1차 수정 설계를 유지했습니다."
         reviewed, _ = enforce_measured_style_evidence(reviewed, profile.style_features)
+        reviewed, _ = enforce_explicit_user_constraints(
+            reviewed, " ".join(part for part in (instruction, edit_instruction) if part)
+        )
         return reviewed
 
     @staticmethod
