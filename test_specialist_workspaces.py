@@ -8,7 +8,8 @@ from PyQt6.QtWidgets import QApplication
 from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
 from plugins.photoshop import PhotoshopPlugin
-from ui.specialist_workspaces import SpecialistWorkspaceWindow
+from ui.specialist_workspaces import MockupWorkspaceWindow, SpecialistWorkspaceWindow
+from core.specialist_team import SpecialistTeamRuntime
 from ui.knowledge_graph_workspace import KnowledgeGraphWindow, NativeGraphView
 from ui.main_window import JarvisMainWindow
 
@@ -115,3 +116,45 @@ def test_knowledge_graph_motion_controls_pause_and_restart():
     graph.graph_view.physics_timer.stop()
     graph.close()
     assert app is not None
+
+
+def test_mockup_workspace_exposes_zoom_sketch_font_and_drop_guidance_controls():
+    app = QApplication.instance() or QApplication([])
+    spec = get_specialist_workspace_registry().get("mockup")
+
+    class Runtime:
+        def list_profiles(self): return []
+        def generation_status(self): return {"ready": False, "base_ready": False,
+                                              "adapter_ready": False, "cuda": False}
+
+    window = MockupWorkspaceWindow(spec, runtime=Runtime())
+    assert window.preview._zoom == 1.0
+    assert window.sketch_canvas is not None
+    assert window.font_family is not None and window.font_size.value() == 64
+    assert window.edit_attachments.acceptDrops()
+    window.close(); assert app is not None
+
+
+def test_specialist_team_scopes_recall_and_stores_only_compact_success():
+    class Rag:
+        namespace = "global"
+        def __init__(self): self.added = []
+        def set_namespace(self, value): self.namespace = value
+        def search_docs(self, query, top_k=5): return [{"content": f"memory:{query}"}]
+        def add_text_document(self, text, **kwargs): self.added.append((text, kwargs)); return kwargs["doc_id"]
+
+    rag = Rag(); team = SpecialistTeamRuntime(rag, namespace_provider=lambda: "project-a")
+    context = team.recall("mockup", "문구 습관")
+    assert "memory:문구 습관" in context.as_prompt()
+    assert rag.namespace == "global"
+    team.remember_success("mockup", instruction="문구를 아래로", result={"renderer": "v5"}, approved=True)
+    assert rag.added[0][1]["namespace"] == "project-a:specialist:mockup"
+    assert "output" not in rag.added[0][0]
+
+
+def test_specialist_team_exposes_sequential_role_pipeline():
+    team = SpecialistTeamRuntime()
+    assert team.role_pipeline("mockup") == (
+        "기억 검색", "Vision 관찰", "레이아웃 설계", "제약 검증", "비파괴 렌더링"
+    )
+    assert "순차 실행/해제" in team.describe_team("mockup")

@@ -41,6 +41,10 @@ class VisionRuntime:
         self.safety = SafetyLayer()
         self.gpu = get_gpu_resource_queue()
 
+    def release_model(self) -> bool:
+        release = getattr(self.llm, "release", None)
+        return bool(release()) if callable(release) else False
+
     def capture_region(self, region: Optional[Dict[str, int]] = None,
                        save_path: Optional[str] = None) -> VisualFrame:
         box = None

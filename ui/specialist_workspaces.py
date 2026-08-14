@@ -2,19 +2,117 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
+import uuid
 import threading
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
+from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMainWindow, QPushButton, QSplitter, QTextEdit,
     QVBoxLayout, QWidget, QInputDialog, QMessageBox, QLineEdit, QComboBox,
-    QSlider,
+    QSlider, QScrollArea, QTabWidget, QFontComboBox, QSpinBox, QCheckBox,
+    QColorDialog,
 )
 
 from core.specialist_workspaces import SpecialistWorkspaceSpec
 from core.mockup_design import MockupDesignRuntime
+
+
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+class ImageDropList(QListWidget):
+    """Image list accepting file drops and reporting normalized local paths."""
+    paths_dropped = pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent); self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls(): event.acceptProposedAction()
+        else: super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+        valid = [str(path.resolve()) for path in paths if path.suffix.casefold() in IMAGE_SUFFIXES and path.is_file()]
+        if valid:
+            self.paths_dropped.emit(valid); event.acceptProposedAction()
+        else: super().dropEvent(event)
+
+
+class ZoomableImageView(QScrollArea):
+    """Scrollable preview with Ctrl-wheel/buttons zoom and fit reset."""
+    def __init__(self, parent=None):
+        super().__init__(parent); self.setWidgetResizable(False)
+        self.label = QLabel("학습용 시안을 추가하고 분석을 시작하세요.")
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter); self.label.setWordWrap(True)
+        self.setWidget(self.label); self._source = QPixmap(); self._zoom = 1.0
+
+    def set_preview(self, pixmap: QPixmap):
+        self._source = QPixmap(pixmap); self._zoom = 1.0; self._refresh()
+
+    def setText(self, text: str):
+        self._source = QPixmap(); self.label.setPixmap(QPixmap()); self.label.setText(text)
+
+    def zoom_by(self, factor: float):
+        if self._source.isNull(): return
+        self._zoom = min(5.0, max(.15, self._zoom * factor)); self._refresh()
+
+    def reset_zoom(self):
+        self._zoom = 1.0; self._refresh()
+
+    def _refresh(self):
+        if self._source.isNull(): return
+        size = self._source.size() * self._zoom
+        self.label.setPixmap(self._source.scaled(size, Qt.AspectRatioMode.KeepAspectRatio,
+                                                  Qt.TransformationMode.SmoothTransformation))
+        self.label.resize(size)
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.zoom_by(1.15 if event.angleDelta().y() > 0 else 1 / 1.15); event.accept(); return
+        super().wheelEvent(event)
+
+
+class SketchCanvas(QWidget):
+    """Small raster annotation canvas used as visual guidance, not final artwork."""
+    def __init__(self, parent=None):
+        super().__init__(parent); self.setMinimumSize(480, 300)
+        self.image = QImage(1000, 700, QImage.Format.Format_ARGB32); self.image.fill(Qt.GlobalColor.white)
+        self.last_point = QPoint(); self.pen_color = QColor("#ef4444"); self.pen_width = 8
+
+    def clear(self): self.image.fill(Qt.GlobalColor.white); self.update()
+    def has_ink(self) -> bool:
+        sample = self.image.scaled(100, 70, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.FastTransformation)
+        return any(QColor(sample.pixel(x, y)).lightness() < 245
+                   for x in range(sample.width()) for y in range(sample.height()))
+    def set_color(self, color: QColor): self.pen_color = color
+    def set_width(self, width: int): self.pen_width = width
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton: self.last_point = event.position().toPoint()
+
+    def mouseMoveEvent(self, event):
+        if not event.buttons() & Qt.MouseButton.LeftButton: return
+        point = event.position().toPoint(); sx = self.image.width() / max(1, self.width()); sy = self.image.height() / max(1, self.height())
+        painter = QPainter(self.image); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(self.pen_color, self.pen_width, Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.drawLine(QPoint(int(self.last_point.x()*sx), int(self.last_point.y()*sy)),
+                         QPoint(int(point.x()*sx), int(point.y()*sy)))
+        painter.end(); self.last_point = point; self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self); painter.fillRect(self.rect(), Qt.GlobalColor.white)
+        painter.drawImage(self.rect(), self.image)
+
+    def save_guidance(self) -> str:
+        root = Path(tempfile.gettempdir()) / "jarvis_mockup_guidance"; root.mkdir(parents=True, exist_ok=True)
+        target = root / f"sketch_{uuid.uuid4().hex}.png"
+        return str(target) if self.image.save(str(target), "PNG") else ""
 
 
 STYLE = """
@@ -234,11 +332,13 @@ class MockupWorkspaceWindow(QMainWindow):
     operation_failed = pyqtSignal(str)
     adjustment_done = pyqtSignal(object)
 
-    def __init__(self, spec: SpecialistWorkspaceSpec, parent=None, runtime=None):
+    def __init__(self, spec: SpecialistWorkspaceSpec, parent=None, runtime=None, team_runtime=None):
         super().__init__(parent)
         self.spec = spec
         self.runtime = runtime or MockupDesignRuntime()
+        self.team_runtime = team_runtime
         self.reference_paths, self.production_paths = [], []
+        self.edit_attachment_paths = []
         self.active_profile_id = ""
         self.preview_history = []
         self.preview_index = -1
@@ -266,6 +366,14 @@ class MockupWorkspaceWindow(QMainWindow):
         outer.addWidget(heading)
         guide = QLabel("① 학습용 시안에서 디자인 형식을 분석한 뒤  ② 제작용 사진에 그 스타일을 적용합니다. 두 자료는 서로 섞이지 않습니다.")
         guide.setWordWrap(True); guide.setObjectName("muted"); outer.addWidget(guide)
+        if self.team_runtime is not None:
+            team_status = QLabel(self.team_runtime.describe_team("mockup"))
+            team_status.setWordWrap(True); team_status.setObjectName("muted")
+            team_status.setToolTip(
+                "여러 역할이 같은 작업 기억을 공유하되, 로컬 메모리를 아끼기 위해 "
+                "Vision과 추론 모델을 순서대로 사용합니다."
+            )
+            outer.addWidget(team_status)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._upload_panel("학습용 시안", True))
         splitter.addWidget(self._upload_panel("제작용 사진", False))
@@ -279,7 +387,8 @@ class MockupWorkspaceWindow(QMainWindow):
         help_text = ("완성된 기존 시안 여러 장을 추가하세요. 원본 사진이 아니라 참고할 디자인 결과물입니다."
                      if learning else "새 시안에 실제로 사용할 제품·인물·배경 사진을 추가하세요.")
         help_label = QLabel(help_text); help_label.setWordWrap(True); help_label.setObjectName("muted"); layout.addWidget(help_label)
-        listing = QListWidget(); listing.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection); layout.addWidget(listing, 1)
+        listing = ImageDropList(); listing.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection); layout.addWidget(listing, 1)
+        listing.paths_dropped.connect(lambda paths, flag=learning: self._append_image_paths(paths, flag))
         add = QPushButton("여러 장 추가"); remove = QPushButton("선택 제거")
         add.clicked.connect(lambda: self._add_images(learning)); remove.clicked.connect(lambda: self._remove_images(learning))
         buttons = QHBoxLayout(); buttons.addWidget(add); buttons.addWidget(remove); layout.addLayout(buttons)
@@ -338,9 +447,23 @@ class MockupWorkspaceWindow(QMainWindow):
     def _preview_panel(self):
         panel = QFrame(); panel.setObjectName("panel"); layout = QVBoxLayout(panel)
         layout.addWidget(QLabel("분석 및 결과 미리보기"))
-        self.preview = QLabel("학습용 시안을 추가하고 분석을 시작하세요.")
-        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter); self.preview.setWordWrap(True)
-        layout.addWidget(self.preview, 3)
+        tabs = QTabWidget(); self.preview = ZoomableImageView()
+        tabs.addTab(self.preview, "결과 미리보기")
+        sketch_panel = QWidget(); sketch_layout = QVBoxLayout(sketch_panel)
+        self.sketch_canvas = SketchCanvas(); sketch_layout.addWidget(self.sketch_canvas, 1)
+        sketch_tools = QHBoxLayout()
+        clear_sketch = QPushButton("스케치 지우기"); clear_sketch.clicked.connect(self.sketch_canvas.clear)
+        sketch_color = QPushButton("펜 색상"); sketch_color.clicked.connect(self._choose_sketch_color)
+        self.sketch_width = QSlider(Qt.Orientation.Horizontal); self.sketch_width.setRange(2, 30); self.sketch_width.setValue(8)
+        self.sketch_width.valueChanged.connect(self.sketch_canvas.set_width)
+        sketch_tools.addWidget(sketch_color); sketch_tools.addWidget(QLabel("굵기")); sketch_tools.addWidget(self.sketch_width, 1); sketch_tools.addWidget(clear_sketch)
+        sketch_layout.addLayout(sketch_tools); tabs.addTab(sketch_panel, "설명 스케치")
+        layout.addWidget(tabs, 3)
+        zoom_row = QHBoxLayout()
+        for label, factor in (("축소", .8), ("확대", 1.25)):
+            button = QPushButton(label); button.clicked.connect(lambda _checked=False, value=factor: self.preview.zoom_by(value)); zoom_row.addWidget(button)
+        fit = QPushButton("100%"); fit.clicked.connect(self.preview.reset_zoom); zoom_row.addWidget(fit); zoom_row.addStretch()
+        layout.addLayout(zoom_row)
         self.details = QTextEdit(); self.details.setReadOnly(True); layout.addWidget(self.details, 2)
         edit_row = QHBoxLayout()
         self.edit_instruction = QLineEdit()
@@ -349,6 +472,20 @@ class MockupWorkspaceWindow(QMainWindow):
         self.ai_edit_button.clicked.connect(self._edit_with_ai)
         edit_row.addWidget(self.edit_instruction, 1); edit_row.addWidget(self.ai_edit_button)
         layout.addLayout(edit_row)
+        attachment_row = QHBoxLayout()
+        self.edit_attachments = ImageDropList(); self.edit_attachments.setMaximumHeight(75)
+        self.edit_attachments.paths_dropped.connect(self._append_edit_attachments)
+        attach = QPushButton("수정 참고사진 첨부"); attach.clicked.connect(self._choose_edit_attachments)
+        clear_attach = QPushButton("첨부 비우기"); clear_attach.clicked.connect(self._clear_edit_attachments)
+        attachment_row.addWidget(self.edit_attachments, 1); attachment_row.addWidget(attach); attachment_row.addWidget(clear_attach)
+        layout.addLayout(attachment_row)
+        font_row = QHBoxLayout(); self.font_family = QFontComboBox(); self.font_size = QSpinBox()
+        self.font_size.setRange(12, 240); self.font_size.setValue(64)
+        self.font_bold = QCheckBox("굵게"); apply_font = QPushButton("글꼴 적용")
+        apply_font.clicked.connect(self._apply_font_controls)
+        font_row.addWidget(QLabel("글꼴")); font_row.addWidget(self.font_family, 1)
+        font_row.addWidget(QLabel("크기")); font_row.addWidget(self.font_size); font_row.addWidget(self.font_bold); font_row.addWidget(apply_font)
+        layout.addLayout(font_row)
         tools = QHBoxLayout()
         for label, operation in (("↶", "rotate_left"), ("↷", "rotate_right"),
                                  ("좌우 반전", "flip_horizontal"), ("상하 반전", "flip_vertical")):
@@ -390,13 +527,45 @@ class MockupWorkspaceWindow(QMainWindow):
             self, "학습용 시안 선택" if learning else "제작용 사진 선택", "",
             "이미지 (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff)",
         )
+        self._append_image_paths(files, learning)
+
+    def _append_image_paths(self, files, learning: bool):
         paths, listing = ((self.reference_paths, self.reference_list) if learning
                           else (self.production_paths, self.production_list))
-        for filename in files:
+        for filename in files or ():
             resolved = str(Path(filename).resolve())
-            if resolved not in paths:
+            if Path(resolved).is_file() and Path(resolved).suffix.casefold() in IMAGE_SUFFIXES and resolved not in paths:
                 paths.append(resolved); item = QListWidgetItem(Path(resolved).name)
                 item.setToolTip(resolved); listing.addItem(item)
+
+    def _choose_edit_attachments(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "수정 참고사진 선택", "",
+                                                "이미지 (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff)")
+        self._append_edit_attachments(files)
+
+    def _append_edit_attachments(self, files):
+        for filename in files or ():
+            resolved = str(Path(filename).resolve())
+            if Path(resolved).is_file() and Path(resolved).suffix.casefold() in IMAGE_SUFFIXES and resolved not in self.edit_attachment_paths:
+                self.edit_attachment_paths.append(resolved)
+                item = QListWidgetItem(Path(resolved).name); item.setToolTip(resolved); self.edit_attachments.addItem(item)
+
+    def _clear_edit_attachments(self):
+        self.edit_attachment_paths.clear(); self.edit_attachments.clear()
+
+    def _choose_sketch_color(self):
+        color = QColorDialog.getColor(self.sketch_canvas.pen_color, self, "스케치 펜 색상")
+        if color.isValid(): self.sketch_canvas.set_color(color)
+
+    def _apply_font_controls(self):
+        if self.preview_index < 0:
+            QMessageBox.information(self, "글꼴", "먼저 시안 미리보기를 만들어 주세요."); return
+        family = self.font_family.currentFont().family()
+        weight = "굵게" if self.font_bold.isChecked() else "보통"
+        self.edit_instruction.setText(
+            f"문구 글꼴을 '{family}'로 바꾸고 글자 크기를 {self.font_size.value()}픽셀, 굵기는 {weight}로 설정해줘."
+        )
+        self._edit_with_ai()
 
     def _remove_images(self, learning: bool):
         paths, listing = ((self.reference_paths, self.reference_list) if learning
@@ -496,18 +665,22 @@ class MockupWorkspaceWindow(QMainWindow):
         if not self.production_paths:
             QMessageBox.information(self, "시안 제작", "제작용 사진을 먼저 추가해 주세요."); return
         self.details.append("\n시안을 렌더링하고 있습니다…")
+        sketch = self.sketch_canvas.save_guidance() if self.sketch_canvas.has_ink() else ""
+        memory_context = self.team_runtime.recall("mockup", self.instruction.toPlainText()).as_prompt() if self.team_runtime else ""
         args = (
             self.active_profile_id, list(self.production_paths),
             self.instruction.toPlainText(), self.visible_copy.text(),
-            self.output_dir.text(), self.backend_selector.currentData(),
+            self.output_dir.text(), self.backend_selector.currentData(), [sketch] if sketch else [], memory_context,
         )
         threading.Thread(target=self._render_worker, args=args, daemon=True).start()
 
-    def _render_worker(self, profile_id, production_paths, instruction, visible_copy, output_dir, backend):
+    def _render_worker(self, profile_id, production_paths, instruction, visible_copy, output_dir, backend,
+                       guidance_paths, memory_context):
         try:
             result = self.runtime.render(
                 profile_id, production_paths, instruction=instruction, output_dir=output_dir,
                 visible_copy=visible_copy, backend=backend, preview_only=True,
+                guidance_paths=guidance_paths, memory_context=memory_context,
             )
             self.render_done.emit(result)
         except Exception as exc: self.operation_failed.emit(str(exc))
@@ -526,7 +699,7 @@ class MockupWorkspaceWindow(QMainWindow):
         self.preview_metadata = dict(result)
         pixmap = QPixmap(result["output"])
         if not pixmap.isNull():
-            self.preview.setPixmap(pixmap.scaled(610, 510, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            self.preview.set_preview(pixmap)
         fallback = (f"생성형 자동 대체 사유: {result['generation_fallback_reason']}\n"
                     if result.get("generation_fallback_reason") else "")
         applied = result.get("applied_edit_fields") or []
@@ -553,13 +726,18 @@ class MockupWorkspaceWindow(QMainWindow):
         self.ai_edit_button.setEnabled(False)
         self.save_preview_button.setEnabled(False)
         self.details.append("\nAI가 현재 미리보기를 수정하고 있습니다…")
+        sketch = self.sketch_canvas.save_guidance() if self.sketch_canvas.has_ink() else ""
+        guidance = [*self.edit_attachment_paths, *([sketch] if sketch else [])]
+        memory_context = self.team_runtime.recall("mockup", instruction).as_prompt() if self.team_runtime else ""
         threading.Thread(target=self._ai_edit_worker,
-                         args=(dict(self.preview_history[self.preview_index]), instruction, serial),
+                         args=(dict(self.preview_history[self.preview_index]), instruction, serial,
+                               guidance, memory_context),
                          daemon=True).start()
 
-    def _ai_edit_worker(self, metadata, instruction, serial):
+    def _ai_edit_worker(self, metadata, instruction, serial, guidance_paths, memory_context):
         try:
-            result = self.runtime.edit_preview(metadata, instruction)
+            result = self.runtime.edit_preview(metadata, instruction, guidance_paths=guidance_paths,
+                                               memory_context=memory_context)
             result["_ai_edit_serial"] = serial
             self.render_done.emit(result)
         except Exception as exc: self.operation_failed.emit(str(exc))
@@ -609,8 +787,7 @@ class MockupWorkspaceWindow(QMainWindow):
         self.preview_metadata = dict(result)
         pixmap = QPixmap(result["output"])
         if not pixmap.isNull():
-            self.preview.setPixmap(pixmap.scaled(610, 510, Qt.AspectRatioMode.KeepAspectRatio,
-                                                 Qt.TransformationMode.SmoothTransformation))
+            self.preview.set_preview(pixmap)
         self.save_preview_button.setEnabled(True); self._update_history_buttons()
 
     def _undo_preview(self):
@@ -624,7 +801,7 @@ class MockupWorkspaceWindow(QMainWindow):
     def _show_history_preview(self):
         result = self.preview_history[self.preview_index]; self.preview_metadata = dict(result)
         pixmap = QPixmap(result["output"])
-        self.preview.setPixmap(pixmap.scaled(610, 510, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self.preview.set_preview(pixmap)
         self._update_history_buttons()
 
     def _update_history_buttons(self):
@@ -641,6 +818,9 @@ class MockupWorkspaceWindow(QMainWindow):
             current = dict(self.preview_history[self.preview_index])
             result = self.runtime.save_preview(current["output"], filename, current)
             self.details.append(f"\n최종 저장 완료: {result['output']}")
+            if self.team_runtime:
+                instruction = str(current.get("edit_instruction") or current.get("instruction") or "")
+                self.team_runtime.remember_success("mockup", instruction=instruction, result=result, approved=True)
         except Exception as exc: self._on_failed(str(exc))
 
     def _on_failed(self, message: str):

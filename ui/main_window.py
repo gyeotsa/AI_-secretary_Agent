@@ -1601,6 +1601,9 @@ class JarvisMainWindow(QWidget):
     def set_plugin_registry(self, plugin_registry):
         self.plugin_registry = plugin_registry
 
+    def set_specialist_team_runtime(self, runtime):
+        self.specialist_team_runtime = runtime
+
     def show_plugin_diagnostics(self):
         if self.plugin_registry is None:
             QMessageBox.information(self, "Plugin 진단", "Plugin Registry가 아직 연결되지 않았습니다.")
@@ -1621,7 +1624,9 @@ class JarvisMainWindow(QWidget):
         if window is None:
             # Top-level ownership lets workspaces participate in normal Windows Z-order.
             if spec.key == "mockup":
-                window = MockupWorkspaceWindow(spec)
+                window = MockupWorkspaceWindow(
+                    spec, team_runtime=getattr(self, "specialist_team_runtime", None)
+                )
             elif spec.key == "knowledge_graph":
                 window = KnowledgeGraphWindow()
             else:

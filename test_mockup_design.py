@@ -429,6 +429,21 @@ def test_generic_compound_text_edit_removes_background_and_applies_style():
     validate_patch_against_instruction(command, fields, before=plan, after=result)
 
 
+def test_font_gui_instruction_maps_to_editable_scene_text_properties():
+    plan = {"assets": [{"x": .1, "y": .1, "width": .8, "height": .8}],
+            "texts": [{"content": "테스트", "x": .2, "y": .2, "width": .5,
+                       "height": .1, "font_size": .04, "font_family": "Arial",
+                       "font_weight": "normal", "color": "#111111", "background": "transparent"}]}
+    result, fields = enforce_explicit_user_constraints(
+        plan, "문구 글꼴을 'Malgun Gothic'로 바꾸고 글자 크기를 80픽셀, 굵기는 굵게로 설정해줘."
+    )
+    text = result["texts"][0]
+    assert text["font_family"] == "Malgun Gothic"
+    assert text["font_size"] == .05
+    assert text["font_weight"] == "bold"
+    assert {"texts[0].font_family", "texts[0].font_size", "texts[0].font_weight"}.issubset(fields)
+
+
 def test_photo_content_edit_requires_zoom_and_preserves_circular_frame():
     command = "사진 속 인물을 더 크게 하고 사진을 프레임 안에서 왼쪽으로 옮겨줘."
     before = {"assets": [{"shape": "ellipse", "width": .8, "height": .8,

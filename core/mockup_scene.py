@@ -35,6 +35,7 @@ SCENE_PLAN_JSON_SCHEMA = {
                   "properties": {"content": {"type": "string"}, "x": {"type": "number"},
                                  "y": {"type": "number"}, "width": {"type": "number"},
                                  "height": {"type": "number"}, "font_size": {"type": "number"},
+                                 "font_family": {"type": "string"},
                                  "font_weight": {"enum": ["normal", "bold"]},
                                  "color": {"type": "string"}, "background": {"type": "string"},
                                  "align": {"enum": ["left", "center", "right"]},
@@ -67,6 +68,7 @@ SCENE_EDIT_PATCH_JSON_SCHEMA = {
                 "x": {"type": "number"}, "y": {"type": "number"},
                 "width": {"type": "number"}, "height": {"type": "number"},
                 "font_size": {"type": "number"}, "color": {"type": "string"},
+                "font_family": {"type": "string"},
                 "font_weight": {"enum": ["normal", "bold"]},
                 "background": {"type": "string"}, "align": {"enum": ["left", "center", "right"]},
                 "padding": {"type": "number"}, "z": {"type": "integer"}}}},
@@ -195,6 +197,7 @@ def normalize_scene_plan(raw: dict, *, asset_count: int, visible_copy: str = "")
             "width": _number(item.get("width"), .1, 1, .7),
             "height": _number(item.get("height"), .04, .5, .16),
             "font_size": _number(item.get("font_size"), .015, .2, .065),
+            "font_family": " ".join(str(item.get("font_family", "Malgun Gothic")).split())[:80],
             "font_weight": "normal" if item.get("font_weight") == "normal" else "bold",
             "color": _color(item.get("color"), "#111111"),
             "background": _color(item.get("background")),
@@ -313,12 +316,13 @@ def apply_scene_edit_patch(before: dict, patch: dict, *, asset_count: int,
             texts.pop(index); changed.append(f"texts[{index}].remove"); continue
         if action == "add":
             base = {"content": str(patch.get("visible_copy") or visible_copy), "x": .15, "y": .72,
-                    "width": .7, "height": .15, "font_size": .06, "font_weight": "bold", "color": "#111111",
+                    "width": .7, "height": .15, "font_size": .06, "font_family": "Malgun Gothic",
+                    "font_weight": "bold", "color": "#111111",
                     "background": "transparent", "align": "center", "padding": .018, "z": 10}
             base.update({key: value for key, value in update.items() if key not in {"index", "action"}})
             texts.append(base); changed.append("texts.add"); continue
         if action == "update" and 0 <= index < len(texts):
-            for key in ("x", "y", "width", "height", "font_size", "font_weight", "color", "background", "align", "padding", "z"):
+            for key in ("x", "y", "width", "height", "font_size", "font_family", "font_weight", "color", "background", "align", "padding", "z"):
                 if key in update and texts[index].get(key) != update[key]:
                     texts[index][key] = update[key]; changed.append(f"texts[{index}].{key}")
     raw["texts"] = texts
@@ -521,7 +525,8 @@ def enforce_measured_style_evidence(plan: dict, style_features: dict) -> tuple[d
 def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dict, list[str]]:
     """Apply only unambiguous, domain-wide layout constraints from user wording."""
     result = deepcopy(plan); applied = []
-    text = " ".join(str(instruction or "").lower().split())
+    raw_text = " ".join(str(instruction or "").split())
+    text = raw_text.lower()
     clauses = [part.strip() for part in re.split(r"[.!?\n]+|,\s*|\s+그리고\s+|고\s+", text) if part.strip()]
     bound_clauses, active_target = [], None
     text_nouns = ("문구", "텍스트", "글자", "글씨", "카피", "폰트")
@@ -614,6 +619,19 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
     if copy_targeted:
         requested = next((color for word, color in color_map.items() if word in text_request), None)
         for index, item in enumerate(result.get("texts", [])):
+            family_match = re.search(r"글꼴(?:을|은)?\s*['\"]([^'\"]+)['\"]", raw_text, re.I)
+            if family_match and item.get("font_family") != family_match.group(1).strip():
+                item["font_family"] = family_match.group(1).strip()[:80]
+                applied.append(f"texts[{index}].font_family")
+            pixel_match = re.search(r"(?:글자\s*)?크기(?:를|는)?\s*(\d{1,3})\s*픽셀", text_request)
+            if pixel_match:
+                normalized_size = max(.015, min(.2, int(pixel_match.group(1)) / 1600))
+                if item.get("font_size") != normalized_size:
+                    item["font_size"] = normalized_size; applied.append(f"texts[{index}].font_size")
+            if "굵기는 보통" in text_request and item.get("font_weight") != "normal":
+                item["font_weight"] = "normal"; applied.append(f"texts[{index}].font_weight")
+            elif any(word in text_request for word in ("굵게", "볼드", "bold")) and item.get("font_weight") != "bold":
+                item["font_weight"] = "bold"; applied.append(f"texts[{index}].font_weight")
             if requested and item.get("color") != requested:
                 item["color"] = requested; applied.append(f"texts[{index}].color")
             background_targeted = any(word in text_request for word in

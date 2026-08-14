@@ -331,8 +331,19 @@ class MockupDesignRuntime:
         return self.generation_backend.prepare(progress)
 
     @staticmethod
-    def _font(size: int, bold: bool = False):
+    def _font(size: int, bold: bool = False, family: str = ""):
+        normalized = re.sub(r"[^a-z0-9가-힣]", "", str(family).casefold())
+        known = {
+            "malgungothic": "malgun", "맑은고딕": "malgun", "segoeui": "segoeui",
+            "arial": "arial", "timesnewroman": "times", "consolas": "consola",
+        }
+        stem = known.get(normalized, normalized)
+        font_root = Path("C:/Windows/Fonts")
+        requested = []
+        if stem:
+            requested = sorted(font_root.glob(f"{stem}*.*"), key=lambda path: (bold and "bd" not in path.stem.casefold(), len(path.name)))
         candidates = [
+            *requested,
             Path("C:/Windows/Fonts/malgunbd.ttf" if bold else "C:/Windows/Fonts/malgun.ttf"),
             Path("C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf"),
         ]
@@ -602,7 +613,8 @@ class MockupDesignRuntime:
 
     def _request_scene_plan(self, profile: MockupStyleProfile, paths: list[Path], instruction: str,
                             visible_copy: str, previous_plan: dict | None = None,
-                            edit_instruction: str = "") -> dict:
+                            edit_instruction: str = "", guidance_paths=None,
+                            memory_context: str = "") -> dict:
         vision = self.vision or VisionRuntime()
         source_context = (
             f"학습된 스타일 분석:\n{profile.vision_analysis}\n\n"
@@ -629,7 +641,7 @@ class MockupDesignRuntime:
 - canvas: aspect_ratio(number 0.55~1.9), background(hex color)
 - assets: 제작 이미지마다 index, x, y, width, height(모두 정규화 좌표), shape(rectangle/rounded/ellipse), fit(cover/contain), zoom(1~4), focal_x, focal_y, rotation, z
 - decorations: 필요할 때만 type(rectangle/ellipse/line), x, y, width, height, fill, stroke, stroke_width, dash, z
-- texts: 표시 문구가 있을 때만 content, x, y, width, height, font_size, font_weight(normal/bold), color, background, align, padding, z
+- texts: 표시 문구가 있을 때만 content, x, y, width, height, font_size, font_family, font_weight(normal/bold), color, background, align, padding, z
 - rationale: 어떤 참고 이미지의 어떤 공통 특징과 사용자 지시가 각 결정의 근거인지 구체적으로 작성
 최상위 키는 canvas, assets, decorations, texts, rationale 다섯 개만 사용하세요."""
         operation = (f"기존 설계도: {json.dumps(previous_plan, ensure_ascii=False)}\n"
@@ -648,13 +660,16 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
 사용자 지시는 학습 스타일보다 우선합니다. 사용자가 문구를 중앙에 요청하면 하단 배치를 강제하지 마세요.
 참고 이미지의 픽셀이나 인물을 결과에 복제하지 마세요. 표시 문구가 없으면 texts는 빈 배열입니다.
 설명이나 Markdown 없이 canvas, assets, decorations, texts, rationale 키를 가진 JSON 객체 하나만 반환하세요."""
-        evidence_paths = [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]]
+        guidance = self._validate_images(guidance_paths or []) if guidance_paths else []
+        evidence_paths = [*profile.reference_paths[:8], *[str(path) for path in paths[:4]],
+                          *[str(path) for path in guidance[:4]]]
         planner = self._get_scene_planner()
         visual_observation = ""
         if planner is not None:
             observation_prompt = f"""이미지를 설계하지 말고 관찰 사실만 기록하세요.
-앞의 {len(profile.reference_paths[:8])}장은 스타일 참고이고 마지막 {len(paths)}장은 제작 원본입니다.
+앞의 {len(profile.reference_paths[:8])}장은 스타일 참고, 다음 {len(paths)}장은 제작 원본, 마지막 {len(guidance)}장은 사용자의 설명 스케치 또는 수정 참고 이미지입니다.
 참고 이미지에서 반복되는 프레임·여백·문구 영역·피사체 크기를 요약하고, 제작 원본마다 사람이나 물체의 위치와 안전하게 자를 수 있는 얼굴·상반신·전신 범위를 설명하세요.
+설명 스케치는 최종 픽셀로 복사하지 말고 화살표·박스·대략적인 배치 관계를 의도로 해석하세요.
 사용자 지시: {instruction or '없음'}"""
             try:
                 visual_observation = str(vision.analyze(
@@ -662,6 +677,9 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 ).get("analysis", ""))[:12000]
             except Exception as exc:
                 visual_observation = f"이미지 관찰 실패: {exc}"
+            finally:
+                release = getattr(vision, "release_model", None)
+                if callable(release): release()
 
         def request_valid_plan(request_prompt: str, stage: str, baseline: dict | None = None) -> dict:
             last_error, last_answer = None, ""
@@ -673,7 +691,8 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                             "당신은 이미지 관찰 결과와 사용자 지시를 검증 가능한 장면 JSON으로 "
                             "변환하는 레이아웃 설계자입니다. 이미지에 없는 사실을 만들지 마세요.")},
                         {"role": "user", "content": (
-                            f"{current_prompt}\n\nVision 관찰 결과:\n{visual_observation}")},
+                            f"{current_prompt}\n\nVision 관찰 결과:\n{visual_observation}"
+                            f"\n\n작업공간의 승인된 과거 기억:\n{memory_context or '없음'}")},
                     ], json_schema=SCENE_PLAN_JSON_SCHEMA))
                 else:
                     try:
@@ -848,9 +867,10 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         font_size = max(14, int(item["font_size"] * min(width, height)))
         content = item["content"]
         bold = item.get("font_weight", "bold") == "bold"
-        font = self._font(font_size, bold=bold)
+        family = str(item.get("font_family", ""))
+        font = self._font(font_size, bold=bold, family=family)
         while font_size > 14:
-            font = self._font(font_size, bold=bold); measured = draw.textbbox((0, 0), content, font=font)
+            font = self._font(font_size, bold=bold, family=family); measured = draw.textbbox((0, 0), content, font=font)
             if measured[2] - measured[0] <= max(1, x2-x1) and measured[3] - measured[1] <= max(1, y2-y1): break
             font_size -= 2
         measured = draw.textbbox((0, 0), content, font=font); text_w, text_h = measured[2]-measured[0], measured[3]-measured[1]
@@ -862,10 +882,14 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                visible_copy: str = "", edit_state: dict | None = None,
                output_dir: str | Path = "data/mockup_outputs", basename: str = "mockup",
                backend: str = "auto", seed: int = 42, preview_only: bool = False,
-               scene_plan: dict | None = None) -> dict:
+               scene_plan: dict | None = None, guidance_paths=None,
+               memory_context: str = "") -> dict:
         """Render exclusively from a model-authored scene plan, never a named template."""
         profile = self.load_profile(profile_id); paths = self._validate_images(production_paths)
-        plan = scene_plan or self._request_scene_plan(profile, paths, instruction, visible_copy)
+        plan = scene_plan or self._request_scene_plan(
+            profile, paths, instruction, visible_copy,
+            guidance_paths=guidance_paths, memory_context=memory_context,
+        )
         # IP-Adapter can reproduce people/text from reference sheets. Automatic
         # mode therefore uses the model-authored vector/raster scene only.
         use_generative = backend == "generative"
@@ -893,6 +917,7 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             "reference_pixels_sent_to_generator": bool(use_generative),
             "seed": int(seed), "scene_plan": plan, "composition_plan": plan["assets"],
             "instruction": instruction.strip(), "visible_copy": visible_copy.strip(), "preview_only": bool(preview_only),
+            "guidance_sources": [str(Path(path).resolve()) for path in (guidance_paths or [])],
             "generation_fallback_reason": generation_error, "style_recipe": profile.design_recipe,
         }
         if not preview_only: output_path.with_suffix(".json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -946,7 +971,8 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             state["remove_copy"] = True; applied.append("remove_copy")
         return state, list(dict.fromkeys(applied))
 
-    def edit_preview(self, metadata: dict, instruction: str, *, seed: int = 42) -> dict:
+    def edit_preview(self, metadata: dict, instruction: str, *, seed: int = 42,
+                     guidance_paths=None, memory_context: str = "") -> dict:
         """Let the model revise the editable scene plan, then re-render from sources."""
         if not isinstance(metadata, dict) or not instruction.strip():
             raise ValueError("수정할 미리보기 정보와 구체적인 수정 지시가 필요합니다.")
@@ -961,7 +987,8 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         paths = self._validate_images(sources)
         try:
             revised_plan, revised_copy, patch_fields = self._request_scene_edit_patch(
-                profile, paths, previous_plan, str(metadata.get("visible_copy", "")), instruction.strip()
+                profile, paths, previous_plan, str(metadata.get("visible_copy", "")), instruction.strip(),
+                guidance_paths=guidance_paths, memory_context=memory_context,
             )
             renderer = "ai-scene-patch-v5"
         except ScenePlanError:
@@ -978,6 +1005,7 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             profile_id, sources, instruction=str(metadata.get("instruction", "")),
             visible_copy=revised_copy, scene_plan=revised_plan,
             backend="auto", seed=seed, preview_only=True,
+            guidance_paths=guidance_paths, memory_context=memory_context,
         )
         result.update({"renderer": renderer,
                        "edit_instruction": instruction.strip(), "applied_edit_fields": patch_fields,
@@ -986,11 +1014,25 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
 
     def _request_scene_edit_patch(self, profile: MockupStyleProfile, paths: list[Path],
                                   previous_plan: dict, visible_copy: str,
-                                  instruction: str) -> tuple[dict, str, list[str]]:
+                                  instruction: str, guidance_paths=None,
+                                  memory_context: str = "") -> tuple[dict, str, list[str]]:
         """Ask the vision model for a delta and verify that the delta changes the scene."""
         vision = self.vision or VisionRuntime()
         planner = self._get_scene_planner()
-        evidence_paths = [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]]
+        guidance = self._validate_images(guidance_paths or []) if guidance_paths else []
+        evidence_paths = [*profile.reference_paths[:8], *[str(path) for path in paths[:4]],
+                          *[str(path) for path in guidance[:4]]]
+        guidance_observation = "첨부 없음"
+        if guidance:
+            try:
+                guidance_observation = str(vision.analyze(
+                    [str(path) for path in guidance[:4]],
+                    "수정 참고사진과 설명 스케치에서 화살표, 박스, 강조 영역, 원하는 배치 관계만 관찰하세요. 최종 픽셀로 복사하지 마세요.",
+                    mode="general",
+                ).get("analysis", ""))[:6000]
+            finally:
+                release = getattr(vision, "release_model", None)
+                if callable(release): release()
         allowed_scopes = sorted(infer_edit_scopes(instruction))
         allowed_scope_text = ", ".join(allowed_scopes) if allowed_scopes else "명령에서 직접 지칭한 대상만"
         last_error = ""
@@ -1005,6 +1047,9 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
 현재 표시 문구: {visible_copy or '없음'}
 현재 설계도: {json.dumps(previous_plan, ensure_ascii=False)}
 학습된 스타일 근거: {json.dumps(profile.style_features, ensure_ascii=False)}
+첨부된 수정 참고 이미지/스케치 수: {len(guidance)}. 스케치는 픽셀 복사가 아니라 위치·화살표·영역 의도로 해석하세요.
+첨부 시각자료 관찰: {guidance_observation}
+작업공간의 승인된 과거 기억: {memory_context or '없음'}
 
 규칙:
 1. 사용자가 명시한 대상과 그 요청을 수행하는 데 필수적인 필드만 패치하세요.

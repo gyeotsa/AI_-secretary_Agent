@@ -290,6 +290,18 @@ class OllamaClient(BaseLLMClient):
     def chat(self, messages: List[Dict]) -> str:
         return self.chat_structured(messages)
 
+    def release(self) -> bool:
+        """Unload this role's model so another local specialist can use VRAM/RAM."""
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/generate",
+                json={"model": self.model, "prompt": "", "keep_alive": 0, "stream": False},
+                timeout=20,
+            )
+            response.raise_for_status(); return True
+        except Exception:
+            return False
+
     def chat_structured(self, messages: List[Dict], json_schema: Optional[Dict] = None) -> str:
         metric_started = time.perf_counter()
         try:

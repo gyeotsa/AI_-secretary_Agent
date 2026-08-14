@@ -28,6 +28,7 @@ from core.response_presenter import present_channels
 from core.runtime_services import get_runtime_service_manager
 from core.assistant_settings import get_assistant_settings
 from core.specialist_workspaces import get_specialist_workspace_registry
+from core.specialist_team import SpecialistTeamRuntime
 from core.memory_consolidator import ConversationMemoryConsolidator
 from core.obsidian_vault import get_obsidian_vault
 
@@ -150,6 +151,10 @@ class JarvisApp:
         ).start()
         self.hardware_manager = get_hardware_manager()
         self.workspace_manager = get_workspace_manager()
+        self.specialist_team_runtime = SpecialistTeamRuntime(
+            self.rag_manager, namespace_provider=self.workspace_manager.get_namespace,
+        )
+        self.window.set_specialist_team_runtime(self.specialist_team_runtime)
         self.project_indexer = get_project_indexer()
         self._activate_workspace_context(initial=True)
         self.permission_manager = get_permission_manager()
