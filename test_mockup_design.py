@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import QApplication, QListWidgetItem
 from core.mockup_design import MockupDesignRuntime
 from core.mockup_scene import (build_evidence_fallback_plan, enforce_explicit_user_constraints,
                                enforce_measured_style_evidence, merge_scoped_scene_edit,
-                               normalize_scene_plan, ScenePlanError,
+                               normalize_scene_plan, ScenePlanError, filter_scene_edit_patch,
                                validate_patch_against_instruction)
 from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
@@ -399,6 +399,19 @@ def test_patch_validation_rejects_partial_compound_edit_and_unrequested_group():
     with pytest.raises(ScenePlanError, match="좌표 변경"):
         validate_patch_against_instruction(command, ["texts[0].color"])
     validate_patch_against_instruction(command, ["texts[0].x", "texts[0].y", "texts[0].color"])
+
+
+def test_edit_patch_write_mask_keeps_requested_asset_change_and_drops_text_noise():
+    patch = {
+        "assets": [{"index": 0, "action": "update", "zoom": 1.4}],
+        "texts": [{"index": 0, "action": "update", "font_size": .1}],
+        "intent_summary": "사진을 확대",
+        "success_criteria": ["사진이 더 크게 보임"],
+    }
+    filtered, removed = filter_scene_edit_patch(patch, "사진 속 인물을 더 크게 확대해줘")
+    assert filtered["assets"][0]["zoom"] == 1.4
+    assert "texts" not in filtered
+    assert removed == ["texts"]
 
 
 def test_generic_text_position_constraints_complete_compound_direction_request():

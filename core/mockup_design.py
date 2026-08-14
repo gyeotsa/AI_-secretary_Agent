@@ -22,6 +22,7 @@ from core.mockup_scene import (SCENE_PLAN_JSON_SCHEMA, SCENE_EDIT_PATCH_JSON_SCH
                                apply_scene_edit_patch, build_evidence_fallback_plan, extract_json_object,
                                normalize_scene_plan, enforce_explicit_user_constraints,
                                enforce_measured_style_evidence, infer_edit_scopes, merge_scoped_scene_edit,
+                               filter_scene_edit_patch,
                                restore_required_elements, scene_changed, validate_patch_against_instruction)
 
 
@@ -1082,6 +1083,7 @@ JSON Schema에 맞는 객체만 반환하세요."""
                 previous_answer = str(response.get("analysis", ""))
             try:
                 patch = extract_json_object(previous_answer)
+                patch, removed_groups = filter_scene_edit_patch(patch, instruction)
                 revised, revised_copy, fields = apply_scene_edit_patch(
                     previous_plan, patch, asset_count=len(paths), visible_copy=visible_copy,
                 )
@@ -1116,6 +1118,8 @@ JSON Schema에 맞는 판정만 반환하세요."""
                     unintended = ", ".join(map(str, verdict.get("unintended_changes", [])))
                     raise ScenePlanError(f"의미 검증 실패: {reason}; 누락={missing or '없음'}; 의도 밖 변경={unintended or '없음'}")
                 revised["edit_semantic_verdict"] = str(verdict.get("reason", "검증 통과"))[:500]
+                if removed_groups:
+                    revised["filtered_unrequested_groups"] = removed_groups
                 return revised, revised_copy, fields
             except ScenePlanError as exc:
                 last_error = str(exc)

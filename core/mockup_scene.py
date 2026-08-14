@@ -286,6 +286,43 @@ def merge_scoped_scene_edit(before: dict, candidate: dict, instruction: str) -> 
     return merged, scopes
 
 
+def filter_scene_edit_patch(patch: dict, instruction: str) -> tuple[dict, list[str]]:
+    """Drop model-authored groups that the user did not request.
+
+    Small local models often return a valid requested asset/canvas delta plus
+    an unsolicited text tweak. Rejecting the whole answer loses the useful
+    delta. This write mask removes only the unrelated groups; the remaining
+    patch still goes through measurable validation afterwards.
+    """
+    if not isinstance(patch, dict):
+        raise ScenePlanError("AI 수정 패치가 객체 형식이 아닙니다.")
+    scopes = infer_edit_scopes(instruction)
+    if not scopes:
+        return deepcopy(patch), []
+    result = {
+        key: deepcopy(value) for key, value in patch.items()
+        if key in {"intent_summary", "success_criteria"}
+    }
+    removed = []
+    group_keys = {
+        "canvas": ("canvas",),
+        "assets": ("assets",),
+        "texts": ("texts", "visible_copy", "remove_visible_copy"),
+        "decorations": ("decorations", "replace_decorations"),
+    }
+    for group, keys in group_keys.items():
+        for key in keys:
+            if group in scopes:
+                if key in patch:
+                    result[key] = deepcopy(patch[key])
+            elif key in patch:
+                value = patch[key]
+                meaningful = bool(value) if not isinstance(value, bool) else value
+                if meaningful:
+                    removed.append(group)
+    return result, sorted(set(removed))
+
+
 def apply_scene_edit_patch(before: dict, patch: dict, *, asset_count: int,
                            visible_copy: str) -> tuple[dict, str, list[str]]:
     """Apply a model-authored delta without allowing an implicit full-plan rewrite."""
