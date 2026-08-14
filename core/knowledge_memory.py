@@ -245,6 +245,41 @@ class KnowledgeMemoryStore:
             row = conn.execute("SELECT * FROM knowledge_records WHERE record_id=?", (record_id,)).fetchone()
         return self._from_row(row) if row else None
 
+    def maintain_lifecycle(self, *, now: Optional[float] = None) -> Dict[str, Any]:
+        """Retire expired evidence and expose unresolved conflicts without guessing."""
+        current = float(now or time.time())
+        with self._session() as conn:
+            expired_rows = conn.execute("""SELECT record_id FROM knowledge_records
+                WHERE status='active' AND expires_at IS NOT NULL AND expires_at<=?""",
+                (current,)).fetchall()
+            expired_ids = [str(row["record_id"]) for row in expired_rows]
+            if expired_ids:
+                placeholders = ",".join("?" for _ in expired_ids)
+                conn.execute(
+                    f"UPDATE knowledge_records SET status='expired' WHERE record_id IN ({placeholders})",
+                    expired_ids,
+                )
+            conflicts = conn.execute("""SELECT record_id,subject,predicate,metadata
+                FROM knowledge_records WHERE status='active' AND metadata LIKE '%conflicts_with%'""").fetchall()
+        return {
+            "expired_ids": expired_ids,
+            "conflicts": [{
+                "record_id": str(row["record_id"]), "subject": str(row["subject"]),
+                "predicate": str(row["predicate"]),
+                "conflicts_with": json.loads(row["metadata"] or "{}").get("conflicts_with", []),
+            } for row in conflicts],
+        }
+
+    def transition_status(self, record_id: str, status: str) -> bool:
+        allowed = {"active", "superseded", "conflicted", "expired", "archived", "deleted"}
+        if status not in allowed:
+            raise MemoryPolicyError(f"지원하지 않는 기억 상태입니다: {status}")
+        with self._session() as conn:
+            cursor = conn.execute(
+                "UPDATE knowledge_records SET status=? WHERE record_id=?", (status, record_id)
+            )
+        return bool(cursor.rowcount)
+
     def supersede_profile_records_except(self, valid_subjects: Iterable[str]) -> List[str]:
         """Retire stale records created from legacy profile keys during bootstrap."""
         valid = set(valid_subjects)

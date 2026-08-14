@@ -4,6 +4,7 @@ import json
 import csv
 import hashlib
 import time
+import threading
 from io import StringIO
 from config import Config
 from core.knowledge_memory import FreshnessPolicy
@@ -19,6 +20,9 @@ class VectorRAGManager:
         # 문서 저장소: {doc_id: {chunks: [text, ...], source: file_path}}
         self.documents = {}
         self.namespace = "global"
+        self.usage_tracker = None
+        self.last_retrieval_trace = ""
+        self._retrieval_local = threading.local()
         self._load()
         
         # Vector DB, Embedding, Reranker 초기화 (try-except로 fallback)
@@ -30,6 +34,9 @@ class VectorRAGManager:
 
     def set_namespace(self, namespace: str) -> None:
         self.namespace = str(namespace or "global")
+
+    def set_usage_tracker(self, tracker) -> None:
+        self.usage_tracker = tracker
 
     def _document_key(self, doc_id: str) -> str:
         return f"{self.namespace}::{doc_id}"
@@ -367,10 +374,24 @@ class VectorRAGManager:
             return []
         
         if self.use_vector_rag:
-            return self._hybrid_search(query, top_k, metadata_filter, include_stale)
+            results = self._hybrid_search(query, top_k, metadata_filter, include_stale)
         else:
             results = self._simple_search(query, top_k, metadata_filter, include_stale)
-            return self._attach_confidence(results, query)
+            results = self._attach_confidence(results, query)
+        tracker = getattr(self, "usage_tracker", None)
+        if tracker is not None:
+            try:
+                trace_id = tracker.record_retrieval(query, results)
+                self.last_retrieval_trace = trace_id
+                retrieval_local = getattr(self, "_retrieval_local", None)
+                if retrieval_local is not None:
+                    retrieval_local.trace_id = trace_id
+            except Exception:
+                self.last_retrieval_trace = ""
+                retrieval_local = getattr(self, "_retrieval_local", None)
+                if retrieval_local is not None:
+                    retrieval_local.trace_id = ""
+        return results
 
     def search_with_confidence(self, query: str, top_k: int = 3,
                                metadata_filter: dict | None = None,
@@ -378,6 +399,17 @@ class VectorRAGManager:
                                threshold: float = 0.42) -> dict:
         results = self.search_docs(query, top_k, metadata_filter, include_stale)
         confidence = float(results[0].get("retrieval_confidence", 0.0)) if results else 0.0
+        tracker = getattr(self, "usage_tracker", None)
+        if results and confidence >= threshold and tracker is not None:
+            try:
+                chunk_ids = [str(item.get("chunk_id") or item.get("doc_id") or "")
+                             for item in results[:top_k]]
+                retrieval_local = getattr(self, "_retrieval_local", None)
+                trace_id = getattr(retrieval_local, "trace_id", getattr(self, "last_retrieval_trace", ""))
+                tracker.mark_included(trace_id,
+                                                 [item for item in chunk_ids if item])
+            except Exception:
+                pass
         return {
             "results": results,
             "confidence": confidence,

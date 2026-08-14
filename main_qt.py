@@ -4,6 +4,7 @@ import json
 import re
 import uuid
 import threading
+import time
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer, QObject, pyqtSignal
@@ -31,6 +32,7 @@ from core.specialist_workspaces import get_specialist_workspace_registry
 from core.specialist_team import SpecialistTeamRuntime
 from core.memory_consolidator import ConversationMemoryConsolidator
 from core.obsidian_vault import get_obsidian_vault
+from core.memory_pipeline import get_memory_event_pipeline
 
 
 def strip_leading_wake_word(text: str, wake_word: str) -> str:
@@ -145,6 +147,10 @@ class JarvisApp:
             llm=get_llm_client("reasoning"), rag=self.rag_manager,
             vault=self.obsidian_vault,
         )
+        self.memory_pipeline = get_memory_event_pipeline()
+        self.rag_manager.set_usage_tracker(self.memory_pipeline)
+        self._last_user_activity = time.time()
+        self._memory_maintenance_running = False
         threading.Thread(
             target=lambda: self.memory_consolidator.bootstrap_profile(self.user_profile),
             daemon=True,
@@ -153,6 +159,7 @@ class JarvisApp:
         self.workspace_manager = get_workspace_manager()
         self.specialist_team_runtime = SpecialistTeamRuntime(
             self.rag_manager, namespace_provider=self.workspace_manager.get_namespace,
+            event_pipeline=self.memory_pipeline,
         )
         self.window.set_specialist_team_runtime(self.specialist_team_runtime)
         self.project_indexer = get_project_indexer()
@@ -226,6 +233,10 @@ class JarvisApp:
         self.workspace_timer = QTimer()
         self.workspace_timer.timeout.connect(self._refresh_workspace_state)
         self.workspace_timer.start(5000)
+
+        self.memory_maintenance_timer = QTimer()
+        self.memory_maintenance_timer.timeout.connect(self._run_idle_memory_maintenance)
+        self.memory_maintenance_timer.start(60000)
         
         self._init_ui()
         threading.Thread(target=self.tool_executor.prepare_selected_tts, daemon=True).start()
@@ -290,6 +301,8 @@ class JarvisApp:
         if self._is_processing_ai:
             self.window.show_assistant_text("현재 작업이 끝난 뒤 세션을 전환해 주세요, 보스.")
             return
+        if session_id != self.session_id:
+            self._run_idle_memory_maintenance(force=True)
         self.session_id = session_id
         self.messages = self.memory.load_session(session_id)
         self.window.set_current_session(session_id)
@@ -339,6 +352,7 @@ class JarvisApp:
         self.window.update_state(new_state)
     
     def _on_user_input(self, text: str, existing_task_id=None):
+        self._last_user_activity = time.time()
         print("[DEBUG] _on_user_input called with:", text)
         self.window.show_user_text(text)
         self.state_machine.start_listening()
@@ -426,7 +440,9 @@ class JarvisApp:
         
         # RAG로 문서 검색
         try:
-            rag_context = self.rag_manager.search_docs(text)
+            # ContextManager performs the authoritative retrieval once.  This
+            # path is debug-only and must not duplicate embeddings/search.
+            rag_context = []
             print("[DEBUG] RAG context:", rag_context)
             # 검색 결과는 Executor의 ContextManager가 다시 조립한다. 여기서 사용자
             # 발화 자체를 RAG 문자열로 바꾸면 대화 기록과 확인 질문 재개가 오염된다.
@@ -556,7 +572,7 @@ class JarvisApp:
         self.memory.save_message(self.session_id, "user", self.messages[-2]["content"])
         self.memory.save_message(self.session_id, "assistant", response_text)
         self._archive_obsidian_exchange_async(self._response_user_request, response_text)
-        self._consolidate_memory_async(self._response_user_request)
+        self._consolidate_memory_async(self._response_user_request, response_text)
         
         # 자동으로 음성 응답 (RESPONDING 상태로)
         print(f"[DEBUG] TTS 스레드 시작 전, self.last_response: {self.last_response}")
@@ -565,22 +581,41 @@ class JarvisApp:
         thread.start()
         print("[DEBUG] TTS 스레드 시작됨")
 
-    def _consolidate_memory_async(self, user_text: str):
-        """Persist durable user knowledge after the response without delaying UI/TTS."""
-        consolidator = getattr(self, "memory_consolidator", None)
-        if consolidator is None or not consolidator.should_consider(user_text):
+    def _consolidate_memory_async(self, user_text: str, assistant_text: str = ""):
+        """Capture cheaply; expensive extraction and embedding run only while idle."""
+        pipeline = getattr(self, "memory_pipeline", None)
+        if pipeline is None:
             return
         namespace = getattr(getattr(self, "memory", None), "workspace_namespace", "global")
+        pipeline.record_exchange(
+            session_id=self.session_id, workspace=namespace,
+            user_text=user_text, assistant_text=assistant_text,
+        )
+
+    def _run_idle_memory_maintenance(self, force: bool = False):
+        """Consolidate event batches and reverse-sync only changed vault notes."""
+        pipeline = getattr(self, "memory_pipeline", None)
+        if pipeline is None or self._memory_maintenance_running:
+            return
+        idle_for = time.time() - getattr(self, "_last_user_activity", time.time())
+        pending = pipeline.pending_count()
+        if not force and (self._is_processing_ai or (pending < 20 and idle_for < 900)):
+            return
+        self._memory_maintenance_running = True
 
         def run():
             try:
-                record_ids = consolidator.consolidate(
-                    user_text, session_id=self.session_id, workspace_namespace=namespace,
-                )
-                if record_ids:
-                    print(f"[Memory] 대화에서 장기 기억 {len(record_ids)}건을 축적했습니다.")
+                report = pipeline.consolidate_pending(self.memory_consolidator, limit=32)
+                lifecycle = self.memory_consolidator.store.maintain_lifecycle()
+                for record_id in lifecycle.get("expired_ids", []):
+                    self.rag_manager.remove_document(f"memory-{record_id}")
+                sync = self.obsidian_vault.sync_external_changes()
+                if report.get("processed") or sync.get("indexed") or sync.get("removed"):
+                    print(f"[Memory] idle maintenance: {report}, lifecycle={lifecycle}, vault={sync}")
             except Exception as exc:
-                print(f"[Memory] 대화 기억 축적 오류: {exc}")
+                print(f"[Memory] idle maintenance error: {exc}")
+            finally:
+                self._memory_maintenance_running = False
 
         threading.Thread(target=run, daemon=True).start()
 

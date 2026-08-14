@@ -461,31 +461,53 @@ managed_by: anis
         target = rag or self.rag
         if target is None:
             raise ObsidianVaultError("RAG Manager가 연결되지 않았습니다.")
-        indexed, errors, active_ids = [], [], set()
+        indexed, unchanged, errors, active_ids = [], [], [], set()
+        state_path = self.root / ".anis" / "vault_index.db"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_db = sqlite3.connect(state_path)
+        state_db.execute("""CREATE TABLE IF NOT EXISTS rag_sync_state (
+            relative_path TEXT PRIMARY KEY, content_sha256 TEXT NOT NULL,
+            doc_id TEXT NOT NULL, namespace TEXT NOT NULL, indexed_at REAL NOT NULL)""")
+        previous = {row[0]: {"digest": row[1], "doc_id": row[2], "namespace": row[3]}
+                    for row in state_db.execute(
+                        "SELECT relative_path,content_sha256,doc_id,namespace FROM rag_sync_state"
+                    ).fetchall()}
+        active_relatives = set()
         for path in self._notes(include_raw=False):
             try:
                 relative = path.relative_to(self.root).as_posix()
+                active_relatives.add(relative)
                 doc_id = "obsidian-" + hashlib.sha256(relative.encode("utf-8")).hexdigest()[:20]
                 active_ids.add(doc_id)
+                content = path.read_text(encoding="utf-8", errors="replace")
+                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                namespace = getattr(target, "namespace", "global")
+                old = previous.get(relative)
+                if old and old["digest"] == digest and old["namespace"] == namespace:
+                    unchanged.append(str(path)); continue
                 target.add_text_document(
-                    path.read_text(encoding="utf-8", errors="replace"), doc_id=doc_id,
-                    namespace=getattr(target, "namespace", "global"), source_uri=str(path),
+                    content, doc_id=doc_id, namespace=namespace, source_uri=str(path),
                     metadata={"source_type": "obsidian", "vault": str(self.root), "relative_path": relative},
                 )
+                state_db.execute("""INSERT OR REPLACE INTO rag_sync_state
+                    VALUES (?,?,?,?,?)""", (relative, digest, doc_id, namespace, time.time()))
                 indexed.append(str(path))
             except Exception as exc:
                 errors.append({"path": str(path), "error": str(exc)})
         removed = []
-        for document in list(getattr(target, "documents", {}).values()):
-            metadata = document.get("metadata", {})
-            doc_id = str(document.get("doc_id", ""))
-            if (metadata.get("source_type") == "obsidian"
-                    and metadata.get("vault") == str(self.root)
-                    and doc_id not in active_ids):
-                namespace = str(document.get("namespace", getattr(target, "namespace", "global")))
-                if target.remove_text_document(doc_id, namespace=namespace):
-                    removed.append(doc_id)
-        return {"indexed": len(indexed), "removed": len(removed), "errors": errors}
+        for relative, old in previous.items():
+            if relative in active_relatives:
+                continue
+            if target.remove_text_document(old["doc_id"], namespace=old["namespace"]):
+                removed.append(old["doc_id"])
+            state_db.execute("DELETE FROM rag_sync_state WHERE relative_path=?", (relative,))
+        state_db.commit(); state_db.close()
+        return {"indexed": len(indexed), "unchanged": len(unchanged),
+                "removed": len(removed), "errors": errors}
+
+    def sync_external_changes(self, rag=None) -> dict[str, Any]:
+        """Reverse-sync Obsidian edits using the same hash-based incremental index."""
+        return self.sync_to_rag(rag=rag)
 
     def lint(self) -> dict[str, Any]:
         notes = self._notes(); stems = {path.stem.casefold() for path in notes}

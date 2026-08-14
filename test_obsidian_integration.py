@@ -68,6 +68,23 @@ def test_vault_sync_only_indexes_wiki(tmp_path):
     assert len({doc_id for _, _, doc_id in rag.paths}) == len(rag.paths)
 
 
+def test_vault_reverse_sync_only_reindexes_changed_notes(tmp_path):
+    class FakeRag:
+        def __init__(self): self.calls = []; self.namespace = "global"
+        def add_text_document(self, text, **kwargs): self.calls.append(kwargs); return kwargs["doc_id"]
+        def remove_text_document(self, doc_id, namespace): return True
+    rag = FakeRag()
+    vault = ObsidianVault(tmp_path / "vault", rag=rag, settings_path=tmp_path / "settings.json")
+    note = vault.upsert_record(_record())
+    first = vault.sync_external_changes()
+    second = vault.sync_external_changes()
+    note.write_text(note.read_text(encoding="utf-8") + "\n사용자 편집\n", encoding="utf-8")
+    third = vault.sync_external_changes()
+    assert first["indexed"] > 0
+    assert second["indexed"] == 0 and second["unchanged"] == first["indexed"]
+    assert third["indexed"] == 1
+
+
 def test_obsidian_plugin_contracts_are_registry_compatible():
     plugin = ObsidianPlugin()
     names = {tool.name for tool in plugin.get_tools()}

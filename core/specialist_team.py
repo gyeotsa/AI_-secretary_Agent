@@ -34,9 +34,10 @@ class SpecialistTeamRuntime:
     successful outcomes, avoiding failed-preview pollution in RAG.
     """
 
-    def __init__(self, rag=None, *, namespace_provider=None):
+    def __init__(self, rag=None, *, namespace_provider=None, event_pipeline=None):
         self.rag = rag
         self.namespace_provider = namespace_provider or (lambda: "global")
+        self.event_pipeline = event_pipeline
         self._rag_lock = threading.RLock()
 
     ROLE_PIPELINES = {
@@ -94,9 +95,15 @@ class SpecialistTeamRuntime:
         digest = hashlib.sha256(json.dumps(summary, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
         namespace = self.namespace(workspace_key)
         with self._rag_lock:
-            return self.rag.add_text_document(
+            doc_id = self.rag.add_text_document(
                 json.dumps(summary, ensure_ascii=False), doc_id=f"workspace-event-{digest}",
                 namespace=namespace,
                 metadata={"source_type": "specialist_workspace", "approved": bool(approved)},
                 source_uri=f"specialist://{workspace_key}/{digest}",
             )
+        if approved and self.event_pipeline is not None:
+            self.event_pipeline.record_approved_result(
+                workspace=namespace, instruction=instruction, result=result,
+                needs_consolidation=False,
+            )
+        return doc_id
