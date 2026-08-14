@@ -1986,3 +1986,11 @@ AI_-secretary_Agent/
 - 장기 기억 수명주기를 추가했다. 만료 시간이 지난 active 기억은 `expired`로 전환하고 RAG 문서를 제거한다. 동일 subject/predicate의 충돌 기억은 임의로 하나를 선택하지 않고 충돌 목록으로 노출하며, 명시적 정정은 기존 `superseded` 흐름을 유지한다.
 - RAG 검색마다 trace/chunk/source를 기록하고, ContextManager가 답변 프롬프트에 실제 포함한 근거만 included/used로 표시한다. 메인 UI의 디버그용 중복 검색을 제거해 한 요청당 검색·임베딩 경로를 단일화했다. 동시 작업공간 검색은 thread-local trace로 서로 섞이지 않는다.
 - 메인 채팅과 전문가 작업공간은 동일한 이벤트/검색 사용량 계층을 공유하지만 namespace는 유지한다. 전체 회귀 테스트 `427 passed, 4 deselected`를 통과했다.
+
+# 2026-08-15 시안 얼굴 프레이밍·Windows 실제 글꼴 적용
+
+- 저장 결과 19·20의 JSON과 원본 사진을 재현해 두 가지 독립 원인을 확인했다. 얼굴 요청은 장면 모델이 프레임 width/height만 바꾸고 원본 사진의 얼굴 좌표를 측정하지 않았으며, 글꼴은 장면 JSON만 변경된 뒤 한글 표시명과 Windows 폰트 파일명이 달라 맑은 고딕 fallback으로 렌더링되고 있었다.
+- 얼굴·머리 표시 요청은 OpenCV Haar 검출로 제작 원본의 가장 큰 얼굴 중심과 크기를 측정한다. `얼굴만/얼굴 위주`는 안전 여백 35%를 포함한 zoom과 focal 좌표를 계산하고, `얼굴이 보이게/잘리지 않게/모두 보이게`는 contain과 zoom 1을 사용한다. 한국어 경로는 `np.fromfile + cv2.imdecode`로 읽어 Windows `cv2.imread` 실패를 피한다.
+- zoom 선행 크롭 뒤 ImageOps.fit에서 focal 좌표를 두 번 적용하던 문제를 제거했다. zoom 크롭 후에는 이미 얼굴 중심으로 잘렸으므로 최종 fit은 중앙 정렬한다.
+- 글꼴 렌더러가 Windows HKLM/HKCU Fonts 레지스트리의 지역화된 표시명을 실제 TTF/TTC 경로로 해석한다. 실제 PC에서 `궁서 → H2GSRB.TTF`, `휴먼둥근헤드라인 → HMKMRHD.TTF`를 확인했다.
+- 20번 저장 설계도를 실제 원본으로 재렌더링해 `focal_y=0.141`, `zoom=4.0`과 얼굴·머리 전체 표시를 시각 확인했다. 관련 시안 테스트 47개와 전체 회귀 테스트 `429 passed, 4 deselected`를 통과했다.

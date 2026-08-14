@@ -20,6 +20,40 @@ from plugins.mockup_design import MockupDesignPlugin
 from ui.specialist_workspaces import MockupWorkspaceWindow
 
 
+def test_windows_localized_font_family_resolves_to_real_file():
+    gungsuh = MockupDesignRuntime._font(40, bold=True, family="궁서")
+    human_round = MockupDesignRuntime._font(40, bold=True, family="휴먼둥근헤드라인")
+    assert Path(gungsuh.path).name.casefold() == "h2gsrb.ttf"
+    assert Path(human_round.path).name.casefold() == "hmkmrhd.ttf"
+
+
+def test_face_visibility_is_grounded_in_detected_source_coordinates(tmp_path, monkeypatch):
+    source = tmp_path / "portrait.jpg"
+    Image.new("RGB", (800, 1200), "gray").save(source)
+    runtime = MockupDesignRuntime(profile_dir=tmp_path / "profiles")
+    monkeypatch.setattr(runtime, "_detect_primary_face", lambda _path: {
+        "center_x": .52, "center_y": .14, "width": .13, "height": .09,
+        "source_ratio": 800 / 1200,
+    })
+    plan = normalize_scene_plan({
+        "canvas": {"aspect_ratio": 1, "background": "#fff"},
+        "assets": [{"index": 0, "x": .1, "y": .1, "width": .8, "height": .8,
+                    "shape": "ellipse", "fit": "cover", "zoom": 1,
+                    "focal_x": .5, "focal_y": .5}],
+        "texts": [], "decorations": [],
+    }, asset_count=1)
+    face_only, fields = runtime._enforce_detected_subject_visibility(
+        plan, [source], "스티커 안에는 얼굴만 나오게 해줘"
+    )
+    assert face_only["assets"][0]["focal_y"] == .14
+    assert face_only["assets"][0]["zoom"] > 1
+    assert "assets[0].focal_y" in fields
+    visible, _ = runtime._enforce_detected_subject_visibility(
+        plan, [source], "얼굴이 보이게 수정해줘"
+    )
+    assert visible["assets"][0]["fit"] == "contain"
+
+
 class FakeVision:
     def analyze(self, paths, prompt, mode="general"):
         if "이미지 편집 결과 의미 검증기" in prompt:

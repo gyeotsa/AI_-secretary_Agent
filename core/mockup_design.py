@@ -341,8 +341,51 @@ class MockupDesignRuntime:
         stem = known.get(normalized, normalized)
         font_root = Path("C:/Windows/Fonts")
         requested = []
+        # Windows stores localized family names separately from font filenames
+        # (for example 휴먼둥근헤드라인 -> HMKMRHD.TTF). Filename globbing
+        # therefore silently fell back to Malgun Gothic even though the UI and
+        # scene JSON showed a different family.
+        if normalized:
+            try:
+                import winreg
+                registry_roots = (
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
+                    (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
+                )
+                matches = []
+                for hive, key_name in registry_roots:
+                    try:
+                        with winreg.OpenKey(hive, key_name) as key:
+                            index = 0
+                            while True:
+                                try:
+                                    display_name, filename, _ = winreg.EnumValue(key, index)
+                                except OSError:
+                                    break
+                                index += 1
+                                display_normalized = re.sub(
+                                    r"[^a-z0-9가-힣]", "", display_name.casefold()
+                                ).replace("truetype", "")
+                                if normalized in display_normalized or display_normalized in normalized:
+                                    path = Path(str(filename))
+                                    if not path.is_absolute():
+                                        path = font_root / path
+                                    if path.is_file():
+                                        score = int(bool(bold) == any(
+                                            token in display_name.casefold()
+                                            for token in ("bold", "굵게", " bd", " b ")
+                                        ))
+                                        matches.append((score, path))
+                    except OSError:
+                        continue
+                requested.extend(path for _, path in sorted(matches, key=lambda item: -item[0]))
+            except (ImportError, OSError):
+                pass
         if stem:
-            requested = sorted(font_root.glob(f"{stem}*.*"), key=lambda path: (bold and "bd" not in path.stem.casefold(), len(path.name)))
+            requested.extend(sorted(
+                font_root.glob(f"{stem}*.*"),
+                key=lambda path: (bold and "bd" not in path.stem.casefold(), len(path.name)),
+            ))
         candidates = [
             *requested,
             Path("C:/Windows/Fonts/malgunbd.ttf" if bold else "C:/Windows/Fonts/malgun.ttf"),
@@ -351,6 +394,76 @@ class MockupDesignRuntime:
         for path in candidates:
             if path.is_file(): return ImageFont.truetype(str(path), size)
         return ImageFont.load_default()
+
+    @staticmethod
+    def _detect_primary_face(path: Path):
+        """Return the largest detected face as normalized center/size."""
+        try:
+            import cv2
+            import numpy as np
+            # cv2.imread on Windows cannot reliably open Korean paths.
+            image = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
+            if image is None:
+                return None
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            classifier = cv2.CascadeClassifier(
+                str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml")
+            )
+            faces = classifier.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=5,
+                                                  minSize=(32, 32))
+            if len(faces) == 0:
+                return None
+            x, y, width, height = max(faces, key=lambda face: int(face[2]) * int(face[3]))
+            image_h, image_w = gray.shape[:2]
+            return {
+                "center_x": (x + width / 2) / image_w,
+                "center_y": (y + height / 2) / image_h,
+                "width": width / image_w,
+                "height": height / image_h,
+                "source_ratio": image_w / max(1, image_h),
+            }
+        except Exception:
+            return None
+
+    def _enforce_detected_subject_visibility(self, plan: dict, paths: list[Path],
+                                             instruction: str) -> tuple[dict, list[str]]:
+        """Ground face framing requests in source pixels instead of LLM guesses."""
+        text = " ".join(str(instruction or "").casefold().split())
+        if not any(word in text for word in ("얼굴", "머리", "안면")):
+            return plan, []
+        face_only = any(word in text for word in ("얼굴만", "얼굴 위주", "얼굴 중심", "얼굴 크게"))
+        fully_visible = any(word in text for word in (
+            "모두 보", "전부 보", "전체 보", "안 잘리", "잘리지 않", "머리까지",
+            "얼굴 보이", "얼굴이 보이", "얼굴을 보이",
+        ))
+        if not face_only and not fully_visible:
+            return plan, []
+        result, changed = deepcopy(plan), []
+        for asset in result.get("assets", []):
+            index = int(asset.get("index", -1))
+            if not 0 <= index < len(paths):
+                continue
+            face = self._detect_primary_face(paths[index])
+            if not face:
+                continue
+            asset["focal_x"] = round(face["center_x"], 4)
+            asset["focal_y"] = round(face["center_y"], 4)
+            changed.extend([f"assets[{index}].focal_x", f"assets[{index}].focal_y"])
+            if fully_visible and not face_only:
+                asset["fit"] = "contain"
+                asset["zoom"] = 1
+                changed.extend([f"assets[{index}].fit", f"assets[{index}].zoom"])
+            else:
+                # Make the face prominent while retaining a 35% safety margin
+                # around the detected box. The cover crop remains centered on
+                # the measured face, so eyes/hair cannot drift outside the frame.
+                frame_ratio = float(asset.get("width", 1)) / max(.001, float(asset.get("height", 1)))
+                visible_height_at_zoom_1 = min(1.0, face["source_ratio"] / max(.001, frame_ratio))
+                safe_zoom = visible_height_at_zoom_1 / max(.05, face["height"] * 1.35)
+                asset["fit"] = "cover"
+                asset["zoom"] = round(max(1.0, min(4.0, safe_zoom)), 4)
+                changed.extend([f"assets[{index}].fit", f"assets[{index}].zoom"])
+        return result, list(dict.fromkeys(changed))
 
     @staticmethod
     def _hex(value: str, fallback=(15, 23, 42)):
@@ -833,8 +946,10 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                     layer = Image.new("RGBA", cell, (0, 0, 0, 0))
                     layer.alpha_composite(placed, ((cell[0]-placed.width)//2, (cell[1]-placed.height)//2))
                 else:
+                    centering = ((.5, .5) if zoom > 1 else
+                                 (item["focal_x"], item["focal_y"]))
                     layer = ImageOps.fit(source, cell, Image.Resampling.LANCZOS,
-                                         centering=(item["focal_x"], item["focal_y"]))
+                                         centering=centering)
             if item["rotation"]:
                 layer = layer.rotate(item["rotation"], Image.Resampling.BICUBIC, expand=False)
             mask = layer.getchannel("A")
@@ -904,6 +1019,9 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             except Exception as exc:
                 if backend == "generative": raise
                 generation_error, use_generative = str(exc), False
+        plan, grounded_fields = self._enforce_detected_subject_visibility(plan, paths, instruction)
+        if grounded_fields:
+            plan["source_grounded_fields"] = grounded_fields
         canvas = self._render_scene_plan(plan, paths, background=background)
         output_root = (Path(tempfile.gettempdir()) / "jarvis_mockup_previews" if preview_only else Path(output_dir).expanduser().resolve())
         output_root.mkdir(parents=True, exist_ok=True)
@@ -1002,6 +1120,10 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             revised_plan, _ = enforce_measured_style_evidence(revised_plan, profile.style_features)
             revised_copy = str(metadata.get("visible_copy", ""))
             renderer = "structured-scene-patch-v4"
+        revised_plan, grounded_fields = self._enforce_detected_subject_visibility(
+            revised_plan, paths, instruction
+        )
+        patch_fields = list(dict.fromkeys([*patch_fields, *grounded_fields]))
         result = self.render(
             profile_id, sources, instruction=str(metadata.get("instruction", "")),
             visible_copy=revised_copy, scene_plan=revised_plan,
