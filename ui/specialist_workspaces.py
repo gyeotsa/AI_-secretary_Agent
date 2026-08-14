@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import tempfile
 import uuid
 import threading
 
@@ -110,7 +109,10 @@ class SketchCanvas(QWidget):
         painter.drawImage(self.rect(), self.image)
 
     def save_guidance(self) -> str:
-        root = Path(tempfile.gettempdir()) / "jarvis_mockup_guidance"; root.mkdir(parents=True, exist_ok=True)
+        # The vision runtime applies the same allowed-path policy as file tools.
+        # Keep transient sketches inside the project instead of the OS temp dir.
+        root = Path(__file__).resolve().parents[1] / "data" / "cache" / "mockup_guidance"
+        root.mkdir(parents=True, exist_ok=True)
         target = root / f"sketch_{uuid.uuid4().hex}.png"
         return str(target) if self.image.save(str(target), "PNG") else ""
 
@@ -141,6 +143,13 @@ QSplitter::handle { background: transparent; width: 8px; }
 QScrollBar:vertical { background: transparent; width: 9px; margin: 2px; }
 QScrollBar::handle:vertical { background: #2b4258; min-height: 28px; border-radius: 4px; }
 QToolTip { color: #eaf7ff; background: #101d2d; border: 1px solid #29445f; padding: 5px; }
+QTabWidget::pane { border: 1px solid #29445f; border-radius: 8px; top: -1px; }
+QTabBar::tab {
+    color: #9bb4c9; background: #101b2a; border: 1px solid #29445f;
+    padding: 8px 16px; margin-right: 3px; min-width: 96px;
+}
+QTabBar::tab:selected { color: #ffffff; background: #17667c; border-color: #57d3e7; font-weight: 700; }
+QTabBar::tab:hover:!selected { color: #eaf8ff; background: #183047; }
 """
 
 

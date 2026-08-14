@@ -1,8 +1,10 @@
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QApplication
 
 from core.model_registry import ModelRegistry, ModelRoleRouter
@@ -10,6 +12,7 @@ from core.specialist_workspaces import get_specialist_workspace_registry
 from plugins.photoshop import PhotoshopPlugin
 from ui.specialist_workspaces import MockupWorkspaceWindow, SpecialistWorkspaceWindow
 from core.specialist_team import SpecialistTeamRuntime
+from core.harness import SafetyLayer
 from ui.knowledge_graph_workspace import KnowledgeGraphWindow, NativeGraphView
 from ui.main_window import JarvisMainWindow
 
@@ -132,6 +135,10 @@ def test_mockup_workspace_exposes_zoom_sketch_font_and_drop_guidance_controls():
     assert window.sketch_canvas is not None
     assert window.font_family is not None and window.font_size.value() == 64
     assert window.edit_attachments.acceptDrops()
+    window.sketch_canvas.image.setPixelColor(10, 10, QColor("#000000"))
+    sketch_path = window.sketch_canvas.save_guidance()
+    assert Path(sketch_path).is_file()
+    assert SafetyLayer.validate_path(sketch_path)[0]
     window.close(); assert app is not None
 
 

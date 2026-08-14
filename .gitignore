@@ -49,6 +49,7 @@ env/
 data/models/
 data/logs/
 data/diagnostics/
+data/cache/
 data/browser_profiles/
 data/AnisKnowledgeVault/
 data/obsidian_settings.json

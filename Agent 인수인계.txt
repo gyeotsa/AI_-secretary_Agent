@@ -10,6 +10,12 @@
 - 글꼴 선택, 픽셀 크기, 굵게 GUI를 추가하고 scene plan/edit patch 스키마와 Pillow 폰트 탐색까지 연결했다. 글꼴·크기·굵기 변경은 구조화된 비파괴 편집 명령으로 처리한다.
 - 검증: 변경 Python 파일 `py_compile` 통과, 집중 테스트 `55 passed`, 전체 테스트 `425 passed, 4 deselected` 통과.
 - 다음에 이어야 할 일: 실제 GUI에서 스케치 화살표/박스와 여러 수정 참고 이미지를 이용한 사용자 수용 테스트를 진행하고, 승인 결과가 누적된 뒤 반복 작업 recall 품질을 평가한다.
+
+### 2026-08-14 스케치 허용 경로 및 탭 가시성 후속 수정
+
+- 설명 스케치를 Windows 임시 폴더에 저장해 `SafetyLayer`가 차단하던 문제를 수정했다. 이제 프로젝트 내부 `data/cache/mockup_guidance`에 저장하며 이 캐시는 Git에서 제외한다.
+- 결과 미리보기/설명 스케치 탭의 선택·미선택·hover 색과 테두리를 명시해 어두운 테마에서 비활성 탭처럼 보이던 문제를 수정했다.
+- 스케치 파일이 실제 생성되고 허용 경로 검사를 통과하는 회귀 테스트를 추가했으며 시안/작업공간 집중 테스트 `55 passed`를 확인했다.
 ## 2026-08-08 Obsidian Knowledge Vault 연결
 
 - Obsidian을 단순 뷰어로 사용하고 아니스가 Markdown Vault의 분류·원자 노트·Wikilink·RAG 동기화를 관리하는 `core/obsidian_vault.py`와 `obsidian` Plugin을 추가했다.
