@@ -968,6 +968,29 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
     def _draw_scene_decoration(self, draw, item, bounds, width):
         fill, stroke = self._rgba(item["fill"]), self._rgba(item["stroke"])
         stroke_width = max(1, int(item["stroke_width"] * width))
+        if item.get("dash") and item["type"] == "ellipse":
+            dash_length = max(2.0, float(item.get("dash_length", .025)) * 360)
+            gap_length = max(1.0, float(item.get("gap_length", .018)) * 360)
+            angle = 0.0
+            while angle < 360:
+                draw.arc(bounds, start=angle, end=min(360, angle + dash_length),
+                         fill=stroke, width=stroke_width)
+                angle += dash_length + gap_length
+            return
+        if item.get("dash") and item["type"] == "line":
+            import math
+            x1, y1, x2, y2 = bounds
+            distance = max(1.0, math.hypot(x2 - x1, y2 - y1))
+            dash = max(2.0, float(item.get("dash_length", .025)) * width)
+            gap = max(1.0, float(item.get("gap_length", .018)) * width)
+            cursor = 0.0
+            while cursor < distance:
+                end = min(distance, cursor + dash)
+                draw.line((x1 + (x2-x1) * cursor/distance, y1 + (y2-y1) * cursor/distance,
+                           x1 + (x2-x1) * end/distance, y1 + (y2-y1) * end/distance),
+                          fill=stroke, width=stroke_width)
+                cursor += dash + gap
+            return
         if item["type"] == "line":
             draw.line((bounds[0], bounds[1], bounds[2], bounds[3]), fill=stroke, width=stroke_width)
         elif item["type"] == "ellipse":
@@ -1216,7 +1239,8 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
 2. 요청하지 않은 텍스트 크기·위치·색, 사진 배치, 배경, 장식은 패치에 넣지 마세요.
 3. assets와 texts의 index는 현재 설계도의 index입니다. 변경하지 않는 요소는 배열에서 생략하세요.
 4. 문구 내용 변경은 visible_copy에 새 문구를 쓰고, 삭제는 remove_visible_copy=true로 지정하세요.
-5. decorations 전체를 바꿀 때만 replace_decorations=true로 지정하세요.
+5. decorations 전체를 바꿀 때만 replace_decorations=true로 지정하세요. 장식 하나를 추가·수정·삭제할 때는 replace_decorations=false이고 decorations 항목에 action(add/update/remove)과 index를 넣으세요. 점선은 dash=true, 점 길이와 간격은 dash_length/gap_length로 지정하세요.
+5-1. '사진/프레임 안쪽' 같은 상대 위치는 해당 asset의 x/y/width/height를 기준으로 여백을 빼서 decoration 좌표를 계산하세요. 참고 이미지나 스케치의 선·박스·화살표는 이 장식 또는 배치 좌표로 변환하세요.
 6. success_criteria에는 결과 이미지에서 확인 가능한 완료 조건을 구체적으로 쓰세요.
 7. 값이 현재와 같은 패치는 실패입니다. 명령을 실제 시각 변화로 변환하세요.
 8. 이번 명령에서 허용된 변경 그룹은 [{allowed_scope_text}]입니다. 이 밖의 그룹은 빈 배열/빈 객체로 두세요.

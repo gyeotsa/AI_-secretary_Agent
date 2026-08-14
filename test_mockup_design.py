@@ -740,6 +740,27 @@ def test_repeated_explicit_edit_is_successful_idempotent_operation(tmp_path):
     assert repeated["revision"] == first["revision"]
 
 
+def test_white_dashed_inner_border_is_added_and_rendered(tmp_path):
+    refs = [_circular_sticker(tmp_path / f"ref{index}.png", (130, 220, 210), (70, 80, 90))
+            for index in range(3)]
+    product = _image(tmp_path / "person.png", (40, 80, 110), size=(700, 900))
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(),
+                                  generation_backend=FailingGenerationBackend(ready=True))
+    profile = runtime.learn_style(refs)
+    original = runtime.render(profile.profile_id, [product], output_dir=tmp_path / "out",
+                              backend="auto", preview_only=True)
+    edited = runtime.edit_preview(original, "하얀 점선으로 원형 테두리 안쪽에 그려줘")
+    decoration = edited["scene_plan"]["decorations"][0]
+    asset = edited["scene_plan"]["assets"][0]
+    assert decoration["type"] == "ellipse"
+    assert decoration["stroke"] == "#ffffff"
+    assert decoration["dash"] is True
+    assert decoration["x"] > asset["x"]
+    assert decoration["width"] < asset["width"]
+    with Image.open(edited["output"]) as rendered:
+        assert rendered.size == (1600, 1600)
+
+
 def test_save_uses_current_history_metadata_instead_of_stale_global_metadata(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     spec = get_specialist_workspace_registry().get("mockup")

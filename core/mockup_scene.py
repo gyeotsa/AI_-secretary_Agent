@@ -73,7 +73,17 @@ SCENE_EDIT_PATCH_JSON_SCHEMA = {
                 "background": {"type": "string"}, "align": {"enum": ["left", "center", "right"]},
                 "padding": {"type": "number"}, "z": {"type": "integer"}}}},
         "replace_decorations": {"type": "boolean"},
-        "decorations": {"type": "array", "items": {"type": "object"}},
+        "decorations": {"type": "array", "items": {"type": "object", "properties": {
+            "index": {"type": "integer"},
+            "action": {"enum": ["add", "update", "remove"]},
+            "type": {"enum": ["rectangle", "ellipse", "line"]},
+            "x": {"type": "number"}, "y": {"type": "number"},
+            "width": {"type": "number"}, "height": {"type": "number"},
+            "fill": {"type": "string"}, "stroke": {"type": "string"},
+            "stroke_width": {"type": "number"}, "dash": {"type": "boolean"},
+            "dash_length": {"type": "number"}, "gap_length": {"type": "number"},
+            "z": {"type": "integer"},
+        }}},
         "visible_copy": {"type": "string"},
         "remove_visible_copy": {"type": "boolean"},
         "success_criteria": {"type": "array", "items": {"type": "string"}},
@@ -183,7 +193,10 @@ def normalize_scene_plan(raw: dict, *, asset_count: int, visible_copy: str = "")
             "height": _number(item.get("height"), 0, 1, 1),
             "fill": _color(item.get("fill")), "stroke": _color(item.get("stroke")),
             "stroke_width": _number(item.get("stroke_width"), 0, .05, .005),
-            "dash": bool(item.get("dash", False)), "z": int(_number(item.get("z"), -20, 20, -1)),
+            "dash": bool(item.get("dash", False)),
+            "dash_length": _number(item.get("dash_length"), .002, .2, .025),
+            "gap_length": _number(item.get("gap_length"), .002, .2, .018),
+            "z": int(_number(item.get("z"), -20, 20, -1)),
         })
     requested_copy = " ".join(str(visible_copy or "").split())[:160]
     if requested_copy:
@@ -367,6 +380,31 @@ def apply_scene_edit_patch(before: dict, patch: dict, *, asset_count: int,
         replacement = patch.get("decorations") if isinstance(patch.get("decorations"), list) else []
         if raw.get("decorations", []) != replacement:
             raw["decorations"] = deepcopy(replacement); changed.append("decorations.replace")
+    elif isinstance(patch.get("decorations"), list):
+        decorations = deepcopy(raw.get("decorations", []))
+        for update in patch["decorations"]:
+            if not isinstance(update, dict):
+                continue
+            action = str(update.get("action", "update"))
+            try: index = int(update.get("index", len(decorations)))
+            except (TypeError, ValueError): index = len(decorations)
+            if action == "remove" and 0 <= index < len(decorations):
+                decorations.pop(index); changed.append(f"decorations[{index}].remove")
+                continue
+            allowed = ("type", "x", "y", "width", "height", "fill", "stroke",
+                       "stroke_width", "dash", "dash_length", "gap_length", "z")
+            if action == "add":
+                item = {"type": "ellipse", "x": .1, "y": .1, "width": .8, "height": .8,
+                        "fill": "transparent", "stroke": "#ffffff", "stroke_width": .006,
+                        "dash": False, "dash_length": .025, "gap_length": .018, "z": 5}
+                item.update({key: update[key] for key in allowed if key in update})
+                decorations.append(item); changed.append(f"decorations[{len(decorations)-1}].add")
+            elif 0 <= index < len(decorations):
+                for key in allowed:
+                    if key in update and decorations[index].get(key) != update[key]:
+                        decorations[index][key] = update[key]
+                        changed.append(f"decorations[{index}].{key}")
+        raw["decorations"] = decorations
     next_copy = str(visible_copy or "")
     if bool(patch.get("remove_visible_copy")):
         next_copy = ""; raw["texts"] = []; changed.append("visible_copy.remove")
@@ -447,6 +485,27 @@ def validate_patch_against_instruction(instruction: str, changed_fields: list[st
     if "canvas" in scopes and any(word in text for word in ("배경색", "바탕색")) \
             and "canvas.background" not in changed_fields:
         raise ScenePlanError("배경색 요청인데 canvas.background 변경이 없습니다.")
+    if "decorations" in scopes:
+        decorations = after.get("decorations", []) if after else []
+        if not decorations:
+            raise ScenePlanError("장식 요청인데 수정 후 장식 요소가 없습니다.")
+        target = decorations[-1]
+        if "점선" in text and not bool(target.get("dash")):
+            raise ScenePlanError("점선 요청인데 장식의 dash가 활성화되지 않았습니다.")
+        if "실선" in text and bool(target.get("dash")):
+            raise ScenePlanError("실선 요청인데 장식이 점선으로 남아 있습니다.")
+        if requested_color and target.get("stroke") != requested_color:
+            raise ScenePlanError("테두리 색상 요청이 장식의 stroke에 반영되지 않았습니다.")
+        if any(word in text for word in ("안쪽", "내부", "안에")) and after.get("assets"):
+            frame = after["assets"][0]
+            inside = (float(target.get("x", 0)) > float(frame.get("x", 0)) and
+                      float(target.get("y", 0)) > float(frame.get("y", 0)) and
+                      float(target.get("x", 0)) + float(target.get("width", 0)) <
+                      float(frame.get("x", 0)) + float(frame.get("width", 0)) and
+                      float(target.get("y", 0)) + float(target.get("height", 0)) <
+                      float(frame.get("y", 0)) + float(frame.get("height", 0)))
+            if not inside:
+                raise ScenePlanError("안쪽 테두리 요청인데 장식이 사진 프레임 내부에 배치되지 않았습니다.")
     shape_satisfied = bool(after and after.get("assets") and
                            all(item.get("shape") == "ellipse" for item in after["assets"]))
     if "assets" in scopes and any(word in text for word in ("원형", "원 형태", "동그랗")) \
@@ -719,6 +778,37 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
                                 f"texts[{index}].width", f"texts[{index}].height",
                                 f"texts[{index}].padding"])
             _fit_normalized_box(item)
+    decoration_request = any(word in text for word in ("테두리", "점선", "실선", "라인", "장식"))
+    if decoration_request and result.get("assets"):
+        color_map = {"하얀": "#ffffff", "흰색": "#ffffff", "흰": "#ffffff",
+                     "검정": "#111111", "검은": "#111111", "파란": "#2878d0",
+                     "빨간": "#e5484d", "초록": "#38a169", "노란": "#f2c94c"}
+        stroke = next((value for word, value in color_map.items() if word in text), "#ffffff")
+        dashed = "점선" in text
+        asset = result["assets"][0]
+        inset = .025 if any(word in text for word in ("안쪽", "내부", "안에")) else 0
+        x = round(float(asset.get("x", 0)) + inset, 4)
+        y = round(float(asset.get("y", 0)) + inset, 4)
+        width = round(max(.02, float(asset.get("width", 1)) - inset * 2), 4)
+        height = round(max(.02, float(asset.get("height", 1)) - inset * 2), 4)
+        shape = "ellipse" if asset.get("shape") == "ellipse" or any(
+            word in text for word in ("원형", "동그란", "원 모양")
+        ) else "rectangle"
+        desired = {"type": shape, "x": x, "y": y, "width": width, "height": height,
+                   "fill": "transparent", "stroke": stroke, "stroke_width": .006,
+                   "dash": dashed, "dash_length": .025, "gap_length": .018,
+                   "z": max(1, int(asset.get("z", 0)) + 1)}
+        candidates = result.setdefault("decorations", [])
+        matching_index = next((index for index, item in enumerate(candidates)
+                               if item.get("type") == shape and item.get("fill") == "transparent"), None)
+        if matching_index is None:
+            candidates.append(desired)
+            applied.append(f"decorations[{len(candidates)-1}].add")
+        else:
+            for key, value in desired.items():
+                if candidates[matching_index].get(key) != value:
+                    candidates[matching_index][key] = value
+                    applied.append(f"decorations[{matching_index}].{key}")
     if applied:
         result["enforced_user_constraints"] = applied
     return result, applied
