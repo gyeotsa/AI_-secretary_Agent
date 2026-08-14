@@ -700,6 +700,14 @@ class MockupWorkspaceWindow(QMainWindow):
             return
         self._ai_edit_in_progress = False
         if hasattr(self, "ai_edit_button"): self.ai_edit_button.setEnabled(True)
+        if result.get("already_satisfied"):
+            self.preview_metadata = dict(result)
+            self.details.append(
+                "\n요청한 수정 사항은 현재 미리보기에 이미 적용되어 있습니다. "
+                "이미지를 중복 생성하지 않고 현재 결과를 유지했습니다."
+            )
+            self.save_preview_button.setEnabled(True)
+            return
         self._push_preview(result)
 
     def _push_preview(self, result):

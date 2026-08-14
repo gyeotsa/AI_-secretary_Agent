@@ -1104,16 +1104,53 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             raise ValueError("이전 결과에 AI 디자인 설계도가 없습니다. 새 파이프라인으로 시안을 다시 생성해 주세요.")
         profile = self.load_profile(profile_id)
         paths = self._validate_images(sources)
+        # A repeated, measurable request is a successful idempotent operation,
+        # not a model failure.  Check it before asking the model to invent a
+        # delta; otherwise a correct no-op patch is retried three times and is
+        # eventually reported as an error.
+        explicit_plan, explicit_fields = enforce_explicit_user_constraints(previous_plan, instruction)
+        explicit_plan, grounded_fields = self._enforce_detected_subject_visibility(
+            explicit_plan, paths, instruction
+        )
+        recognized_noop = bool(explicit_fields or grounded_fields or re.search(
+            r"글꼴(?:을|은)?\s*['\"][^'\"]+['\"]|(?:글자\s*)?크기(?:를|는)?\s*\d{1,3}\s*픽셀",
+            instruction,
+            re.I,
+        ))
+        if recognized_noop and not scene_changed(previous_plan, explicit_plan):
+            result = deepcopy(metadata)
+            result.update({
+                "renderer": "verified-idempotent-edit-v1",
+                "edit_instruction": instruction.strip(),
+                "applied_edit_fields": [],
+                "already_satisfied": True,
+                "revision": int(metadata.get("revision", 0)),
+            })
+            return result
         try:
             revised_plan, revised_copy, patch_fields = self._request_scene_edit_patch(
                 profile, paths, previous_plan, str(metadata.get("visible_copy", "")), instruction.strip(),
                 guidance_paths=guidance_paths, memory_context=memory_context,
             )
             renderer = "ai-scene-patch-v5"
-        except ScenePlanError:
+        except ScenePlanError as model_error:
             revised_plan, patch_fields = enforce_explicit_user_constraints(previous_plan, instruction)
-            if not patch_fields or not scene_changed(previous_plan, revised_plan):
-                raise
+            revised_plan, grounded_fields = self._enforce_detected_subject_visibility(
+                revised_plan, paths, instruction
+            )
+            patch_fields = list(dict.fromkeys([*patch_fields, *grounded_fields]))
+            if not scene_changed(previous_plan, revised_plan):
+                if patch_fields:
+                    result = deepcopy(metadata)
+                    result.update({
+                        "renderer": "verified-idempotent-edit-v1",
+                        "edit_instruction": instruction.strip(),
+                        "applied_edit_fields": [],
+                        "already_satisfied": True,
+                        "revision": int(metadata.get("revision", 0)),
+                    })
+                    return result
+                raise model_error
             validate_patch_against_instruction(
                 instruction, patch_fields, before=previous_plan, after=revised_plan,
             )

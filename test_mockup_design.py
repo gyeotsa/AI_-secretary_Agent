@@ -723,6 +723,23 @@ def test_ai_edits_revise_scene_plan_and_rerender_from_original_sources(tmp_path)
     assert second["scene_plan"]["canvas"]["background"] == "#eef2f5"
 
 
+def test_repeated_explicit_edit_is_successful_idempotent_operation(tmp_path):
+    refs = [_circular_sticker(tmp_path / f"ref{index}.png", (130, 220, 210), (70, 80, 90))
+            for index in range(3)]
+    product = _image(tmp_path / "person.png", (40, 80, 110), size=(700, 900))
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(),
+                                  generation_backend=FailingGenerationBackend(ready=True))
+    profile = runtime.learn_style(refs)
+    original = runtime.render(profile.profile_id, [product], visible_copy="응원합니다!",
+                              output_dir=tmp_path / "out", backend="auto", preview_only=True)
+    first = runtime.edit_preview(original, "글꼴을 '궁서'로 바꿔줘")
+    repeated = runtime.edit_preview(first, "글꼴을 '궁서'로 바꿔줘")
+    assert repeated["already_satisfied"] is True
+    assert repeated["renderer"] == "verified-idempotent-edit-v1"
+    assert repeated["output"] == first["output"]
+    assert repeated["revision"] == first["revision"]
+
+
 def test_save_uses_current_history_metadata_instead_of_stale_global_metadata(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     spec = get_specialist_workspace_registry().get("mockup")
