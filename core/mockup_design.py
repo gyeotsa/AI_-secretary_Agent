@@ -21,7 +21,7 @@ from core.mockup_scene import (SCENE_PLAN_JSON_SCHEMA, SCENE_EDIT_PATCH_JSON_SCH
                                SCENE_EDIT_VERDICT_JSON_SCHEMA, ScenePlanError,
                                apply_scene_edit_patch, build_evidence_fallback_plan, extract_json_object,
                                normalize_scene_plan, enforce_explicit_user_constraints,
-                               enforce_measured_style_evidence, merge_scoped_scene_edit,
+                               enforce_measured_style_evidence, infer_edit_scopes, merge_scoped_scene_edit,
                                restore_required_elements, scene_changed, validate_patch_against_instruction)
 
 
@@ -613,7 +613,7 @@ class MockupDesignRuntime:
 - canvas: aspect_ratio(number 0.55~1.9), background(hex color)
 - assets: 제작 이미지마다 index, x, y, width, height(모두 정규화 좌표), shape(rectangle/rounded/ellipse), fit(cover/contain), focal_x, focal_y, rotation, z
 - decorations: 필요할 때만 type(rectangle/ellipse/line), x, y, width, height, fill, stroke, stroke_width, dash, z
-- texts: 표시 문구가 있을 때만 content, x, y, width, height, font_size, color, background, align, padding, z
+- texts: 표시 문구가 있을 때만 content, x, y, width, height, font_size, font_weight(normal/bold), color, background, align, padding, z
 - rationale: 어떤 참고 이미지의 어떤 공통 특징과 사용자 지시가 각 결정의 근거인지 구체적으로 작성
 최상위 키는 canvas, assets, decorations, texts, rationale 다섯 개만 사용하세요."""
         operation = (f"기존 설계도: {json.dumps(previous_plan, ensure_ascii=False)}\n"
@@ -800,8 +800,10 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         padding = int(item["padding"] * min(width, height)); x1 += padding; y1 += padding; x2 -= padding; y2 -= padding
         font_size = max(14, int(item["font_size"] * min(width, height)))
         content = item["content"]
+        bold = item.get("font_weight", "bold") == "bold"
+        font = self._font(font_size, bold=bold)
         while font_size > 14:
-            font = self._font(font_size, bold=True); measured = draw.textbbox((0, 0), content, font=font)
+            font = self._font(font_size, bold=bold); measured = draw.textbbox((0, 0), content, font=font)
             if measured[2] - measured[0] <= max(1, x2-x1) and measured[3] - measured[1] <= max(1, y2-y1): break
             font_size -= 2
         measured = draw.textbbox((0, 0), content, font=font); text_w, text_h = measured[2]-measured[0], measured[3]-measured[1]
@@ -939,6 +941,8 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         """Ask the vision model for a delta and verify that the delta changes the scene."""
         vision = self.vision or VisionRuntime()
         evidence_paths = [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]]
+        allowed_scopes = sorted(infer_edit_scopes(instruction))
+        allowed_scope_text = ", ".join(allowed_scopes) if allowed_scopes else "명령에서 직접 지칭한 대상만"
         last_error = ""
         previous_answer = ""
         for attempt in range(3):
@@ -960,6 +964,8 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
 5. decorations 전체를 바꿀 때만 replace_decorations=true로 지정하세요.
 6. success_criteria에는 결과 이미지에서 확인 가능한 완료 조건을 구체적으로 쓰세요.
 7. 값이 현재와 같은 패치는 실패입니다. 명령을 실제 시각 변화로 변환하세요.
+8. 이번 명령에서 허용된 변경 그룹은 [{allowed_scope_text}]입니다. 이 밖의 그룹은 빈 배열/빈 객체로 두세요.
+9. 방향·크기·색상 표현은 같은 절에서 가장 가까운 대상 명사에만 연결하세요. 예를 들어 '스티커 오른쪽이 잘림'은 텍스트 오른쪽 이동이 아닙니다.
 {correction}
 JSON Schema에 맞는 객체만 반환하세요."""
             try:

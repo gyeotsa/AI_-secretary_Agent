@@ -12,7 +12,8 @@ from PyQt6.QtWidgets import QApplication, QListWidgetItem
 from core.mockup_design import MockupDesignRuntime
 from core.mockup_scene import (build_evidence_fallback_plan, enforce_explicit_user_constraints,
                                enforce_measured_style_evidence, merge_scoped_scene_edit,
-                               ScenePlanError, validate_patch_against_instruction)
+                               normalize_scene_plan, ScenePlanError,
+                               validate_patch_against_instruction)
 from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
 from plugins.mockup_design import MockupDesignPlugin
@@ -291,6 +292,70 @@ def test_half_text_size_is_applied_without_model_replanning():
     result, applied = enforce_explicit_user_constraints(plan, "글씨 크기를 절반으로 줄여줘")
     assert result["texts"][0]["font_size"] == .1
     assert "texts[0].font_size" in applied
+
+
+def test_compound_sticker_and_text_request_binds_directions_to_the_sticker():
+    plan = {
+        "assets": [{"x": .11, "y": .06, "width": .78, "height": .78,
+                    "shape": "ellipse", "fit": "contain"}],
+        "texts": [{"content": "정지원 테스트", "x": 0, "y": .2, "width": 1,
+                   "height": .5, "font_size": .2, "font_weight": "bold",
+                   "color": "#111111", "background": "transparent",
+                   "align": "center", "padding": .1}],
+    }
+    command = ("글씨 크기가 너무 크고 스티커 오른쪽 왼쪽이 잘렸어. "
+               "스티커가 원형이 되도록 변경해줘. 그리고 글씨가 스티커 안에 "
+               "들어오도록 글씨크기 수정해줘. 글씨 색은 빨간색으로 바꿔줘.")
+    result, applied = enforce_explicit_user_constraints(plan, command)
+    text = result["texts"][0]
+    frame = result["assets"][0]
+    assert frame["shape"] == "ellipse"
+    assert text["align"] == "center"
+    assert text["font_size"] < .2
+    assert text["color"] == "#e5484d"
+    assert frame["x"] <= text["x"]
+    assert text["x"] + text["width"] <= frame["x"] + frame["width"]
+    assert "texts[0].x" in applied
+
+
+def test_text_center_and_bold_are_persistent_scene_properties():
+    plan = {
+        "assets": [{"x": .11, "y": .06, "width": .78, "height": .78}],
+        "texts": [{"content": "정지원 테스트", "x": .7, "y": .4, "width": .2,
+                   "height": .1, "font_size": .04, "font_weight": "normal",
+                   "color": "#e5484d", "background": "#ffffffcc",
+                   "align": "right", "padding": .1}],
+    }
+    centered, _ = enforce_explicit_user_constraints(
+        plan, "글씨를 흰색으로 바꿔줘. 글씨 위치가 스티커 중앙에 위치하게 수정해줘."
+    )
+    text = centered["texts"][0]
+    assert text["align"] == "center"
+    assert text["color"] == "#ffffff"
+    assert text["background"] == "transparent"
+    assert text["padding"] <= .025
+    bold, fields = enforce_explicit_user_constraints(centered, "글씨 크기를 좀 더 키워주고 볼드체로 해줘.")
+    assert bold["texts"][0]["font_weight"] == "bold"
+    assert bold["texts"][0]["font_size"] > text["font_size"]
+    assert "texts[0].font_weight" in fields
+
+
+def test_scene_normalization_clamps_boxes_and_text_padding_to_canvas():
+    raw = {
+        "canvas": {"aspect_ratio": 1, "background": "#ffffff"},
+        "assets": [{"index": 0, "x": .8, "y": .9, "width": .5, "height": .4,
+                    "shape": "ellipse", "fit": "contain"}],
+        "decorations": [],
+        "texts": [{"content": "정지원", "x": .9, "y": .9, "width": .4,
+                   "height": .2, "font_size": .06, "padding": .1}],
+    }
+    result = normalize_scene_plan(raw, asset_count=1, visible_copy="정지원")
+    assert result["assets"][0]["x"] + result["assets"][0]["width"] <= 1
+    assert result["assets"][0]["y"] + result["assets"][0]["height"] <= 1
+    text = result["texts"][0]
+    assert text["x"] + text["width"] <= 1
+    assert text["y"] + text["height"] <= 1
+    assert text["padding"] <= text["height"] * .2
 
 
 def test_patch_validation_rejects_partial_compound_edit_and_unrequested_group():

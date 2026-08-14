@@ -34,6 +34,7 @@ SCENE_PLAN_JSON_SCHEMA = {
                   "properties": {"content": {"type": "string"}, "x": {"type": "number"},
                                  "y": {"type": "number"}, "width": {"type": "number"},
                                  "height": {"type": "number"}, "font_size": {"type": "number"},
+                                 "font_weight": {"enum": ["normal", "bold"]},
                                  "color": {"type": "string"}, "background": {"type": "string"},
                                  "align": {"enum": ["left", "center", "right"]},
                                  "padding": {"type": "number"}, "z": {"type": "integer"}}}},
@@ -64,6 +65,7 @@ SCENE_EDIT_PATCH_JSON_SCHEMA = {
                 "x": {"type": "number"}, "y": {"type": "number"},
                 "width": {"type": "number"}, "height": {"type": "number"},
                 "font_size": {"type": "number"}, "color": {"type": "string"},
+                "font_weight": {"enum": ["normal", "bold"]},
                 "background": {"type": "string"}, "align": {"enum": ["left", "center", "right"]},
                 "padding": {"type": "number"}, "z": {"type": "integer"}}}},
         "replace_decorations": {"type": "boolean"},
@@ -117,6 +119,15 @@ def _color(value, default="transparent") -> str:
     return default
 
 
+def _fit_normalized_box(item: dict) -> None:
+    """Keep a normalized scene box fully inside its canvas."""
+    width = min(1.0, max(0.0, float(item.get("width", 0))))
+    height = min(1.0, max(0.0, float(item.get("height", 0))))
+    item["width"], item["height"] = width, height
+    item["x"] = round(min(max(0.0, float(item.get("x", 0))), 1.0 - width), 4)
+    item["y"] = round(min(max(0.0, float(item.get("y", 0))), 1.0 - height), 4)
+
+
 def normalize_scene_plan(raw: dict, *, asset_count: int, visible_copy: str = "") -> dict:
     """Validate the model plan while keeping visual decisions model-authored."""
     if not isinstance(raw, dict):
@@ -140,7 +151,7 @@ def normalize_scene_plan(raw: dict, *, asset_count: int, visible_copy: str = "")
         if index < 0 or index >= asset_count or index in seen:
             continue
         seen.add(index)
-        result["assets"].append({
+        normalized_asset = {
             "index": index,
             "x": _number(item.get("x"), 0, .98, .1), "y": _number(item.get("y"), 0, .98, .1),
             "width": _number(item.get("width"), .05, 1, .8),
@@ -152,7 +163,9 @@ def normalize_scene_plan(raw: dict, *, asset_count: int, visible_copy: str = "")
             "focal_y": _number(item.get("focal_y"), 0, 1, .5),
             "rotation": _number(item.get("rotation"), -30, 30, 0),
             "z": int(_number(item.get("z"), -20, 20, 0)),
-        })
+        }
+        _fit_normalized_box(normalized_asset)
+        result["assets"].append(normalized_asset)
     if seen != set(range(asset_count)):
         missing = sorted(set(range(asset_count)) - seen)
         raise ScenePlanError(f"AI 설계도에 제작용 이미지 배치가 누락되었습니다: {missing}")
@@ -173,18 +186,26 @@ def normalize_scene_plan(raw: dict, *, asset_count: int, visible_copy: str = "")
         if not matching:
             raise ScenePlanError("표시 문구가 요청되었지만 AI 설계도에 텍스트 영역이 없습니다.")
         item = matching[0]
-        result["texts"] = [{
+        normalized_text = {
             "content": requested_copy,
             "x": _number(item.get("x"), 0, .95, .15), "y": _number(item.get("y"), 0, .95, .72),
             "width": _number(item.get("width"), .1, 1, .7),
             "height": _number(item.get("height"), .04, .5, .16),
             "font_size": _number(item.get("font_size"), .015, .2, .065),
+            "font_weight": "normal" if item.get("font_weight") == "normal" else "bold",
             "color": _color(item.get("color"), "#111111"),
             "background": _color(item.get("background")),
             "align": str(item.get("align")) if item.get("align") in {"left", "center", "right"} else "center",
             "padding": _number(item.get("padding"), 0, .1, .018),
             "z": int(_number(item.get("z"), -20, 20, 10)),
-        }]
+        }
+        _fit_normalized_box(normalized_text)
+        normalized_text["padding"] = min(
+            normalized_text["padding"],
+            normalized_text["width"] * .2,
+            normalized_text["height"] * .2,
+        )
+        result["texts"] = [normalized_text]
     return result
 
 
@@ -289,12 +310,12 @@ def apply_scene_edit_patch(before: dict, patch: dict, *, asset_count: int,
             texts.pop(index); changed.append(f"texts[{index}].remove"); continue
         if action == "add":
             base = {"content": str(patch.get("visible_copy") or visible_copy), "x": .15, "y": .72,
-                    "width": .7, "height": .15, "font_size": .06, "color": "#111111",
+                    "width": .7, "height": .15, "font_size": .06, "font_weight": "bold", "color": "#111111",
                     "background": "transparent", "align": "center", "padding": .018, "z": 10}
             base.update({key: value for key, value in update.items() if key not in {"index", "action"}})
             texts.append(base); changed.append("texts.add"); continue
         if action == "update" and 0 <= index < len(texts):
-            for key in ("x", "y", "width", "height", "font_size", "color", "background", "align", "padding", "z"):
+            for key in ("x", "y", "width", "height", "font_size", "font_weight", "color", "background", "align", "padding", "z"):
                 if key in update and texts[index].get(key) != update[key]:
                     texts[index][key] = update[key]; changed.append(f"texts[{index}].{key}")
     raw["texts"] = texts
@@ -390,7 +411,7 @@ def build_evidence_fallback_plan(style_features: dict, *, asset_count: int,
     copy = " ".join(str(visible_copy or "").split())[:160]
     if copy:
         texts.append({"content": copy, "x": .15, "y": .76, "width": .7, "height": .15,
-                      "font_size": .06, "color": "#111111", "background": "#ffffffcc",
+                      "font_size": .06, "font_weight": "bold", "color": "#111111", "background": "#ffffffcc",
                       "align": "center", "padding": .018, "z": 10})
     raw = {"canvas": {"aspect_ratio": ratio, "background": "#ffffff"}, "assets": assets,
            "decorations": [], "texts": texts,
@@ -443,6 +464,17 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
     """Apply only unambiguous, domain-wide layout constraints from user wording."""
     result = deepcopy(plan); applied = []
     text = " ".join(str(instruction or "").lower().split())
+    clauses = [part.strip() for part in re.split(r"[.!?\n]+|,\s*|\s+그리고\s+|고\s+", text) if part.strip()]
+    bound_clauses, active_target = [], None
+    text_nouns = ("문구", "텍스트", "글자", "글씨", "카피", "폰트")
+    asset_nouns = ("스티커", "사진", "이미지", "인물", "사람", "얼굴", "머리", "프레임",
+                   "원형", "원 형태", "모양", "형태")
+    for clause in clauses:
+        if any(word in clause for word in text_nouns): active_target = "text"
+        elif any(word in clause for word in asset_nouns): active_target = "asset"
+        bound_clauses.append((active_target, clause))
+    text_request = " ".join(clause for target, clause in bound_clauses if target == "text")
+    asset_request = " ".join(clause for target, clause in bound_clauses if target == "asset")
     subject_words = ("얼굴", "머리", "인물", "사람", "전신", "상반신")
     visibility_words = ("전부", "모두", "전체", "안 잘리", "안잘리", "보이", "나오", "포함")
     preserve_subject = any(word in text for word in subject_words) and any(
@@ -453,7 +485,7 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
             if asset.get("fit") != "contain":
                 asset["fit"] = "contain"; applied.append(f"assets[{index}].fit")
             asset["focal_x"], asset["focal_y"] = .5, .5
-    circular_frame = any(word in text for word in ("원형", "원 형태", "동그랗"))
+    circular_frame = any(word in asset_request for word in ("원형", "원 형태", "동그랗"))
     if circular_frame:
         for index, asset in enumerate(result.get("assets", [])):
             width, height = float(asset.get("width", .8)), float(asset.get("height", .8))
@@ -463,14 +495,12 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
             asset.update({"shape": "ellipse", "width": side, "height": side,
                           "x": round(max(0, min(1 - side, center_x - side / 2)), 4),
                           "y": round(max(0, min(1 - side, center_y - side / 2)), 4)})
-            if any(word in text for word in ("원 형태가 아니", "원형으로", "동그랗게")):
+            if any(word in asset_request for word in ("원 형태가 아니", "원형으로", "동그랗게")):
                 asset["fit"] = "cover"
             applied.extend([f"assets[{index}].shape", f"assets[{index}].width",
                             f"assets[{index}].height", f"assets[{index}].x", f"assets[{index}].y"])
             if asset.get("fit") == "cover": applied.append(f"assets[{index}].fit")
-    center_copy = any(word in text for word in ("문구", "텍스트", "글자", "글씨")) and any(
-        word in text for word in ("정중앙", "가운데", "중앙")
-    )
+    center_copy = any(word in text_request for word in ("정중앙", "가운데", "중앙"))
     if center_copy:
         for index, item in enumerate(result.get("texts", [])):
             width, height = float(item.get("width", .7)), float(item.get("height", .15))
@@ -480,6 +510,8 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
             item["x"] = round(frame_x + (frame_w - width) / 2, 4)
             item["y"] = round(frame_y + (frame_h - height) / 2, 4)
             item["background"] = "transparent"
+            item["align"] = "center"
+            item["padding"] = min(.025, float(item.get("padding", .018)))
             if float(item.get("font_size", 0)) < .05:
                 item["font_size"] = .055
             if width < .35:
@@ -487,11 +519,11 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
                 item["x"] = round(frame_x + (frame_w - .5) / 2, 4)
             applied.extend([f"texts[{index}].x", f"texts[{index}].y",
                             f"texts[{index}].background"])
-    copy_position = any(word in text for word in ("문구", "텍스트", "글자", "글씨"))
-    horizontal = ("right" if any(word in text for word in ("오른쪽", "우측")) else
-                  "left" if any(word in text for word in ("왼쪽", "좌측")) else None)
-    vertical = ("bottom" if any(word in text for word in ("아래", "하단")) else
-                "top" if any(word in text for word in ("위쪽", "상단", "위로")) else None)
+    copy_position = bool(text_request)
+    horizontal = ("right" if any(word in text_request for word in ("오른쪽", "우측")) else
+                  "left" if any(word in text_request for word in ("왼쪽", "좌측")) else None)
+    vertical = ("bottom" if any(word in text_request for word in ("아래", "하단")) else
+                "top" if any(word in text_request for word in ("위쪽", "상단", "위로")) else None)
     if copy_position and (horizontal or vertical):
         frame = result.get("assets", [{}])[0] if result.get("assets") else {}
         frame_x, frame_y = float(frame.get("x", 0)), float(frame.get("y", 0))
@@ -512,13 +544,13 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
     color_map = {"파란": "#2878d0", "파랑": "#2878d0", "빨간": "#e5484d", "빨강": "#e5484d",
                  "검정": "#111111", "검은": "#111111", "흰색": "#ffffff", "하얀": "#ffffff",
                  "초록": "#38a169", "노란": "#f2c94c", "보라": "#8b4cc2"}
-    copy_targeted = any(word in text for word in ("문구", "텍스트", "글자", "글씨"))
+    copy_targeted = bool(text_request)
     if copy_targeted:
-        requested = next((color for word, color in color_map.items() if word in text), None)
+        requested = next((color for word, color in color_map.items() if word in text_request), None)
         for index, item in enumerate(result.get("texts", [])):
             if requested and item.get("color") != requested:
                 item["color"] = requested; applied.append(f"texts[{index}].color")
-            if any(word in text for word in ("더 크게", "크게", "키워", "키워줘")):
+            if any(word in text_request for word in ("더 크게", "크게", "키워", "키워줘")):
                 old = float(item.get("font_size", .055))
                 item["font_size"] = round(min(.16, max(.055, old * 1.5)), 4)
                 item["width"] = min(.85, max(float(item.get("width", .5)), .5))
@@ -531,6 +563,33 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
             if half_size:
                 item["font_size"] = round(max(.015, float(item.get("font_size", .055)) * .5), 4)
                 applied.append(f"texts[{index}].font_size")
+            if not half_size and ("너무 크" in text_request or any(
+                    word in text_request for word in ("작게", "줄여", "축소"))):
+                item["font_size"] = round(max(.025, float(item.get("font_size", .055)) * .65), 4)
+                item["width"] = min(float(item.get("width", .7)), .72)
+                item["height"] = min(float(item.get("height", .15)), .2)
+                item["padding"] = min(.025, float(item.get("padding", .018)))
+                applied.extend([f"texts[{index}].font_size", f"texts[{index}].width",
+                                f"texts[{index}].height", f"texts[{index}].padding"])
+            if any(word in text_request for word in ("볼드", "굵게", "굵은", "진하게")):
+                item["font_weight"] = "bold"; applied.append(f"texts[{index}].font_weight")
+            if any(word in text_request for word in ("안에", "내부", "영역 안")):
+                frame = result.get("assets", [{}])[0] if result.get("assets") else {}
+                frame_x, frame_y = float(frame.get("x", 0)), float(frame.get("y", 0))
+                frame_w, frame_h = float(frame.get("width", 1)), float(frame.get("height", 1))
+                margin = min(.035, frame_w * .04, frame_h * .04)
+                item["width"] = round(min(float(item.get("width", .7)), max(.1, frame_w - margin * 2)), 4)
+                item["height"] = round(min(float(item.get("height", .15)), max(.04, frame_h - margin * 2)), 4)
+                item["x"] = round(min(max(float(item.get("x", 0)), frame_x + margin),
+                                      frame_x + frame_w - item["width"] - margin), 4)
+                item["y"] = round(min(max(float(item.get("y", 0)), frame_y + margin),
+                                      frame_y + frame_h - item["height"] - margin), 4)
+                item["padding"] = min(float(item.get("padding", .018)),
+                                      item["width"] * .08, item["height"] * .08)
+                applied.extend([f"texts[{index}].x", f"texts[{index}].y",
+                                f"texts[{index}].width", f"texts[{index}].height",
+                                f"texts[{index}].padding"])
+            _fit_normalized_box(item)
     if applied:
         result["enforced_user_constraints"] = applied
     return result, applied
