@@ -6,6 +6,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PIL import Image, ImageDraw
 from PyQt6.QtWidgets import QApplication, QListWidgetItem
 
@@ -649,8 +650,8 @@ def test_high_confidence_learned_composition_repairs_tiny_off_center_subject_and
     repaired, enforced = enforce_measured_style_evidence(plan, features)
     assert {key: repaired["assets"][0][key] for key in ("x", "y", "width", "height", "shape")} == {
         "x": .11, "y": .06, "width": .78, "height": .78, "shape": "ellipse"}
-    assert repaired["texts"][0]["x"] == .5
-    assert repaired["texts"][0]["y"] == .47
+    assert repaired["texts"][0]["x"] == .345
+    assert repaired["texts"][0]["y"] == .525
     assert repaired["texts"][0]["font_size"] == .2
     assert "assets[0].learned_subject_occupancy" in enforced
 
@@ -759,6 +760,33 @@ def test_white_dashed_inner_border_is_added_and_rendered(tmp_path):
     assert decoration["width"] < asset["width"]
     with Image.open(edited["output"]) as rendered:
         assert rendered.size == (1600, 1600)
+
+
+def test_exact_pixel_font_size_rejects_model_value_with_wrong_canvas_scale():
+    before = {"assets": [], "decorations": [], "texts": [{"font_size": .05}]}
+    after = {"assets": [], "decorations": [], "texts": [{"font_size": .2}]}
+    with pytest.raises(ScenePlanError, match="실제 캔버스 기준"):
+        validate_patch_against_instruction(
+            "글자 크기를 200픽셀로 바꿔줘", ["texts[0].font_size"], before=before, after=after,
+        )
+
+
+def test_learned_lower_overlay_centers_copy_inside_primary_frame():
+    plan = {
+        "assets": [{"x": .1, "y": .05, "width": .8, "height": .8, "shape": "ellipse"}],
+        "decorations": [],
+        "texts": [{"x": .5, "y": .5, "width": .4, "height": .1, "align": "left"}],
+    }
+    enforced, fields = enforce_measured_style_evidence(plan, {
+        "references": [{"aspect_ratio": 1.0}] * 4,
+        "consensus": {"primary_frame": "circle", "subject_scale": .8,
+                      "text_region": "lower_overlay", "confidence": 1.0,
+                      "evidence": {"reference_count": 4}},
+    })
+    assert enforced["texts"][0]["x"] == pytest.approx(.3)
+    assert enforced["texts"][0]["y"] == pytest.approx(.715)
+    assert enforced["texts"][0]["align"] == "center"
+    assert "texts[0].learned_lower_overlay" in fields
 
 
 def test_save_uses_current_history_metadata_instead_of_stale_global_metadata(tmp_path, monkeypatch):

@@ -434,11 +434,12 @@ def validate_patch_against_instruction(instruction: str, changed_fields: list[st
             raise ScenePlanError(f"명령하지 않은 영역을 변경했습니다: {sorted(unexpected)}")
     text_target = "texts" in scopes
     if text_target and any(word in text for word in (
-        "옮겨", "이동", "위치", "왼쪽", "오른쪽", "위로", "아래로", "상단", "하단", "중앙", "가운데",
+        "옮겨", "이동", "위치", "왼쪽", "오른쪽", "위로", "아래로", "아래쪽", "밑",
+        "상단", "하단", "중앙", "가운데",
     )):
         required_axes = set()
         if any(word in text for word in ("왼쪽", "오른쪽", "좌측", "우측")): required_axes.add("x")
-        if any(word in text for word in ("위쪽", "아래", "상단", "하단", "위로")): required_axes.add("y")
+        if any(word in text for word in ("위쪽", "아래", "아래쪽", "밑", "상단", "하단", "위로")): required_axes.add("y")
         if any(word in text for word in ("중앙", "가운데")): required_axes.update({"x", "y"})
         changed_axes = {field.rsplit(".", 1)[-1] for field in changed_fields
                         if field.startswith("texts[") and field.rsplit(".", 1)[-1] in {"x", "y"}}
@@ -454,6 +455,25 @@ def validate_patch_against_instruction(instruction: str, changed_fields: list[st
                             float(frame.get("y", 0)) + float(frame.get("height", 1)) / 2)
             position_satisfied = (abs(text_center[0] - frame_center[0]) <= .03 and
                                   abs(text_center[1] - frame_center[1]) <= .03)
+        if after and after.get("texts") and not position_satisfied:
+            item = after["texts"][0]
+            frame = after.get("assets", [{}])[0] if after.get("assets") else {
+                "x": 0, "y": 0, "width": 1, "height": 1,
+            }
+            left_gap = float(item.get("x", 0)) - float(frame.get("x", 0))
+            right_gap = (float(frame.get("x", 0)) + float(frame.get("width", 1)) -
+                         float(item.get("x", 0)) - float(item.get("width", 0)))
+            top_gap = float(item.get("y", 0)) - float(frame.get("y", 0))
+            bottom_gap = (float(frame.get("y", 0)) + float(frame.get("height", 1)) -
+                          float(item.get("y", 0)) - float(item.get("height", 0)))
+            horizontal_ok = (not any(word in text for word in ("왼쪽", "좌측", "오른쪽", "우측")) or
+                             (any(word in text for word in ("왼쪽", "좌측")) and left_gap <= .06) or
+                             (any(word in text for word in ("오른쪽", "우측")) and right_gap <= .06))
+            vertical_ok = (not any(word in text for word in
+                                   ("위쪽", "위로", "상단", "아래", "아래쪽", "밑", "하단")) or
+                           (any(word in text for word in ("위쪽", "위로", "상단")) and top_gap <= .06) or
+                           (any(word in text for word in ("아래", "아래쪽", "밑", "하단")) and bottom_gap <= .06))
+            position_satisfied = horizontal_ok and vertical_ok
         if required_axes and not required_axes.issubset(changed_axes) and not position_satisfied:
             raise ScenePlanError(f"텍스트 위치 요청의 좌표 변경이 부족합니다: 필요={sorted(required_axes)}")
         if not required_axes and not changed_axes:
@@ -482,6 +502,15 @@ def validate_patch_against_instruction(instruction: str, changed_fields: list[st
             and not any(field.startswith("texts[") and field.rsplit(".", 1)[-1] in
                         {"font_size", "width", "height"} for field in changed_fields):
         raise ScenePlanError("텍스트 크기 요청인데 크기 관련 변경이 없습니다.")
+    pixel_match = re.search(r"(?:글자\s*)?크기(?:를|는)?\s*(\d{1,3})\s*픽셀", text)
+    if text_target and pixel_match and after and after.get("texts"):
+        expected = max(.015, min(.2, int(pixel_match.group(1)) / 1600))
+        actual = float(after["texts"][0].get("font_size", 0))
+        if abs(actual - expected) > .001:
+            raise ScenePlanError(
+                f"글자 크기 요청이 실제 캔버스 기준과 다릅니다: 요청={pixel_match.group(1)}px, "
+                f"설계값={round(actual * 1600)}px"
+            )
     if "canvas" in scopes and any(word in text for word in ("배경색", "바탕색")) \
             and "canvas.background" not in changed_fields:
         raise ScenePlanError("배경색 요청인데 canvas.background 변경이 없습니다.")
@@ -611,8 +640,19 @@ def enforce_measured_style_evidence(plan: dict, style_features: dict) -> tuple[d
             if primary_frame == "circle" and asset.get("shape") != "ellipse":
                 asset["shape"] = "ellipse"
                 enforced.append("assets[0].learned_primary_frame")
-        # Text placement is not forced from the learned profile because an
-        # explicit user placement request must take priority.
+        if result.get("texts") and consensus.get("text_region") == "lower_overlay":
+            frame = result.get("assets", [{}])[0]
+            frame_x, frame_y = float(frame.get("x", 0)), float(frame.get("y", 0))
+            frame_w, frame_h = float(frame.get("width", 1)), float(frame.get("height", 1))
+            for index, item in enumerate(result["texts"]):
+                width, height = float(item.get("width", .7)), float(item.get("height", .15))
+                target_x = round(frame_x + (frame_w - width) / 2, 4)
+                target_y = round(max(frame_y, frame_y + frame_h - height - .035), 4)
+                if item.get("x") != target_x:
+                    item["x"] = target_x; enforced.append(f"texts[{index}].learned_center")
+                if item.get("y") != target_y:
+                    item["y"] = target_y; enforced.append(f"texts[{index}].learned_lower_overlay")
+                item["align"] = "center"
     if enforced:
         result["enforced_measured_evidence"] = enforced
     return result, enforced
@@ -689,7 +729,7 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
     copy_position = bool(text_request)
     horizontal = ("right" if any(word in text_request for word in ("오른쪽", "우측")) else
                   "left" if any(word in text_request for word in ("왼쪽", "좌측")) else None)
-    vertical = ("bottom" if any(word in text_request for word in ("아래", "하단")) else
+    vertical = ("bottom" if any(word in text_request for word in ("아래", "아래쪽", "밑", "하단")) else
                 "top" if any(word in text_request for word in ("위쪽", "상단", "위로")) else None)
     if copy_position and (horizontal or vertical):
         frame = result.get("assets", [{}])[0] if result.get("assets") else {}
