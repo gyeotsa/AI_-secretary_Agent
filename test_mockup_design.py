@@ -11,7 +11,8 @@ from PyQt6.QtWidgets import QApplication, QListWidgetItem
 
 from core.mockup_design import MockupDesignRuntime
 from core.mockup_scene import (build_evidence_fallback_plan, enforce_explicit_user_constraints,
-                               enforce_measured_style_evidence, merge_scoped_scene_edit)
+                               enforce_measured_style_evidence, merge_scoped_scene_edit,
+                               ScenePlanError, validate_patch_against_instruction)
 from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
 from plugins.mockup_design import MockupDesignPlugin
@@ -20,6 +21,20 @@ from ui.specialist_workspaces import MockupWorkspaceWindow
 
 class FakeVision:
     def analyze(self, paths, prompt, mode="general"):
+        if "이미지 편집 결과 의미 검증기" in prompt:
+            import json
+            return {"analysis": json.dumps({"fulfilled": True, "reason": "요청한 배경만 변경됨",
+                "missing_requirements": [], "unintended_changes": []}, ensure_ascii=False)}
+        if "비파괴 이미지 편집 명령 해석기" in prompt:
+            import json
+            background = "#dde5ea" if "#eef2f5" in prompt else "#eef2f5"
+            return {"analysis": json.dumps({
+                "intent_summary": "요청한 분위기에 맞춰 배경만 조정",
+                "canvas": {"background": background},
+                "assets": [], "texts": [], "replace_decorations": False,
+                "decorations": [], "visible_copy": "", "remove_visible_copy": False,
+                "success_criteria": ["배경색이 차분한 회청색으로 바뀐다"],
+            }, ensure_ascii=False)}
         if ('필수 최상위 키는 canvas, assets' in prompt or
                 'canvas, assets, decorations, texts, rationale 키를 가진 JSON' in prompt or
                 '전체 JSON 설계도만 반환' in prompt or
@@ -275,7 +290,30 @@ def test_half_text_size_is_applied_without_model_replanning():
     plan = {"assets": [], "texts": [{"content": "테스트", "font_size": .2}]}
     result, applied = enforce_explicit_user_constraints(plan, "글씨 크기를 절반으로 줄여줘")
     assert result["texts"][0]["font_size"] == .1
-    assert "texts[0].size_half" in applied
+    assert "texts[0].font_size" in applied
+
+
+def test_patch_validation_rejects_partial_compound_edit_and_unrequested_group():
+    import pytest
+    command = "문구를 오른쪽 아래로 옮기고 파란색으로 바꿔줘"
+    with pytest.raises(ScenePlanError, match="명령하지 않은 영역"):
+        validate_patch_against_instruction(command, ["texts[0].color", "decorations.replace"])
+    with pytest.raises(ScenePlanError, match="좌표 변경"):
+        validate_patch_against_instruction(command, ["texts[0].color"])
+    validate_patch_against_instruction(command, ["texts[0].x", "texts[0].y", "texts[0].color"])
+
+
+def test_generic_text_position_constraints_complete_compound_direction_request():
+    plan = {"assets": [{"x": .1, "y": .1, "width": .8, "height": .8}],
+            "texts": [{"content": "테스트", "x": .2, "y": .2, "width": .3,
+                       "height": .1, "font_size": .06, "color": "#111111"}]}
+    command = "문구를 오른쪽 아래로 옮기고 파란색으로 바꿔줘"
+    result, fields = enforce_explicit_user_constraints(plan, command)
+    assert result["texts"][0]["x"] >= .49
+    assert result["texts"][0]["y"] > .5
+    assert result["texts"][0]["align"] == "right"
+    assert result["texts"][0]["color"] == "#2878d0"
+    validate_patch_against_instruction(command, fields)
 
 
 def test_learned_subject_scale_repairs_oversized_asset():
@@ -488,6 +526,30 @@ def test_ai_edits_revise_scene_plan_and_rerender_from_original_sources(tmp_path)
     assert first["revision"] == 1
     second = runtime.edit_preview(first, "조금 더 정돈된 느낌으로 수정해줘")
     assert second["revision"] == 2
+    assert second["renderer"] == "ai-scene-patch-v5"
+    assert second["scene_plan"]["texts"] == first["scene_plan"]["texts"]
+    assert second["scene_plan"]["canvas"]["background"] == "#eef2f5"
+
+
+def test_save_uses_current_history_metadata_instead_of_stale_global_metadata(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    spec = get_specialist_workspace_registry().get("mockup")
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(),
+                                  generation_backend=FakeGenerationBackend())
+    window = MockupWorkspaceWindow(spec, runtime=runtime)
+    preview_root = Path(__import__("tempfile").gettempdir()) / "jarvis_mockup_previews"
+    preview_root.mkdir(parents=True, exist_ok=True)
+    source = preview_root / "history-current.png"
+    Image.new("RGB", (20, 20), "white").save(source)
+    current = {"output": str(source), "edit_instruction": "마지막 명령", "scene_plan": {"texts": []}}
+    window.preview_history = [current]; window.preview_index = 0
+    window.preview_metadata = {"output": str(source), "edit_instruction": "이전 명령"}
+    target = tmp_path / "saved.png"
+    monkeypatch.setattr("ui.specialist_workspaces.QFileDialog.getSaveFileName",
+                        lambda *_args, **_kwargs: (str(target), "PNG"))
+    window._save_preview()
+    saved = __import__("json").loads(target.with_suffix(".json").read_text(encoding="utf-8"))
+    assert saved["edit_instruction"] == "마지막 명령"
 
 
 def test_live_adjustment_is_repeatable_from_stable_base(tmp_path):

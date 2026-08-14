@@ -244,6 +244,7 @@ class MockupWorkspaceWindow(QMainWindow):
         self.preview_index = -1
         self.preview_metadata = {}
         self._adjustment_serial = 0
+        self._ai_edit_serial = 0
         self.setWindowTitle("JARVIS · 시안 제작 전문가")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
         self.resize(1320, 820)
@@ -344,9 +345,9 @@ class MockupWorkspaceWindow(QMainWindow):
         edit_row = QHBoxLayout()
         self.edit_instruction = QLineEdit()
         self.edit_instruction.setPlaceholderText("현재 시안을 어떻게 바꿀지 AI에게 지시하세요")
-        ai_edit = QPushButton("AI 수정")
-        ai_edit.clicked.connect(self._edit_with_ai)
-        edit_row.addWidget(self.edit_instruction, 1); edit_row.addWidget(ai_edit)
+        self.ai_edit_button = QPushButton("AI 수정")
+        self.ai_edit_button.clicked.connect(self._edit_with_ai)
+        edit_row.addWidget(self.edit_instruction, 1); edit_row.addWidget(self.ai_edit_button)
         layout.addLayout(edit_row)
         tools = QHBoxLayout()
         for label, operation in (("↶", "rotate_left"), ("↷", "rotate_right"),
@@ -512,7 +513,11 @@ class MockupWorkspaceWindow(QMainWindow):
         except Exception as exc: self.operation_failed.emit(str(exc))
 
     def _on_render_done(self, result):
+        edit_serial = result.pop("_ai_edit_serial", None)
+        if edit_serial is not None and int(edit_serial) != self._ai_edit_serial:
+            return
         self._ai_edit_in_progress = False
+        if hasattr(self, "ai_edit_button"): self.ai_edit_button.setEnabled(True)
         self._push_preview(result)
 
     def _push_preview(self, result):
@@ -525,8 +530,8 @@ class MockupWorkspaceWindow(QMainWindow):
         fallback = (f"생성형 자동 대체 사유: {result['generation_fallback_reason']}\n"
                     if result.get("generation_fallback_reason") else "")
         applied = result.get("applied_edit_fields") or []
-        edit_note = ("AI가 수정 명령에 맞춰 디자인 설계도를 갱신하고 원본 제작 이미지를 다시 배치했습니다.\n"
-                     if result.get("renderer") == "ai-scene-plan-edit-v3" else
+        edit_note = ("AI가 수정 명령을 구조화 패치로 변환하고 요청한 항목만 변경했습니다.\n"
+                     if result.get("renderer") == "ai-scene-patch-v5" else
                      (f"적용된 수정 항목: {', '.join(applied)}\n" if applied else ""))
         self.details.append(
             f"\n임시 미리보기 생성 완료\n{result['width']}×{result['height']}\n"
@@ -543,12 +548,20 @@ class MockupWorkspaceWindow(QMainWindow):
         instruction = self.edit_instruction.text().strip()
         if not instruction: QMessageBox.information(self, "AI 수정", "수정 지시를 입력해 주세요."); return
         self._ai_edit_in_progress = True
+        self._ai_edit_serial += 1
+        serial = self._ai_edit_serial
+        self.ai_edit_button.setEnabled(False)
         self.save_preview_button.setEnabled(False)
         self.details.append("\nAI가 현재 미리보기를 수정하고 있습니다…")
-        threading.Thread(target=self._ai_edit_worker, args=(dict(self.preview_history[self.preview_index]), instruction), daemon=True).start()
+        threading.Thread(target=self._ai_edit_worker,
+                         args=(dict(self.preview_history[self.preview_index]), instruction, serial),
+                         daemon=True).start()
 
-    def _ai_edit_worker(self, metadata, instruction):
-        try: self.render_done.emit(self.runtime.edit_preview(metadata, instruction))
+    def _ai_edit_worker(self, metadata, instruction, serial):
+        try:
+            result = self.runtime.edit_preview(metadata, instruction)
+            result["_ai_edit_serial"] = serial
+            self.render_done.emit(result)
         except Exception as exc: self.operation_failed.emit(str(exc))
 
     def _manual_edit(self, operation, value=1.0):
@@ -625,13 +638,15 @@ class MockupWorkspaceWindow(QMainWindow):
         filename, _ = QFileDialog.getSaveFileName(self, "시안 저장", str(default_dir / "mockup.png"), "PNG 이미지 (*.png)")
         if not filename: return
         try:
-            result = self.runtime.save_preview(self.preview_history[self.preview_index]["output"], filename, self.preview_metadata)
+            current = dict(self.preview_history[self.preview_index])
+            result = self.runtime.save_preview(current["output"], filename, current)
             self.details.append(f"\n최종 저장 완료: {result['output']}")
         except Exception as exc: self._on_failed(str(exc))
 
     def _on_failed(self, message: str):
         if getattr(self, "_ai_edit_in_progress", False):
             self._ai_edit_in_progress = False
+            if hasattr(self, "ai_edit_button"): self.ai_edit_button.setEnabled(True)
             self.details.append("\n수정에 실패해 이전 미리보기를 그대로 유지했습니다. 저장하면 수정 전 결과가 저장됩니다.")
         self.save_preview_button.setEnabled(self.preview_index >= 0)
         self.details.append(f"\n오류: {message}")

@@ -17,10 +17,12 @@ from statistics import median
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from core.vision_runtime import VisionRuntime
-from core.mockup_scene import (SCENE_PLAN_JSON_SCHEMA, ScenePlanError, build_evidence_fallback_plan, extract_json_object,
+from core.mockup_scene import (SCENE_PLAN_JSON_SCHEMA, SCENE_EDIT_PATCH_JSON_SCHEMA,
+                               SCENE_EDIT_VERDICT_JSON_SCHEMA, ScenePlanError,
+                               apply_scene_edit_patch, build_evidence_fallback_plan, extract_json_object,
                                normalize_scene_plan, enforce_explicit_user_constraints,
                                enforce_measured_style_evidence, merge_scoped_scene_edit,
-                               restore_required_elements, scene_changed)
+                               restore_required_elements, scene_changed, validate_patch_against_instruction)
 
 
 SUPPORTED_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
@@ -908,36 +910,95 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             raise ValueError("이전 결과에 AI 디자인 설계도가 없습니다. 새 파이프라인으로 시안을 다시 생성해 주세요.")
         profile = self.load_profile(profile_id)
         paths = self._validate_images(sources)
-        deterministic_plan, explicit_fields = enforce_explicit_user_constraints(previous_plan, instruction)
-        if explicit_fields and scene_changed(previous_plan, deterministic_plan):
-            deterministic_plan, _ = enforce_measured_style_evidence(
-                deterministic_plan, profile.style_features
+        try:
+            revised_plan, revised_copy, patch_fields = self._request_scene_edit_patch(
+                profile, paths, previous_plan, str(metadata.get("visible_copy", "")), instruction.strip()
             )
-            result = self.render(
-                profile_id, sources, instruction=str(metadata.get("instruction", "")),
-                visible_copy=str(metadata.get("visible_copy", "")), scene_plan=deterministic_plan,
-                backend="auto", seed=seed, preview_only=True,
-            )
-            result.update({"renderer": "structured-scene-patch-v4",
-                           "edit_instruction": instruction.strip(),
-                           "applied_edit_fields": explicit_fields,
-                           "revision": int(metadata.get("revision", 0)) + 1})
-            return result
-        revised_plan = self._request_scene_plan(
-            profile, paths, str(metadata.get("instruction", "")),
-            str(metadata.get("visible_copy", "")), previous_plan, instruction.strip(),
-        )
-        if not scene_changed(previous_plan, revised_plan):
-            raise ValueError("수정 명령이 설계도에 반영되지 않았습니다. AI가 변경할 대상을 식별하지 못했으므로 결과를 덮어쓰지 않았습니다.")
+            renderer = "ai-scene-patch-v5"
+        except ScenePlanError:
+            revised_plan, patch_fields = enforce_explicit_user_constraints(previous_plan, instruction)
+            if not patch_fields or not scene_changed(previous_plan, revised_plan):
+                raise
+            validate_patch_against_instruction(instruction, patch_fields)
+            revised_plan, _ = enforce_measured_style_evidence(revised_plan, profile.style_features)
+            revised_copy = str(metadata.get("visible_copy", ""))
+            renderer = "structured-scene-patch-v4"
         result = self.render(
             profile_id, sources, instruction=str(metadata.get("instruction", "")),
-            visible_copy=str(metadata.get("visible_copy", "")), scene_plan=revised_plan,
+            visible_copy=revised_copy, scene_plan=revised_plan,
             backend="auto", seed=seed, preview_only=True,
         )
-        result.update({"renderer": "ai-scene-plan-edit-v3",
-                       "edit_instruction": instruction.strip(), "applied_edit_fields": ["scene_plan"],
+        result.update({"renderer": renderer,
+                       "edit_instruction": instruction.strip(), "applied_edit_fields": patch_fields,
                        "revision": int(metadata.get("revision", 0)) + 1})
         return result
+
+    def _request_scene_edit_patch(self, profile: MockupStyleProfile, paths: list[Path],
+                                  previous_plan: dict, visible_copy: str,
+                                  instruction: str) -> tuple[dict, str, list[str]]:
+        """Ask the vision model for a delta and verify that the delta changes the scene."""
+        vision = self.vision or VisionRuntime()
+        evidence_paths = [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]]
+        last_error = ""
+        previous_answer = ""
+        for attempt in range(3):
+            correction = (f"\n이전 패치 검증 오류: {last_error}\n이전 응답: {previous_answer}\n"
+                          "오류 원인만 교정하고 실제로 달라지는 필드만 다시 작성하세요."
+                          if last_error else "")
+            prompt = f"""당신은 비파괴 이미지 편집 명령 해석기입니다.
+사용자 수정 명령을 기존 전체 설계도가 아니라 최소 변경 패치로 변환하세요.
+사용자 명령: {instruction}
+현재 표시 문구: {visible_copy or '없음'}
+현재 설계도: {json.dumps(previous_plan, ensure_ascii=False)}
+학습된 스타일 근거: {json.dumps(profile.style_features, ensure_ascii=False)}
+
+규칙:
+1. 사용자가 명시한 대상과 그 요청을 수행하는 데 필수적인 필드만 패치하세요.
+2. 요청하지 않은 텍스트 크기·위치·색, 사진 배치, 배경, 장식은 패치에 넣지 마세요.
+3. assets와 texts의 index는 현재 설계도의 index입니다. 변경하지 않는 요소는 배열에서 생략하세요.
+4. 문구 내용 변경은 visible_copy에 새 문구를 쓰고, 삭제는 remove_visible_copy=true로 지정하세요.
+5. decorations 전체를 바꿀 때만 replace_decorations=true로 지정하세요.
+6. success_criteria에는 결과 이미지에서 확인 가능한 완료 조건을 구체적으로 쓰세요.
+7. 값이 현재와 같은 패치는 실패입니다. 명령을 실제 시각 변화로 변환하세요.
+{correction}
+JSON Schema에 맞는 객체만 반환하세요."""
+            try:
+                response = vision.analyze(evidence_paths, prompt, mode="general",
+                                          json_schema=SCENE_EDIT_PATCH_JSON_SCHEMA)
+            except TypeError:
+                response = vision.analyze(evidence_paths, prompt, mode="general")
+            previous_answer = str(response.get("analysis", ""))
+            try:
+                patch = extract_json_object(previous_answer)
+                revised, revised_copy, fields = apply_scene_edit_patch(
+                    previous_plan, patch, asset_count=len(paths), visible_copy=visible_copy,
+                )
+                validate_patch_against_instruction(instruction, fields)
+                verdict_prompt = f"""당신은 이미지 편집 결과 의미 검증기입니다.
+사용자 명령: {instruction}
+수정 전 설계도: {json.dumps(previous_plan, ensure_ascii=False)}
+적용된 패치: {json.dumps(patch, ensure_ascii=False)}
+수정 후 설계도: {json.dumps(revised, ensure_ascii=False)}
+실제 변경 필드: {json.dumps(fields, ensure_ascii=False)}
+사용자 명령의 모든 요구가 수정 후 수치와 속성에 실제 반영됐는지 검사하세요.
+명령하지 않은 요소가 바뀌었거나, 관련 없는 미세 변경만 있고 핵심 요구가 빠졌다면 fulfilled=false입니다.
+JSON Schema에 맞는 판정만 반환하세요."""
+                try:
+                    verdict_response = vision.analyze(evidence_paths, verdict_prompt, mode="general",
+                                                      json_schema=SCENE_EDIT_VERDICT_JSON_SCHEMA)
+                except TypeError:
+                    verdict_response = vision.analyze(evidence_paths, verdict_prompt, mode="general")
+                verdict = extract_json_object(str(verdict_response.get("analysis", "")))
+                if not bool(verdict.get("fulfilled")) or verdict.get("missing_requirements") or verdict.get("unintended_changes"):
+                    reason = str(verdict.get("reason", "요구 충족 실패"))
+                    missing = ", ".join(map(str, verdict.get("missing_requirements", [])))
+                    unintended = ", ".join(map(str, verdict.get("unintended_changes", [])))
+                    raise ScenePlanError(f"의미 검증 실패: {reason}; 누락={missing or '없음'}; 의도 밖 변경={unintended or '없음'}")
+                revised["edit_semantic_verdict"] = str(verdict.get("reason", "검증 통과"))[:500]
+                return revised, revised_copy, fields
+            except ScenePlanError as exc:
+                last_error = str(exc)
+        raise ScenePlanError(f"AI가 수정 명령을 3회 해석했지만 유효한 변경 패치를 만들지 못했습니다: {last_error}")
 
     def transform_preview(self, preview_path: str | Path, operation: str, value: float = 1.0) -> dict:
         """Apply a non-destructive manual operation and return a new temporary draft."""

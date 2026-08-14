@@ -42,6 +42,49 @@ SCENE_PLAN_JSON_SCHEMA = {
 }
 
 
+SCENE_EDIT_PATCH_JSON_SCHEMA = {
+    "type": "object",
+    "required": ["intent_summary", "canvas", "assets", "texts", "replace_decorations",
+                 "decorations", "visible_copy", "remove_visible_copy", "success_criteria"],
+    "properties": {
+        "intent_summary": {"type": "string"},
+        "canvas": {"type": "object", "properties": {
+            "aspect_ratio": {"type": "number"}, "background": {"type": "string"}}},
+        "assets": {"type": "array", "items": {"type": "object", "required": ["index"],
+            "properties": {"index": {"type": "integer"}, "x": {"type": "number"},
+                "y": {"type": "number"}, "width": {"type": "number"},
+                "height": {"type": "number"},
+                "shape": {"enum": ["rectangle", "rounded", "ellipse"]},
+                "fit": {"enum": ["cover", "contain"]}, "focal_x": {"type": "number"},
+                "focal_y": {"type": "number"}, "rotation": {"type": "number"},
+                "z": {"type": "integer"}}}},
+        "texts": {"type": "array", "items": {"type": "object",
+            "required": ["index", "action"], "properties": {
+                "index": {"type": "integer"}, "action": {"enum": ["update", "remove", "add"]},
+                "x": {"type": "number"}, "y": {"type": "number"},
+                "width": {"type": "number"}, "height": {"type": "number"},
+                "font_size": {"type": "number"}, "color": {"type": "string"},
+                "background": {"type": "string"}, "align": {"enum": ["left", "center", "right"]},
+                "padding": {"type": "number"}, "z": {"type": "integer"}}}},
+        "replace_decorations": {"type": "boolean"},
+        "decorations": {"type": "array", "items": {"type": "object"}},
+        "visible_copy": {"type": "string"},
+        "remove_visible_copy": {"type": "boolean"},
+        "success_criteria": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+SCENE_EDIT_VERDICT_JSON_SCHEMA = {
+    "type": "object",
+    "required": ["fulfilled", "reason", "missing_requirements", "unintended_changes"],
+    "properties": {
+        "fulfilled": {"type": "boolean"}, "reason": {"type": "string"},
+        "missing_requirements": {"type": "array", "items": {"type": "string"}},
+        "unintended_changes": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+
 def extract_json_object(text: str) -> dict:
     """Extract one JSON object without accepting prose as a successful plan."""
     value = str(text or "").strip()
@@ -216,6 +259,103 @@ def merge_scoped_scene_edit(before: dict, candidate: dict, instruction: str) -> 
     return merged, scopes
 
 
+def apply_scene_edit_patch(before: dict, patch: dict, *, asset_count: int,
+                           visible_copy: str) -> tuple[dict, str, list[str]]:
+    """Apply a model-authored delta without allowing an implicit full-plan rewrite."""
+    if not isinstance(patch, dict):
+        raise ScenePlanError("AI 수정 패치가 객체 형식이 아닙니다.")
+    raw = deepcopy(before); changed = []
+    canvas_patch = patch.get("canvas") if isinstance(patch.get("canvas"), dict) else {}
+    for key in ("aspect_ratio", "background"):
+        if key in canvas_patch and raw.setdefault("canvas", {}).get(key) != canvas_patch[key]:
+            raw["canvas"][key] = canvas_patch[key]; changed.append(f"canvas.{key}")
+    assets = {int(item.get("index", -1)): item for item in raw.get("assets", []) if isinstance(item, dict)}
+    for update in patch.get("assets", []):
+        if not isinstance(update, dict): continue
+        try: index = int(update.get("index"))
+        except (TypeError, ValueError): continue
+        target = assets.get(index)
+        if target is None: continue
+        for key in ("x", "y", "width", "height", "shape", "fit", "focal_x", "focal_y", "rotation", "z"):
+            if key in update and target.get(key) != update[key]:
+                target[key] = update[key]; changed.append(f"assets[{index}].{key}")
+    texts = [deepcopy(item) for item in raw.get("texts", []) if isinstance(item, dict)]
+    for update in patch.get("texts", []):
+        if not isinstance(update, dict): continue
+        try: index = int(update.get("index", -1))
+        except (TypeError, ValueError): continue
+        action = update.get("action")
+        if action == "remove" and 0 <= index < len(texts):
+            texts.pop(index); changed.append(f"texts[{index}].remove"); continue
+        if action == "add":
+            base = {"content": str(patch.get("visible_copy") or visible_copy), "x": .15, "y": .72,
+                    "width": .7, "height": .15, "font_size": .06, "color": "#111111",
+                    "background": "transparent", "align": "center", "padding": .018, "z": 10}
+            base.update({key: value for key, value in update.items() if key not in {"index", "action"}})
+            texts.append(base); changed.append("texts.add"); continue
+        if action == "update" and 0 <= index < len(texts):
+            for key in ("x", "y", "width", "height", "font_size", "color", "background", "align", "padding", "z"):
+                if key in update and texts[index].get(key) != update[key]:
+                    texts[index][key] = update[key]; changed.append(f"texts[{index}].{key}")
+    raw["texts"] = texts
+    if bool(patch.get("replace_decorations")):
+        replacement = patch.get("decorations") if isinstance(patch.get("decorations"), list) else []
+        if raw.get("decorations", []) != replacement:
+            raw["decorations"] = deepcopy(replacement); changed.append("decorations.replace")
+    next_copy = str(visible_copy or "")
+    if bool(patch.get("remove_visible_copy")):
+        next_copy = ""; raw["texts"] = []; changed.append("visible_copy.remove")
+    elif str(patch.get("visible_copy", "")).strip():
+        proposed = " ".join(str(patch["visible_copy"]).split())[:160]
+        if proposed != next_copy:
+            next_copy = proposed; changed.append("visible_copy")
+    normalized = normalize_scene_plan(raw, asset_count=asset_count, visible_copy=next_copy)
+    if not changed or not scene_changed(before, normalized):
+        raise ScenePlanError("AI 수정 패치에 실제 시각 변경이 없습니다.")
+    normalized["edit_patch_summary"] = str(patch.get("intent_summary", ""))[:500]
+    normalized["edit_patch_fields"] = list(dict.fromkeys(changed))
+    normalized["edit_success_criteria"] = [str(item)[:240] for item in patch.get("success_criteria", [])[:8]]
+    return normalized, next_copy, list(dict.fromkeys(changed))
+
+
+def validate_patch_against_instruction(instruction: str, changed_fields: list[str]) -> None:
+    """Programmatically validate measurable parts of an edit request."""
+    text = " ".join(str(instruction or "").lower().split())
+    scopes = infer_edit_scopes(text)
+    groups = {field.split(".", 1)[0].split("[", 1)[0] for field in changed_fields}
+    if scopes:
+        unexpected = groups - scopes - {"visible_copy"}
+        if unexpected:
+            raise ScenePlanError(f"명령하지 않은 영역을 변경했습니다: {sorted(unexpected)}")
+    text_target = "texts" in scopes
+    if text_target and any(word in text for word in (
+        "옮겨", "이동", "위치", "왼쪽", "오른쪽", "위로", "아래로", "상단", "하단", "중앙", "가운데",
+    )):
+        required_axes = set()
+        if any(word in text for word in ("왼쪽", "오른쪽", "좌측", "우측")): required_axes.add("x")
+        if any(word in text for word in ("위쪽", "아래", "상단", "하단", "위로")): required_axes.add("y")
+        if any(word in text for word in ("중앙", "가운데")): required_axes.update({"x", "y"})
+        changed_axes = {field.rsplit(".", 1)[-1] for field in changed_fields
+                        if field.startswith("texts[") and field.rsplit(".", 1)[-1] in {"x", "y"}}
+        if required_axes and not required_axes.issubset(changed_axes):
+            raise ScenePlanError(f"텍스트 위치 요청의 좌표 변경이 부족합니다: 필요={sorted(required_axes)}")
+        if not required_axes and not changed_axes:
+            raise ScenePlanError("텍스트 위치 요청인데 x/y 위치 변경이 없습니다.")
+    if text_target and any(word in text for word in ("색", "파란", "빨간", "검정", "흰색", "초록", "노란", "보라")) \
+            and not any(field.startswith("texts[") and field.endswith(".color") for field in changed_fields):
+        raise ScenePlanError("텍스트 색상 요청인데 color 변경이 없습니다.")
+    if text_target and any(word in text for word in ("크기", "크게", "작게", "줄여", "키워", "확대", "축소")) \
+            and not any(field.startswith("texts[") and field.rsplit(".", 1)[-1] in
+                        {"font_size", "width", "height"} for field in changed_fields):
+        raise ScenePlanError("텍스트 크기 요청인데 크기 관련 변경이 없습니다.")
+    if "canvas" in scopes and any(word in text for word in ("배경색", "바탕색")) \
+            and "canvas.background" not in changed_fields:
+        raise ScenePlanError("배경색 요청인데 canvas.background 변경이 없습니다.")
+    if "assets" in scopes and any(word in text for word in ("원형", "원 형태", "동그랗")) \
+            and not any(field.startswith("assets[") and field.endswith(".shape") for field in changed_fields):
+        raise ScenePlanError("원형 프레임 요청인데 shape 변경이 없습니다.")
+
+
 def build_evidence_fallback_plan(style_features: dict, *, asset_count: int,
                                  visible_copy: str = "") -> dict:
     """Build a usable neutral plan only from measured profile evidence.
@@ -311,7 +451,7 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
     if preserve_subject:
         for index, asset in enumerate(result.get("assets", [])):
             if asset.get("fit") != "contain":
-                asset["fit"] = "contain"; applied.append(f"assets[{index}].fit=contain")
+                asset["fit"] = "contain"; applied.append(f"assets[{index}].fit")
             asset["focal_x"], asset["focal_y"] = .5, .5
     circular_frame = any(word in text for word in ("원형", "원 형태", "동그랗"))
     if circular_frame:
@@ -325,7 +465,9 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
                           "y": round(max(0, min(1 - side, center_y - side / 2)), 4)})
             if any(word in text for word in ("원 형태가 아니", "원형으로", "동그랗게")):
                 asset["fit"] = "cover"
-            applied.append(f"assets[{index}].circular_frame")
+            applied.extend([f"assets[{index}].shape", f"assets[{index}].width",
+                            f"assets[{index}].height", f"assets[{index}].x", f"assets[{index}].y"])
+            if asset.get("fit") == "cover": applied.append(f"assets[{index}].fit")
     center_copy = any(word in text for word in ("문구", "텍스트", "글자", "글씨")) and any(
         word in text for word in ("정중앙", "가운데", "중앙")
     )
@@ -343,7 +485,30 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
             if width < .35:
                 item["width"] = .5
                 item["x"] = round(frame_x + (frame_w - .5) / 2, 4)
-            applied.append(f"texts[{index}].primary_frame_center")
+            applied.extend([f"texts[{index}].x", f"texts[{index}].y",
+                            f"texts[{index}].background"])
+    copy_position = any(word in text for word in ("문구", "텍스트", "글자", "글씨"))
+    horizontal = ("right" if any(word in text for word in ("오른쪽", "우측")) else
+                  "left" if any(word in text for word in ("왼쪽", "좌측")) else None)
+    vertical = ("bottom" if any(word in text for word in ("아래", "하단")) else
+                "top" if any(word in text for word in ("위쪽", "상단", "위로")) else None)
+    if copy_position and (horizontal or vertical):
+        frame = result.get("assets", [{}])[0] if result.get("assets") else {}
+        frame_x, frame_y = float(frame.get("x", 0)), float(frame.get("y", 0))
+        frame_w, frame_h = float(frame.get("width", 1)), float(frame.get("height", 1))
+        margin = .025
+        for index, item in enumerate(result.get("texts", [])):
+            width, height = float(item.get("width", .7)), float(item.get("height", .15))
+            if horizontal in {"right", "left"}:
+                width = min(width, max(.22, frame_w * .48)); item["width"] = round(width, 4)
+                item["align"] = horizontal
+            if horizontal == "right": item["x"] = round(max(0, frame_x + frame_w - width - margin), 4)
+            elif horizontal == "left": item["x"] = round(min(1 - width, frame_x + margin), 4)
+            if vertical == "bottom": item["y"] = round(max(0, frame_y + frame_h - height - margin), 4)
+            elif vertical == "top": item["y"] = round(min(1 - height, frame_y + margin), 4)
+            if horizontal:
+                applied.extend([f"texts[{index}].x", f"texts[{index}].width", f"texts[{index}].align"])
+            if vertical: applied.append(f"texts[{index}].y")
     color_map = {"파란": "#2878d0", "파랑": "#2878d0", "빨간": "#e5484d", "빨강": "#e5484d",
                  "검정": "#111111", "검은": "#111111", "흰색": "#ffffff", "하얀": "#ffffff",
                  "초록": "#38a169", "노란": "#f2c94c", "보라": "#8b4cc2"}
@@ -358,13 +523,14 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
                 item["font_size"] = round(min(.16, max(.055, old * 1.5)), 4)
                 item["width"] = min(.85, max(float(item.get("width", .5)), .5))
                 item["height"] = min(.24, max(float(item.get("height", .12)), .12))
-                applied.append(f"texts[{index}].size")
+                applied.extend([f"texts[{index}].font_size", f"texts[{index}].width",
+                                f"texts[{index}].height"])
             half_size = any(word in text for word in ("절반", "반으로")) and any(
                 word in text for word in ("줄여", "작게", "축소")
             )
             if half_size:
                 item["font_size"] = round(max(.015, float(item.get("font_size", .055)) * .5), 4)
-                applied.append(f"texts[{index}].size_half")
+                applied.append(f"texts[{index}].font_size")
     if applied:
         result["enforced_user_constraints"] = applied
     return result, applied
