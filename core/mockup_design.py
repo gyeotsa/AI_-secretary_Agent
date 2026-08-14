@@ -48,14 +48,30 @@ class MockupDesignRuntime:
     """Keeps measured visual traits separate from unverified Vision interpretation."""
 
     def __init__(self, profile_dir: str | Path = "data/mockup_styles", vision=None,
-                 generation_backend=None):
+                 generation_backend=None, scene_planner=None):
         self.profile_dir = Path(profile_dir)
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self.vision = vision
+        self.scene_planner = scene_planner
         if generation_backend is None:
             from core.mockup_generation import IPAdapterGenerationBackend
             generation_backend = IPAdapterGenerationBackend()
         self.generation_backend = generation_backend
+
+    def _get_scene_planner(self):
+        """Use a text reasoning model for JSON planning, separate from image observation."""
+        if self.scene_planner is not None:
+            return self.scene_planner
+        # Injected vision doubles used by tests and custom adapters keep the
+        # legacy single-adapter contract unless a planner is explicitly given.
+        if self.vision is not None:
+            return None
+        # Scene JSON must remain local and schema-constrained even when the
+        # application's global provider is hybrid. HybridLLMClient exposes a
+        # conversational surface, while OllamaClient exposes format/schema.
+        from core.llm import OllamaClient
+        self.scene_planner = OllamaClient("reasoning")
+        return self.scene_planner
 
     @staticmethod
     def _validate_images(paths) -> list[Path]:
@@ -611,7 +627,7 @@ class MockupDesignRuntime:
 표시 문구가 '없음'이면 texts는 빈 배열이어야 합니다. 지시문 자체를 이미지 문구로 쓰지 마세요.
 설명 없이 JSON 객체 하나만 반환하세요. 아래는 값 예시가 아니라 필드의 형식 정의입니다. 좌표와 속성은 반드시 실제 이미지를 분석해 새로 결정하세요.
 - canvas: aspect_ratio(number 0.55~1.9), background(hex color)
-- assets: 제작 이미지마다 index, x, y, width, height(모두 정규화 좌표), shape(rectangle/rounded/ellipse), fit(cover/contain), focal_x, focal_y, rotation, z
+- assets: 제작 이미지마다 index, x, y, width, height(모두 정규화 좌표), shape(rectangle/rounded/ellipse), fit(cover/contain), zoom(1~4), focal_x, focal_y, rotation, z
 - decorations: 필요할 때만 type(rectangle/ellipse/line), x, y, width, height, fill, stroke, stroke_width, dash, z
 - texts: 표시 문구가 있을 때만 content, x, y, width, height, font_size, font_weight(normal/bold), color, background, align, padding, z
 - rationale: 어떤 참고 이미지의 어떤 공통 특징과 사용자 지시가 각 결정의 근거인지 구체적으로 작성
@@ -633,17 +649,39 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
 참고 이미지의 픽셀이나 인물을 결과에 복제하지 마세요. 표시 문구가 없으면 texts는 빈 배열입니다.
 설명이나 Markdown 없이 canvas, assets, decorations, texts, rationale 키를 가진 JSON 객체 하나만 반환하세요."""
         evidence_paths = [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]]
+        planner = self._get_scene_planner()
+        visual_observation = ""
+        if planner is not None:
+            observation_prompt = f"""이미지를 설계하지 말고 관찰 사실만 기록하세요.
+앞의 {len(profile.reference_paths[:8])}장은 스타일 참고이고 마지막 {len(paths)}장은 제작 원본입니다.
+참고 이미지에서 반복되는 프레임·여백·문구 영역·피사체 크기를 요약하고, 제작 원본마다 사람이나 물체의 위치와 안전하게 자를 수 있는 얼굴·상반신·전신 범위를 설명하세요.
+사용자 지시: {instruction or '없음'}"""
+            try:
+                visual_observation = str(vision.analyze(
+                    evidence_paths, observation_prompt, mode="general"
+                ).get("analysis", ""))[:12000]
+            except Exception as exc:
+                visual_observation = f"이미지 관찰 실패: {exc}"
 
         def request_valid_plan(request_prompt: str, stage: str, baseline: dict | None = None) -> dict:
             last_error, last_answer = None, ""
             current_prompt = request_prompt
             for attempt in range(3):
-                try:
-                    response = vision.analyze(evidence_paths, current_prompt, mode="general",
-                                              json_schema=SCENE_PLAN_JSON_SCHEMA)
-                except TypeError:  # compatibility with injected/custom vision adapters
-                    response = vision.analyze(evidence_paths, current_prompt, mode="general")
-                last_answer = str(response.get("analysis", ""))
+                if planner is not None:
+                    last_answer = str(planner.chat_structured([
+                        {"role": "system", "content": (
+                            "당신은 이미지 관찰 결과와 사용자 지시를 검증 가능한 장면 JSON으로 "
+                            "변환하는 레이아웃 설계자입니다. 이미지에 없는 사실을 만들지 마세요.")},
+                        {"role": "user", "content": (
+                            f"{current_prompt}\n\nVision 관찰 결과:\n{visual_observation}")},
+                    ], json_schema=SCENE_PLAN_JSON_SCHEMA))
+                else:
+                    try:
+                        response = vision.analyze(evidence_paths, current_prompt, mode="general",
+                                                  json_schema=SCENE_PLAN_JSON_SCHEMA)
+                    except TypeError:  # compatibility with injected/custom vision adapters
+                        response = vision.analyze(evidence_paths, current_prompt, mode="general")
+                    last_answer = str(response.get("analysis", ""))
                 try:
                     raw = extract_json_object(last_answer)
                     restored = []
@@ -761,6 +799,15 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 alpha_bbox = source.getchannel("A").getbbox()
                 if alpha_bbox and alpha_bbox != (0, 0, source.width, source.height):
                     source = source.crop(alpha_bbox)
+                zoom = max(1.0, float(item.get("zoom", 1)))
+                if zoom > 1:
+                    crop_width = max(1, int(source.width / zoom))
+                    crop_height = max(1, int(source.height / zoom))
+                    center_x = int(float(item.get("focal_x", .5)) * source.width)
+                    center_y = int(float(item.get("focal_y", .5)) * source.height)
+                    left = min(max(0, center_x - crop_width // 2), source.width - crop_width)
+                    top = min(max(0, center_y - crop_height // 2), source.height - crop_height)
+                    source = source.crop((left, top, left + crop_width, top + crop_height))
                 if item["fit"] == "contain":
                     placed = ImageOps.contain(source, cell, Image.Resampling.LANCZOS)
                     layer = Image.new("RGBA", cell, (0, 0, 0, 0))
@@ -921,7 +968,9 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             revised_plan, patch_fields = enforce_explicit_user_constraints(previous_plan, instruction)
             if not patch_fields or not scene_changed(previous_plan, revised_plan):
                 raise
-            validate_patch_against_instruction(instruction, patch_fields)
+            validate_patch_against_instruction(
+                instruction, patch_fields, before=previous_plan, after=revised_plan,
+            )
             revised_plan, _ = enforce_measured_style_evidence(revised_plan, profile.style_features)
             revised_copy = str(metadata.get("visible_copy", ""))
             renderer = "structured-scene-patch-v4"
@@ -940,6 +989,7 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                                   instruction: str) -> tuple[dict, str, list[str]]:
         """Ask the vision model for a delta and verify that the delta changes the scene."""
         vision = self.vision or VisionRuntime()
+        planner = self._get_scene_planner()
         evidence_paths = [*profile.reference_paths[:8], *[str(path) for path in paths[:4]]]
         allowed_scopes = sorted(infer_edit_scopes(instruction))
         allowed_scope_text = ", ".join(allowed_scopes) if allowed_scopes else "명령에서 직접 지칭한 대상만"
@@ -966,20 +1016,33 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
 7. 값이 현재와 같은 패치는 실패입니다. 명령을 실제 시각 변화로 변환하세요.
 8. 이번 명령에서 허용된 변경 그룹은 [{allowed_scope_text}]입니다. 이 밖의 그룹은 빈 배열/빈 객체로 두세요.
 9. 방향·크기·색상 표현은 같은 절에서 가장 가까운 대상 명사에만 연결하세요. 예를 들어 '스티커 오른쪽이 잘림'은 텍스트 오른쪽 이동이 아닙니다.
+10. 사진·인물·피사체 자체의 확대/축소는 assets[index].zoom으로, 사진 내부 초점 이동은 focal_x/focal_y로 표현하세요.
+11. 스티커·프레임·사진 영역 자체의 크기/위치 요청에만 width/height/x/y를 사용하세요. 원형 프레임은 width와 height를 같은 비율로 유지하세요.
 {correction}
 JSON Schema에 맞는 객체만 반환하세요."""
             try:
-                response = vision.analyze(evidence_paths, prompt, mode="general",
-                                          json_schema=SCENE_EDIT_PATCH_JSON_SCHEMA)
+                if planner is not None:
+                    previous_answer = str(planner.chat_structured([
+                        {"role": "system", "content": (
+                            "당신은 기존 장면 JSON을 보존하면서 사용자 지시를 최소 변경 패치로 "
+                            "컴파일하는 편집 계획기입니다.")},
+                        {"role": "user", "content": prompt},
+                    ], json_schema=SCENE_EDIT_PATCH_JSON_SCHEMA))
+                else:
+                    response = vision.analyze(evidence_paths, prompt, mode="general",
+                                              json_schema=SCENE_EDIT_PATCH_JSON_SCHEMA)
+                    previous_answer = str(response.get("analysis", ""))
             except TypeError:
                 response = vision.analyze(evidence_paths, prompt, mode="general")
-            previous_answer = str(response.get("analysis", ""))
+                previous_answer = str(response.get("analysis", ""))
             try:
                 patch = extract_json_object(previous_answer)
                 revised, revised_copy, fields = apply_scene_edit_patch(
                     previous_plan, patch, asset_count=len(paths), visible_copy=visible_copy,
                 )
-                validate_patch_against_instruction(instruction, fields)
+                validate_patch_against_instruction(
+                    instruction, fields, before=previous_plan, after=revised,
+                )
                 verdict_prompt = f"""당신은 이미지 편집 결과 의미 검증기입니다.
 사용자 명령: {instruction}
 수정 전 설계도: {json.dumps(previous_plan, ensure_ascii=False)}
@@ -989,12 +1052,19 @@ JSON Schema에 맞는 객체만 반환하세요."""
 사용자 명령의 모든 요구가 수정 후 수치와 속성에 실제 반영됐는지 검사하세요.
 명령하지 않은 요소가 바뀌었거나, 관련 없는 미세 변경만 있고 핵심 요구가 빠졌다면 fulfilled=false입니다.
 JSON Schema에 맞는 판정만 반환하세요."""
-                try:
-                    verdict_response = vision.analyze(evidence_paths, verdict_prompt, mode="general",
-                                                      json_schema=SCENE_EDIT_VERDICT_JSON_SCHEMA)
-                except TypeError:
-                    verdict_response = vision.analyze(evidence_paths, verdict_prompt, mode="general")
-                verdict = extract_json_object(str(verdict_response.get("analysis", "")))
+                if planner is not None:
+                    verdict_answer = planner.chat_structured([
+                        {"role": "system", "content": "장면 패치의 의미 충족 여부만 JSON으로 판정하세요."},
+                        {"role": "user", "content": verdict_prompt},
+                    ], json_schema=SCENE_EDIT_VERDICT_JSON_SCHEMA)
+                else:
+                    try:
+                        verdict_response = vision.analyze(evidence_paths, verdict_prompt, mode="general",
+                                                          json_schema=SCENE_EDIT_VERDICT_JSON_SCHEMA)
+                    except TypeError:
+                        verdict_response = vision.analyze(evidence_paths, verdict_prompt, mode="general")
+                    verdict_answer = str(verdict_response.get("analysis", ""))
+                verdict = extract_json_object(str(verdict_answer))
                 if not bool(verdict.get("fulfilled")) or verdict.get("missing_requirements") or verdict.get("unintended_changes"):
                     reason = str(verdict.get("reason", "요구 충족 실패"))
                     missing = ", ".join(map(str, verdict.get("missing_requirements", [])))

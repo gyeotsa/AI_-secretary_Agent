@@ -358,6 +358,39 @@ def test_scene_normalization_clamps_boxes_and_text_padding_to_canvas():
     assert text["padding"] <= text["height"] * .2
 
 
+def test_upper_body_instruction_uses_real_source_zoom_not_only_cover():
+    plan = {
+        "assets": [{"index": 0, "x": .11, "y": .06, "width": .78, "height": .78,
+                    "shape": "ellipse", "fit": "contain", "zoom": 1,
+                    "focal_x": .5, "focal_y": .5}],
+        "texts": [],
+    }
+    result, fields = enforce_explicit_user_constraints(
+        plan, "사진 속 인물이 상반신 위로만 스티커에 나오게 해줘."
+    )
+    asset = result["assets"][0]
+    assert asset["fit"] == "cover"
+    assert asset["zoom"] >= 1.5
+    assert asset["focal_y"] < .5
+    assert "assets[0].zoom" in fields
+
+
+def test_textbox_removal_accepts_an_already_satisfied_text_color():
+    before = {
+        "assets": [{"x": .11, "y": .06, "width": .78, "height": .78}],
+        "texts": [{"content": "정지원", "x": .15, "y": .66, "width": .7,
+                   "height": .15, "font_size": .06, "color": "#2878d0",
+                   "background": "#ffffffcc"}],
+    }
+    command = ("글씨를 하얀색으로 만들라는게 아니라 글씨 뒤 배경인 텍스트박스 "
+               "색상을 없애달라는거야. 글씨는 파란색으로 해줘.")
+    after, fields = enforce_explicit_user_constraints(before, command)
+    assert after["texts"][0]["background"] == "transparent"
+    assert after["texts"][0]["color"] == "#2878d0"
+    assert fields == ["texts[0].background"]
+    validate_patch_against_instruction(command, fields, before=before, after=after)
+
+
 def test_patch_validation_rejects_partial_compound_edit_and_unrequested_group():
     import pytest
     command = "문구를 오른쪽 아래로 옮기고 파란색으로 바꿔줘"
@@ -379,6 +412,38 @@ def test_generic_text_position_constraints_complete_compound_direction_request()
     assert result["texts"][0]["align"] == "right"
     assert result["texts"][0]["color"] == "#2878d0"
     validate_patch_against_instruction(command, fields)
+
+
+def test_generic_compound_text_edit_removes_background_and_applies_style():
+    plan = {"assets": [{"x": .1, "y": .1, "width": .8, "height": .8}],
+            "texts": [{"content": "테스트", "x": .2, "y": .2, "width": .3,
+                       "height": .1, "font_size": .06, "color": "#111111",
+                       "background": "#ffffffcc", "font_weight": "normal"}]}
+    command = "문구를 오른쪽 아래에 배치하고 배경 없이 굵은 흰색 글씨로 바꿔줘."
+    result, fields = enforce_explicit_user_constraints(plan, command)
+    text = result["texts"][0]
+    assert text["x"] >= .49 and text["y"] > .5
+    assert text["background"] == "transparent"
+    assert text["color"] == "#ffffff"
+    assert text["font_weight"] == "bold"
+    validate_patch_against_instruction(command, fields, before=plan, after=result)
+
+
+def test_photo_content_edit_requires_zoom_and_preserves_circular_frame():
+    command = "사진 속 인물을 더 크게 하고 사진을 프레임 안에서 왼쪽으로 옮겨줘."
+    before = {"assets": [{"shape": "ellipse", "width": .8, "height": .8,
+                          "zoom": 1, "focal_x": .5, "focal_y": .5}], "texts": []}
+    invalid = {"assets": [{"shape": "ellipse", "width": .9, "height": .8,
+                           "zoom": 1, "focal_x": .5, "focal_y": .5}], "texts": []}
+    import pytest
+    with pytest.raises(ScenePlanError):
+        validate_patch_against_instruction(command, ["assets[0].width"],
+                                           before=before, after=invalid)
+    valid = {"assets": [{"shape": "ellipse", "width": .8, "height": .8,
+                         "zoom": 1.3, "focal_x": .45, "focal_y": .5}], "texts": []}
+    validate_patch_against_instruction(command,
+                                       ["assets[0].zoom", "assets[0].focal_x"],
+                                       before=before, after=valid)
 
 
 def test_learned_subject_scale_repairs_oversized_asset():
