@@ -5,6 +5,7 @@ import time
 
 from PIL import Image
 
+from core.mockup_design import MockupDesignRuntime
 from core.mockup_layer_graph import (layer_graph_to_svg, render_svg_with_qt,
                                       scene_plan_to_layer_graph, validate_layer_graph)
 from core.mockup_style_index import VisualStyleIndex
@@ -153,3 +154,29 @@ def test_phrase_specific_font_and_true_circular_sticker_contract(tmp_path):
     rendered = render_svg_with_qt(svg, 600, 600)
     assert rendered.getpixel((300, 250))[3] > 0
     assert rendered.getpixel((0, 0))[3] == 0
+
+
+def test_visual_review_contract_uses_scene_facts_not_subjective_gaze():
+    plan, _ = enforce_explicit_user_constraints(
+        _plan(),
+        "스티커를 원형으로 만들어줘. 문구는 스티커 안쪽 하단에 위치해줘. "
+        "'정지원'은 빨간색 고딕체, 'ㅈㅈㅈ'은 파란색 궁서체로 해줘.",
+    )
+    plan["assets"][0]["zoom"] = 3
+    plan["texts"][0].update({
+        "content": "정지원 ㅈㅈㅈ", "x": .2, "y": .68, "width": .6, "height": .08,
+        "spans": [
+            {"content": "정지원", "color": "#e5484d", "font_family": "Malgun Gothic"},
+            {"content": "ㅈㅈㅈ", "color": "#2878d0", "font_family": "Gungsuh"},
+        ],
+    })
+    instruction = ("스티커를 원형으로 만들어줘. 문구는 스티커 안쪽 하단에 위치해줘. "
+                   "'정지원'은 빨간색 고딕체, 'ㅈㅈㅈ'은 파란색 궁서체로 해줘.")
+    assert MockupDesignRuntime._scene_contract_violations(
+        plan, instruction, "정지원 ㅈㅈㅈ"
+    ) == []
+
+    plan["texts"][0]["spans"][1]["color"] = "#111111"
+    assert "'ㅈㅈㅈ' 문구 색상이 요청과 다릅니다." in (
+        MockupDesignRuntime._scene_contract_violations(plan, instruction, "정지원 ㅈㅈㅈ")
+    )

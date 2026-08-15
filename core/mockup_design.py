@@ -23,6 +23,7 @@ from core.mockup_scene import (SCENE_PLAN_JSON_SCHEMA, SCENE_EDIT_PATCH_JSON_SCH
                                normalize_scene_plan, enforce_explicit_user_constraints,
                                enforce_exact_user_copy,
                                enforce_measured_style_evidence, infer_edit_scopes, merge_scoped_scene_edit,
+                               parse_explicit_colored_copy,
                                filter_scene_edit_patch,
                                restore_required_elements, scene_changed, validate_patch_against_instruction)
 from core.mockup_layer_graph import (scene_plan_to_layer_graph, validate_layer_graph,
@@ -193,8 +194,55 @@ class MockupDesignRuntime:
         self.load_profile(profile_id)
         return self.training_dataset.collect(profile_id, self.style_index.items(profile_id, approved_only=True))
 
+    @staticmethod
+    def _scene_contract_violations(plan: dict, instruction: str, visible_copy: str) -> list[str]:
+        """Validate explicit user requirements from editable layer data.
+
+        Vision is useful for aesthetic advice but unreliable for exact font,
+        colour and geometry claims. Those are authoritative in the scene graph.
+        """
+        violations = []
+        text_layers = plan.get("texts", [])
+        copy, required_spans = parse_explicit_colored_copy(instruction)
+        if visible_copy and not any(str(item.get("content", "")).strip() == visible_copy.strip()
+                                    for item in text_layers):
+            violations.append("정확한 표시 문구가 장면 레이어에 없습니다.")
+        if required_spans:
+            actual_spans = [span for item in text_layers for span in item.get("spans", [])]
+            for required in required_spans:
+                actual = next((item for item in actual_spans
+                               if str(item.get("content", "")).strip() == required["content"]), None)
+                if not actual:
+                    violations.append(f"'{required['content']}' 문구 구간이 없습니다.")
+                    continue
+                if str(actual.get("color", "")).casefold() != str(required["color"]).casefold():
+                    violations.append(f"'{required['content']}' 문구 색상이 요청과 다릅니다.")
+                requested_font = re.sub(r"[\s_-]|체$", "", str(required.get("font_family", "")).casefold())
+                actual_font = re.sub(r"[\s_-]|체$", "", str(actual.get("font_family", "")).casefold())
+                aliases = {"맑은고딕": "malgungothic", "궁서": "gungsuh", "고딕": "gothic"}
+                requested_font, actual_font = aliases.get(requested_font, requested_font), aliases.get(actual_font, actual_font)
+                if requested_font and requested_font not in actual_font and actual_font not in requested_font:
+                    violations.append(f"'{required['content']}' 문구 글꼴이 요청과 다릅니다.")
+        assets = plan.get("assets", [])
+        if any(word in instruction for word in ("원형", "동그랗", "원 모양")):
+            if not assets or any(item.get("shape") != "ellipse" for item in assets):
+                violations.append("원형 스티커 프레임이 적용되지 않았습니다.")
+            if "스티커" in instruction and plan.get("canvas", {}).get("background") != "transparent":
+                violations.append("원형 스티커 바깥 영역이 투명하지 않습니다.")
+        if "얼굴만" in instruction and (not assets or float(assets[0].get("zoom", 1)) <= 1.5):
+            violations.append("얼굴 중심 확대 크롭이 적용되지 않았습니다.")
+        if ("안쪽" in instruction and "하단" in instruction and assets and text_layers):
+            asset, text = assets[0], text_layers[0]
+            inside = (float(text.get("x", 0)) >= float(asset.get("x", 0)) and
+                      float(text.get("x", 0)) + float(text.get("width", 0)) <= float(asset.get("x", 0)) + float(asset.get("width", 0)) and
+                      float(text.get("y", 0)) >= float(asset.get("y", 0)) + float(asset.get("height", 0)) * .55 and
+                      float(text.get("y", 0)) + float(text.get("height", 0)) <= float(asset.get("y", 0)) + float(asset.get("height", 0)))
+            if not inside:
+                violations.append("문구가 스티커 안쪽 하단에 배치되지 않았습니다.")
+        return violations
+
     def _review_rendered_image(self, output_path: Path, profile: MockupStyleProfile,
-                               instruction: str, visible_copy: str) -> dict:
+                               instruction: str, visible_copy: str, scene_plan: dict) -> dict:
         schema = {
             "type": "object", "required": ["passed", "score", "violations", "correction_instruction"],
             "properties": {
@@ -207,20 +255,26 @@ class MockupDesignRuntime:
         try:
             result = vision.analyze([str(output_path)], (
                 "렌더링된 결과를 실제 이미지로 검수하세요. 얼굴/핵심 피사체 잘림, 문구 가독성, "
-                "겹침, 안전 여백, 대비, 시선 흐름, 사용자 지시 충족 여부를 판정하세요. "
+                "겹침, 안전 여백, 대비와 사용자 지시 충족 여부를 판정하세요. 사용자가 시선을 지시하지 "
+                "않았다면 피사체 시선 방향을 결함으로 판단하지 마세요. 사용자가 문구를 사진 안쪽 하단에 "
+                "요청했다면 하단 피사체와의 일부 중첩은 의도된 구성이며 눈·코·입을 실제로 가릴 때만 지적하세요. "
+                "정확한 문구 색상·글꼴·좌표는 이미지에서 추측하지 말고 아래 장면 레이어를 기준으로 판단하세요. "
                 f"사용자 지시: {instruction or '없음'} / 정확한 표시 문구: {visible_copy or '없음'} / "
+                f"장면 레이어: {json.dumps(scene_plan, ensure_ascii=False)[:5000]} / "
                 f"학습 스타일 구조: {json.dumps(profile.design_recipe, ensure_ascii=False)[:3000]}"
             ), mode="general", json_schema=schema)
             raw = extract_json_object(result.get("analysis", ""))
-            violations = [str(item)[:300] for item in raw.get("violations", [])[:8] if str(item).strip()]
+            visual_advice = [str(item)[:300] for item in raw.get("violations", [])[:8] if str(item).strip()]
+            violations = self._scene_contract_violations(scene_plan, instruction, visible_copy)
             return {
-                # A critic response cannot simultaneously pass and report
-                # visible defects. Treat that contradictory output as failed
-                # so the correction loop actually runs.
-                "passed": bool(raw.get("passed")) and not violations,
+                # Only explicit, machine-verifiable contract failures block a
+                # preview. Vision's aesthetic observations remain advisory.
+                "passed": not violations,
                 "score": max(0.0, min(1.0, float(raw.get("score", 0)))),
                 "violations": violations,
-                "correction_instruction": str(raw.get("correction_instruction", ""))[:1200],
+                "visual_advice": visual_advice,
+                "correction_instruction": (str(raw.get("correction_instruction", ""))[:1200]
+                                           if violations else ""),
             }
         except Exception as exc:
             return {"passed": False, "score": 0.0, "violations": [f"시각 검수 실패: {exc}"],
@@ -1205,7 +1259,9 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             for correction_index in range(Config.MOCKUP_MAX_CORRECTIONS + 1):
                 review_path = review_root / f"review_{uuid.uuid4().hex}.png"
                 canvas.convert("RGB").save(review_path, "PNG")
-                quality_verdict = self._review_rendered_image(review_path, profile, instruction, visible_copy)
+                quality_verdict = self._review_rendered_image(
+                    review_path, profile, instruction, visible_copy, plan
+                )
                 if self.team_runtime and correction_index == 0:
                     team_run.artifacts["rendered_image"] = str(review_path)
                     self.team_runtime.execute_role(team_run, "visual_critic", lambda _run: quality_verdict)

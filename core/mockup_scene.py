@@ -28,7 +28,7 @@ def parse_explicit_colored_copy(instruction: str) -> tuple[str, list[dict]]:
     value = " ".join(str(instruction or "").replace("\n", " ").split())
     color_words = "|".join(sorted(map(re.escape, COLOR_WORDS), key=len, reverse=True))
     pattern = re.compile(
-        rf"(?:문구(?:는|를)?\s*)?[\"'“”]?([가-힣A-Za-z0-9_.-]+)[\"'“”]?\s*(?:은|는|을|를)?\s*({color_words}|#[0-9a-fA-F]{{6}})"
+        rf"(?:문구(?:는|를)?\s*)?[\"'“”]?([가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9_.-]+)[\"'“”]?\s*(?:은|는|을|를)?\s*({color_words}|#[0-9a-fA-F]{{6}})"
     )
     spans = []
     for match in pattern.finditer(value):
