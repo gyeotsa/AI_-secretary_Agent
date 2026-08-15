@@ -1,4 +1,7 @@
 from pathlib import Path
+import json
+import sqlite3
+import time
 
 from PIL import Image
 
@@ -50,6 +53,23 @@ def test_visual_style_index_does_not_use_text_embedding(tmp_path):
     matches = db.search(blue)
     assert matches[0]["profile_id"] == "blue-profile"
     assert matches[0]["backend"] == "visual-descriptor-v1"
+
+
+def test_visual_style_index_reads_legacy_nested_clip_vectors(tmp_path, monkeypatch):
+    db_path = tmp_path / "styles.db"
+    index = VisualStyleIndex(db_path, tmp_path / "missing-clip")
+    source = tmp_path / "source.png"
+    Image.new("RGB", (32, 32), "blue").save(source)
+    monkeypatch.setattr(index, "embed", lambda _path: ([.6, .8], "clip-vit-base-patch32"))
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO visual_styles VALUES(?,?,?,?,?,?,?,?,?)",
+            ("legacy", "profile", str(source), "reference", "clip-vit-base-patch32",
+             json.dumps([[[.6, .8]]]), "{}", 0, time.time()),
+        )
+    matches = index.search(source)
+    assert matches[0]["item_id"] == "legacy"
+    assert matches[0]["score"] == 1.0
 
 
 def test_specialist_team_enforces_artifact_contract_and_records_events():

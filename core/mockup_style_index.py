@@ -38,6 +38,24 @@ class VisualStyleIndex:
         db.row_factory = sqlite3.Row
         return db
 
+    @staticmethod
+    def _flat_vector(value) -> list[float]:
+        """Flatten tensor/legacy JSON dimensions into one numeric embedding."""
+        result: list[float] = []
+
+        def visit(item):
+            if isinstance(item, (list, tuple)):
+                for child in item:
+                    visit(child)
+                return
+            try:
+                result.append(float(item))
+            except (TypeError, ValueError):
+                return
+
+        visit(value)
+        return result
+
     def _init_db(self):
         with self._connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS visual_styles(
@@ -82,16 +100,16 @@ class VisualStyleIndex:
             with Image.open(path) as source:
                 inputs = self._processor(images=source.convert("RGB"), return_tensors="pt")
             with torch.inference_mode():
-                vector = self._model.get_image_features(**inputs)[0].float()
+                vector = self._model.get_image_features(**inputs).float().reshape(-1)
                 vector = vector / vector.norm().clamp_min(1e-12)
-            return vector.cpu().tolist()
+            return self._flat_vector(vector.cpu().tolist())
         except Exception:
             return None
 
     def embed(self, path: str | Path) -> tuple[list[float], str]:
         resolved = Path(path).expanduser().resolve()
         vector = self._clip_vector(resolved)
-        return (vector, "clip-vit-base-patch32") if vector is not None else (self._fallback_vector(resolved), "visual-descriptor-v1")
+        return (self._flat_vector(vector), "clip-vit-base-patch32") if vector is not None else (self._fallback_vector(resolved), "visual-descriptor-v1")
 
     def add(self, profile_id: str, image_path: str | Path, *, kind: str = "reference",
             approved: bool = False, metadata: dict | None = None) -> str:
@@ -113,7 +131,9 @@ class VisualStyleIndex:
             rows = db.execute(sql).fetchall()
         scored = []
         for row in rows:
-            vector = json.loads(row["vector_json"])
+            # Older CLIP entries could be persisted as [[...]]. Flatten them
+            # at read time so existing style profiles remain immediately usable.
+            vector = self._flat_vector(json.loads(row["vector_json"]))
             if len(vector) != len(query):
                 continue
             score = sum(a * b for a, b in zip(query, vector))
