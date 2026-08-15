@@ -74,6 +74,18 @@ class APIConfig:
     OLLAMA_REASONING_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_REASONING_MODEL", "qwen2.5:7b-instruct"))
     OLLAMA_CODE_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_CODE_MODEL", "qwen2.5-coder:7b-instruct"))
     OLLAMA_VISION_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_VISION_MODEL", "gemma3:4b"))
+    OLLAMA_DESIGN_VISION_MODEL: str = field(
+        default_factory=lambda: os.getenv("OLLAMA_DESIGN_VISION_MODEL", "qwen2.5vl:7b")
+    )
+    MOCKUP_VISUAL_REVIEW: bool = field(
+        default_factory=lambda: os.getenv("MOCKUP_VISUAL_REVIEW", "true").strip().lower() in {"1", "true", "yes", "on"}
+    )
+    MOCKUP_MAX_CORRECTIONS: int = field(
+        default_factory=lambda: max(0, min(3, int(os.getenv("MOCKUP_MAX_CORRECTIONS", "2"))))
+    )
+    MOCKUP_SEGMENTATION_BACKEND: str = field(
+        default_factory=lambda: os.getenv("MOCKUP_SEGMENTATION_BACKEND", "birefnet").strip().lower()
+    )
     MODEL_NAME: str = field(default_factory=lambda: os.getenv("MODEL_NAME", "qwen2.5-coder:7b-instruct"))
     MAX_TOKENS: int = field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "4096")))
     TEMPERATURE: float = field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0.7")))
@@ -187,6 +199,26 @@ class Config:
     @property
     def OLLAMA_VISION_MODEL(cls):
         return cls.API_CONFIG.OLLAMA_VISION_MODEL
+
+    @classmethod
+    @property
+    def OLLAMA_DESIGN_VISION_MODEL(cls):
+        return cls.API_CONFIG.OLLAMA_DESIGN_VISION_MODEL
+
+    @classmethod
+    @property
+    def MOCKUP_VISUAL_REVIEW(cls):
+        return cls.API_CONFIG.MOCKUP_VISUAL_REVIEW
+
+    @classmethod
+    @property
+    def MOCKUP_MAX_CORRECTIONS(cls):
+        return cls.API_CONFIG.MOCKUP_MAX_CORRECTIONS
+
+    @classmethod
+    @property
+    def MOCKUP_SEGMENTATION_BACKEND(cls):
+        return cls.API_CONFIG.MOCKUP_SEGMENTATION_BACKEND
     
     @classmethod
     @property

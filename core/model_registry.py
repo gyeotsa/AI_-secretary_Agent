@@ -29,6 +29,8 @@ class ModelRegistry:
         "multimodal": "vision",
         "photoshop": "image_editing",
         "mockup": "mockup_design",
+        "style": "style_vision",
+        "critic": "visual_critic",
     }
 
     def __init__(self):
@@ -36,6 +38,7 @@ class ModelRegistry:
         reasoning = Config.OLLAMA_REASONING_MODEL
         code = Config.OLLAMA_CODE_MODEL
         vision = Config.OLLAMA_VISION_MODEL
+        design_vision = Config.OLLAMA_DESIGN_VISION_MODEL
         self._profiles: Dict[str, ModelProfile] = {
             "conversation": ModelProfile("conversation", conversation, 0.65, 1024, "10m"),
             "planning": ModelProfile("planning", reasoning, 0.15, 2048, "5m"),
@@ -46,6 +49,11 @@ class ModelRegistry:
             "vision": ModelProfile("vision", vision, 0.2, 1024, "2m", ("text", "image")),
             "image_editing": ModelProfile("image_editing", vision, 0.25, 2048, "3m", ("text", "image")),
             "mockup_design": ModelProfile("mockup_design", vision, 0.2, 3072, "5m", ("text", "image")),
+            "style_vision": ModelProfile("style_vision", design_vision, 0.1, 3072, "0", ("text", "image")),
+            "visual_critic": ModelProfile("visual_critic", design_vision, 0.0, 2048, "0", ("text", "image")),
+            "design_planning": ModelProfile("design_planning", reasoning, 0.12, 4096, "0"),
+            "subject_analysis": ModelProfile("subject_analysis", design_vision, 0.0, 1024, "0", ("text", "image")),
+            "rendering": ModelProfile("rendering", reasoning, 0.0, 512, "0"),
         }
 
     def resolve(self, role: str = "default") -> ModelProfile:

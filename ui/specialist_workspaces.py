@@ -346,6 +346,8 @@ class MockupWorkspaceWindow(QMainWindow):
         self.spec = spec
         self.runtime = runtime or MockupDesignRuntime()
         self.team_runtime = team_runtime
+        if self.team_runtime is not None:
+            self.runtime.team_runtime = self.team_runtime
         self.reference_paths, self.production_paths = [], []
         self.edit_attachment_paths = []
         self.active_profile_id = ""
@@ -439,6 +441,7 @@ class MockupWorkspaceWindow(QMainWindow):
             self.backend_selector = QComboBox()
             self.backend_selector.addItem("권장 · AI 설계 + 원본 보존 렌더링", "auto")
             self.backend_selector.addItem("실험적 · 생성형 스타일 배경 (참고 인물 재생성 위험)", "generative")
+            self.backend_selector.addItem("고품질 · SDXL 배경 + 정확한 SVG 문구 (별도 모델 준비)", "generative_sdxl")
             self.backend_selector.addItem("AI 설계 + 원본 보존 렌더링", "local")
             layout.addWidget(self.backend_selector)
             model_row = QHBoxLayout()
@@ -725,7 +728,7 @@ class MockupWorkspaceWindow(QMainWindow):
                      (f"적용된 수정 항목: {', '.join(applied)}\n" if applied else ""))
         self.details.append(
             f"\n임시 미리보기 생성 완료\n{result['width']}×{result['height']}\n"
-            f"렌더러: {result['renderer']}\n{fallback}{edit_note}"
+            f"렌더러: {result.get('render_engine') or result['renderer']}\n{fallback}{edit_note}"
             "아직 최종 폴더에 저장되지 않았습니다. 결과를 확인한 뒤 저장 버튼을 눌러 주세요."
         )
         self.save_preview_button.setEnabled(True)

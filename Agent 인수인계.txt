@@ -2009,3 +2009,12 @@ AI_-secretary_Agent/
 - 픽셀 단위 글자 크기를 1600px 기준 정규화 좌표와 대조해 정확한 값이 아니면 모델 패치를 거부한다.
 - 학습 스타일의 text_region=lower_overlay를 주 프레임 내부 하단 중앙 좌표로 변환한다.
 - 왼쪽/오른쪽/위/아래/밑/상단/하단 위치 요청의 이미 만족된 상태를 프레임 상대 여백으로 검증한다.
+2026-08-15 시안 제작 전문가 근본 재설계
+- 단일 Vision 모델이 관찰·설계·검증을 모두 담당하던 구조를 역할/산출물 계약 기반 전문가 팀으로 변경했다. 시안 팀은 기억, 스타일 Vision, 피사체 분석, 디자인 설계, 레이어 렌더링, 실제 이미지 검수, 최소 교정을 순차 실행하며 결과 metadata에 team_events를 남긴다.
+- Qwen2.5-VL 7B를 style_vision/visual_critic/subject_analysis 역할로 등록하고 keep_alive=0으로 구성했다. reasoning 설계 모델과 분리해 VRAM에 동시에 무거운 모델이 남지 않도록 했다.
+- 텍스트 BGE RAG와 분리된 VisualStyleIndex를 추가했다. 로컬 CLIP이 준비되면 CLIP을 쓰고, 설치 전에도 색상·명도·에지·구도 기반 이미지 descriptor로 검색한다. 참고 이미지와 사용자가 승인 저장한 결과를 SQLite 이미지 인덱스에 기록한다.
+- scene_plan을 버전형 layer_graph로 변환하고 Qt SVG 엔진으로 실제 최종 PNG를 렌더링한다. 편집 가능한 SVG 원본도 PNG 옆에 저장한다. 기존 API renderer 값은 호환 유지하고 render_engine으로 실제 엔진을 기록한다.
+- 텍스트 레이어에 자간, 행간, 윤곽선, 그림자, 곡선 경로, opacity/blend 속성을 추가했다. 사진/장식/텍스트는 고유 ID·z·mask·transform을 가진 레이어로 유지된다.
+- SubjectAnalysisRuntime을 추가해 얼굴 위치와 안전 텍스트 영역을 설계 입력에 제공한다. 준비된 BiRefNet은 지연 로드하고 없으면 OpenCV GrabCut/얼굴 검출로 폴백한다.
+- 최종 렌더링 PNG를 Vision이 다시 검수해 얼굴 잘림, 겹침, 안전 여백, 대비, 시선 흐름과 지시 충족도를 판정한다. 실패 시 최대 2회만 구조화 패치로 교정하며 실패 결과를 무한 반복하지 않는다.
+- 네 장의 참고 이미지를 실제 가중치 학습이라고 표시하지 않는다. 승인 결과 20개 이상일 때만 SDXL LoRA 학습 manifest를 생성하는 post-training gate를 추가했다.

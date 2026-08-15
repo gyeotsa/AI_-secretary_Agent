@@ -24,6 +24,13 @@ from core.mockup_scene import (SCENE_PLAN_JSON_SCHEMA, SCENE_EDIT_PATCH_JSON_SCH
                                enforce_measured_style_evidence, infer_edit_scopes, merge_scoped_scene_edit,
                                filter_scene_edit_patch,
                                restore_required_elements, scene_changed, validate_patch_against_instruction)
+from core.mockup_layer_graph import (scene_plan_to_layer_graph, validate_layer_graph,
+                                     layer_graph_to_svg, render_svg_with_qt)
+from core.mockup_style_index import VisualStyleIndex
+from core.mockup_subject_runtime import SubjectAnalysisRuntime
+from core.mockup_post_training import StyleTrainingDataset
+from config import Config
+from core.specialist_team import TeamRun
 
 
 SUPPORTED_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
@@ -49,15 +56,25 @@ class MockupDesignRuntime:
     """Keeps measured visual traits separate from unverified Vision interpretation."""
 
     def __init__(self, profile_dir: str | Path = "data/mockup_styles", vision=None,
-                 generation_backend=None, scene_planner=None):
+                 generation_backend=None, scene_planner=None, style_index=None,
+                 enable_visual_review: bool | None = None, subject_runtime=None, team_runtime=None):
         self.profile_dir = Path(profile_dir)
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self.vision = vision
         self.scene_planner = scene_planner
+        self.style_index = style_index or VisualStyleIndex(self.profile_dir / "visual_style.db")
+        self.subject_runtime = subject_runtime or SubjectAnalysisRuntime()
+        self.training_dataset = StyleTrainingDataset()
+        self.team_runtime = team_runtime
+        # Injected test/custom vision adapters keep their established contract.
+        self.enable_visual_review = (Config.MOCKUP_VISUAL_REVIEW if enable_visual_review is None and vision is None
+                                     else bool(enable_visual_review))
         if generation_backend is None:
             from core.mockup_generation import IPAdapterGenerationBackend
             generation_backend = IPAdapterGenerationBackend()
         self.generation_backend = generation_backend
+        from core.mockup_generation import SDXLGenerationBackend
+        self.sdxl_backend = SDXLGenerationBackend()
 
     def _get_scene_planner(self):
         """Use a text reasoning model for JSON planning, separate from image observation."""
@@ -161,7 +178,50 @@ class MockupDesignRuntime:
         )
         target = self.profile_dir / f"{profile.profile_id}.json"
         target.write_text(json.dumps(asdict(profile), ensure_ascii=False, indent=2), encoding="utf-8")
+        for reference in paths:
+            self.style_index.add(profile.profile_id, reference, kind="reference",
+                                 metadata={"profile_name": profile.name})
         return profile
+
+    def similar_styles(self, image_path: str | Path, *, top_k: int = 5) -> list[dict]:
+        """Search reference/approved images using image-native features, never text RAG."""
+        return self.style_index.search(image_path, top_k=top_k)
+
+    def prepare_style_training_dataset(self, profile_id: str) -> dict:
+        """Prepare a real post-training manifest only from approved outputs."""
+        self.load_profile(profile_id)
+        return self.training_dataset.collect(profile_id, self.style_index.items(profile_id, approved_only=True))
+
+    def _review_rendered_image(self, output_path: Path, profile: MockupStyleProfile,
+                               instruction: str, visible_copy: str) -> dict:
+        schema = {
+            "type": "object", "required": ["passed", "score", "violations", "correction_instruction"],
+            "properties": {
+                "passed": {"type": "boolean"}, "score": {"type": "number"},
+                "violations": {"type": "array", "items": {"type": "string"}},
+                "correction_instruction": {"type": "string"},
+            },
+        }
+        vision = VisionRuntime()
+        try:
+            result = vision.analyze([str(output_path)], (
+                "렌더링된 결과를 실제 이미지로 검수하세요. 얼굴/핵심 피사체 잘림, 문구 가독성, "
+                "겹침, 안전 여백, 대비, 시선 흐름, 사용자 지시 충족 여부를 판정하세요. "
+                f"사용자 지시: {instruction or '없음'} / 정확한 표시 문구: {visible_copy or '없음'} / "
+                f"학습 스타일 구조: {json.dumps(profile.design_recipe, ensure_ascii=False)[:3000]}"
+            ), mode="general", json_schema=schema)
+            raw = extract_json_object(result.get("analysis", ""))
+            return {
+                "passed": bool(raw.get("passed")),
+                "score": max(0.0, min(1.0, float(raw.get("score", 0)))),
+                "violations": [str(item)[:300] for item in raw.get("violations", [])[:8]],
+                "correction_instruction": str(raw.get("correction_instruction", ""))[:1200],
+            }
+        except Exception as exc:
+            return {"passed": False, "score": 0.0, "violations": [f"시각 검수 실패: {exc}"],
+                    "correction_instruction": "", "review_error": True}
+        finally:
+            vision.release_model()
 
     def load_profile(self, profile_id: str) -> MockupStyleProfile:
         path = self.profile_dir / f"{profile_id}.json"
@@ -326,10 +386,15 @@ class MockupDesignRuntime:
         return True
 
     def generation_status(self) -> dict:
-        return self.generation_backend.status()
+        result = self.generation_backend.status()
+        result["sdxl"] = self.sdxl_backend.status()
+        return result
 
     def prepare_generation_models(self, progress=None) -> dict:
         return self.generation_backend.prepare(progress)
+
+    def prepare_sdxl_model(self, progress=None) -> dict:
+        return self.sdxl_backend.prepare(progress)
 
     @staticmethod
     def _font(size: int, bold: bool = False, family: str = ""):
@@ -1012,10 +1077,47 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             font = self._font(font_size, bold=bold, family=family); measured = draw.textbbox((0, 0), content, font=font)
             if measured[2] - measured[0] <= max(1, x2-x1) and measured[3] - measured[1] <= max(1, y2-y1): break
             font_size -= 2
-        measured = draw.textbbox((0, 0), content, font=font); text_w, text_h = measured[2]-measured[0], measured[3]-measured[1]
+        measured = draw.textbbox((0, 0), content, font=font, spacing=max(1, int(font_size * float(item.get("line_height", 1.2)))))
+        text_w, text_h = measured[2]-measured[0], measured[3]-measured[1]
         x = x1 if item["align"] == "left" else x2-text_w if item["align"] == "right" else x1+(x2-x1-text_w)//2
         y = y1 + (y2-y1-text_h)//2 - measured[1]
-        draw.text((x, y), content, font=font, fill=self._rgba(item["color"], (17, 17, 17, 255)))
+        fill = self._rgba(item["color"], (17, 17, 17, 255))
+        stroke_fill = self._rgba(item.get("stroke", "transparent"))
+        stroke_width = max(0, int(float(item.get("stroke_width", 0)) * min(width, height)))
+        shadow = item.get("shadow") if isinstance(item.get("shadow"), dict) else {}
+        if shadow:
+            offset_x = int(float(shadow.get("offset_x", .006)) * width)
+            offset_y = int(float(shadow.get("offset_y", .006)) * height)
+            draw.multiline_text((x + offset_x, y + offset_y), content, font=font,
+                                fill=self._rgba(shadow.get("color", "#00000066")),
+                                spacing=max(1, int(font_size * float(item.get("line_height", 1.2)))))
+        path = item.get("path") if isinstance(item.get("path"), dict) else None
+        letter_spacing = int(float(item.get("letter_spacing", 0)) * min(width, height))
+        if path and path.get("type") == "arc" and content:
+            radius = max(font_size, int(float(path.get("radius", .25)) * min(width, height)))
+            center_x, center_y = x1 + (x2 - x1) // 2, y1 + (y2 - y1) // 2
+            start = math.radians(float(path.get("start_angle", 200)))
+            end = math.radians(float(path.get("end_angle", 340)))
+            step = (end - start) / max(1, len(content) - 1)
+            for index, character in enumerate(content):
+                angle = start + step * index
+                cx = center_x + math.cos(angle) * radius
+                cy = center_y + math.sin(angle) * radius
+                draw.text((cx, cy), character, font=font, anchor="mm", fill=fill,
+                          stroke_width=stroke_width, stroke_fill=stroke_fill)
+        elif letter_spacing and "\n" not in content:
+            widths = [draw.textlength(character, font=font) for character in content]
+            total = sum(widths) + letter_spacing * max(0, len(content) - 1)
+            cursor = x1 if item["align"] == "left" else x2-total if item["align"] == "right" else x1+(x2-x1-total)/2
+            for character, char_width in zip(content, widths):
+                draw.text((cursor, y), character, font=font, fill=fill,
+                          stroke_width=stroke_width, stroke_fill=stroke_fill)
+                cursor += char_width + letter_spacing
+        else:
+            draw.multiline_text((x, y), content, font=font, fill=fill,
+                                spacing=max(1, int(font_size * float(item.get("line_height", 1.2)))),
+                                align=item.get("align", "center"), stroke_width=stroke_width,
+                                stroke_fill=stroke_fill)
 
     def render(self, profile_id: str, production_paths, *, instruction: str = "",
                visible_copy: str = "", edit_state: dict | None = None,
@@ -1025,42 +1127,127 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                memory_context: str = "") -> dict:
         """Render exclusively from a model-authored scene plan, never a named template."""
         profile = self.load_profile(profile_id); paths = self._validate_images(production_paths)
-        plan = scene_plan or self._request_scene_plan(
+        team_run = TeamRun("mockup", instruction, {
+            "memory_context": memory_context, "references": list(profile.reference_paths),
+            "production_assets": [str(path) for path in paths],
+        })
+        if self.team_runtime:
+            self.team_runtime.execute_role(team_run, "style_analyst", lambda _run: {
+                "recipe": profile.design_recipe, "features": profile.style_features,
+                "similar_styles": self.similar_styles(paths[0], top_k=3),
+            }, release=self.style_index.release)
+            subject_evidence = self.team_runtime.execute_role(
+                team_run, "subject_specialist",
+                lambda _run: [self.subject_runtime.analyze(path) for path in paths],
+                release=self.subject_runtime.release,
+            )
+        else:
+            subject_evidence = [self.subject_runtime.analyze(path) for path in paths]
+        planner_memory = "\n".join(part for part in (
+            memory_context,
+            "피사체·얼굴·안전영역 계측: " + json.dumps(subject_evidence, ensure_ascii=False),
+        ) if part)
+        plan_factory = lambda _run: (scene_plan or self._request_scene_plan(
             profile, paths, instruction, visible_copy,
-            guidance_paths=guidance_paths, memory_context=memory_context,
-        )
+            guidance_paths=guidance_paths, memory_context=planner_memory,
+        ))
+        plan = (self.team_runtime.execute_role(team_run, "design_director", plan_factory)
+                if self.team_runtime else plan_factory(team_run))
         # IP-Adapter can reproduce people/text from reference sheets. Automatic
         # mode therefore uses the model-authored vector/raster scene only.
-        use_generative = backend == "generative"
+        use_generative = backend in {"generative", "generative_sdxl"}
         background, generation_error = None, ""
         if use_generative:
             try:
-                background = self.generation_backend.generate_background(
+                selected_generator = self.sdxl_backend if backend == "generative_sdxl" else self.generation_backend
+                background = selected_generator.generate_background(
                     reference_paths=profile.reference_paths,
                     prompt=f"{profile.generation_prompt}. {instruction}. {plan.get('rationale', '')}",
                     orientation=profile.orientation, seed=seed)
             except Exception as exc:
-                if backend == "generative": raise
+                if backend in {"generative", "generative_sdxl"}: raise
                 generation_error, use_generative = str(exc), False
         plan, grounded_fields = self._enforce_detected_subject_visibility(plan, paths, instruction)
         if grounded_fields:
             plan["source_grounded_fields"] = grounded_fields
-        canvas = self._render_scene_plan(plan, paths, background=background)
+        def render_current(current_plan):
+            graph = scene_plan_to_layer_graph(current_plan)
+            validate_layer_graph(graph, asset_count=len(paths))
+            # A generated pixel background cannot be represented as a reusable
+            # source layer yet, so that explicit backend keeps the compatibility renderer.
+            if background is not None:
+                return self._render_scene_plan(current_plan, paths, background=background), graph, "pillow-generative-composite-v1", ""
+            ratio = float(current_plan["canvas"]["aspect_ratio"])
+            svg_width, svg_height = ((1600, max(900, int(1600 / ratio))) if ratio >= 1 else
+                                     (max(900, int(1600 * ratio)), 1600))
+            svg = layer_graph_to_svg(graph, paths, svg_width, svg_height)
+            try:
+                return render_svg_with_qt(svg, svg_width, svg_height), graph, "qt-svg-layer-graph-v1", svg
+            except Exception:
+                return self._render_scene_plan(current_plan, paths), graph, "pillow-layer-graph-fallback-v1", svg
+
+        rendered = (self.team_runtime.execute_role(team_run, "renderer", lambda _run: render_current(plan))
+                    if self.team_runtime else render_current(plan))
+        canvas, layer_graph, renderer_name, editable_svg = rendered
+        quality_verdict = {"passed": True, "score": 1.0, "violations": [], "skipped": True}
+        correction_history = []
+        if self.enable_visual_review:
+            review_root = Path(tempfile.gettempdir()) / "jarvis_mockup_reviews"
+            review_root.mkdir(parents=True, exist_ok=True)
+            for correction_index in range(Config.MOCKUP_MAX_CORRECTIONS + 1):
+                review_path = review_root / f"review_{uuid.uuid4().hex}.png"
+                canvas.convert("RGB").save(review_path, "PNG")
+                quality_verdict = self._review_rendered_image(review_path, profile, instruction, visible_copy)
+                if self.team_runtime and correction_index == 0:
+                    team_run.artifacts["rendered_image"] = str(review_path)
+                    self.team_runtime.execute_role(team_run, "visual_critic", lambda _run: quality_verdict)
+                review_path.unlink(missing_ok=True)
+                quality_verdict["skipped"] = False
+                if quality_verdict.get("passed") or quality_verdict.get("review_error") or correction_index >= Config.MOCKUP_MAX_CORRECTIONS:
+                    break
+                correction = str(quality_verdict.get("correction_instruction", "")).strip()
+                if not correction:
+                    break
+                try:
+                    revised, _copy, fields = self._request_scene_edit_patch(
+                        profile, paths, plan, visible_copy, correction,
+                        memory_context="시각 품질 검수 자동 교정",
+                    )
+                    if not scene_changed(plan, revised):
+                        break
+                    plan = revised
+                    correction_history.append({"instruction": correction, "fields": fields})
+                    if self.team_runtime:
+                        team_run.artifacts["layer_graph"] = scene_plan_to_layer_graph(plan)
+                        self.team_runtime.execute_role(team_run, "corrector", lambda _run: team_run.artifacts["layer_graph"])
+                    canvas, layer_graph, renderer_name, editable_svg = render_current(plan)
+                except Exception as exc:
+                    correction_history.append({"instruction": correction, "error": str(exc)})
+                    break
         output_root = (Path(tempfile.gettempdir()) / "jarvis_mockup_previews" if preview_only else Path(output_dir).expanduser().resolve())
         output_root.mkdir(parents=True, exist_ok=True)
         safe_name = "".join(c for c in basename if c.isalnum() or c in "-_ ").strip() or "mockup"
         suffix = uuid.uuid4().hex if preview_only else time.strftime('%Y%m%d_%H%M%S')
         output_path = output_root / f"{safe_name}_{suffix}.png"; canvas.convert("RGB").save(output_path, "PNG", optimize=True)
+        svg_path = output_path.with_suffix(".svg")
+        if editable_svg:
+            svg_path.write_text(editable_svg, encoding="utf-8")
         metadata = {
             "output": str(output_path), "profile_id": profile.profile_id, "references": profile.reference_hashes,
             "production_inputs": [self._sha256(path) for path in paths], "production_sources": [str(path) for path in paths],
             "width": canvas.width, "height": canvas.height, "renderer": "ai-scene-plan-renderer-v3",
+            "render_engine": renderer_name,
+            "editable_svg": str(svg_path) if editable_svg else "",
             "generation_backend": "generative" if use_generative else "model_planned_local",
             "reference_pixels_sent_to_generator": bool(use_generative),
             "seed": int(seed), "scene_plan": plan, "composition_plan": plan["assets"],
             "instruction": instruction.strip(), "visible_copy": visible_copy.strip(), "preview_only": bool(preview_only),
             "guidance_sources": [str(Path(path).resolve()) for path in (guidance_paths or [])],
             "generation_fallback_reason": generation_error, "style_recipe": profile.design_recipe,
+            "layer_graph": layer_graph, "quality_verdict": quality_verdict,
+            "automatic_corrections": correction_history,
+            "subject_evidence": subject_evidence,
+            "team_events": team_run.events,
         }
         if not preview_only: output_path.with_suffix(".json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
         return metadata
@@ -1077,7 +1264,17 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         result = dict(metadata or {})
+        editable_svg = Path(str(result.get("editable_svg", ""))) if result.get("editable_svg") else None
+        if editable_svg and editable_svg.is_file():
+            target_svg = target.with_suffix(".svg")
+            shutil.copy2(editable_svg, target_svg)
+            result["editable_svg"] = str(target_svg)
         result.update({"output": str(target), "preview_only": False, "saved_from_preview": str(source)})
+        profile_id = str(result.get("profile_id", ""))
+        if profile_id:
+            self.style_index.add(profile_id, target, kind="approved_result", approved=True,
+                                 metadata={"instruction": result.get("edit_instruction") or result.get("instruction", ""),
+                                           "quality_verdict": result.get("quality_verdict", {})})
         target.with_suffix(".json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
         )

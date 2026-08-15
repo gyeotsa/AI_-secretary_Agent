@@ -178,3 +178,61 @@ class IPAdapterGenerationBackend:
                 torch.cuda.empty_cache()
         except Exception:
             pass
+
+
+class SDXLGenerationBackend:
+    """Optional high-quality background generator; exact text stays in SVG layers."""
+    MODEL_ID = "stabilityai/sdxl-turbo"
+
+    def __init__(self, model_root: str | Path = "data/models/mockup_generation/sdxl-turbo"):
+        self.model_root = Path(model_root).resolve()
+        self._pipe = None
+
+    def status(self) -> dict:
+        try:
+            import torch
+            cuda = torch.cuda.is_available()
+            vram_mb = int(torch.cuda.get_device_properties(0).total_memory / 1024**2) if cuda else 0
+        except Exception:
+            cuda, vram_mb = False, 0
+        return {"ready": (self.model_root / "model_index.json").is_file() and cuda,
+                "model": self.MODEL_ID, "cuda": cuda, "vram_mb": vram_mb,
+                "model_root": str(self.model_root)}
+
+    def prepare(self, progress=None) -> dict:
+        from huggingface_hub import snapshot_download
+        if progress: progress("SDXL Turbo 모델을 준비하고 있습니다.")
+        self.model_root.mkdir(parents=True, exist_ok=True)
+        snapshot_download(self.MODEL_ID, local_dir=str(self.model_root))
+        return self.status()
+
+    def _load(self):
+        if self._pipe is not None: return self._pipe
+        if not self.status()["ready"]: raise RuntimeError("SDXL Turbo 모델 준비가 필요합니다.")
+        import torch
+        from diffusers import AutoPipelineForText2Image
+        pipe = AutoPipelineForText2Image.from_pretrained(
+            str(self.model_root), torch_dtype=torch.float16, variant="fp16",
+            local_files_only=True, safety_checker=None)
+        pipe.enable_model_cpu_offload(); pipe.vae.enable_slicing(); self._pipe = pipe
+        return pipe
+
+    def generate_background(self, *, reference_paths: list[str], prompt: str,
+                            orientation: str, seed: int = 42) -> Image.Image:
+        import torch
+        pipe = self._load()
+        width, height = ((768, 512) if orientation == "landscape" else
+                         (512, 768) if orientation == "portrait" else (640, 640))
+        generator = torch.Generator(device="cpu").manual_seed(int(seed))
+        exact = ("professional graphic design background, no text, no letters, no logo, "
+                 "reserved negative space for exact raster photo and vector typography, " + str(prompt))
+        with torch.inference_mode():
+            return pipe(prompt=exact, width=width, height=height, num_inference_steps=4,
+                        guidance_scale=0.0, generator=generator).images[0].convert("RGB")
+
+    def unload(self):
+        self._pipe = None; gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available(): torch.cuda.empty_cache()
+        except Exception: pass

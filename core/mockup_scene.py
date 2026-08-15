@@ -37,6 +37,14 @@ SCENE_PLAN_JSON_SCHEMA = {
                                  "height": {"type": "number"}, "font_size": {"type": "number"},
                                  "font_family": {"type": "string"},
                                  "font_weight": {"enum": ["normal", "bold"]},
+                                 "letter_spacing": {"type": "number"},
+                                 "line_height": {"type": "number"},
+                                 "stroke": {"type": "string"},
+                                 "stroke_width": {"type": "number"},
+                                 "shadow": {"type": "object"},
+                                 "path": {"type": ["object", "null"]},
+                                 "opacity": {"type": "number"},
+                                 "blend_mode": {"type": "string"},
                                  "color": {"type": "string"}, "background": {"type": "string"},
                                  "align": {"enum": ["left", "center", "right"]},
                                  "padding": {"type": "number"}, "z": {"type": "integer"}}}},
@@ -70,6 +78,10 @@ SCENE_EDIT_PATCH_JSON_SCHEMA = {
                 "font_size": {"type": "number"}, "color": {"type": "string"},
                 "font_family": {"type": "string"},
                 "font_weight": {"enum": ["normal", "bold"]},
+                "letter_spacing": {"type": "number"}, "line_height": {"type": "number"},
+                "stroke": {"type": "string"}, "stroke_width": {"type": "number"},
+                "shadow": {"type": "object"}, "path": {"type": ["object", "null"]},
+                "opacity": {"type": "number"}, "blend_mode": {"type": "string"},
                 "background": {"type": "string"}, "align": {"enum": ["left", "center", "right"]},
                 "padding": {"type": "number"}, "z": {"type": "integer"}}}},
         "replace_decorations": {"type": "boolean"},
@@ -212,6 +224,15 @@ def normalize_scene_plan(raw: dict, *, asset_count: int, visible_copy: str = "")
             "font_size": _number(item.get("font_size"), .015, .2, .065),
             "font_family": " ".join(str(item.get("font_family", "Malgun Gothic")).split())[:80],
             "font_weight": "normal" if item.get("font_weight") == "normal" else "bold",
+            "letter_spacing": _number(item.get("letter_spacing"), -.03, .1, 0),
+            "line_height": _number(item.get("line_height"), .8, 3.0, 1.2),
+            "stroke": _color(item.get("stroke")),
+            "stroke_width": _number(item.get("stroke_width"), 0, .03, 0),
+            "shadow": item.get("shadow") if isinstance(item.get("shadow"), dict) else {},
+            "path": item.get("path") if isinstance(item.get("path"), dict) else None,
+            "opacity": _number(item.get("opacity"), 0, 1, 1),
+            "blend_mode": str(item.get("blend_mode", "normal")) if str(item.get("blend_mode", "normal")) in
+                          {"normal", "multiply", "screen", "overlay"} else "normal",
             "color": _color(item.get("color"), "#111111"),
             "background": _color(item.get("background")),
             "align": str(item.get("align")) if item.get("align") in {"left", "center", "right"} else "center",
@@ -372,7 +393,9 @@ def apply_scene_edit_patch(before: dict, patch: dict, *, asset_count: int,
             base.update({key: value for key, value in update.items() if key not in {"index", "action"}})
             texts.append(base); changed.append("texts.add"); continue
         if action == "update" and 0 <= index < len(texts):
-            for key in ("x", "y", "width", "height", "font_size", "font_family", "font_weight", "color", "background", "align", "padding", "z"):
+            for key in ("x", "y", "width", "height", "font_size", "font_family", "font_weight",
+                        "letter_spacing", "line_height", "stroke", "stroke_width", "shadow", "path",
+                        "opacity", "blend_mode", "color", "background", "align", "padding", "z"):
                 if key in update and texts[index].get(key) != update[key]:
                     texts[index][key] = update[key]; changed.append(f"texts[{index}].{key}")
     raw["texts"] = texts
