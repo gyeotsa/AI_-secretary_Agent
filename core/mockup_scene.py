@@ -10,6 +10,38 @@ class ScenePlanError(ValueError):
     pass
 
 
+COLOR_WORDS = {
+    "빨간색": "#e5484d", "빨강": "#e5484d", "레드": "#e5484d",
+    "파란색": "#2878d0", "파랑": "#2878d0", "블루": "#2878d0",
+    "검은색": "#111111", "검정": "#111111", "흰색": "#ffffff", "하얀색": "#ffffff",
+    "초록색": "#38a169", "초록": "#38a169", "노란색": "#f2c94c", "노랑": "#f2c94c",
+    "보라색": "#8b4cc2", "보라": "#8b4cc2", "분홍색": "#ec6f9e", "분홍": "#ec6f9e",
+}
+
+
+def parse_explicit_colored_copy(instruction: str) -> tuple[str, list[dict]]:
+    """Extract exact user-authored copy/color pairs without LLM correction.
+
+    Example: ``정지언은 빨간색, 테스트는 파란색`` becomes one copy
+    string with two independently colored spans.  The spelling is preserved.
+    """
+    value = " ".join(str(instruction or "").replace("\n", " ").split())
+    color_words = "|".join(sorted(map(re.escape, COLOR_WORDS), key=len, reverse=True))
+    pattern = re.compile(
+        rf"(?:문구(?:는|를)?\s*)?[\"'“”]?([가-힣A-Za-z0-9_.-]+)[\"'“”]?\s*(?:은|는|을|를)?\s*({color_words}|#[0-9a-fA-F]{{6}})"
+    )
+    spans = []
+    for match in pattern.finditer(value):
+        content = re.sub(r"(?:은|는|을|를)$", "", match.group(1).strip())
+        if content in {"문구", "글자", "텍스트", "색상"}:
+            continue
+        color_word = match.group(2)
+        spans.append({"content": content, "color": COLOR_WORDS.get(color_word, color_word.lower())})
+    if not spans:
+        return "", []
+    return " ".join(span["content"] for span in spans), spans
+
+
 SCENE_PLAN_JSON_SCHEMA = {
     "type": "object",
     "required": ["canvas", "assets", "decorations", "texts", "rationale"],
@@ -45,6 +77,7 @@ SCENE_PLAN_JSON_SCHEMA = {
                                  "path": {"type": ["object", "null"]},
                                  "opacity": {"type": "number"},
                                  "blend_mode": {"type": "string"},
+                                 "spans": {"type": "array", "items": {"type": "object"}},
                                  "color": {"type": "string"}, "background": {"type": "string"},
                                  "align": {"enum": ["left", "center", "right"]},
                                  "padding": {"type": "number"}, "z": {"type": "integer"}}}},
@@ -239,6 +272,17 @@ def normalize_scene_plan(raw: dict, *, asset_count: int, visible_copy: str = "")
             "padding": _number(item.get("padding"), 0, .1, .018),
             "z": int(_number(item.get("z"), -20, 20, 10)),
         }
+        spans = item.get("spans") if isinstance(item.get("spans"), list) else []
+        normalized_spans = []
+        for span in spans:
+            if not isinstance(span, dict) or not str(span.get("content", "")).strip():
+                continue
+            normalized_spans.append({
+                "content": str(span["content"]).strip()[:80],
+                "color": _color(span.get("color"), normalized_text["color"]),
+            })
+        if normalized_spans and " ".join(part["content"] for part in normalized_spans) == requested_copy:
+            normalized_text["spans"] = normalized_spans
         _fit_normalized_box(normalized_text)
         normalized_text["padding"] = min(
             normalized_text["padding"],
@@ -247,6 +291,35 @@ def normalize_scene_plan(raw: dict, *, asset_count: int, visible_copy: str = "")
         )
         result["texts"] = [normalized_text]
     return result
+
+
+def enforce_exact_user_copy(plan: dict, instruction: str, visible_copy: str) -> tuple[dict, str, list[str]]:
+    """Make exact user copy and per-fragment colors a non-negotiable render contract."""
+    result = deepcopy(plan)
+    explicit_copy, spans = parse_explicit_colored_copy(instruction)
+    copy = explicit_copy or " ".join(str(visible_copy or "").split())[:160]
+    if not copy or not result.get("texts"):
+        return result, copy, []
+    text = result["texts"][0]
+    changed = []
+    if text.get("content") != copy:
+        text["content"] = copy
+        changed.append("texts[0].content")
+    if spans and text.get("spans") != spans:
+        text["spans"] = spans
+        changed.append("texts[0].spans")
+    # A model may propose an enormous normalized size. Keep it as a preference;
+    # the SVG renderer performs the final exact fit inside this box.
+    if float(text.get("width", 0)) < .45:
+        text["width"] = .7
+        text["x"] = max(0.0, min(.3, .5 - text["width"] / 2))
+        changed.extend(["texts[0].width", "texts[0].x"])
+    _fit_normalized_box(text)
+    if changed:
+        result["enforced_user_constraints"] = list(dict.fromkeys(
+            [*result.get("enforced_user_constraints", []), *changed]
+        ))
+    return result, copy, changed
 
 
 def restore_required_elements(raw: dict, baseline: dict, *, asset_count: int,

@@ -26,8 +26,51 @@ class SubjectAnalysisRuntime:
             data = np.fromfile(str(path), dtype=np.uint8)
             image = cv2.imdecode(data, cv2.IMREAD_COLOR)
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            cascade = cv2.CascadeClassifier(str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"))
-            return [tuple(map(int, item)) for item in cascade.detectMultiScale(gray, 1.08, 5, minSize=(32, 32))]
+            root = Path(cv2.data.haarcascades)
+            candidates = []
+            for name in ("haarcascade_frontalface_default.xml", "haarcascade_frontalface_alt2.xml",
+                         "haarcascade_profileface.xml"):
+                cascade = cv2.CascadeClassifier(str(root / name))
+                candidates.extend(tuple(map(int, item)) for item in
+                                  cascade.detectMultiScale(gray, 1.05, 3, minSize=(28, 28)))
+                if "profile" in name:
+                    flipped = cv2.flip(gray, 1)
+                    for x, y, w, h in cascade.detectMultiScale(flipped, 1.05, 3, minSize=(28, 28)):
+                        candidates.append((gray.shape[1] - int(x) - int(w), int(y), int(w), int(h)))
+            if candidates:
+                # Remove near-duplicate detections while preferring the largest.
+                unique = []
+                for box in sorted(candidates, key=lambda item: item[2] * item[3], reverse=True):
+                    cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
+                    if not any(abs(cx-(old[0]+old[2]/2)) < max(box[2], old[2])*.3 and
+                               abs(cy-(old[1]+old[3]/2)) < max(box[3], old[3])*.3 for old in unique):
+                        unique.append(box)
+                return unique
+            # Last-resort eye-pair grounding is substantially safer than a
+            # blind center crop for selfie/profile photographs.
+            eye = cv2.CascadeClassifier(str(root / "haarcascade_eye_tree_eyeglasses.xml"))
+            eyes = sorted((tuple(map(int, item)) for item in
+                           eye.detectMultiScale(gray, 1.05, 3, minSize=(18, 12))),
+                          key=lambda item: item[2] * item[3], reverse=True)[:6]
+            best = None
+            for first in eyes:
+                for second in eyes:
+                    if first == second:
+                        continue
+                    x1, y1 = first[0]+first[2]/2, first[1]+first[3]/2
+                    x2, y2 = second[0]+second[2]/2, second[1]+second[3]/2
+                    distance = abs(x2-x1)
+                    if distance > max(first[2], second[2])*1.2 and abs(y2-y1) < distance*.45:
+                        score = distance
+                        if best is None or score > best[0]:
+                            best = (score, min(x1,x2), (y1+y2)/2, max(x1,x2))
+            if best:
+                _, left, eye_y, right = best
+                face_w = min(gray.shape[1], max(64, int((right-left)*2.35)))
+                face_h = min(gray.shape[0], int(face_w*1.18))
+                return [(max(0, int((left+right)/2-face_w/2)), max(0, int(eye_y-face_h*.38)),
+                         face_w, face_h)]
+            return []
         except Exception:
             return []
 

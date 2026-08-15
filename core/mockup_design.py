@@ -21,6 +21,7 @@ from core.mockup_scene import (SCENE_PLAN_JSON_SCHEMA, SCENE_EDIT_PATCH_JSON_SCH
                                SCENE_EDIT_VERDICT_JSON_SCHEMA, ScenePlanError,
                                apply_scene_edit_patch, build_evidence_fallback_plan, extract_json_object,
                                normalize_scene_plan, enforce_explicit_user_constraints,
+                               enforce_exact_user_copy,
                                enforce_measured_style_evidence, infer_edit_scopes, merge_scoped_scene_edit,
                                filter_scene_edit_patch,
                                restore_required_elements, scene_changed, validate_patch_against_instruction)
@@ -1153,6 +1154,9 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         ))
         plan = (self.team_runtime.execute_role(team_run, "design_director", plan_factory)
                 if self.team_runtime else plan_factory(team_run))
+        plan, visible_copy, exact_copy_fields = enforce_exact_user_copy(plan, instruction, visible_copy)
+        if exact_copy_fields:
+            plan["exact_copy_fields"] = exact_copy_fields
         # IP-Adapter can reproduce people/text from reference sheets. Automatic
         # mode therefore uses the model-authored vector/raster scene only.
         use_generative = backend in {"generative", "generative_sdxl"}
@@ -1192,7 +1196,7 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         quality_verdict = {"passed": True, "score": 1.0, "violations": [], "skipped": True}
         correction_history = []
         if self.enable_visual_review:
-            review_root = Path(tempfile.gettempdir()) / "jarvis_mockup_reviews"
+            review_root = Path("data/runtime/mockup_reviews").resolve()
             review_root.mkdir(parents=True, exist_ok=True)
             for correction_index in range(Config.MOCKUP_MAX_CORRECTIONS + 1):
                 review_path = review_root / f"review_{uuid.uuid4().hex}.png"
@@ -1224,11 +1228,21 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 except Exception as exc:
                     correction_history.append({"instruction": correction, "error": str(exc)})
                     break
+        if quality_verdict.get("review_error"):
+            raise ScenePlanError("렌더링 결과를 시각적으로 검수하지 못해 미리보기를 제공하지 않았습니다: " +
+                                 "; ".join(quality_verdict.get("violations", [])))
+        if self.enable_visual_review and not quality_verdict.get("passed"):
+            raise ScenePlanError(
+                "렌더링 결과가 시각 품질 검수를 통과하지 못해 미리보기를 제공하지 않았습니다: "
+                + "; ".join(quality_verdict.get("violations", []))
+            )
         output_root = (Path(tempfile.gettempdir()) / "jarvis_mockup_previews" if preview_only else Path(output_dir).expanduser().resolve())
         output_root.mkdir(parents=True, exist_ok=True)
         safe_name = "".join(c for c in basename if c.isalnum() or c in "-_ ").strip() or "mockup"
         suffix = uuid.uuid4().hex if preview_only else time.strftime('%Y%m%d_%H%M%S')
-        output_path = output_root / f"{safe_name}_{suffix}.png"; canvas.convert("RGB").save(output_path, "PNG", optimize=True)
+        output_path = output_root / f"{safe_name}_{suffix}.png"
+        output_mode = "RGBA" if plan.get("canvas", {}).get("background") == "transparent" else "RGB"
+        canvas.convert(output_mode).save(output_path, "PNG", optimize=True)
         svg_path = output_path.with_suffix(".svg")
         if editable_svg:
             svg_path.write_text(editable_svg, encoding="utf-8")
@@ -1337,7 +1351,31 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             instruction,
             re.I,
         ))
+        # JSON equality is not proof of visual success. Re-render and run the
+        # image critic instead of returning the previous bitmap here.
         if recognized_noop and not scene_changed(previous_plan, explicit_plan):
+            # Re-render the plan and run the real-image critic. This preserves
+            # idempotent UX without trusting stale JSON or an old bitmap.
+            verification = self.render(
+                profile_id, sources, instruction=str(metadata.get("instruction", "")),
+                visible_copy=str(metadata.get("visible_copy", "")), scene_plan=explicit_plan,
+                backend="auto", seed=seed, preview_only=True,
+                guidance_paths=guidance_paths, memory_context=memory_context,
+            )
+            # The extra render exists only to prove the current visual output
+            # still satisfies the request. Keep the user's active preview and
+            # revision stable instead of silently replacing it with a duplicate.
+            verified_output = Path(str(verification.get("output", "")))
+            for artifact in (
+                verified_output,
+                verified_output.with_suffix(".json"),
+                verified_output.with_suffix(".svg"),
+            ):
+                try:
+                    if artifact.is_file():
+                        artifact.unlink()
+                except OSError:
+                    pass
             result = deepcopy(metadata)
             result.update({
                 "renderer": "verified-idempotent-edit-v1",
@@ -1345,6 +1383,7 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 "applied_edit_fields": [],
                 "already_satisfied": True,
                 "revision": int(metadata.get("revision", 0)),
+                "quality_verdict": verification.get("quality_verdict", {}),
             })
             return result
         try:
@@ -1360,17 +1399,10 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             )
             patch_fields = list(dict.fromkeys([*patch_fields, *grounded_fields]))
             if not scene_changed(previous_plan, revised_plan):
-                if patch_fields:
-                    result = deepcopy(metadata)
-                    result.update({
-                        "renderer": "verified-idempotent-edit-v1",
-                        "edit_instruction": instruction.strip(),
-                        "applied_edit_fields": [],
-                        "already_satisfied": True,
-                        "revision": int(metadata.get("revision", 0)),
-                    })
-                    return result
-                raise model_error
+                if not patch_fields:
+                    raise model_error
+                revised_copy = str(metadata.get("visible_copy", ""))
+                renderer = "structured-scene-patch-v4"
             validate_patch_against_instruction(
                 instruction, patch_fields, before=previous_plan, after=revised_plan,
             )
@@ -1381,6 +1413,10 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             revised_plan, paths, instruction
         )
         patch_fields = list(dict.fromkeys([*patch_fields, *grounded_fields]))
+        revised_plan, revised_copy, exact_fields = enforce_exact_user_copy(
+            revised_plan, instruction, revised_copy
+        )
+        patch_fields = list(dict.fromkeys([*patch_fields, *exact_fields]))
         result = self.render(
             profile_id, sources, instruction=str(metadata.get("instruction", "")),
             visible_copy=revised_copy, scene_plan=revised_plan,

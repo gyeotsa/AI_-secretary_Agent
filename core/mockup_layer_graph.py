@@ -36,6 +36,7 @@ def scene_plan_to_layer_graph(plan: dict) -> dict:
             "id": f"text-{index}", "kind": "text", "name": f"문구 {index + 1}",
             "z": text.get("z", 10), "visible": True, "opacity": text.get("opacity", 1.0),
             "blend_mode": text.get("blend_mode", "normal"), "content": text.get("content", ""),
+            "spans": deepcopy(text.get("spans", [])),
             "frame": {key: text.get(key) for key in ("x", "y", "width", "height")},
             "typography": {
                 "font_family": text.get("font_family", "Malgun Gothic"),
@@ -112,15 +113,38 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
             x, y, w, h = frame["x"]*width, frame["y"]*height, frame["width"]*width, frame["height"]*height
             anchor = {"left":"start", "center":"middle", "right":"end"}.get(typo.get("align"), "middle")
             tx = x if anchor == "start" else x+w if anchor == "end" else x+w/2
-            font_size = typo.get("font_size", .065)*min(width,height)
+            requested_font_size = typo.get("font_size", .065)*min(width,height)
+            padding_px = max(0.0, float(layer.get("padding", 0))) * min(width, height)
+            available_width = max(8.0, w - padding_px * 2)
+            available_height = max(8.0, h - padding_px * 2)
+            content_value = str(layer.get("content", ""))
+            # Conservative glyph measurement: Hangul/CJK occupies roughly one em,
+            # Latin letters .62 em and spaces .35 em.  This prevents SVG text from
+            # escaping its declared frame even when the planner requests 320 px.
+            units = sum(.35 if ch.isspace() else 1.0 if ord(ch) >= 0x2E80 else .62 for ch in content_value) or 1
+            font_size = min(float(requested_font_size), available_height * .82, available_width / units)
+            font_size = max(8.0, font_size)
             background = layer.get("background", "transparent")
             if background != "transparent": body.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{background}"/>')
-            content = html.escape(str(layer.get("content", "")))
+            content = html.escape(content_value)
+            text_clip = f"text-clip-{layer_id}"
+            defs.append(f'<clipPath id="{text_clip}"><rect x="{x}" y="{y}" width="{w}" height="{h}"/></clipPath>')
+            spans = layer.get("spans") if isinstance(layer.get("spans"), list) else []
+            if spans and " ".join(str(item.get("content", "")).strip() for item in spans) == content_value:
+                rendered_parts = []
+                for index, span in enumerate(spans):
+                    separator = " " if index else ""
+                    rendered_parts.append(
+                        f'<tspan fill="{html.escape(str(span.get("color", typo.get("color", "#111111"))))}">'
+                        f'{html.escape(separator + str(span.get("content", "")))}</tspan>'
+                    )
+                content = "".join(rendered_parts)
             body.append(f'<text id="{layer_id}" x="{tx}" y="{y+h/2}" dominant-baseline="middle" text-anchor="{anchor}" '
                         f'font-family="{html.escape(str(typo.get("font_family","Malgun Gothic")))}" font-size="{font_size}" '
                         f'font-weight="{typo.get("font_weight","bold")}" fill="{typo.get("color","#111111")}" '
                         f'stroke="{typo.get("stroke","none")}" stroke-width="{typo.get("stroke_width",0)*min(width,height)}" '
-                        f'letter-spacing="{typo.get("letter_spacing",0)*min(width,height)}" opacity="{opacity}">{content}</text>')
+                        f'letter-spacing="{typo.get("letter_spacing",0)*min(width,height)}" opacity="{opacity}" '
+                        f'clip-path="url(#{text_clip})">{content}</text>')
     return (f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
             f'width="{width}" height="{height}" viewBox="0 0 {width} {height}"><defs>{"".join(defs)}</defs>{"".join(body)}</svg>')
 

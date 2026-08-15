@@ -6,6 +6,7 @@ from core.mockup_layer_graph import (layer_graph_to_svg, render_svg_with_qt,
                                       scene_plan_to_layer_graph, validate_layer_graph)
 from core.mockup_style_index import VisualStyleIndex
 from core.mockup_subject_runtime import SubjectAnalysisRuntime
+from core.mockup_scene import enforce_exact_user_copy, parse_explicit_colored_copy
 from core.specialist_team import SpecialistTeamRuntime, TeamRun
 
 
@@ -71,3 +72,38 @@ def test_subject_analysis_exposes_safe_regions(tmp_path):
     assert result["width"] == 320
     assert len(result["safe_text_regions"]) == 4
     assert result["segmentation"]["backend"] == "opencv-grabcut"
+
+
+def test_exact_multicolor_copy_preserves_user_spelling():
+    plan = _plan()
+    copy, spans = parse_explicit_colored_copy(
+        "스티커는 원형으로 제작해줘. 문구는 정지언은 빨간색, 테스트는 파란색으로 해줘."
+    )
+    assert copy == "정지언 테스트"
+    assert spans == [
+        {"content": "정지언", "color": "#e5484d"},
+        {"content": "테스트", "color": "#2878d0"},
+    ]
+    revised, revised_copy, fields = enforce_exact_user_copy(plan, "정지언은 빨간색, 테스트는 파란색", "")
+    assert revised_copy == "정지언 테스트"
+    assert revised["texts"][0]["spans"] == spans
+    assert "texts[0].spans" in fields
+
+
+def test_svg_multicolor_text_is_clipped_and_auto_fitted(tmp_path):
+    source = tmp_path / "source.png"
+    Image.new("RGB", (400, 700), "#777777").save(source)
+    plan = _plan()
+    plan["canvas"]["background"] = "transparent"
+    plan["texts"][0].update({
+        "content": "정지언 테스트", "font_size": .2, "width": .2,
+        "spans": [{"content": "정지언", "color": "#e5484d"},
+                  {"content": "테스트", "color": "#2878d0"}],
+    })
+    svg = layer_graph_to_svg(scene_plan_to_layer_graph(plan), [source], 600, 600)
+    assert '<tspan fill="#e5484d">정지언</tspan>' in svg
+    assert '<tspan fill="#2878d0"> 테스트</tspan>' in svg
+    assert 'clip-path="url(#text-clip-text-0)"' in svg
+    rendered = render_svg_with_qt(svg, 600, 600)
+    assert rendered.mode == "RGBA"
+    assert rendered.getpixel((0, 0))[3] == 0
