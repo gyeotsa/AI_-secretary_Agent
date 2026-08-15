@@ -9,7 +9,8 @@ from core.mockup_layer_graph import (layer_graph_to_svg, render_svg_with_qt,
                                       scene_plan_to_layer_graph, validate_layer_graph)
 from core.mockup_style_index import VisualStyleIndex
 from core.mockup_subject_runtime import SubjectAnalysisRuntime
-from core.mockup_scene import enforce_exact_user_copy, parse_explicit_colored_copy
+from core.mockup_scene import (enforce_exact_user_copy, enforce_explicit_user_constraints,
+                               parse_explicit_colored_copy)
 from core.specialist_team import SpecialistTeamRuntime, TeamRun
 
 
@@ -121,9 +122,34 @@ def test_svg_multicolor_text_is_clipped_and_auto_fitted(tmp_path):
                   {"content": "테스트", "color": "#2878d0"}],
     })
     svg = layer_graph_to_svg(scene_plan_to_layer_graph(plan), [source], 600, 600)
-    assert '<tspan fill="#e5484d">정지언</tspan>' in svg
-    assert '<tspan fill="#2878d0"> 테스트</tspan>' in svg
+    assert 'id="text-0-span-0"' in svg and 'fill="#e5484d"' in svg and '>정지언</text>' in svg
+    assert 'id="text-0-span-1"' in svg and 'fill="#2878d0"' in svg and '> 테스트</text>' in svg
     assert 'clip-path="url(#text-clip-text-0)"' in svg
     rendered = render_svg_with_qt(svg, 600, 600)
     assert rendered.mode == "RGBA"
+    assert rendered.getpixel((0, 0))[3] == 0
+
+
+def test_phrase_specific_font_and_true_circular_sticker_contract(tmp_path):
+    copy, spans = parse_explicit_colored_copy(
+        "'정지원'은 빨간색 맑은 고딕, '테스트'는 파란색 궁서체로 해줘."
+    )
+    assert copy == "정지원 테스트"
+    assert spans[0]["font_family"] == "맑은 고딕"
+    assert spans[1]["font_family"] == "궁서"
+    plan, fields = enforce_explicit_user_constraints(_plan(), "스티커를 원형으로 만들어줘")
+    assert plan["canvas"]["background"] == "transparent"
+    assert plan["assets"][0]["shape"] == "ellipse"
+    assert "canvas.background" in fields
+
+    source = tmp_path / "portrait.png"
+    Image.new("RGB", (400, 800), "gray").save(source)
+    plan["assets"][0].update({"zoom": 3, "focal_x": .5, "focal_y": .2})
+    plan["texts"][0].update({"content": copy, "spans": spans})
+    svg = layer_graph_to_svg(scene_plan_to_layer_graph(plan), [source], 600, 600)
+    assert 'font-family="Malgun Gothic"' in svg
+    assert 'font-family="Gungsuh"' in svg
+    assert 'href="data:image/png;base64,' in svg  # zoom/focal crop is embedded for Qt
+    rendered = render_svg_with_qt(svg, 600, 600)
+    assert rendered.getpixel((300, 250))[3] > 0
     assert rendered.getpixel((0, 0))[3] == 0

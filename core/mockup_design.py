@@ -212,10 +212,14 @@ class MockupDesignRuntime:
                 f"학습 스타일 구조: {json.dumps(profile.design_recipe, ensure_ascii=False)[:3000]}"
             ), mode="general", json_schema=schema)
             raw = extract_json_object(result.get("analysis", ""))
+            violations = [str(item)[:300] for item in raw.get("violations", [])[:8] if str(item).strip()]
             return {
-                "passed": bool(raw.get("passed")),
+                # A critic response cannot simultaneously pass and report
+                # visible defects. Treat that contradictory output as failed
+                # so the correction loop actually runs.
+                "passed": bool(raw.get("passed")) and not violations,
                 "score": max(0.0, min(1.0, float(raw.get("score", 0)))),
-                "violations": [str(item)[:300] for item in raw.get("violations", [])[:8]],
+                "violations": violations,
                 "correction_instruction": str(raw.get("correction_instruction", ""))[:1200],
             }
         except Exception as exc:

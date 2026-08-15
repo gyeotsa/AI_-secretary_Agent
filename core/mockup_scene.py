@@ -36,7 +36,22 @@ def parse_explicit_colored_copy(instruction: str) -> tuple[str, list[dict]]:
         if content in {"문구", "글자", "텍스트", "색상"}:
             continue
         color_word = match.group(2)
-        spans.append({"content": content, "color": COLOR_WORDS.get(color_word, color_word.lower())})
+        span = {"content": content, "color": COLOR_WORDS.get(color_word, color_word.lower())}
+        # Typography may be specified independently for each coloured phrase,
+        # e.g. `'정지원'은 빨간색 맑은 고딕, '테스트'는 파란색 궁서체`.
+        clause_end = re.search(r"[,;\n.]", value[match.end():])
+        suffix = value[match.end():match.end() + (clause_end.start() if clause_end else len(value))]
+        suffix = re.sub(
+            r"\s*(?:으로|로)?\s*(?:해\s*줘|해주세요|설정해줘|적용해줘|써줘|작성해줘).*$",
+            "", suffix,
+        ).strip(" '\"“”")
+        if suffix.endswith("체") and len(suffix) > 1:
+            suffix = suffix[:-1].strip()
+        if suffix and len(suffix) <= 80 and not any(
+            word in suffix for word in ("문구", "색상", "위치", "크기", "하단", "상단")
+        ):
+            span["font_family"] = suffix
+        spans.append(span)
     if not spans:
         return "", []
     return " ".join(span["content"] for span in spans), spans
@@ -281,6 +296,9 @@ def normalize_scene_plan(raw: dict, *, asset_count: int, visible_copy: str = "")
                 "content": str(span["content"]).strip()[:80],
                 "color": _color(span.get("color"), normalized_text["color"]),
             })
+            family = " ".join(str(span.get("font_family", "")).split())[:80]
+            if family:
+                normalized_spans[-1]["font_family"] = family
         if normalized_spans and " ".join(part["content"] for part in normalized_spans) == requested_copy:
             normalized_text["spans"] = normalized_spans
         _fit_normalized_box(normalized_text)
@@ -790,6 +808,11 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
                             f"assets[{index}].focal_y"])
     circular_frame = any(word in asset_request for word in ("원형", "원 형태", "동그랗"))
     if circular_frame:
+        # "스티커를 원형으로" describes the delivered sticker/canvas, not
+        # merely an already-elliptical photo frame. Preserve true alpha outside.
+        if "스티커" in asset_request and result.get("canvas", {}).get("background") != "transparent":
+            result.setdefault("canvas", {})["background"] = "transparent"
+            applied.append("canvas.background")
         for index, asset in enumerate(result.get("assets", [])):
             width, height = float(asset.get("width", .8)), float(asset.get("height", .8))
             side = min(width, height)

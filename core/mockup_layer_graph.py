@@ -4,12 +4,28 @@ from __future__ import annotations
 from copy import deepcopy
 import base64
 import html
+import io
 import mimetypes
 import os
 from pathlib import Path
 
+from PIL import Image
+
 
 LAYER_GRAPH_VERSION = 1
+
+_SVG_FONT_ALIASES = {
+    "맑은고딕": "Malgun Gothic", "맑은 고딕": "Malgun Gothic",
+    "궁서": "Gungsuh", "궁서체": "Gungsuh",
+    "굴림": "Gulim", "굴림체": "GulimChe",
+    "돋움": "Dotum", "돋움체": "DotumChe",
+    "바탕": "Batang", "바탕체": "BatangChe",
+}
+
+
+def _svg_font_family(value) -> str:
+    family = " ".join(str(value or "Malgun Gothic").split())
+    return _SVG_FONT_ALIASES.get(family, family)
 
 
 def scene_plan_to_layer_graph(plan: dict) -> dict:
@@ -87,7 +103,8 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
             w, h = frame["width"]*width, frame["height"]*height
             path = Path(asset_paths[int(layer["source_index"])]).resolve()
             mime = mimetypes.guess_type(path.name)[0] or "image/png"
-            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            with Image.open(path) as source:
+                source_width, source_height = source.size
             clip_id = f"clip-{layer_id}"
             mask_type = layer.get("mask", {}).get("type", "rectangle")
             if mask_type == "ellipse":
@@ -96,9 +113,34 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
                 defs.append(f'<clipPath id="{clip_id}"><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{min(w,h)/12}"/></clipPath>')
             else:
                 defs.append(f'<clipPath id="{clip_id}"><rect x="{x}" y="{y}" width="{w}" height="{h}"/></clipPath>')
-            aspect = "xMidYMid meet" if transform.get("fit") == "contain" else "xMidYMid slice"
-            body.append(f'<image id="{layer_id}" x="{x}" y="{y}" width="{w}" height="{h}" opacity="{opacity}" '
-                        f'preserveAspectRatio="{aspect}" clip-path="url(#{clip_id})" href="data:{mime};base64,{encoded}"/>')
+            if transform.get("fit") == "contain":
+                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+                body.append(f'<image id="{layer_id}" x="{x}" y="{y}" width="{w}" height="{h}" opacity="{opacity}" '
+                            f'preserveAspectRatio="xMidYMid meet" clip-path="url(#{clip_id})" href="data:{mime};base64,{encoded}"/>')
+            else:
+                zoom = max(1.0, float(transform.get("zoom") or 1.0))
+                focal_x = max(0.0, min(1.0, float(transform.get("focal_x") or .5)))
+                focal_y = max(0.0, min(1.0, float(transform.get("focal_y") or .5)))
+                source_ratio = source_width / max(1, source_height)
+                frame_ratio = w / max(1.0, h)
+                if source_ratio >= frame_ratio:
+                    crop_h, crop_w = 1.0 / zoom, (frame_ratio / source_ratio) / zoom
+                else:
+                    crop_w, crop_h = 1.0 / zoom, (source_ratio / frame_ratio) / zoom
+                crop_x = max(0.0, min(1.0 - crop_w, focal_x - crop_w / 2))
+                crop_y = max(0.0, min(1.0 - crop_h, focal_y - crop_h / 2))
+                crop_box = (
+                    int(crop_x * source_width), int(crop_y * source_height),
+                    max(1, int((crop_x + crop_w) * source_width)),
+                    max(1, int((crop_y + crop_h) * source_height)),
+                )
+                with Image.open(path) as source:
+                    cropped = source.convert("RGBA").crop(crop_box)
+                payload = io.BytesIO()
+                cropped.save(payload, "PNG")
+                encoded = base64.b64encode(payload.getvalue()).decode("ascii")
+                body.append(f'<image id="{layer_id}" x="{x}" y="{y}" width="{w}" height="{h}" opacity="{opacity}" '
+                            f'preserveAspectRatio="none" clip-path="url(#{clip_id})" href="data:image/png;base64,{encoded}"/>')
         elif kind == "vector":
             item = layer["geometry"]
             x, y, w, h = item.get("x",0)*width, item.get("y",0)*height, item.get("width",0)*width, item.get("height",0)*height
@@ -131,16 +173,33 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
             defs.append(f'<clipPath id="{text_clip}"><rect x="{x}" y="{y}" width="{w}" height="{h}"/></clipPath>')
             spans = layer.get("spans") if isinstance(layer.get("spans"), list) else []
             if spans and " ".join(str(item.get("content", "")).strip() for item in spans) == content_value:
-                rendered_parts = []
+                # QtSvg does not reliably shape Hangul when a font-family is
+                # changed on nested tspan nodes.  Render phrase spans as
+                # independent text nodes so each phrase keeps its own Windows
+                # font while remaining one centred copy line.
+                span_layout = []
                 for index, span in enumerate(spans):
                     separator = " " if index else ""
-                    rendered_parts.append(
-                        f'<tspan fill="{html.escape(str(span.get("color", typo.get("color", "#111111"))))}">'
-                        f'{html.escape(separator + str(span.get("content", "")))}</tspan>'
+                    span_content = separator + str(span.get("content", ""))
+                    span_units = sum(.35 if ch.isspace() else 1.0 if ord(ch) >= 0x2E80 else .62
+                                     for ch in span_content)
+                    span_layout.append((span, span_content, span_units * font_size))
+                total_width = sum(part[2] for part in span_layout)
+                cursor = x if anchor == "start" else x + w - total_width if anchor == "end" else x + (w - total_width) / 2
+                for index, (span, span_content, span_width) in enumerate(span_layout):
+                    body.append(
+                        f'<text id="{layer_id}-span-{index}" x="{cursor}" y="{y+h/2}" '
+                        f'dominant-baseline="middle" text-anchor="start" '
+                        f'font-family="{html.escape(_svg_font_family(span.get("font_family", typo.get("font_family", "Malgun Gothic"))))}" '
+                        f'font-size="{font_size}" font-weight="{typo.get("font_weight","bold")}" '
+                        f'fill="{html.escape(str(span.get("color", typo.get("color", "#111111"))))}" '
+                        f'stroke="{typo.get("stroke","none")}" stroke-width="{typo.get("stroke_width",0)*min(width,height)}" '
+                        f'opacity="{opacity}" clip-path="url(#{text_clip})">{html.escape(span_content)}</text>'
                     )
-                content = "".join(rendered_parts)
+                    cursor += span_width
+                continue
             body.append(f'<text id="{layer_id}" x="{tx}" y="{y+h/2}" dominant-baseline="middle" text-anchor="{anchor}" '
-                        f'font-family="{html.escape(str(typo.get("font_family","Malgun Gothic")))}" font-size="{font_size}" '
+                        f'font-family="{html.escape(_svg_font_family(typo.get("font_family", "Malgun Gothic")))}" font-size="{font_size}" '
                         f'font-weight="{typo.get("font_weight","bold")}" fill="{typo.get("color","#111111")}" '
                         f'stroke="{typo.get("stroke","none")}" stroke-width="{typo.get("stroke_width",0)*min(width,height)}" '
                         f'letter-spacing="{typo.get("letter_spacing",0)*min(width,height)}" opacity="{opacity}" '
@@ -152,7 +211,7 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
 def render_svg_with_qt(svg: str, width: int, height: int):
     """Rasterize SVG through Qt's vector engine and return a PIL RGBA image."""
     from PyQt6.QtCore import QByteArray, QCoreApplication
-    from PyQt6.QtGui import QImage, QPainter
+    from PyQt6.QtGui import QFontDatabase, QImage, QPainter
     from PyQt6.QtSvg import QSvgRenderer
     from PIL import Image
     global _qt_application
@@ -160,6 +219,16 @@ def render_svg_with_qt(svg: str, width: int, height: int):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PyQt6.QtWidgets import QApplication
         _qt_application = QApplication([])
+    global _qt_design_fonts_loaded
+    if not _qt_design_fonts_loaded:
+        # Headless Qt sessions may not enumerate Korean system fonts even when
+        # they are installed. Register the concrete files used by supported
+        # aliases so SVG text never degrades into missing-glyph boxes.
+        for font_file in ("malgun.ttf", "malgunbd.ttf", "batang.ttc", "gulim.ttc"):
+            path = Path("C:/Windows/Fonts") / font_file
+            if path.is_file():
+                QFontDatabase.addApplicationFont(str(path))
+        _qt_design_fonts_loaded = True
     renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
     if not renderer.isValid():
         raise ValueError("생성된 SVG 레이어 그래프가 유효하지 않습니다.")
@@ -173,3 +242,4 @@ def render_svg_with_qt(svg: str, width: int, height: int):
 
 
 _qt_application = None
+_qt_design_fonts_loaded = False
