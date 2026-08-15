@@ -11,7 +11,8 @@ from core.mockup_layer_graph import (layer_graph_to_svg, render_svg_with_qt,
 from core.mockup_style_index import VisualStyleIndex
 from core.mockup_subject_runtime import SubjectAnalysisRuntime
 from core.mockup_scene import (enforce_exact_user_copy, enforce_explicit_user_constraints,
-                               parse_explicit_colored_copy)
+                               filter_scene_edit_patch, infer_edit_scopes,
+                               parse_explicit_colored_copy, validate_patch_against_instruction)
 from core.specialist_team import SpecialistTeamRuntime, TeamRun
 
 
@@ -180,3 +181,34 @@ def test_visual_review_contract_uses_scene_facts_not_subjective_gaze():
     assert "'ㅈㅈㅈ' 문구 색상이 요청과 다릅니다." in (
         MockupDesignRuntime._scene_contract_violations(plan, instruction, "정지원 ㅈㅈㅈ")
     )
+
+
+def test_circular_sticker_edit_allows_required_canvas_alpha_change():
+    instruction = "스티커를 원 형태로 만들어줘"
+    assert infer_edit_scopes(instruction) == {"assets", "canvas"}
+    filtered, removed = filter_scene_edit_patch(
+        {"canvas": {"background": "transparent"},
+         "assets": [{"index": 0, "shape": "ellipse"}]},
+        instruction,
+    )
+    assert removed == []
+    assert filtered["canvas"]["background"] == "transparent"
+
+    before = _plan()
+    after, fields = enforce_explicit_user_constraints(before, instruction)
+    validate_patch_against_instruction(instruction, fields, before, after)
+    assert after["canvas"]["background"] == "transparent"
+
+
+def test_circular_sticker_constraint_does_not_move_existing_text():
+    before = _plan()
+    before["texts"][0]["x"] = 0.21
+    before["texts"][0]["y"] = 0.45
+
+    after, fields = enforce_explicit_user_constraints(
+        before, "스티커를 원 형태로 만들어줘",
+    )
+
+    assert after["texts"] == before["texts"]
+    assert "canvas.background" in fields
+    assert "assets[0].shape" in fields

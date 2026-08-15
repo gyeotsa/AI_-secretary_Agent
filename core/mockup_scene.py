@@ -392,6 +392,11 @@ def infer_edit_scopes(instruction: str) -> set[str]:
         "원형", "원 형태", "프레임", "틀", "크롭", "잘리", "잘라",
     )):
         scopes.add("assets")
+    # A circular *sticker* changes both the photo/frame mask and the delivered
+    # canvas alpha.  Treating it as assets-only makes the safety write mask
+    # reject the required transparent canvas as an unsolicited edit.
+    if "스티커" in text and any(word in text for word in ("원형", "원 형태", "원 모양", "동그랗")):
+        scopes.add("canvas")
     if any(word in text for word in ("테두리", "점선", "실선", "장식", "라인")):
         scopes.add("decorations")
     return scopes

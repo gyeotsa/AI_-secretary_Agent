@@ -1466,7 +1466,6 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             validate_patch_against_instruction(
                 instruction, patch_fields, before=previous_plan, after=revised_plan,
             )
-            revised_plan, _ = enforce_measured_style_evidence(revised_plan, profile.style_features)
             revised_copy = str(metadata.get("visible_copy", ""))
             renderer = "structured-scene-patch-v4"
         revised_plan, grounded_fields = self._enforce_detected_subject_visibility(
