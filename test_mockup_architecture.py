@@ -12,7 +12,8 @@ from core.mockup_style_index import VisualStyleIndex
 from core.mockup_subject_runtime import SubjectAnalysisRuntime
 from core.mockup_scene import (enforce_exact_user_copy, enforce_explicit_user_constraints,
                                filter_scene_edit_patch, infer_edit_scopes,
-                               parse_explicit_colored_copy, validate_patch_against_instruction)
+                               parse_explicit_colored_copy, requests_circular_shape,
+                               validate_patch_against_instruction)
 from core.specialist_team import SpecialistTeamRuntime, TeamRun
 
 
@@ -212,3 +213,26 @@ def test_circular_sticker_constraint_does_not_move_existing_text():
     assert after["texts"] == before["texts"]
     assert "canvas.background" in fields
     assert "assets[0].shape" in fields
+
+
+def test_plain_korean_circle_wording_creates_a_true_round_sticker(tmp_path):
+    instruction = "스티커는 원으로 만들어줘."
+    assert requests_circular_shape(instruction)
+    assert infer_edit_scopes(instruction) == {"assets", "canvas"}
+
+    plan, fields = enforce_explicit_user_constraints(_plan(), instruction)
+    assert plan["canvas"]["background"] == "transparent"
+    assert plan["assets"][0]["shape"] == "ellipse"
+    assert plan["assets"][0]["fit"] == "cover"
+    assert "assets[0].fit" in fields
+
+    source = tmp_path / "portrait.png"
+    Image.new("RGB", (500, 800), "gray").save(source)
+    rendered = render_svg_with_qt(
+        layer_graph_to_svg(scene_plan_to_layer_graph(plan), [source], 600, 600),
+        600, 600,
+    )
+    # The corner of the asset frame must be transparent; checking only the
+    # outer canvas would miss QtSvg silently ignoring a raster clipPath.
+    assert rendered.getpixel((65, 65))[3] == 0
+    assert rendered.getpixel((300, 65))[3] > 0

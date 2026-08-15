@@ -379,6 +379,13 @@ def scene_changed(before: dict, after: dict) -> bool:
     return left != right
 
 
+def requests_circular_shape(value: str) -> bool:
+    """Recognize ordinary Korean variants describing a circular result."""
+    text = " ".join(str(value or "").lower().split())
+    return (any(word in text for word in ("원형", "원 형태", "원 모양", "동그랗", "동그란")) or
+            bool(re.search(r"원\s*(?:모양|형태)?\s*(?:으)?로(?:\s|$|[.,!?])", text)))
+
+
 def infer_edit_scopes(instruction: str) -> set[str]:
     """Identify the visual groups explicitly targeted by an edit request."""
     text = " ".join(str(instruction or "").lower().split())
@@ -392,10 +399,12 @@ def infer_edit_scopes(instruction: str) -> set[str]:
         "원형", "원 형태", "프레임", "틀", "크롭", "잘리", "잘라",
     )):
         scopes.add("assets")
+    if requests_circular_shape(text):
+        scopes.add("assets")
     # A circular *sticker* changes both the photo/frame mask and the delivered
     # canvas alpha.  Treating it as assets-only makes the safety write mask
     # reject the required transparent canvas as an unsolicited edit.
-    if "스티커" in text and any(word in text for word in ("원형", "원 형태", "원 모양", "동그랗")):
+    if "스티커" in text and requests_circular_shape(text):
         scopes.add("canvas")
     if any(word in text for word in ("테두리", "점선", "실선", "장식", "라인")):
         scopes.add("decorations")
@@ -656,7 +665,7 @@ def validate_patch_against_instruction(instruction: str, changed_fields: list[st
                 raise ScenePlanError("안쪽 테두리 요청인데 장식이 사진 프레임 내부에 배치되지 않았습니다.")
     shape_satisfied = bool(after and after.get("assets") and
                            all(item.get("shape") == "ellipse" for item in after["assets"]))
-    if "assets" in scopes and any(word in text for word in ("원형", "원 형태", "동그랗")) \
+    if "assets" in scopes and requests_circular_shape(text) \
             and not any(field.startswith("assets[") and field.endswith(".shape")
                         for field in changed_fields) and not shape_satisfied:
         raise ScenePlanError("원형 프레임 요청인데 shape 변경이 없습니다.")
@@ -811,7 +820,7 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
             asset["focal_x"], asset["focal_y"] = .5, .3
             applied.extend([f"assets[{index}].fit", f"assets[{index}].zoom", f"assets[{index}].focal_x",
                             f"assets[{index}].focal_y"])
-    circular_frame = any(word in asset_request for word in ("원형", "원 형태", "동그랗"))
+    circular_frame = requests_circular_shape(asset_request)
     if circular_frame:
         # "스티커를 원형으로" describes the delivered sticker/canvas, not
         # merely an already-elliptical photo frame. Preserve true alpha outside.
@@ -826,8 +835,9 @@ def enforce_explicit_user_constraints(plan: dict, instruction: str) -> tuple[dic
             asset.update({"shape": "ellipse", "width": side, "height": side,
                           "x": round(max(0, min(1 - side, center_x - side / 2)), 4),
                           "y": round(max(0, min(1 - side, center_y - side / 2)), 4)})
-            if any(word in asset_request for word in ("원 형태가 아니", "원형으로", "동그랗게")):
-                asset["fit"] = "cover"
+            # A delivered circular sticker must fill the circle. ``contain``
+            # leaves a rectangular photo floating inside an elliptical mask.
+            asset["fit"] = "cover"
             applied.extend([f"assets[{index}].shape", f"assets[{index}].width",
                             f"assets[{index}].height", f"assets[{index}].x", f"assets[{index}].y"])
             if asset.get("fit") == "cover": applied.append(f"assets[{index}].fit")

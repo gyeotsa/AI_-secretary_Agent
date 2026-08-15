@@ -25,7 +25,8 @@ from core.mockup_scene import (SCENE_PLAN_JSON_SCHEMA, SCENE_EDIT_PATCH_JSON_SCH
                                enforce_measured_style_evidence, infer_edit_scopes, merge_scoped_scene_edit,
                                parse_explicit_colored_copy,
                                filter_scene_edit_patch,
-                               restore_required_elements, scene_changed, validate_patch_against_instruction)
+                               requests_circular_shape, restore_required_elements, scene_changed,
+                               validate_patch_against_instruction)
 from core.mockup_layer_graph import (scene_plan_to_layer_graph, validate_layer_graph,
                                      layer_graph_to_svg, render_svg_with_qt)
 from core.mockup_style_index import VisualStyleIndex
@@ -224,7 +225,7 @@ class MockupDesignRuntime:
                 if requested_font and requested_font not in actual_font and actual_font not in requested_font:
                     violations.append(f"'{required['content']}' 문구 글꼴이 요청과 다릅니다.")
         assets = plan.get("assets", [])
-        if any(word in instruction for word in ("원형", "동그랗", "원 모양")):
+        if requests_circular_shape(instruction):
             if not assets or any(item.get("shape") != "ellipse" for item in assets):
                 violations.append("원형 스티커 프레임이 적용되지 않았습니다.")
             if "스티커" in instruction and plan.get("canvas", {}).get("background") != "transparent":

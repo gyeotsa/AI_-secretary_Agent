@@ -9,7 +9,7 @@ import mimetypes
 import os
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw
 
 
 LAYER_GRAPH_VERSION = 1
@@ -114,9 +114,12 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
             else:
                 defs.append(f'<clipPath id="{clip_id}"><rect x="{x}" y="{y}" width="{w}" height="{h}"/></clipPath>')
             if transform.get("fit") == "contain":
-                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-                body.append(f'<image id="{layer_id}" x="{x}" y="{y}" width="{w}" height="{h}" opacity="{opacity}" '
-                            f'preserveAspectRatio="xMidYMid meet" clip-path="url(#{clip_id})" href="data:{mime};base64,{encoded}"/>')
+                with Image.open(path) as source:
+                    source = source.convert("RGBA")
+                    source.thumbnail((max(1, round(w)), max(1, round(h))), Image.Resampling.LANCZOS)
+                    raster = Image.new("RGBA", (max(1, round(w)), max(1, round(h))), (0, 0, 0, 0))
+                    raster.alpha_composite(source, ((raster.width - source.width) // 2,
+                                                    (raster.height - source.height) // 2))
             else:
                 zoom = max(1.0, float(transform.get("zoom") or 1.0))
                 focal_x = max(0.0, min(1.0, float(transform.get("focal_x") or .5)))
@@ -136,11 +139,31 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
                 )
                 with Image.open(path) as source:
                     cropped = source.convert("RGBA").crop(crop_box)
+                raster = cropped.resize((max(1, round(w)), max(1, round(h))), Image.Resampling.LANCZOS)
+
+            # QtSvg does not consistently honor clipPath on embedded raster
+            # images. Bake non-rectangular masks into the PNG alpha channel so
+            # the saved preview and the editable SVG have identical geometry.
+            if mask_type in {"ellipse", "rounded"}:
+                mask = Image.new("L", raster.size, 0)
+                painter = ImageDraw.Draw(mask)
+                bounds = (0, 0, raster.width - 1, raster.height - 1)
+                if mask_type == "ellipse":
+                    painter.ellipse(bounds, fill=255)
+                else:
+                    painter.rounded_rectangle(bounds, radius=max(1, min(raster.size) // 12), fill=255)
+                raster.putalpha(ImageChops.multiply(raster.getchannel("A"), mask))
+
+            if mask_type in {"ellipse", "rounded"} or transform.get("fit") != "contain":
                 payload = io.BytesIO()
-                cropped.save(payload, "PNG")
+                raster.save(payload, "PNG")
                 encoded = base64.b64encode(payload.getvalue()).decode("ascii")
                 body.append(f'<image id="{layer_id}" x="{x}" y="{y}" width="{w}" height="{h}" opacity="{opacity}" '
-                            f'preserveAspectRatio="none" clip-path="url(#{clip_id})" href="data:image/png;base64,{encoded}"/>')
+                            f'preserveAspectRatio="none" href="data:image/png;base64,{encoded}"/>')
+            else:
+                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+                body.append(f'<image id="{layer_id}" x="{x}" y="{y}" width="{w}" height="{h}" opacity="{opacity}" '
+                            f'preserveAspectRatio="xMidYMid meet" href="data:{mime};base64,{encoded}"/>')
         elif kind == "vector":
             item = layer["geometry"]
             x, y, w, h = item.get("x",0)*width, item.get("y",0)*height, item.get("width",0)*width, item.get("height",0)*height
