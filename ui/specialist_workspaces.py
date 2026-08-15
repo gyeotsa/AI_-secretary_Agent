@@ -27,11 +27,19 @@ class ImageDropList(QListWidget):
     paths_dropped = pyqtSignal(object)
 
     def __init__(self, parent=None):
-        super().__init__(parent); self.setAcceptDrops(True)
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.viewport().setAcceptDrops(True)
+        self.setDragDropMode(QListWidget.DragDropMode.DropOnly)
+        self.setDefaultDropAction(Qt.DropAction.CopyAction)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls(): event.acceptProposedAction()
         else: super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls(): event.acceptProposedAction()
+        else: super().dragMoveEvent(event)
 
     def dropEvent(self, event):
         paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
@@ -42,32 +50,75 @@ class ImageDropList(QListWidget):
 
 
 class ZoomableImageView(QScrollArea):
-    """Scrollable preview with Ctrl-wheel/buttons zoom and fit reset."""
+    """Centered fit-to-view preview with zoom and click-drag panning."""
     def __init__(self, parent=None):
         super().__init__(parent); self.setWidgetResizable(False)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.label = QLabel("학습용 시안을 추가하고 분석을 시작하세요.")
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter); self.label.setWordWrap(True)
+        self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setWidget(self.label); self._source = QPixmap(); self._zoom = 1.0
+        self._fit_to_view = True; self._pan_origin = None; self._pan_scroll = (0, 0)
 
     def set_preview(self, pixmap: QPixmap):
-        self._source = QPixmap(pixmap); self._zoom = 1.0; self._refresh()
+        self._source = QPixmap(pixmap); self._fit_to_view = True
+        self.fit_to_view(); QTimer.singleShot(0, self.fit_to_view)
 
     def setText(self, text: str):
         self._source = QPixmap(); self.label.setPixmap(QPixmap()); self.label.setText(text)
+        self._fit_to_view = True; self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
     def zoom_by(self, factor: float):
         if self._source.isNull(): return
-        self._zoom = min(5.0, max(.15, self._zoom * factor)); self._refresh()
+        self._fit_to_view = False
+        self._zoom = min(5.0, max(.05, self._zoom * factor)); self._refresh()
 
     def reset_zoom(self):
-        self._zoom = 1.0; self._refresh()
+        self.fit_to_view()
+
+    def fit_to_view(self):
+        if self._source.isNull(): return
+        viewport = self.viewport().size()
+        available_w = max(1, viewport.width() - 16)
+        available_h = max(1, viewport.height() - 16)
+        self._zoom = min(available_w / self._source.width(),
+                         available_h / self._source.height())
+        self._fit_to_view = True; self._refresh()
+        self.horizontalScrollBar().setValue(0); self.verticalScrollBar().setValue(0)
 
     def _refresh(self):
         if self._source.isNull(): return
         size = self._source.size() * self._zoom
         self.label.setPixmap(self._source.scaled(size, Qt.AspectRatioMode.KeepAspectRatio,
                                                   Qt.TransformationMode.SmoothTransformation))
-        self.label.resize(size)
+        self.label.resize(size); self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._fit_to_view and not self._source.isNull(): self.fit_to_view()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self._source.isNull():
+            self._pan_origin = event.position().toPoint()
+            self._pan_scroll = (self.horizontalScrollBar().value(),
+                                self.verticalScrollBar().value())
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept(); return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._pan_origin is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            delta = event.position().toPoint() - self._pan_origin
+            self.horizontalScrollBar().setValue(self._pan_scroll[0] - delta.x())
+            self.verticalScrollBar().setValue(self._pan_scroll[1] - delta.y())
+            event.accept(); return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._pan_origin is not None:
+            self._pan_origin = None; self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept(); return
+        super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -474,7 +525,7 @@ class MockupWorkspaceWindow(QMainWindow):
         zoom_row = QHBoxLayout()
         for label, factor in (("축소", .8), ("확대", 1.25)):
             button = QPushButton(label); button.clicked.connect(lambda _checked=False, value=factor: self.preview.zoom_by(value)); zoom_row.addWidget(button)
-        fit = QPushButton("100%"); fit.clicked.connect(self.preview.reset_zoom); zoom_row.addWidget(fit); zoom_row.addStretch()
+        fit = QPushButton("전체 맞춤"); fit.clicked.connect(self.preview.reset_zoom); zoom_row.addWidget(fit); zoom_row.addStretch()
         layout.addLayout(zoom_row)
         self.details = QTextEdit(); self.details.setReadOnly(True); layout.addWidget(self.details, 2)
         edit_row = QHBoxLayout()

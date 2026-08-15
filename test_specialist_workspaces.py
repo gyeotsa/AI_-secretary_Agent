@@ -3,14 +3,15 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, QMimeData, QPointF, QUrl
+from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtWidgets import QApplication
 
 from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
 from plugins.photoshop import PhotoshopPlugin
-from ui.specialist_workspaces import MockupWorkspaceWindow, SpecialistWorkspaceWindow
+from ui.specialist_workspaces import (ImageDropList, MockupWorkspaceWindow,
+                                      SpecialistWorkspaceWindow, ZoomableImageView)
 from core.specialist_team import SpecialistTeamRuntime
 from core.harness import SafetyLayer
 from ui.knowledge_graph_workspace import KnowledgeGraphWindow, NativeGraphView
@@ -140,6 +141,55 @@ def test_mockup_workspace_exposes_zoom_sketch_font_and_drop_guidance_controls():
     assert Path(sketch_path).is_file()
     assert SafetyLayer.validate_path(sketch_path)[0]
     window.close(); assert app is not None
+
+
+def test_mockup_preview_defaults_to_centered_fit_and_supports_drag_pan():
+    app = QApplication.instance() or QApplication([])
+    view = ZoomableImageView(); view.resize(500, 360); view.show(); app.processEvents()
+    view.set_preview(QPixmap(1600, 1200)); app.processEvents()
+    assert view._fit_to_view
+    assert view._zoom < 1.0
+    assert view.label.width() <= view.viewport().width()
+    assert view.label.height() <= view.viewport().height()
+    assert view.alignment() & Qt.AlignmentFlag.AlignCenter
+
+    view.zoom_by(3); app.processEvents()
+    view.horizontalScrollBar().setValue(view.horizontalScrollBar().maximum() // 2)
+    view.verticalScrollBar().setValue(view.verticalScrollBar().maximum() // 2)
+    start = (view.horizontalScrollBar().value(), view.verticalScrollBar().value())
+
+    class MouseEvent:
+        def __init__(self, point, button=Qt.MouseButton.NoButton, buttons=Qt.MouseButton.NoButton):
+            self._point, self._button, self._buttons = QPointF(*point), button, buttons
+        def position(self): return self._point
+        def button(self): return self._button
+        def buttons(self): return self._buttons
+        def accept(self): pass
+
+    view.mousePressEvent(MouseEvent((180, 140), Qt.MouseButton.LeftButton,
+                                    Qt.MouseButton.LeftButton))
+    view.mouseMoveEvent(MouseEvent((130, 100), buttons=Qt.MouseButton.LeftButton))
+    assert (view.horizontalScrollBar().value(), view.verticalScrollBar().value()) != start
+    view.mouseReleaseEvent(MouseEvent((130, 100), Qt.MouseButton.LeftButton))
+    view.close()
+
+
+def test_edit_reference_drop_box_accepts_local_image_urls(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    image = tmp_path / "reference.png"; QPixmap(20, 20).save(str(image), "PNG")
+    mime = QMimeData(); mime.setUrls([QUrl.fromLocalFile(str(image))])
+    dropped = []
+    widget = ImageDropList(); widget.paths_dropped.connect(dropped.extend)
+
+    class DropEvent:
+        def mimeData(self): return mime
+        def acceptProposedAction(self): self.accepted = True
+        accepted = False
+
+    event = DropEvent(); widget.dropEvent(event)
+    assert event.accepted
+    assert dropped == [str(image.resolve())]
+    widget.close(); assert app is not None
 
 
 def test_specialist_team_scopes_recall_and_stores_only_compact_success():
