@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "presets": [
+    {
+      "id": "work_start",
+      "label": "업무 시작",
+      "description": "실제 시각·날씨·작업·승인·자동화 상태를 출처와 함께 브리핑합니다.",
+      "trigger": ["업무 시작", "오늘 업무 시작"],
+      "steps": [
+        {"id": "core_health", "action": "diagnostics", "scope": "core", "on_failure": "continue"},
+        {"id": "brief", "action": "morning_brief", "on_failure": "continue"}
+      ]
+    },
+    {
+      "id": "development_start",
+      "label": "개발 시작",
+      "description": "선택한 Workspace와 Git 상태를 읽기 전용으로 점검합니다.",
+      "trigger": ["개발 시작", "코딩 시작"],
+      "steps": [
+        {"id": "workspace", "action": "workspace_summary", "condition": "workspace_selected"},
+        {"id": "git_status", "action": "tool", "tool": "git_status", "input": {"path": "${workspace_path}"}, "condition": "workspace_selected", "on_failure": "continue"}
+      ]
+    },
+    {
+      "id": "document_work",
+      "label": "문서 작업",
+      "description": "문서 Workspace와 실제 Office Plugin 연결 상태를 점검합니다.",
+      "trigger": ["문서 작업 시작", "문서 모드"],
+      "steps": [
+        {"id": "workspace", "action": "workspace_summary", "condition": "workspace_selected", "on_failure": "continue"},
+        {"id": "office_plugins", "action": "plugin_group_check", "prefixes": ["excel", "word", "powerpoint", "pdf", "hwpx"]}
+      ]
+    },
+    {
+      "id": "bedtime",
+      "label": "업무 종료",
+      "description": "보류 중인 기억을 통합하고 런타임 상태를 점검합니다.",
+      "trigger": ["업무 종료", "오늘은 여기까지"],
+      "steps": [
+        {"id": "memory", "action": "memory_maintenance", "requires_approval": true, "on_failure": "continue"},
+        {"id": "final_health", "action": "diagnostics", "scope": "core", "on_failure": "continue"}
+      ]
+    }
+  ]
+}

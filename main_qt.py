@@ -6,7 +6,7 @@ import uuid
 import threading
 import time
 from pathlib import Path
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtCore import QTimer, QObject, pyqtSignal
 from PyQt6.QtGui import QIcon
 from config import Config, request_windows_permissions
@@ -33,6 +33,13 @@ from core.specialist_team import SpecialistTeamRuntime
 from core.memory_consolidator import ConversationMemoryConsolidator
 from core.obsidian_vault import get_obsidian_vault
 from core.memory_pipeline import get_memory_event_pipeline
+from core.task_contracts import get_supervisor_runtime
+from core.workflow_runtime import MorningBriefService, WorkflowRuntime
+from core.diagnostics_runtime import DiagnosticsRuntime
+from core.command_center import CommandCenterRuntime
+from core.gesture_runtime import GestureRuntime
+from core.observer import get_observer_layer
+from ui.command_center import FirstRunWizard
 
 
 def strip_leading_wake_word(text: str, wake_word: str) -> str:
@@ -115,6 +122,7 @@ class AppSignals(QObject):
     proactive_message = pyqtSignal(str)
     control_response_ready = pyqtSignal(object)
     voice_text_detected = pyqtSignal(str)
+    gesture_action = pyqtSignal(str)
 
 
 class JarvisApp:
@@ -157,9 +165,11 @@ class JarvisApp:
         ).start()
         self.hardware_manager = get_hardware_manager()
         self.workspace_manager = get_workspace_manager()
+        self.supervisor_runtime = get_supervisor_runtime()
         self.specialist_team_runtime = SpecialistTeamRuntime(
             self.rag_manager, namespace_provider=self.workspace_manager.get_namespace,
             event_pipeline=self.memory_pipeline,
+            supervisor=self.supervisor_runtime,
         )
         self.window.set_specialist_team_runtime(self.specialist_team_runtime)
         self.project_indexer = get_project_indexer()
@@ -170,6 +180,49 @@ class JarvisApp:
         self.window.set_dialogue_state_store(self.executor.dialogue_state)
         self.automation_engine = get_automation_engine()
         self.signals = AppSignals()  # <-- 여기로 옮겼어요!
+        self.signals.gesture_action.connect(self._on_gesture_action)
+
+        self.diagnostics_runtime = DiagnosticsRuntime(
+            tool_executor=self.tool_executor, workspace_manager=self.workspace_manager,
+            plugin_registry=self.tool_executor.plugin_registry,
+            tts_settings=self.tool_executor.tts_settings,
+            audio_processor=self.audio_processor,
+            automation_engine=self.automation_engine,
+        )
+        self.morning_brief = MorningBriefService(
+            tool_executor=self.tool_executor, dialogue_state=self.executor.dialogue_state,
+            permission_manager=self.permission_manager,
+            plugin_registry=self.tool_executor.plugin_registry,
+            automation_engine=self.automation_engine, user_profile=self.user_profile,
+        )
+        self.workflow_runtime = WorkflowRuntime(
+            tool_executor=self.tool_executor, brief_service=self.morning_brief,
+            diagnostics=self.diagnostics_runtime,
+            memory_maintenance=lambda: self._run_idle_memory_maintenance(force=True),
+            context_provider=self._command_center_context,
+        )
+        self.gesture_runtime = GestureRuntime(actions={
+            "stop_tts": lambda: self.signals.gesture_action.emit("stop_tts"),
+            "approve": lambda: self.signals.gesture_action.emit("approve"),
+            "cancel": lambda: self.signals.gesture_action.emit("cancel"),
+            "switch_workspace": lambda: self.signals.gesture_action.emit("switch_workspace"),
+        })
+        self.command_center_runtime = CommandCenterRuntime(
+            supervisor=self.supervisor_runtime, specialist_team=self.specialist_team_runtime,
+            permission_manager=self.permission_manager, plugin_registry=self.tool_executor.plugin_registry,
+            automation_engine=self.automation_engine, observer=get_observer_layer(),
+            workspace_manager=self.workspace_manager, workflow_runtime=self.workflow_runtime,
+            diagnostics=self.diagnostics_runtime, dialogue_state=self.executor.dialogue_state,
+            session_provider=lambda: self.session_id,
+        )
+        self.window.set_command_center_runtime(
+            self.command_center_runtime, workflow_runtime=self.workflow_runtime,
+            diagnostics=self.diagnostics_runtime, gesture_runtime=self.gesture_runtime,
+            context_provider=self._command_center_context,
+            control_callback=lambda command: self.executor.handle_control_command(
+                command, self.session_id,
+            ),
+        )
         
         # 권한 요청 결과 저장용 변수
         self._permission_result = None
@@ -199,6 +252,7 @@ class JarvisApp:
         
         self._is_processing_ai = False
         self._queued_dispatch_inflight = set()
+        self._queued_specialist_payloads = {}
         
         # 콘솔 리더 초기화
         self.console_reader = ConsoleReader()
@@ -224,7 +278,8 @@ class JarvisApp:
         self.window.session_deleted.connect(self._delete_session)
         self.window.session_reset.connect(self._reset_session)
         self.window.task_control_requested.connect(self._on_task_control_requested)
-        self.window.specialist_prompt_submitted.connect(self._on_user_input)
+        self.window.specialist_prompt_submitted.connect(self._on_specialist_prompt_submitted)
+        self._active_specialist_key = ""
         
         self.heartbeat_timer = QTimer()
         self.heartbeat_timer.timeout.connect(lambda: None)
@@ -241,6 +296,22 @@ class JarvisApp:
         self._init_ui()
         threading.Thread(target=self.tool_executor.prepare_selected_tts, daemon=True).start()
         QTimer.singleShot(0, self._run_next_queued_task)
+        if FirstRunWizard.should_show():
+            QTimer.singleShot(700, self._show_first_run_wizard)
+
+    def _command_center_context(self):
+        return {
+            "session_id": getattr(self, "session_id", ""),
+            "workspace_path": self.workspace_manager.get_workspace_path() or "",
+            "location": (self.user_profile.get_preference("weather_location", "")
+                         or self.user_profile.get("location", "")),
+        }
+
+    def _show_first_run_wizard(self):
+        wizard = FirstRunWizard(self.diagnostics_runtime, self.window)
+        wizard.exec()
+        if wizard.result() == QDialog.DialogCode.Accepted:
+            self.window.show_command_center()
     
     def _init_ui(self):
         # 시스템 프롬프트 설정
@@ -351,7 +422,7 @@ class JarvisApp:
     def _on_state_changed(self, old_state: State, new_state: State):
         self.window.update_state(new_state)
     
-    def _on_user_input(self, text: str, existing_task_id=None):
+    def _on_user_input(self, text: str, existing_task_id=None, specialist_payload=None):
         self._last_user_activity = time.time()
         print("[DEBUG] _on_user_input called with:", text)
         self.window.show_user_text(text)
@@ -371,7 +442,7 @@ class JarvisApp:
             self.window.open_specialist_workspace(specialist.key)
             response = f"{specialist.title} 작업공간을 열었어요. 이 창에서도 채팅으로 작업을 이어갈 수 있어요."
             self.window.show_assistant_text(response)
-            self.window.show_specialist_result(response)
+            self.window.show_specialist_result(response, specialist.key)
             self.state_machine.go_idle()
             return
 
@@ -405,6 +476,8 @@ class JarvisApp:
                 )
                 return
             task = self.executor.enqueue_goal(text.strip(), self.session_id)
+            if specialist_payload:
+                self._queued_specialist_payloads[task.task_id] = dict(specialist_payload)
             self.window.show_assistant_text(
                 f"현재 작업이 끝나면 이어서 처리하겠습니다, 보스. 대기 작업 ID: {task.task_id}"
             )
@@ -415,7 +488,11 @@ class JarvisApp:
         self.state_machine.start_processing()
         
         # AI 호출을 별도 스레드로 처리
-        thread = threading.Thread(target=self._process_ai, args=(text, existing_task_id), daemon=True)
+        thread = threading.Thread(
+            target=self._process_ai,
+            args=(text, existing_task_id, specialist_payload),
+            daemon=True,
+        )
         thread.start()
 
     def _process_control_command(self, text: str):
@@ -427,14 +504,21 @@ class JarvisApp:
         response_text = self._personalize_address(outcome.response)
         self.window.show_assistant_text(response_text)
         if hasattr(self.window, "show_specialist_result"):
-            self.window.show_specialist_result(response_text)
+            self.window.show_specialist_result(response_text, self._active_specialist_key)
         self.messages.append({"role": "assistant", "content": response_text})
         self.memory.save_message(self.session_id, "assistant", response_text)
         if getattr(outcome, "next_goal", ""):
             self.executor.enqueue_goal(outcome.next_goal, self.session_id, priority=100)
         QTimer.singleShot(0, self._run_next_queued_task)
     
-    def _process_ai(self, text: str, existing_task_id=None):
+    def _on_specialist_prompt_submitted(self, payload):
+        if not isinstance(payload, dict):
+            payload = {"workspace": "document", "instruction": str(payload), "attachments": []}
+        instruction = str(payload.get("instruction", "")).strip()
+        if instruction:
+            self._on_user_input(instruction, specialist_payload=payload)
+
+    def _process_ai(self, text: str, existing_task_id=None, specialist_payload=None):
         print("[DEBUG] _process_ai called with:", text)
         self._response_user_request = text
         
@@ -455,6 +539,34 @@ class JarvisApp:
         self.messages.append({"role": "user", "content": text})
         
         try:
+            if specialist_payload:
+                workspace_key = str(specialist_payload.get("workspace", "document"))
+                self._active_specialist_key = workspace_key
+                outcome, team_run = self.specialist_team_runtime.execute_workspace_request(
+                    workspace_key, text,
+                    attachments=list(specialist_payload.get("attachments") or ()),
+                    invoke_executor=lambda enriched: self.executor.execute_turn(
+                        enriched, self.session_id, conversation_history,
+                        self.signals.progress_update.emit, existing_task_id,
+                    ),
+                )
+                response_text = outcome.response
+                print(f"[SpecialistTeam] run={team_run.run_id} status={team_run.status}")
+                self.signals.ai_response_ready.emit(response_text)
+                return
+            # Declarative workflow triggers are part of the real conversation
+            # path.  The trigger vocabulary lives only in workflows.json.
+            workflow_runtime = getattr(self, "workflow_runtime", None)
+            preset_id = workflow_runtime.match_trigger(text) if workflow_runtime else None
+            if preset_id:
+                run = workflow_runtime.execute(
+                    preset_id, context=self._command_center_context(),
+                    approve=lambda step: False,
+                )
+                response_text = workflow_runtime.present_run(run)
+                print("[DEBUG] WorkflowRuntime returned:", response_text)
+                self.signals.ai_response_ready.emit(response_text)
+                return
             # Executor로 목표 실행!
             if hasattr(self.executor, "execute_turn"):
                 outcome = self.executor.execute_turn(
@@ -542,7 +654,8 @@ class JarvisApp:
         print("[DEBUG] Calling window.show_assistant_text")
         self.window.show_assistant_text(response_text)
         if hasattr(self.window, "show_specialist_result"):
-            self.window.show_specialist_result(response_text)
+            self.window.show_specialist_result(response_text, self._active_specialist_key)
+            self._active_specialist_key = ""
         workspace_manager = getattr(self, "workspace_manager", None)
         if workspace_manager is not None and workspace_manager.is_set():
             workspace_info = workspace_manager.get_info()
@@ -661,7 +774,8 @@ class JarvisApp:
                 print(f"[Queue] 동일 대기 작업 재디스패치 차단: {task.task_id}")
                 return
             inflight.add(task.task_id)
-            self._on_user_input(task.goal, task.task_id)
+            specialist_payload = self._queued_specialist_payloads.pop(task.task_id, None)
+            self._on_user_input(task.goal, task.task_id, specialist_payload)
     
     def _on_command_triggered(self, command: str):
         self.state_machine.start_processing()
@@ -864,9 +978,28 @@ class JarvisApp:
     def _on_permission_response(self, result: bool):
         """권한 응답 처리 (필요시)"""
         pass
+
+    def _on_gesture_action(self, action: str):
+        """Apply camera gestures only on the Qt thread and only to explicit controls."""
+        if action == "stop_tts":
+            self.audio_processor.cancel_playback()
+            self._reset_all()
+        elif action == "approve" and not self._permission_event.is_set():
+            self._permission_result = True
+            self._permission_event.set()
+        elif action == "cancel":
+            self.audio_processor.cancel_playback()
+            if not self._permission_event.is_set():
+                self._permission_result = False
+                self._permission_event.set()
+            self._reset_all()
+        elif action == "switch_workspace":
+            self.window._select_workspace()
     
     def _on_close_requested(self):
         # 종료 버튼 클릭시 프로그램 자체 종료
+        if hasattr(self, "gesture_runtime"):
+            self.gesture_runtime.stop()
         if hasattr(self, "proactive_policy"):
             self.proactive_policy.stop()
         if hasattr(self, "runtime_services"):

@@ -13,6 +13,7 @@ from core.state_machine import State
 from core.specialist_workspaces import get_specialist_workspace_registry
 from .specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindow, MockupWorkspaceWindow
 from .knowledge_graph_workspace import KnowledgeGraphWindow
+from .command_center import CommandCenterDialog
 
 MAIN_STYLE = """
 QWidget { color: #dce8f5; font-family: "Segoe UI"; font-size: 12px; }
@@ -848,7 +849,7 @@ class JarvisMainWindow(QWidget):
     session_deleted = pyqtSignal(str)
     session_reset = pyqtSignal(str)
     task_control_requested = pyqtSignal(str, str)
-    specialist_prompt_submitted = pyqtSignal(str)
+    specialist_prompt_submitted = pyqtSignal(object)
     
     def __init__(self, audio_processor=None):
         super().__init__()
@@ -867,6 +868,9 @@ class JarvisMainWindow(QWidget):
         self.memory_manager = None
         self.dialogue_state_store = None
         self.plugin_registry = None
+        self.command_center_runtime = None
+        self.command_center_services = {}
+        self.command_center_dialog = None
         self.current_session_id = ""
         self.specialist_registry = get_specialist_workspace_registry()
         self.specialist_windows = {}
@@ -965,6 +969,13 @@ class JarvisMainWindow(QWidget):
         self.specialist_btn.setToolTip("전문가 작업공간")
         self.specialist_btn.clicked.connect(self.show_specialist_hub)
         tab_layout.addWidget(self.specialist_btn)
+
+        self.command_center_btn = QPushButton("◎")
+        self.command_center_btn.setObjectName("toolbarButton")
+        self.command_center_btn.setFixedSize(35, 35)
+        self.command_center_btn.setToolTip("통합 Command Center")
+        self.command_center_btn.clicked.connect(self.show_command_center)
+        tab_layout.addWidget(self.command_center_btn)
         
         tab_layout.addStretch()
         
@@ -1604,6 +1615,25 @@ class JarvisMainWindow(QWidget):
     def set_specialist_team_runtime(self, runtime):
         self.specialist_team_runtime = runtime
 
+    def set_command_center_runtime(self, runtime, **services):
+        self.command_center_runtime = runtime
+        self.command_center_services = dict(services)
+
+    def show_command_center(self):
+        if self.command_center_runtime is None:
+            QMessageBox.information(self, "Command Center", "런타임 상태 수집기가 아직 준비되지 않았습니다.")
+            return None
+        if self.command_center_dialog is None:
+            self.command_center_dialog = CommandCenterDialog(
+                self.command_center_runtime, parent=self,
+                **self.command_center_services,
+            )
+        self.command_center_dialog.show()
+        self.command_center_dialog.raise_()
+        self.command_center_dialog.activateWindow()
+        self.command_center_dialog.refresh()
+        return self.command_center_dialog
+
     def show_plugin_diagnostics(self):
         if self.plugin_registry is None:
             QMessageBox.information(self, "Plugin 진단", "Plugin Registry가 아직 연결되지 않았습니다.")
@@ -1639,8 +1669,13 @@ class JarvisMainWindow(QWidget):
         window.activateWindow()
         return window
 
-    def show_specialist_result(self, text: str):
-        for window in self.specialist_windows.values():
+    def show_specialist_result(self, text: str, workspace_key: str = ""):
+        # Main-chat responses must not leak into every open specialist window.
+        if not workspace_key:
+            return
+        for key, window in self.specialist_windows.items():
+            if key != workspace_key:
+                continue
             if window.isVisible() and hasattr(window, "show_result"):
                 window.show_result(text)
 

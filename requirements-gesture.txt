@@ -1,0 +1,7 @@
+# 선택 기능: 카메라는 Command Center에서 사용자가 직접 활성화할 때만 켜집니다.
+# 최신 MediaPipe가 자동으로 끌어오는 OpenCV 5/NumPy 2는 기존 RAG·STT·Vision
+# 런타임의 검증된 ABI와 충돌하므로 호환 조합을 명시적으로 고정합니다.
+numpy>=1.24,<2
+opencv-contrib-python>=4.8,<4.9
+protobuf>=5,<8
+mediapipe==0.10.35

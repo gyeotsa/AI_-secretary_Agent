@@ -75,3 +75,5 @@ data/voices/*/*.ckpt
 assets/jarvis_icon_chroma.png
 assets/jarvis_icon_v2.png
 assets/jarvis_icon_final.png
+# MediaPipe Tasks 모델은 제스처 기능을 처음 명시적으로 켤 때 내려받습니다.
+data/models/mediapipe/*.task
