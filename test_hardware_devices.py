@@ -182,6 +182,26 @@ def test_faster_whisper_accepts_confident_command():
     assert manager._trusted_transcription_text(result) == "자비스 디코 종료해"
 
 
+def test_faster_whisper_rejects_confident_repetition_loop():
+    manager = _bare_hardware_manager()
+    manager.stt_engine = "faster-whisper"
+    result = {
+        "text": "코드, 아니스 코드, 아니스 코드.",
+        "segments": [{"avg_logprob": -0.15, "no_speech_prob": 0.03, "compression_ratio": 1.1}],
+    }
+    assert manager._trusted_transcription_text(result) == ""
+
+
+def test_faster_whisper_keeps_valid_command_with_reused_term():
+    manager = _bare_hardware_manager()
+    manager.stt_engine = "faster-whisper"
+    result = {
+        "text": "자비스 파일 열고 파일 저장해줘",
+        "segments": [{"avg_logprob": -0.2, "no_speech_prob": 0.05, "compression_ratio": 1.1}],
+    }
+    assert manager._trusted_transcription_text(result) == "자비스 파일 열고 파일 저장해줘"
+
+
 def test_hangul_phoneme_similarity_prefers_kyeo_over_kkeo():
     heard = hardware.HardwareManager._hangul_jamo(
         hardware.HardwareManager._speech_stem("케어")

@@ -164,6 +164,27 @@ def test_gesture_classifier_maps_only_explicit_hand_shapes():
     assert GestureRuntime._classify(_hand((8, 12))) == ""
 
 
+def test_gesture_commands_are_opt_in_and_never_open_workspace_by_default():
+    runtime = GestureRuntime(actions={"switch_workspace": lambda: None})
+    assert runtime._recognizers == []
+
+
+def test_opt_in_gesture_command_requires_stable_hold_and_release():
+    calls = []
+    runtime = GestureRuntime(enable_command_gestures=True, actions={"approve": lambda: calls.append("approve")})
+    thumb = _hand((), thumb=True)
+    runtime._recognize_discrete(thumb, timestamp=1.0)
+    runtime._recognize_discrete(thumb, timestamp=1.5)
+    assert calls == []
+    runtime._recognize_discrete(thumb, timestamp=1.81)
+    runtime._recognize_discrete(thumb, timestamp=2.8)
+    assert calls == ["approve"]
+    runtime._recognize_discrete(_hand((8, 12)), timestamp=3.0)
+    runtime._recognize_discrete(thumb, timestamp=4.0)
+    runtime._recognize_discrete(thumb, timestamp=4.81)
+    assert calls == ["approve", "approve"]
+
+
 def test_gesture_motion_preserves_continuous_zoom_and_swipe_speed():
     runtime = GestureRuntime()
     closed = runtime._motion_sample(_motion_hand(open_hand=False), timestamp=1.0)

@@ -47,6 +47,7 @@ class GestureRecognizer:
     name: str
     predicate: Callable[[object], bool]
     cooldown: float = 1.5
+    hold_seconds: float = 0.8
 
 
 class GestureRuntime:
@@ -58,7 +59,7 @@ class GestureRuntime:
     )
 
     def __init__(self, *, camera_index: int = 0, actions: dict[str, Callable] | None = None,
-                 model_path: str | None = None):
+                 model_path: str | None = None, enable_command_gestures: bool = False):
         self.camera_index = int(camera_index)
         self.actions = dict(actions or {})
         configured = model_path or os.getenv("JARVIS_HAND_LANDMARKER_MODEL", "")
@@ -72,19 +73,24 @@ class GestureRuntime:
         self._previous_center: tuple[float, float, float] | None = None
         self._smooth_motion: GestureMotion | None = None
         self._recognizers: list[GestureRecognizer] = []
-        self._register_builtin_gestures()
+        self._candidate_gesture = ""
+        self._candidate_since = 0.0
+        if enable_command_gestures:
+            self._register_builtin_gestures()
 
     def _register_builtin_gestures(self) -> None:
         self.register_gesture("stop_tts", lambda points: self._classify(points) == "stop_tts")
         self.register_gesture("approve", lambda points: self._classify(points) == "approve")
         self.register_gesture("cancel", lambda points: self._classify(points) == "cancel")
-        self.register_gesture("switch_workspace", lambda points: self._classify(points) == "switch_workspace")
 
     def register_gesture(self, name: str, predicate: Callable[[object], bool], *, cooldown: float = 1.5,
-                         callback: Callable | None = None) -> None:
-        """Register a new gesture without modifying the capture loop."""
+                         hold_seconds: float = 0.8, callback: Callable | None = None) -> None:
+        """Register an opt-in command gesture with a stable-hold safety gate."""
         self._recognizers = [item for item in self._recognizers if item.name != name]
-        self._recognizers.append(GestureRecognizer(str(name), predicate, max(0.0, float(cooldown))))
+        self._recognizers.append(GestureRecognizer(
+            str(name), predicate, max(0.0, float(cooldown)),
+            max(0.0, float(hold_seconds)),
+        ))
         if callback is not None:
             self.actions[str(name)] = callback
 
@@ -206,6 +212,9 @@ class GestureRuntime:
                     self._recognize_discrete(points)
                 else:
                     self._previous_center = None
+                    self._candidate_gesture = ""
+                    self._candidate_since = 0.0
+                    self._last_gesture = ""
                 time.sleep(0.018)
         except Exception as exc:
             self._error = f"{type(exc).__name__}: {exc}"
@@ -276,21 +285,38 @@ class GestureRuntime:
             callback(payload)
         get_event_bus().publish(Event("gesture.motion", "gesture_runtime", data=payload))
 
-    def _recognize_discrete(self, points) -> None:
-        now = time.monotonic()
+    def _recognize_discrete(self, points, *, timestamp: float | None = None) -> None:
+        now = float(timestamp if timestamp is not None else time.monotonic())
+        matched_recognizer = None
         for recognizer in self._recognizers:
-            if now < self._cooldown_until.get(recognizer.name, 0.0):
-                continue
             try:
                 matched = bool(recognizer.predicate(points))
             except Exception:
                 matched = False
-            if matched and recognizer.name != self._last_gesture:
-                self._cooldown_until[recognizer.name] = now + recognizer.cooldown
-                self._dispatch(recognizer.name)
-                return
-        if not self._classify(points):
+            if matched:
+                matched_recognizer = recognizer
+                break
+        if matched_recognizer is None:
+            self._candidate_gesture = ""
+            self._candidate_since = 0.0
             self._last_gesture = ""
+            return
+
+        name = matched_recognizer.name
+        if name == self._last_gesture:
+            return
+        if self._candidate_gesture != name:
+            self._candidate_gesture = name
+            self._candidate_since = now
+            return
+        if now - self._candidate_since < matched_recognizer.hold_seconds:
+            return
+        if now < self._cooldown_until.get(name, 0.0):
+            return
+        self._cooldown_until[name] = now + matched_recognizer.cooldown
+        self._candidate_gesture = ""
+        self._candidate_since = 0.0
+        self._dispatch(name)
 
     @staticmethod
     def _classify(points) -> str:

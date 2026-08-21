@@ -11,6 +11,13 @@ from core.tool_result import Evidence, ToolRunResult
 
 
 class DesktopMessagingPlugin(BasePlugin):
+    _PROVIDER_PATTERN = re.compile(r"(?:카카오\s*톡|카톡|kakaotalk)", re.I)
+    _SEND_PATTERN = re.compile(r"(?:보내\s*줘|보내\s*줄래|보내|전송(?:해\s*줘|해줘|해)?)", re.I)
+    _RECIPIENT_PATTERN = re.compile(
+        r"(?P<recipient>[^,!?\n]+?)(?:에게|한테|께|이게)\s*(?P<message>.*)$",
+        re.I | re.S,
+    )
+
     def __init__(self):
         super().__init__()
         self.name = "desktop_messaging"
@@ -54,29 +61,54 @@ class DesktopMessagingPlugin(BasePlugin):
         slots = dict(current_slots)
         if intent_name != "messaging.send":
             return slots
-        normalized = re.sub(r"카카오\s*톡", "카카오톡", text, flags=re.I)
-        if re.search(r"(?:카카오톡|카톡|kakaotalk)", normalized, re.I):
+        normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+        if self._PROVIDER_PATTERN.search(normalized):
             slots["provider"] = "kakaotalk"
-        body = re.sub(r"^.*?(?:카카오톡|카톡|kakaotalk)(?:으로|에서|을|를)?\s*", "", normalized,
-                      count=1, flags=re.I)
-        match = re.search(
-            r"^\s*(?P<recipient>.+?)(?:에게|한테|께)\s*"
-            r"(?P<message>.+?)\s*(?:라고|이라고)?\s*(?:보내|전송)",
-            body, re.I | re.S,
-        )
+
+        # Work from the full utterance.  The old parser discarded everything before
+        # "카톡", so natural Korean word order such as "형택이에게 ... 카톡 보내줘"
+        # lost both the recipient and the message.
+        actions = list(self._SEND_PATTERN.finditer(normalized))
+        action = actions[-1] if actions else None
+        before_action = normalized[:action.start()] if action else normalized
+        before_action = self._PROVIDER_PATTERN.sub(" ", before_action)
+        before_action = re.sub(r"(?:으로|에서|을|를)\s*", " ", before_action, count=1)
+        before_action = re.sub(r"\s+", " ", before_action).strip(" ,")
+        match = self._RECIPIENT_PATTERN.search(before_action)
         if match:
-            # 조사 '에게/한테/께'는 정규식 경계에서 이미 제거된다. 이름 자체가
-            # '이'로 끝날 수 있으므로 뒤 글자를 임의로 조사로 간주해 자르지 않는다.
-            recipient = match.group("recipient").strip()
-            message = match.group("message").strip()
-            message = re.sub(r"^(?:메시지|내용)(?:로|은|는)?\s*", "", message)
-            message = re.sub(r"\s*(?:라고|이라고)$", "", message)
-            message = message.strip(" \t\r\n\"'“”‘’")
+            recipient = re.sub(r"^(?:혹시|그러면|그럼|이번에는)\s+", "", match.group("recipient").strip())
+            message = self._clean_message(match.group("message"))
             if recipient:
                 slots["recipient"] = recipient
             if message:
                 slots["message"] = message
+        elif self._is_short_slot_answer(normalized):
+            # A pending clarification may contain just a name or just the body.
+            # Fill only the first missing slot; never reinterpret a complete sentence.
+            value = normalized.strip(" \t\r\n\"'“”‘’")
+            if slots.get("provider") and not slots.get("recipient"):
+                slots["recipient"] = value
+            elif slots.get("recipient") and not slots.get("message"):
+                slots["message"] = value
         return slots
+
+    @staticmethod
+    def _clean_message(value: str) -> str:
+        message = str(value or "").strip()
+        message = re.sub(r"^(?:메시지|내용)(?:로|은|는)?\s*", "", message)
+        message = re.sub(r"\s*(?:이라고|라고)\s*$", "", message)
+        return message.strip(" \t\r\n\"'“”‘’")
+
+    @staticmethod
+    def _is_short_slot_answer(text: str) -> bool:
+        value = str(text or "").strip()
+        if not value or len(value) > 80 or "\n" in value:
+            return False
+        if re.search(r"(?:앞으로|이제부터|기억|잊지|뜻|의미|설정|변경|말하면)", value):
+            return False
+        if re.search(r"(?:보내|전송|카카오\s*톡|카톡|kakaotalk)", value, re.I):
+            return False
+        return True
 
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
         if tool_name != "desktop_send_message":

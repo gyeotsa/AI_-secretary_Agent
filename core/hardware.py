@@ -385,6 +385,10 @@ class HardwareManager:
         text = str(result.get("text", "")).strip()
         if not text or self.stt_engine != "faster-whisper":
             return text
+        from core.voice_runtime import is_probable_repetition_hallucination
+        if is_probable_repetition_hallucination(text):
+            print(f"[STT] 반복성 환각 결과 폐기: text={text!r}")
+            return ""
         segments = result.get("segments") or []
         if not segments:
             return ""

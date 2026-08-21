@@ -346,6 +346,17 @@ class Executor:
                 pending.task_id, status="cancelled", result="새로운 명시적 요청으로 대체됨"
             )
             pending = None
+        elif (pending and not selected_task_id
+              and self._is_independent_declaration(supplied_answer)):
+            # Persistent preferences and definitions are complete new turns, not an
+            # answer to an unrelated slot question.  Let the normal conversation and
+            # memory pipeline process them instead of trapping the user in a loop.
+            self.dialogue_state.delete(session_key, pending.task_id)
+            self.dialogue_state.delete_intent_state(pending.task_id)
+            self.dialogue_state.transition_task(
+                pending.task_id, status="cancelled", result="새로운 사용자 규칙으로 대체됨"
+            )
+            pending = None
         agent_task_id = pending.task_id if pending else (existing_task_id or "")
         intent_resolution = IntentResolution()
 
@@ -942,6 +953,17 @@ class Executor:
             lines.append(item)
         lines.append("계속하려면 ‘승인’이라고 말씀해 주세요.")
         return "\n".join(lines)
+
+    @staticmethod
+    def _is_independent_declaration(text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+        if re.search(r"(?:기억해(?:\s*둬)?|잊지\s*마)", normalized):
+            return True
+        if not re.match(r"^(?:앞으로|이제부터|항상|기본적으로)\b", normalized):
+            return False
+        return bool(re.search(
+            r"(?:말하면|부르면|뜻|의미|규칙|설정|사용|적용|알아들|기억)", normalized,
+        ))
 
     @staticmethod
     def is_control_command(text: str) -> bool:

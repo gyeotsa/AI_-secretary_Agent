@@ -210,10 +210,6 @@ class JarvisApp:
             context_provider=self._command_center_context,
         )
         self.gesture_runtime = GestureRuntime(actions={
-            "stop_tts": lambda: self.signals.gesture_action.emit("stop_tts"),
-            "approve": lambda: self.signals.gesture_action.emit("approve"),
-            "cancel": lambda: self.signals.gesture_action.emit("cancel"),
-            "switch_workspace": lambda: self.signals.gesture_action.emit("switch_workspace"),
             "motion": lambda payload: self.signals.gesture_motion.emit(payload),
         })
         interface_bridge = get_interface_control_bridge()
@@ -895,8 +891,8 @@ class JarvisApp:
     
     def _reset_all(self):
         # 모든 상태를 초기화하고 IDLE로 돌아가기
-        print("[DEBUG] IDLE 상태로 전환")
-        self.state_machine.go_idle()
+        if self.state_machine.go_idle():
+            print("[DEBUG] IDLE 상태로 전환")
         self.window.set_soundbar_speaking(False)
         self.window.reset_soundbar()
         # 다음 대기 작업은 현재 답변 음성이 완전히 끝난 뒤 시작한다. 응답 직후
@@ -1017,8 +1013,6 @@ class JarvisApp:
                 self._permission_result = False
                 self._permission_event.set()
             self._reset_all()
-        elif action == "switch_workspace":
-            self.window._select_workspace()
 
     def _open_interface_surface(self, surface: str):
         value = str(surface or "")

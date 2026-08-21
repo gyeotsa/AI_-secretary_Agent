@@ -44,6 +44,42 @@ class WakeWordCandidateEvaluator:
         return ranked[0].text if similarity >= 0.72 else None
 
 
+def is_probable_repetition_hallucination(text: str) -> bool:
+    """Detect confident Whisper loops without relying on phrase blocklists.
+
+    Acoustic confidence alone cannot reject a repeated decoder loop.  This checks
+    repeated clauses and short n-grams, while leaving ordinary commands that happen
+    to reuse one word untouched.
+    """
+    value = str(text or "").strip().casefold()
+    if not value:
+        return False
+    clauses = [
+        re.sub(r"[^0-9a-z가-힣]+", "", item)
+        for item in re.split(r"[,，.!?;；…]+", value)
+    ]
+    clauses = [item for item in clauses if item]
+    if len(clauses) >= 2 and any(
+        clauses[index] == clauses[index - 1] and len(clauses[index]) >= 2
+        for index in range(1, len(clauses))
+    ):
+        return True
+
+    tokens = re.findall(r"[0-9a-z가-힣]+", value)
+    if len(tokens) < 5 or len(set(tokens)) / len(tokens) > 0.55:
+        return False
+    for width in range(1, min(3, len(tokens) // 2) + 1):
+        counts: dict[tuple[str, ...], int] = {}
+        for index in range(len(tokens) - width + 1):
+            gram = tuple(tokens[index:index + width])
+            counts[gram] = counts.get(gram, 0) + 1
+        if counts and max(counts.values()) >= 2:
+            covered = max(counts.values()) * width
+            if covered / len(tokens) >= 0.6:
+                return True
+    return False
+
+
 class VoiceDuplexController:
     """Tracks TTS reference energy and detects sustained near-end speech for barge-in."""
 

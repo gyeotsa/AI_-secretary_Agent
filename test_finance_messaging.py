@@ -75,6 +75,40 @@ def test_kakaotalk_request_extracts_recipient_and_message_without_stock_context(
     }
 
 
+def test_kakaotalk_parser_supports_natural_recipient_first_word_order():
+    resolution = _router().resolve("형택이에게 테스트123 이라고 카톡 보내줘")
+    assert resolution.ready
+    assert resolution.slots == {
+        "provider": "kakaotalk", "recipient": "형택이", "message": "테스트123",
+    }
+
+
+def test_kakaotalk_pending_slots_accept_short_recipient_and_message_answers():
+    router = _router()
+    first = router.resolve("카톡 보내줘")
+    assert first.question == "누구에게 보낼까요, 보스?"
+    recipient = router.resolve("형택", first.intent_name, first.slots)
+    assert recipient.question == "어떤 내용을 보낼까요, 보스?"
+    message = router.resolve("테스트123", recipient.intent_name, recipient.slots)
+    assert message.ready
+    assert message.slots == {
+        "provider": "kakaotalk", "recipient": "형택", "message": "테스트123",
+    }
+
+
+def test_kakaotalk_speech_particle_typo_still_extracts_recipient():
+    resolution = _router().resolve("형택이게 카톡 보내줘")
+    assert resolution.question == "어떤 내용을 보낼까요, 보스?"
+    assert resolution.slots["recipient"] == "형택"
+
+
+def test_persistent_user_rule_is_not_a_pending_slot_answer():
+    assert Executor._is_independent_declaration(
+        "앞으로 카톡이라고 말하면 카카오톡을 말하는 거야."
+    )
+    assert not Executor._is_independent_declaration("형택")
+
+
 def test_executor_routes_independent_message_before_context_rewrite(tmp_path):
     executor = Executor.__new__(Executor)
     executor.dialogue_state = DialogueStateStore(str(tmp_path / "dialogue.db"))
