@@ -15,9 +15,31 @@ class ResolvedRequest:
     confidence: float = 1.0
     needs_clarification: bool = False
     clarification_question: str = ""
+    relation: str = "independent"
+    context_used: bool = False
 
 
 class ConversationContextResolver:
+    _REFERENCE_PATTERN = re.compile(
+        r"(?:^|\s)(?:그거|그걸|그것|거기|그곳|그\s*(?:파일|문서|사진|작업|내용|사람)|"
+        r"이거|이걸|이것|여기|아까|방금|직전|앞에서|이어서|계속|그대로|같은\s*걸로)(?:\s|$|[을를은는이가도])",
+        re.IGNORECASE,
+    )
+    _REVISION_PATTERN = re.compile(
+        r"^\s*(?:아니|그게\s*아니라|대신|그러면|그럼|다시|좀\s*더|더\s+|"
+        r"방금\s*것|이전\s*것)", re.IGNORECASE,
+    )
+    _ELLIPTICAL_QUESTION_PATTERN = re.compile(
+        r"^\s*[^\s]{1,12}(?:은|는|이|가|도)\s*(?:어때|어느|얼마|몇|뭐|어떻게|언제|어디|누구)",
+        re.IGNORECASE,
+    )
+    _VALUE_FRAGMENT_PATTERN = re.compile(
+        r"^\s*(?:(?:19|20)\d{2}[./년-]\s*\d{1,2}(?:[./월-]\s*\d{1,2})?"
+        r"|\d+(?:\.\d+)?\s*(?:초|분|시간|일|주|개월|년|퍼센트|%|px|픽셀))"
+        r"(?:\s*(?:부터|까지|~|-).*)?\s*$",
+        re.IGNORECASE,
+    )
+
     def __init__(self, llm):
         self.llm = llm
         self._states: Dict[str, Dict[str, Any]] = {}
@@ -46,10 +68,12 @@ class ConversationContextResolver:
             active_state = dict(self._states.get(session_id, {}))
         if not history and not active_state:
             return ResolvedRequest(request, request)
+        if not self._may_depend_on_context(request):
+            return ResolvedRequest(request, request, relation="independent", context_used=False)
 
         system = """당신은 대화 문맥 해석기입니다. 최근 대화와 활성 상태를 이용해 현재 요청의 생략된 대상·장소·시간·문서를 복원하세요.
 반드시 JSON 객체만 반환하세요:
-{"resolved_request":"독립적으로 실행 가능한 한국어 요청", "topic":"주제", "entities":{}, "confidence":0.0, "needs_clarification":false, "clarification_question":""}
+{"resolved_request":"독립적으로 실행 가능한 한국어 요청", "topic":"주제", "entities":{}, "confidence":0.0, "needs_clarification":false, "clarification_question":"", "relation":"follow_up|independent|ambiguous", "context_used":true}
 규칙:
 - 사용자가 말하지 않은 사실은 만들지 마세요.
 - '그거', '거기', '온도는?', '내일은?', '좀 더 정중하게' 같은 후속 표현은 직전 문맥에서 대상을 상속하세요.
@@ -82,23 +106,29 @@ class ConversationContextResolver:
             confidence=max(0.0, min(float(payload.get("confidence", 0.5)), 1.0)),
             needs_clarification=bool(payload.get("needs_clarification", False)),
             clarification_question=str(payload.get("clarification_question", "")).strip(),
+            relation=str(payload.get("relation", "follow_up")).strip().casefold(),
+            context_used=bool(payload.get("context_used", True)),
         )
-        # 해석 과정에서 "온도는?", "내일은?", "좀 더 정중하게" 같은 후속
-        # 질문의 초점이 사라지지 않도록 원문도 실행 목표에 함께 보존한다.
-        if result.resolved_request != request:
-            recent_user_context = " | ".join(
-                str(message.get("content", "")).strip()
-                for message in history[-4:]
-                if message.get("role") == "user" and str(message.get("content", "")).strip()
-            )
-            result.resolved_request = (
-                f"{result.resolved_request}\n"
-                f"후속 질문의 핵심 요구: {request}"
-                + (f"\n해석 근거가 된 최근 사용자 대화: {recent_user_context}" if recent_user_context else "")
-            )
+        if result.relation not in {"follow_up", "ambiguous"} or not result.context_used:
+            result.resolved_request = request
+            result.relation = "independent"
+            result.context_used = False
         if session_id and not result.needs_clarification:
             with self._lock:
                 state = self._states.setdefault(session_id, {})
                 state["topic"] = result.topic
                 state.update(result.entities)
         return result
+
+    @classmethod
+    def _may_depend_on_context(cls, request: str) -> bool:
+        """도메인 키워드가 아니라 한국어 담화 표지와 생략 형태로 후속 여부를 판단한다."""
+        text = str(request or "").strip()
+        if not text:
+            return False
+        return bool(
+            cls._REFERENCE_PATTERN.search(text)
+            or cls._REVISION_PATTERN.search(text)
+            or cls._ELLIPTICAL_QUESTION_PATTERN.search(text)
+            or cls._VALUE_FRAGMENT_PATTERN.fullmatch(text)
+        )

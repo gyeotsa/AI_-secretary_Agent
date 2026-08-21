@@ -9,6 +9,32 @@ from core.plan_runtime import PlanDAG, PlanStep
 from core.plugin import get_plugin_registry
 
 
+def _parse_json_object(response: str) -> Dict[str, Any]:
+    """Markdown 설명이 섞여도 첫 번째 유효한 JSON 객체만 안전하게 추출한다."""
+    candidate = str(response or "").strip()
+    if candidate.startswith("```"):
+        candidate = candidate.split("\n", 1)[-1]
+        if candidate.endswith("```"):
+            candidate = candidate[:-3].strip()
+    try:
+        value = json.loads(candidate)
+        if isinstance(value, dict):
+            return value
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(candidate):
+        if char != "{":
+            continue
+        try:
+            value, _end = decoder.raw_decode(candidate[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise json.JSONDecodeError("유효한 JSON 객체를 찾지 못했습니다.", candidate, 0)
+
+
 @dataclass
 class DecomposedTask:
     """분해된 작업 단위"""
@@ -146,14 +172,7 @@ __TOOLS_TEXT__
             if not response or response.lstrip().casefold().startswith(("오류:", "오류가 발생했습니다:", "error:")):
                 raise RuntimeError(response or "Planner가 빈 응답을 반환했습니다.")
 
-            # JSON 파싱
-            # 응답에서 ```json ... ``` 부분 추출 (있으면)
-            if "```json" in response:
-                response = response.split("```json")[1].split("```")[0].strip()
-            elif "```" in response:
-                response = response.split("```")[1].strip()
-
-            result = json.loads(response)
+            result = _parse_json_object(response)
             tasks_data = result.get("tasks", [])
 
             # DecomposedTask로 변환하고 Scratchpad에 저장

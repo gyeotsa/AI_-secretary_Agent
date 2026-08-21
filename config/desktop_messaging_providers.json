@@ -1,0 +1,13 @@
+{
+  "kakaotalk": {
+    "aliases": ["카카오톡", "카카오 톡", "카톡", "kakaotalk"],
+    "executable_names": ["KakaoTalk.exe", "KakaoTalk"],
+    "executable_candidates": [
+      "%ProgramFiles(x86)%\\Kakao\\KakaoTalk\\KakaoTalk.exe",
+      "%ProgramFiles%\\Kakao\\KakaoTalk\\KakaoTalk.exe",
+      "%LOCALAPPDATA%\\Kakao\\KakaoTalk\\KakaoTalk.exe"
+    ],
+    "main_window_titles": ["카카오톡", "KakaoTalk"],
+    "contact_search_hotkey": ["CTRL", "F"]
+  }
+}

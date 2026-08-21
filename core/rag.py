@@ -442,7 +442,10 @@ class VectorRAGManager:
                        include_stale=False) -> list:
         """Merge independent vector and lexical rankings with reciprocal-rank fusion."""
         fetch_k = max(top_k * 5, 20)
-        namespace_filter = {"$or": [{"namespace": value} for value in sorted({"global", self.namespace})]}
+        namespaces = {"global", self.namespace}
+        namespace_filter = ({"namespace": self.namespace} if len(namespaces) == 1 else {
+            "$or": [{"namespace": value} for value in sorted(namespaces)]
+        })
         try:
             raw = self.collection.query(query_texts=[query], n_results=fetch_k, where=namespace_filter)
             vector = [

@@ -22,6 +22,7 @@
 - Playwright 공개 페이지 본문·스크린샷·SSRF 방어 — 1차 연결됨
 - JSON 공급자 카탈로그 기반 YouTube·Google·Naver·DuckDuckGo 사이트 검색 — 연결·검증됨
 - `yt-dlp` 검색 결과 해석 후 YouTube 재생 페이지 열기 — 연결·실URL 검증됨
+- Yahoo Finance 일별 거래 데이터 기반 종목·시장 정량 분석 — 연결·실조회 검증됨
 - OS 브라우저 전달, 페이지 로드, 오디오 재생을 별도 Evidence로 구분 — 적용됨
 - 검색 결과 페이지 실제 방문·게시/수정일 확인·공식 출처 우선·주장별 교차 인용 — 연결됨
 - Playwright persistent profile·Cookie·다운로드·취소 — 연결됨
@@ -57,6 +58,7 @@
 - 연락처·할 일·리마인더·지도/교통
 - Windows UI Automation 우선, 화면 좌표 기반 pyautogui는 최후 fallback
 - 카카오톡 등 공식 자동화 API가 없는 앱은 오작동·약관 위험을 별도 표시
+- 카카오톡 로컬 UI 전송은 외부 전송 승인, 동일 프로세스·정확 수신자 창 검증 후 키 입력 — 구현·모의 E2E 검증됨, 실제 상대방 전송 수락 대기
 
 ## 설계 원칙
 

@@ -30,11 +30,28 @@ def test_follow_up_request_inherits_location_from_recent_dialogue():
         {"role": "user", "content": "오늘 서울시 구로구 항동 날씨를 알려줘"},
         {"role": "assistant", "content": "날씨를 확인했습니다."},
     ], "session")
-    assert "오늘 서울시 구로구 항동의 현재 온도를 조회해줘" in result.resolved_request
-    assert "후속 질문의 핵심 요구: 온도는 어느 정도야?" in result.resolved_request
-    assert "해석 근거가 된 최근 사용자 대화: 오늘 서울시 구로구 항동 날씨를 알려줘" in result.resolved_request
+    assert result.resolved_request == "오늘 서울시 구로구 항동의 현재 온도를 조회해줘"
     assert result.entities["location"] == "서울시 구로구 항동"
+    assert result.relation == "follow_up"
+    assert result.context_used
     assert not result.needs_clarification
+
+
+def test_independent_message_request_never_receives_previous_stock_context():
+    class NeverCalledLLM:
+        def chat(self, _messages):
+            raise AssertionError("독립 요청에는 문맥 재작성 LLM을 호출하면 안 됩니다")
+
+    resolver = ConversationContextResolver(NeverCalledLLM())
+    request = "카카오 톡으로 형택이에게 테스트 라고 보내줄래?"
+    result = resolver.resolve(request, [
+        {"role": "user", "content": "삼성전자 주식 분석해줄래?"},
+        {"role": "assistant", "content": "삼성전자 검색 결과를 열었습니다."},
+    ], "session")
+
+    assert result.resolved_request == request
+    assert result.relation == "independent"
+    assert not result.context_used
 
 
 def test_unknown_json_tool_request_is_not_marked_as_simple_success():

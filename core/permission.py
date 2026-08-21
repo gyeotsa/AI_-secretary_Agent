@@ -85,6 +85,9 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "windows_add_app_aliases": "windows_api",
     "windows_list_app_aliases": "windows_api",
     "windows_remove_app_aliases": "windows_api",
+    "finance_analyze_equity": "network_access",
+    "finance_market_overview": "network_access",
+    "desktop_send_message": "external_send",
     # 셸 명령 실행 (가장 위험도 높은 도구)
     "run_command": "shell_execute",
     "git_status": "filesystem_read",
