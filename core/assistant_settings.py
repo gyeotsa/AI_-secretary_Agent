@@ -21,6 +21,9 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     "user_address": SettingDefinition("user_address", "사용자 호칭", "", 30),
     "response_style": SettingDefinition("response_style", "응답 스타일", "", 200),
     "response_language": SettingDefinition("response_language", "응답 언어", "한국어", 30),
+    "gesture_camera_enabled": SettingDefinition(
+        "gesture_camera_enabled", "손 제스처 카메라 자동 실행", "true", 5
+    ),
 }
 
 

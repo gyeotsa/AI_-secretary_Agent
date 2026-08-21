@@ -128,7 +128,8 @@ def test_diagnostics_never_marks_an_unrun_probe_passed(tmp_path, monkeypatch):
 
 
 class _Point:
-    def __init__(self, y=1.0):
+    def __init__(self, x=0.5, y=1.0):
+        self.x = x
         self.y = y
 
 
@@ -141,12 +142,90 @@ def _hand(extended=(), thumb=False):
     return points
 
 
+def _motion_hand(*, center_x=0.5, open_hand=True):
+    points = [_Point(center_x, 0.65) for _ in range(21)]
+    points[0] = _Point(center_x, 0.82)
+    points[5] = _Point(center_x - 0.10, 0.63)
+    points[9] = _Point(center_x, 0.55)
+    points[13] = _Point(center_x + 0.06, 0.63)
+    points[17] = _Point(center_x + 0.11, 0.68)
+    for offset, (tip, pip) in enumerate(zip((8, 12, 16, 20), (6, 10, 14, 18))):
+        points[pip] = _Point(center_x + (offset - 1.5) * 0.045, 0.52)
+        points[tip] = _Point(center_x + (offset - 1.5) * 0.07, 0.20 if open_hand else 0.72)
+    points[4] = _Point(center_x - (0.18 if open_hand else 0.02), 0.53)
+    return points
+
+
 def test_gesture_classifier_maps_only_explicit_hand_shapes():
     assert GestureRuntime._classify(_hand((8, 12, 16, 20))) == "stop_tts"
     assert GestureRuntime._classify(_hand((), thumb=True)) == "approve"
     assert GestureRuntime._classify(_hand(())) == "cancel"
     assert GestureRuntime._classify(_hand((8,))) == "switch_workspace"
     assert GestureRuntime._classify(_hand((8, 12))) == ""
+
+
+def test_gesture_motion_preserves_continuous_zoom_and_swipe_speed():
+    runtime = GestureRuntime()
+    closed = runtime._motion_sample(_motion_hand(open_hand=False), timestamp=1.0)
+    runtime._smooth_motion = None
+    runtime._previous_center = None
+    opened = runtime._motion_sample(_motion_hand(open_hand=True), timestamp=2.0)
+    assert opened.openness > closed.openness
+    assert opened.zoom > closed.zoom
+
+    runtime._smooth_motion = None
+    runtime._previous_center = None
+    runtime._motion_sample(_motion_hand(center_x=0.28), timestamp=3.0)
+    fast_swipe = runtime._motion_sample(_motion_hand(center_x=0.68), timestamp=3.1)
+    assert fast_swipe.swipe_velocity > 0.0
+
+
+def test_interface_plugin_controls_live_bridge_and_reports_evidence():
+    from core.interface_control import get_interface_control_bridge
+    from plugins.interface_control import InterfaceControlPlugin
+
+    bridge = get_interface_control_bridge()
+    calls = []
+    bridge.register("set_gesture_camera", lambda enabled: {
+        "running": bool(enabled), "enabled": True, "error": "", "camera_index": 0,
+    })
+    bridge.register("get_gesture_status", lambda: {
+        "running": True, "enabled": True, "error": "", "camera_index": 0,
+    })
+    bridge.register("open_surface", lambda surface: calls.append(surface) or {"surface": surface})
+    plugin = InterfaceControlPlugin()
+    try:
+        slots = plugin.extract_slots("interface.gesture_camera", "카메라 꺼줘", {})
+        assert slots == {"enabled": False}
+        result = plugin.execute_tool("set_gesture_camera_control", slots)
+        assert result.succeeded
+        assert "꺼짐" in result.raw_output
+        opened = plugin.execute_tool("open_interface_surface", {"surface": "permissions"})
+        assert opened.succeeded
+        assert calls == ["permissions"]
+    finally:
+        for name in ("set_gesture_camera", "get_gesture_status", "open_surface"):
+            bridge.unregister(name)
+
+
+def test_brain_orbit_uses_gesture_speed_and_real_surface_signals(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    from ui.brain_orbit import BrainOrbitWidget
+
+    app = QApplication.instance() or QApplication([])
+    widget = BrainOrbitWidget()
+    widget.resize(900, 360)
+    initial_zoom = widget.target_zoom
+    widget.apply_gesture_motion({"zoom": 0.1, "swipe_velocity": 0.0, "timestamp": 1.0})
+    widget.apply_gesture_motion({"zoom": 1.0, "swipe_velocity": 1.5, "timestamp": 1.1})
+    assert widget.target_zoom > initial_zoom
+    assert widget.zoom_response > 0.13
+    assert widget.angular_velocity < 0.0
+    widget.set_camera_status({"running": True, "error": ""})
+    assert widget.camera_running is True
+    widget.close()
+    app.processEvents()
 
 
 def test_command_center_is_live_and_contract_cancel_is_persisted(tmp_path, monkeypatch):

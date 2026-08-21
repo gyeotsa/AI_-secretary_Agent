@@ -14,6 +14,7 @@ from core.specialist_workspaces import get_specialist_workspace_registry
 from .specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindow, MockupWorkspaceWindow
 from .knowledge_graph_workspace import KnowledgeGraphWindow
 from .command_center import CommandCenterDialog
+from .brain_orbit import BrainOrbitWidget
 
 MAIN_STYLE = """
 QWidget { color: #dce8f5; font-family: "Segoe UI"; font-size: 12px; }
@@ -850,6 +851,7 @@ class JarvisMainWindow(QWidget):
     session_reset = pyqtSignal(str)
     task_control_requested = pyqtSignal(str, str)
     specialist_prompt_submitted = pyqtSignal(object)
+    gesture_camera_requested = pyqtSignal(bool)
     
     def __init__(self, audio_processor=None):
         super().__init__()
@@ -871,6 +873,7 @@ class JarvisMainWindow(QWidget):
         self.command_center_runtime = None
         self.command_center_services = {}
         self.command_center_dialog = None
+        self.gesture_camera_running = False
         self.current_session_id = ""
         self.specialist_registry = get_specialist_workspace_registry()
         self.specialist_windows = {}
@@ -976,6 +979,15 @@ class JarvisMainWindow(QWidget):
         self.command_center_btn.setToolTip("통합 Command Center")
         self.command_center_btn.clicked.connect(self.show_command_center)
         tab_layout.addWidget(self.command_center_btn)
+
+        self.gesture_camera_btn = QPushButton("G")
+        self.gesture_camera_btn.setObjectName("toolbarButton")
+        self.gesture_camera_btn.setFixedSize(35, 35)
+        self.gesture_camera_btn.setToolTip("손 제스처 카메라 · 로컬 처리")
+        self.gesture_camera_btn.clicked.connect(
+            lambda: self.gesture_camera_requested.emit(not self.gesture_camera_running)
+        )
+        tab_layout.addWidget(self.gesture_camera_btn)
         
         tab_layout.addStretch()
         
@@ -1053,8 +1065,13 @@ class JarvisMainWindow(QWidget):
         self.text_input.setPlaceholderText("메시지 또는 작업 명령을 입력하세요")
         self.text_input.returnPressed.connect(self._on_text_submitted)
         
-        center_layout.addStretch()
-        center_layout.addSpacing(20)
+        self.brain_orbit = BrainOrbitWidget(self)
+        self.brain_orbit.set_surfaces(self.specialist_registry.all())
+        self.brain_orbit.surface_requested.connect(self.open_interface_surface)
+        self.brain_orbit.camera_toggle_requested.connect(self.gesture_camera_requested.emit)
+
+        center_layout.addWidget(self.brain_orbit, 1)
+        center_layout.addSpacing(6)
         center_layout.addWidget(self.status_label)
         center_layout.addWidget(self.workspace_label)
         center_layout.addSpacing(10)
@@ -1062,7 +1079,7 @@ class JarvisMainWindow(QWidget):
         center_layout.addSpacing(20)
         center_layout.addWidget(self.user_text_label)
         center_layout.addWidget(self.assistant_text_label)
-        center_layout.addStretch()
+        center_layout.addSpacing(8)
         center_layout.addWidget(self.text_input)
         
         self.main_layout.addWidget(self.center_widget, 1)
@@ -1293,6 +1310,8 @@ class JarvisMainWindow(QWidget):
     
     def update_state(self, state: State):
         self.current_state = state
+        if hasattr(self, "brain_orbit"):
+            self.brain_orbit.set_runtime_state(state)
         if self.window_mode != "mini":
             state_texts = {
                 State.IDLE: "SYSTEM READY",
@@ -1618,6 +1637,8 @@ class JarvisMainWindow(QWidget):
     def set_command_center_runtime(self, runtime, **services):
         self.command_center_runtime = runtime
         self.command_center_services = dict(services)
+        self.command_center_services.setdefault("surface_callback", self.open_interface_surface)
+        self.command_center_services.setdefault("gesture_callback", self.gesture_camera_requested.emit)
 
     def show_command_center(self):
         if self.command_center_runtime is None:
@@ -1633,6 +1654,40 @@ class JarvisMainWindow(QWidget):
         self.command_center_dialog.activateWindow()
         self.command_center_dialog.refresh()
         return self.command_center_dialog
+
+    def open_interface_surface(self, key: str):
+        """Open only surfaces that are backed by a real window or dialog."""
+        surface = str(key or "").casefold()
+        actions = {
+            "command_center": self.show_command_center,
+            "permissions": self.show_permission_settings,
+            "sessions": self.show_session_manager,
+            "plugins": self.show_plugin_diagnostics,
+            "voice": self.show_tts_voice_settings,
+            "specialists": self.show_specialist_hub,
+        }
+        callback = actions.get(surface)
+        if callback is not None:
+            return callback()
+        return self.open_specialist_workspace(surface)
+
+    def apply_gesture_motion(self, payload: dict):
+        if hasattr(self, "brain_orbit"):
+            self.brain_orbit.apply_gesture_motion(payload)
+        if self.command_center_dialog is not None:
+            self.command_center_dialog.apply_gesture_motion(payload)
+
+    def set_gesture_camera_status(self, status: dict):
+        self.gesture_camera_running = bool(status.get("running"))
+        self.gesture_camera_btn.setText("G●" if self.gesture_camera_running else "G")
+        error = str(status.get("error") or "")
+        self.gesture_camera_btn.setToolTip(
+            error or ("손 제스처 카메라 실행 중 · 영상은 저장되지 않음"
+                      if self.gesture_camera_running else "손 제스처 카메라 꺼짐")
+        )
+        self.brain_orbit.set_camera_status(status)
+        if self.command_center_dialog is not None:
+            self.command_center_dialog.set_gesture_camera_status(status)
 
     def show_plugin_diagnostics(self):
         if self.plugin_registry is None:

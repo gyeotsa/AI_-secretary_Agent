@@ -291,11 +291,12 @@ Command Center는 작업 계약, 팀, DAG, 모델/자원, Observer, 승인, 권�
 - Ollama 9개 모델 확인, 필수 모델 누락 없음
 - RTX 4060 Laptop에서 실제 CUDA 텐서 연산 성공
 - Scheduler 1,000회 soak와 Tool 왕복 실패 없음
-- MediaPipe 0.10.35 HandLandmarker 모델 생성·종료 성공(카메라는 동의 없이 열지 않음)
-- `444 passed, 4 deselected`, `pip check` 충돌 0개
+- MediaPipe 0.10.35 HandLandmarker 모델과 저장된 카메라 허용 권한을 사용해 실제 카메라 0번의
+  프레임 처리·실행 상태·정상 종료를 확인함
+- `454 passed, 4 deselected`, `pip check` 충돌 0개
 
 정직하게 남은 위험은 세 가지다. 외부 OAuth/SMTP 계정은 자격증명이 없어 E2E 미수락이고, 실제
-카메라·스피커 출력은 사용자의 라이브 동의가 필요하며, 임의 Tool 프로세스를 OS 수준에서 강제
+스피커 출력은 사용자의 라이브 동의가 필요하며, 임의 Tool 프로세스를 OS 수준에서 강제
 종료하는 격리는 아직 범용 샌드박스가 아니다. 현재 Supervisor는 실행 전 admission과 단계 사이
 취소, 반환 후 시간 초과 판정을 보장한다. 장기적으로는 위험 Tool을 별도 worker process로 옮겨
 hard timeout과 메모리 제한을 적용하는 것이 다음 강화 지점이다.

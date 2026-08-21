@@ -38,6 +38,7 @@ from core.workflow_runtime import MorningBriefService, WorkflowRuntime
 from core.diagnostics_runtime import DiagnosticsRuntime
 from core.command_center import CommandCenterRuntime
 from core.gesture_runtime import GestureRuntime
+from core.interface_control import get_interface_control_bridge
 from core.observer import get_observer_layer
 from ui.command_center import FirstRunWizard
 
@@ -123,6 +124,9 @@ class AppSignals(QObject):
     control_response_ready = pyqtSignal(object)
     voice_text_detected = pyqtSignal(str)
     gesture_action = pyqtSignal(str)
+    gesture_motion = pyqtSignal(object)
+    gesture_status = pyqtSignal(object)
+    interface_surface = pyqtSignal(str)
 
 
 class JarvisApp:
@@ -181,6 +185,10 @@ class JarvisApp:
         self.automation_engine = get_automation_engine()
         self.signals = AppSignals()  # <-- 여기로 옮겼어요!
         self.signals.gesture_action.connect(self._on_gesture_action)
+        self.signals.gesture_motion.connect(self.window.apply_gesture_motion)
+        self.signals.gesture_status.connect(self.window.set_gesture_camera_status)
+        self.signals.interface_surface.connect(self.window.open_interface_surface)
+        self.window.gesture_camera_requested.connect(self._request_gesture_camera)
 
         self.diagnostics_runtime = DiagnosticsRuntime(
             tool_executor=self.tool_executor, workspace_manager=self.workspace_manager,
@@ -206,7 +214,12 @@ class JarvisApp:
             "approve": lambda: self.signals.gesture_action.emit("approve"),
             "cancel": lambda: self.signals.gesture_action.emit("cancel"),
             "switch_workspace": lambda: self.signals.gesture_action.emit("switch_workspace"),
+            "motion": lambda payload: self.signals.gesture_motion.emit(payload),
         })
+        interface_bridge = get_interface_control_bridge()
+        interface_bridge.register("set_gesture_camera", self._set_gesture_camera_sync)
+        interface_bridge.register("get_gesture_status", self.gesture_runtime.status)
+        interface_bridge.register("open_surface", self._open_interface_surface)
         self.command_center_runtime = CommandCenterRuntime(
             supervisor=self.supervisor_runtime, specialist_team=self.specialist_team_runtime,
             permission_manager=self.permission_manager, plugin_registry=self.tool_executor.plugin_registry,
@@ -223,6 +236,7 @@ class JarvisApp:
                 command, self.session_id,
             ),
         )
+        self.window.set_gesture_camera_status(self.gesture_runtime.status())
         
         # 권한 요청 결과 저장용 변수
         self._permission_result = None
@@ -298,6 +312,8 @@ class JarvisApp:
         QTimer.singleShot(0, self._run_next_queued_task)
         if FirstRunWizard.should_show():
             QTimer.singleShot(700, self._show_first_run_wizard)
+        else:
+            self._schedule_gesture_autostart()
 
     def _command_center_context(self):
         return {
@@ -312,6 +328,14 @@ class JarvisApp:
         wizard.exec()
         if wizard.result() == QDialog.DialogCode.Accepted:
             self.window.show_command_center()
+        self._schedule_gesture_autostart()
+
+    def _schedule_gesture_autostart(self):
+        if (os.getenv("JARVIS_DISABLE_CAMERA_AUTOSTART") == "1"
+                or os.getenv("PYTEST_CURRENT_TEST")
+                or self.assistant_settings.get("gesture_camera_enabled").casefold() != "true"):
+            return
+        QTimer.singleShot(650, lambda: self._request_gesture_camera(True, persist=False))
     
     def _init_ui(self):
         # 시스템 프롬프트 설정
@@ -995,6 +1019,38 @@ class JarvisApp:
             self._reset_all()
         elif action == "switch_workspace":
             self.window._select_workspace()
+
+    def _open_interface_surface(self, surface: str):
+        value = str(surface or "")
+        self.signals.interface_surface.emit(value)
+        return {"surface": value, "requested": True}
+
+    def _request_gesture_camera(self, enabled: bool, *, persist: bool = True):
+        """Never block the Qt thread while a device or permission dialog is pending."""
+        threading.Thread(
+            target=self._set_gesture_camera_sync,
+            args=(bool(enabled),), kwargs={"persist": persist},
+            daemon=True, name="jarvis-gesture-control",
+        ).start()
+
+    def _set_gesture_camera_sync(self, enabled: bool, *, persist: bool = True) -> dict:
+        enabled = bool(enabled)
+        if persist:
+            self.assistant_settings.set("gesture_camera_enabled", "true" if enabled else "false")
+        try:
+            if enabled:
+                if not self.permission_manager.request_permission("camera"):
+                    status = self.gesture_runtime.status()
+                    status["error"] = "카메라 권한이 차단되어 있습니다. 상단 A 버튼에서 허용할 수 있습니다."
+                else:
+                    status = self.gesture_runtime.start().__dict__
+            else:
+                status = self.gesture_runtime.stop().__dict__
+        except Exception as exc:
+            status = self.gesture_runtime.status()
+            status["error"] = str(exc)
+        self.signals.gesture_status.emit(status)
+        return status
     
     def _on_close_requested(self):
         # 종료 버튼 클릭시 프로그램 자체 종료

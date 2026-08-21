@@ -13,6 +13,8 @@ from PyQt6.QtWidgets import (
     QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout,
     QWidget,
 )
+from core.specialist_workspaces import get_specialist_workspace_registry
+from .brain_orbit import BrainOrbitWidget
 
 
 COMMAND_CENTER_STYLE = """
@@ -105,7 +107,8 @@ class MetricCard(QFrame):
 class CommandCenterDialog(QDialog):
     def __init__(self, runtime, *, workflow_runtime=None, diagnostics=None,
                  gesture_runtime=None, context_provider=None,
-                 control_callback=None, parent=None):
+                 control_callback=None, surface_callback=None,
+                 gesture_callback=None, parent=None):
         super().__init__(parent)
         self.runtime = runtime
         self.workflow_runtime = workflow_runtime
@@ -113,6 +116,8 @@ class CommandCenterDialog(QDialog):
         self.gesture_runtime = gesture_runtime
         self.context_provider = context_provider or (lambda: {})
         self.control_callback = control_callback
+        self.surface_callback = surface_callback
+        self.gesture_callback = gesture_callback
         self._contract_rows = []
         self.bridge = _AsyncBridge(self)
         self.bridge.completed.connect(self._async_completed)
@@ -179,6 +184,12 @@ class CommandCenterDialog(QDialog):
         root.addLayout(controls)
 
         self.tabs = QTabWidget()
+        self.brain_map = BrainOrbitWidget(compact=True)
+        self.brain_map.set_surfaces(get_specialist_workspace_registry().all())
+        if self.surface_callback:
+            self.brain_map.surface_requested.connect(self.surface_callback)
+        self.brain_map.camera_toggle_requested.connect(self._request_gesture_state)
+        self.tabs.addTab(self.brain_map, "BRAIN MAP")
         self.task_table = self._table(("계약 ID", "상위 작업", "상태", "전문가", "목표", "시도", "실패/승인"))
         self.task_table.itemSelectionChanged.connect(self._show_selected_contract)
         self.tabs.addTab(self.task_table, "작업·계약")
@@ -319,6 +330,7 @@ class CommandCenterDialog(QDialog):
             gesture = self.gesture_runtime.status()
             self.gesture_btn.setText("제스처 끄기" if gesture["running"] else "제스처 켜기")
             self.gesture_btn.setToolTip(gesture.get("error", ""))
+            self.brain_map.set_camera_status(gesture)
 
     def _run_async(self, callback):
         def worker():
@@ -402,17 +414,25 @@ class CommandCenterDialog(QDialog):
     def _toggle_gesture(self):
         if not self.gesture_runtime:
             return
+        self._request_gesture_state(not bool(self.gesture_runtime.status().get("running")))
+
+    def _request_gesture_state(self, enabled: bool):
+        if self.gesture_callback:
+            self.gesture_callback(bool(enabled))
+            return
         try:
-            status = self.gesture_runtime.status()
-            if status["running"]:
-                self.gesture_runtime.stop()
-            else:
-                if QMessageBox.question(self, "카메라 제스처", "카메라를 계속 사용해 손 제스처를 인식할까요?\n기본값은 꺼짐이며 언제든 끌 수 있습니다.") != QMessageBox.StandardButton.Yes:
-                    return
-                self.gesture_runtime.start()
+            self.gesture_runtime.start() if enabled else self.gesture_runtime.stop()
         except Exception as exc:
-            QMessageBox.warning(self, "제스처를 시작할 수 없음", str(exc))
+            QMessageBox.warning(self, "제스처 상태를 변경할 수 없음", str(exc))
         self.refresh()
+
+    def apply_gesture_motion(self, payload: dict):
+        self.brain_map.apply_gesture_motion(payload)
+
+    def set_gesture_camera_status(self, status: dict):
+        self.brain_map.set_camera_status(status)
+        self.gesture_btn.setText("제스처 끄기" if status.get("running") else "제스처 켜기")
+        self.gesture_btn.setToolTip(str(status.get("error") or ""))
 
     def _async_completed(self, result):
         if hasattr(result, "__dict__"):
