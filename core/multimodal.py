@@ -1,6 +1,7 @@
 import os
 import base64
 import tempfile
+import time
 from typing import Optional
 from config import Config
 from core.harness import SafetyLayer
@@ -28,12 +29,59 @@ except ImportError:
 class MultimodalManager:
     def __init__(self):
         self.safety = SafetyLayer()
+        from core.llm import get_llm_client
+        self.vision_llm = get_llm_client("vision")
+
+    @staticmethod
+    def _camera_backends():
+        """Windows에서 안정적인 순서로 카메라 백엔드를 반환합니다."""
+        backends = []
+        if os.name == "nt":
+            backends.extend([
+                ("MSMF", getattr(cv2, "CAP_MSMF", 1400)),
+                ("DSHOW", getattr(cv2, "CAP_DSHOW", 700)),
+            ])
+        backends.append(("DEFAULT", getattr(cv2, "CAP_ANY", 0)))
+        return backends
+
+    @staticmethod
+    def _configured_camera_indices(max_index: int = 5):
+        requested = str(Config.CAMERA_INDEX).strip()
+        if requested and requested.casefold() != "auto":
+            try:
+                return [int(requested)]
+            except ValueError as exc:
+                raise ValueError(f"CAMERA_INDEX는 auto 또는 0 이상의 정수여야 합니다: {requested}") from exc
+        return list(range(max_index))
+
+    def list_camera_devices(self, max_index: int = 5) -> list[dict]:
+        if not OPENCV_AVAILABLE:
+            return []
+        devices = []
+        found_indices = set()
+        for index in self._configured_camera_indices(max_index):
+            for backend_name, backend in self._camera_backends():
+                cap = cv2.VideoCapture(index, backend)
+                try:
+                    if not cap.isOpened():
+                        continue
+                    ok, frame = cap.read()
+                    if ok and frame is not None:
+                        height, width = frame.shape[:2]
+                        devices.append({
+                            "index": index,
+                            "backend": backend_name,
+                            "width": width,
+                            "height": height,
+                        })
+                        found_indices.add(index)
+                        break
+                finally:
+                    cap.release()
+        return devices
 
     def analyze_image(self, image_path: str, prompt: str = "이 이미지에 무엇이 있나요?") -> str:
-        """
-        이미지를 분석합니다.
-        현재는 로컬 이미지 정보만 제공하고, 향후 Vision API와 연동할 수 있습니다.
-        """
+        """이미지를 역할 전용 로컬 Vision 모델로 분석합니다."""
         if not PIL_AVAILABLE:
             return "오류: Pillow가 설치되지 않았습니다. requirements.txt를 확인하세요."
 
@@ -42,29 +90,19 @@ class MultimodalManager:
             return error_msg
 
         try:
-            with Image.open(image_path) as img:
-                info = {
-                    "파일명": os.path.basename(image_path),
-                    "크기": f"{img.width}x{img.height}",
-                    "포맷": img.format,
-                    "모드": img.mode,
-                    "프롬프트": prompt
-                }
-
-                result = [
-                    f"🖼️ 이미지 분석 결과:",
-                    f"",
-                    f"📁 파일명: {info['파일명']}",
-                    f"📐 크기: {info['크기']}",
-                    f"🎨 포맷: {info['포맷']}",
-                    f"🌈 모드: {info['모드']}",
-                    f"",
-                    f"💡 질문: {prompt}",
-                    f"",
-                    f"참고: 현재 이미지의 메타데이터만 분석합니다. 더 자세한 분석을 위해 Vision API를 추가로 연동할 수 있습니다."
-                ]
-
-                return "\n".join(result)
+            with open(image_path, "rb") as image_file:
+                encoded = base64.b64encode(image_file.read()).decode("ascii")
+            response = self.vision_llm.chat([
+                {
+                    "role": "system",
+                    "content": (
+                        "당신은 Jarvis의 이미지 분석 담당 모델입니다. 이미지에서 실제로 "
+                        "관찰되는 내용만 한국어로 답하고 불확실한 내용은 추측이라고 명시하세요."
+                    ),
+                },
+                {"role": "user", "content": prompt, "images": [encoded]},
+            ]).strip()
+            return response or "이미지 분석 모델이 빈 응답을 반환했습니다."
 
         except Exception as e:
             return f"이미지 분석 오류: {str(e)}"
@@ -107,7 +145,7 @@ class MultimodalManager:
                 result.append("-" * 40)
                 all_text = ""
                 for i in range(total_pages):
-                    page = doc[page_num - 1]
+                    page = doc[i]
                     all_text += page.get_text() + "\n"
                 
                 result.append(all_text[:3000])
@@ -120,39 +158,65 @@ class MultimodalManager:
         except Exception as e:
             return f"PDF 분석 오류: {str(e)}"
 
-    def capture_camera_frame(self, save_path: Optional[str] = None) -> str:
+    def capture_camera_frame_details(self, save_path: Optional[str] = None) -> dict:
         """
-        카메라에서 프레임을 캡처합니다.
+        카메라에서 프레임을 캡처하고 검증 가능한 구조화 결과를 반환합니다.
         save_path가 지정되면 해당 경로에 저장하고, 아니면 임시 파일에 저장합니다.
         """
         if not OPENCV_AVAILABLE:
-            return "오류: opencv-python이 설치되지 않았습니다. requirements.txt를 확인하세요."
+            raise RuntimeError("opencv-python이 설치되지 않았습니다. requirements.txt를 확인하세요.")
 
+        if save_path is not None:
+            is_valid, error_msg = self.safety.validate_path(save_path)
+            if not is_valid:
+                raise ValueError(error_msg)
+        else:
+            save_path = os.path.join(
+                tempfile.gettempdir(), f"camera_capture_{os.urandom(4).hex()}.jpg"
+            )
+
+        for index in self._configured_camera_indices():
+            for backend_name, backend in self._camera_backends():
+                cap = cv2.VideoCapture(index, backend)
+                try:
+                    if not cap.isOpened():
+                        continue
+                    frame = None
+                    for _ in range(5):
+                        ok, candidate = cap.read()
+                        if ok and candidate is not None:
+                            frame = candidate
+                        time.sleep(0.03)
+                    if frame is None:
+                        continue
+                    if not cv2.imwrite(save_path, frame):
+                        raise OSError(f"카메라 이미지를 저장하지 못했습니다: {save_path}")
+                    height, width = frame.shape[:2]
+                    if not os.path.isfile(save_path) or os.path.getsize(save_path) <= 0:
+                        raise OSError(f"저장된 카메라 이미지를 확인하지 못했습니다: {save_path}")
+                    return {
+                        "path": os.path.abspath(save_path),
+                        "camera_index": index,
+                        "backend": backend_name,
+                        "width": width,
+                        "height": height,
+                        "size": os.path.getsize(save_path),
+                    }
+                finally:
+                    cap.release()
+        raise RuntimeError("프레임을 읽을 수 있는 카메라를 찾지 못했습니다.")
+
+    def capture_camera_frame(self, save_path: Optional[str] = None) -> str:
+        """하위 호환 문자열 API."""
         try:
-            # 카메라 열기 (0은 기본 카메라)
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                return "오류: 카메라를 열 수 없습니다."
-
-            # 프레임 캡처
-            ret, frame = cap.read()
-            cap.release()
-
-            if not ret:
-                return "오류: 카메라에서 프레임을 캡처할 수 없습니다."
-
-            # 저장 경로 결정
-            if save_path is None:
-                temp_dir = tempfile.gettempdir()
-                save_path = os.path.join(temp_dir, f"camera_capture_{os.urandom(4).hex()}.jpg")
-
-            # 프레임 저장
-            cv2.imwrite(save_path, frame)
-
-            return f"성공: 카메라 프레임을 {save_path}에 저장했습니다."
-
+            result = self.capture_camera_frame_details(save_path)
+            return (
+                f"성공: 카메라 {result['camera_index']}({result['backend']}, "
+                f"{result['width']}x{result['height']})의 프레임을 "
+                f"{result['path']}에 저장했습니다."
+            )
         except Exception as e:
-            return f"카메라 캡처 오류: {str(e)}"
+            return f"카메라 캡처 오류: {e}"
 
     def image_to_base64(self, image_path: str) -> str:
         """

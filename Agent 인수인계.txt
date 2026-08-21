@@ -1,4 +1,48 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
+
+## 2026-08-14 전문가 작업공간 팀·기억·시각 지시 확장
+
+- 시안 제작 작업공간에 `SpecialistTeamRuntime`을 연결했다. 프로젝트/세션 네임스페이스 아래 `specialist:mockup` 기억을 분리하고, 생성 지시 전에 관련 기억을 검색한다. 실패한 시안은 학습시키지 않으며 사용자가 최종 저장한 승인 결과만 짧은 JSON으로 RAG에 축적한다.
+- 작업공간 RAG 검색 중 전역 namespace를 임시 변경하는 구간을 재진입 잠금으로 보호해 메인 채팅과 작업공간 스레드의 문맥이 섞이지 않게 했다.
+- 시안 팀은 `기억 검색 → Vision 관찰 → 레이아웃 설계 → 제약 검증 → 비파괴 렌더링` 역할로 구성했다. RAM/VRAM 한계를 고려해 모든 모델을 동시에 상주시키지 않고 역할별 순차 실행 후 Vision/Ollama 모델을 해제할 수 있게 했다.
+- 미리보기 확대·축소와 스크롤, Ctrl+휠, 100% 복원을 추가했다. 스케치 탭에는 펜 색상·굵기·지우기 기능을 넣었고 실제로 그린 경우에만 임시 PNG를 만들어 Vision 보조 근거로 전달한다.
+- AI 수정란에 참고 이미지 첨부 버튼과 드래그 앤 드롭 목록을 추가했다. 첨부 이미지는 제작 자산이 아니라 수정 의도를 해석하는 시각 근거로 분리한다.
+- 글꼴 선택, 픽셀 크기, 굵게 GUI를 추가하고 scene plan/edit patch 스키마와 Pillow 폰트 탐색까지 연결했다. 글꼴·크기·굵기 변경은 구조화된 비파괴 편집 명령으로 처리한다.
+- 검증: 변경 Python 파일 `py_compile` 통과, 집중 테스트 `55 passed`, 전체 테스트 `425 passed, 4 deselected` 통과.
+- 다음에 이어야 할 일: 실제 GUI에서 스케치 화살표/박스와 여러 수정 참고 이미지를 이용한 사용자 수용 테스트를 진행하고, 승인 결과가 누적된 뒤 반복 작업 recall 품질을 평가한다.
+
+### 2026-08-14 스케치 허용 경로 및 탭 가시성 후속 수정
+
+- 설명 스케치를 Windows 임시 폴더에 저장해 `SafetyLayer`가 차단하던 문제를 수정했다. 이제 프로젝트 내부 `data/cache/mockup_guidance`에 저장하며 이 캐시는 Git에서 제외한다.
+- 결과 미리보기/설명 스케치 탭의 선택·미선택·hover 색과 테두리를 명시해 어두운 테마에서 비활성 탭처럼 보이던 문제를 수정했다.
+- 스케치 파일이 실제 생성되고 허용 경로 검사를 통과하는 회귀 테스트를 추가했으며 시안/작업공간 집중 테스트 `55 passed`를 확인했다.
+
+### 2026-08-14 AI 수정 패치 범위 정제
+
+- 로컬 모델이 요청한 사진/캔버스 변경과 함께 요청하지 않은 `texts` 변경을 반환하면 전체 패치를 폐기하던 문제를 수정했다.
+- `filter_scene_edit_patch`가 사용자 명령에서 추론한 쓰기 범위를 기준으로 무관한 그룹만 제거한다. 요청한 변경은 계속 적용하며, 정제된 결과는 기존 수치 검증과 의미 검증을 모두 통과해야 한다.
+- 사진 확대 요청에 섞인 텍스트 크기 변경을 제거하면서 사진 변경은 보존하는 회귀 테스트를 추가했다. 집중 테스트 `56 passed`, 전체 테스트 `426 passed, 4 deselected`를 통과했다.
+## 2026-08-08 Obsidian Knowledge Vault 연결
+
+- Obsidian을 단순 뷰어로 사용하고 아니스가 Markdown Vault의 분류·원자 노트·Wikilink·RAG 동기화를 관리하는 `core/obsidian_vault.py`와 `obsidian` Plugin을 추가했다.
+- 모든 대화는 감사·재컴파일용 `raw/conversations`에 보관하지만 기본 RAG에서 제외한다. 명시적 기억, 선호, 설정, 프로젝트 결정만 `wiki/`에 승격되고, 일반 질문·명령·잡담은 정규화한 패턴이 3회 이상 반복될 때만 활성 지식이 된다.
+- 각 기억은 중요도, 신뢰도, epistemic status, action, topic, source, workspace를 frontmatter로 보유한다. 주제와 action Map of Content를 만들고 `obsidian_explore`가 최대 깊이 3의 BFS로 Wikilink를 실제 탐색한다.
+- `obsidian_sync_to_rag`는 wiki만 하이브리드 RAG에 넣고, `obsidian_lint`는 깨진 링크·고아·얇은·중복 페이지를 점검한다. 민감정보는 Vault 자동 저장에서도 차단한다.
+- 기본 Vault는 `data/AnisKnowledgeVault`이고 설치된 Obsidian 앱은 URI로 열 수 있다. 다른 Vault는 Plugin 설정 Tool 또는 `OBSIDIAN_VAULT_PATH`로 연결한다.
+- 구현 커밋: `1570003` (`옵시디언 지식 볼트와 그래프 기억 연결`). 새 테스트를 기본 pytest 목록에 포함했고 전체 `383 passed, 4 deselected`를 통과했다.
+- 다음 해야 할 일: 실제 사용 후 중요도 임계값과 반복 승격 기준(현재 3회)을 사용자 데이터에 맞게 조정하고, 필요하면 Vault 상태·린트 결과 UI를 추가한다.
+
+## 2026-08-08 Post-training 기반 선행 Runtime 개선
+
+- Post-training을 바로 실행하지 않고 실행 trajectory와 사용자 피드백을 먼저 축적하도록 `core/learning_runtime.py`를 추가했다. 민감정보를 마스킹하고 라우팅·Tool 요청·결과·최종 상태를 하나의 실행 ID로 연결한다.
+- Plugin Registry 메타데이터에서 요청별 Tool Loadout을 만들며, 일반 대화에는 Tool 스키마를 싣지 않고 명확한 Intent에는 해당 Tool만 노출한다. ReasoningPolicy는 단순 대화·단일 Tool·복합·위험 작업의 추론 수준을 분리한다.
+- RAG는 벡터/어휘 후보를 독립 검색해 RRF로 합치고 선택적 Cross-Encoder 재정렬과 retrieval confidence를 제공한다. 신뢰도가 낮은 후보는 Context에서 사실 근거로 사용하지 않는다.
+- 대용량 Tool 결과 offload, 최근 대화 예산, 작업 checkpoint를 위한 `core/context_lifecycle.py`를 추가했다. 외부 콘텐츠의 ANSI 제어문자와 명령형 prompt injection 격리도 공통 SafetyLayer에 추가했다.
+- 결정론적 애플리케이션 평가, 격리된 Skill 개선 후보, SFT/DPO/Verifier-RL JSONL 내보내기를 구현했다. 학습과 배포는 자동 실행하지 않으며 사람 검토와 95% 회귀 게이트를 요구한다.
+- `POST_TRAINING.md`, `training/post_training_config.json`, `test_post_training_runtime.py`에 운영 원칙과 검증을 기록했다.
+- 구현 커밋: `bc24b36` (`에이전트 평가와 학습 준비 런타임 구축`). 전체 회귀 테스트는 `371 passed, 4 deselected`를 통과했다.
+- 다음 해야 할 일: 실제 사용자 피드백 UI를 연결하고 충분한 승인 데이터가 쌓인 뒤 역할별 QLoRA 파일럿을 별도 브랜치에서 실행한다.
+
 ⚠️⚠️⚠️ **절대 지켜야 할 규칙 (반드시 읽고 따르세요!)** ⚠️⚠️⚠️
 1. **인수인계 매 회차마다 업데이트**: 대화 내용 중 결정 사항, 중요 사항, 변경 사항은 무조건 이 파일에 기록하세요.
 2. **코드 업데이트시 반드시 Agent가 Git 커밋 완료**: 코드 변경 후 **Agent가 직접 Git add/commit까지 완료**하세요! 사용자가 FORK로 푸시만 하면 됩니다. 이 파일에 커밋 주소도 함께 기록하세요.
@@ -7,6 +51,616 @@
 5. Git 커밋할 때 **반드시** AUTHOR의 이름을 **gyeotsa**로 하세요.
 6. Git 커밋할 때 커밋 내용은 한국어로 작성하세요.
 ---
+
+## 2026-08-02 P0~P12 실제 main_qt 재수락 및 통합 결함 수정
+
+- 실제 `JarvisApp`에 날짜 질의를 넣자 Tool은 succeeded/Evidence를 반환했지만
+  `system_tools.present_result()`가 `ToolRunResult`를 ISO 문자열로 오인해 TypeError가 났다.
+  Registry의 중앙 presentation 경계가 typed envelope를 보존하면서 Presenter에는 raw payload만
+  전달하도록 수정했다. alarm/browser/filesystem/weather 등 문자열 Presenter에도 동일 적용된다.
+- 예외 출력의 emoji가 CP949에서 2차 `UnicodeEncodeError`를 내던 main/RAG/STT/ReAct/박수
+  로그를 ASCII prefix로 교체했다. MiniControlBar QSS 선언 안의 Python 주석도 제거해 실제
+  시작 시 반복되던 QPushButton stylesheet 경고가 사라졌다.
+- `안녕, 오늘 기분은 어때?`가 “오늘+어때” 때문에 43초 web.search로 가던 문제를 수정했다.
+  사회적 대화는 명시적 검색·조사 표현이 없으면 conversation이며 실제 GUI에서 자연스러운
+  Anis 응답을 확인했다. 명시적 “웹에서 찾아줘”는 계속 live 검색으로 간다.
+- 실제 GUI 날짜, Open-Meteo 서울 날씨, 일반 대화 모두 응답 표시까지 통과했다. HTTPS,
+  Credential Manager 임시 저장/조회/삭제, 카메라 프레임 기반 장치 2개, Anis TTS 실제 재생,
+  패키징 smoke, Scheduler 100,000 tick soak, DB quick check를 확인했다.
+- 실제 OAuth는 자격증명이 없어 skipped이며 성공으로 표시하지 않는다. 전체 회귀
+  `303 passed, 4 deselected`, compileall, diff check 통과.
+
+## 2026-08-02 Workspace 임시 테스트 경로 시작 오류 수정
+
+- 과거 pytest가 운영용 `data/workspaces.json`의 마지막 Workspace를 `.pytest-tmp`로
+  덮어써 앱 시작 시 `PermissionError`가 발생했다.
+- 접근 불가·삭제된 Workspace는 예외 없이 자동 복원만 해제하고 앱을 계속 시작한다.
+  운영 상태에 남은 `.pytest-tmp` 경로도 복원하지 않는다.
+- pytest에서 singleton Workspace는 시스템 임시 디렉터리의 프로세스별 상태 파일을 사용해
+  운영 설정을 다시 덮어쓰지 않는다. 일반 `WorkspaceManager(custom_state)` 복원 동작은 유지한다.
+- 실제 운영 초기화는 `workspace_init_ok None`, 전체 회귀는 `299 passed, 4 deselected`,
+  compileall과 diff check를 통과했다.
+
+## 2026-08-02 P12 Security Observability Productization 완료
+
+- `core/productization.py`: scoped permission(folder/app/domain/account/global),
+  once/session/always lifetime, Windows Credential Manager, redaction, rotating JSON trace,
+  correlation IDs, metrics, diagnostics, safe mode를 구현했다.
+- 중앙 Tool 경계는 scope 입력을 권한 검사에 전달하고 safe mode에서 read 이외 작업을
+  차단한다. 비밀 원문 조회 Tool은 제공하지 않으며 trace의 token, authorization,
+  cookie, email, phone은 마스킹한다.
+- 선택형 Bootstrap은 role 다운로드, SHA-256, atomic replace를 사용한다. Update는
+  checksum, ZIP traversal 차단, backup/rollback을 제공하고 DB migration version을 기록한다.
+- 실제 network와 OAuth credential이 필요한 E2E는 `not_run/skipped`로 남기며 성공으로
+  간주하지 않는다. 다음 작업은 사용자 Windows 세션의 P10~P12 배포 수락 테스트다.
+
+## 2026-08-02 P8 Research·Browser Agent 완료
+
+- `core/research.py`에 실제 페이지 방문형 `ResearchAgent`와 typed Source/Claim/Report,
+  SQLite TTL Cache, Prompt Injection Guard를 추가했다.
+- DDGS는 후보 URL 발견에만 사용한다. Playwright가 실제 방문해 성공 응답·최종 URL·렌더링
+  본문을 확인해야 Source로 채택한다.
+- meta·JSON-LD·time·Last-Modified에서 게시/수정일을 추출하고 정부·교육 도메인과
+  공식/보도자료 표식으로 공식 출처를 우선 정렬한다.
+- 유사 주장을 출처별 Source ID로 교차 연결한다. 숫자 값이 다른 주장은 conflicts와 원문
+  variants를 보존하며 Presenter는 주장별 `[S1, S2]` 인용과 상충 경고를 표시한다.
+- Playwright persistent profile로 로그인 Cookie/세션을 유지한다. Profile 이름은 경로 탈출이
+  불가능하게 정규화하며 Cookie 값은 상태 Tool에서 노출하지 않는다.
+- 안전한 다운로드, 동적 페이지 network-idle, HTML table, PDF 본문 추출을 지원한다.
+- 웹 본문과 레거시 검색 스니펫의 시스템 지시·이전 명령 무시·비밀 노출·도구 실행 문구는
+  `[격리된 웹 지시문]`으로 치환하고 경고를 Evidence에 남긴다.
+- Research Cache는 query/source/profile 키와 TTL을 사용하며 force refresh만 우회한다.
+- 코드 커밋: `dcc94ed`, `b263b09`.
+- 검증: P8 관련 26개 통과, Playwright Chromium 설치·headless 실행 확인,
+  전체 `212 passed, 4 deselected`.
+- P8 Research·Browser Agent: **완료**.
+- P9 Office·Cloud·Communication 런타임: **완료**. 실제 계정·Office/HWP 설치 환경 수락 테스트는 대기.
+- P10 OS·Multimodal·Voice 런타임: **완료**. 대화형 화면·실제 acoustic 환경 수락 테스트는 대기.
+- P11 Automation·Proactive Policy 런타임: **완료**. 며칠 단위 wall-clock·실제 재부팅 수락 관찰은 대기.
+- 다음 해야 할 일: P12 Security·Observability·Evaluation·Deployment를 시작한다.
+
+## 2026-08-02 P11 Automation·Proactive Policy 완료
+
+- `core/proactive_runtime.py`에 집중 모드·회의·전체화면·방해 금지 상태와 SQLite 알림·제안
+  원장을 추가했다. 전체화면은 foreground 창과 monitor rect로 감지하고 상태 변경은 원자 저장한다.
+- `core/proactive.py`는 severity·dedupe·보류·digest 정책을 적용한다. 모든 알림은 왜
+  알려주는지, 이벤트 ID, 출처 Evidence를 보존한다. critical 보안 알림만 방해 금지를 우회한다.
+- 상태 해제 이벤트가 발생하면 실행 중인 정책이 보류 알림을 중요도순으로 자동 묶어 전달한다.
+- `plugins/proactive_policy.py`가 방해 상태 조회/변경, 보류함, 제안 생성/승인/조회,
+  Scheduler health/soak Tool을 Registry에 등록한다.
+- 선제 proposal은 `proposed → approved`까지만 바뀐다. 승인 Tool은 대상 Tool을 직접 실행하지
+  않으므로 실제 행동은 원래 Plugin Tool과 Permission 검사를 별도로 거쳐야 한다.
+- Scheduler에 heartbeat, 마지막 DB 복원, 실행 중 job lease, 10초 tick 공백 기반 절전
+  복구를 추가했다. 시작 시 enabled 작업을 다시 구성하고 동일 작업 동시 실행을 억제한다.
+- 100,000 tick 가속 soak는 오류 없이 통과했고 실제 엔진 2.2초 실행에서 heartbeat 기록,
+  20초 공백 주입에서 재로드를 확인했다. 기존 장식 이모지가 CP949 로그 출력에서
+  `UnicodeEncodeError`를 일으키는 문제도 제거했다.
+- P11 관련 33개, 전체 `289 passed, 4 deselected`를 통과했다.
+- 코드 커밋: `af7300f`, `cd1661b`.
+- 다음 작업은 P12다. 며칠 단위 wall-clock soak와 실제 Windows 재부팅 후 알람·반복 작업
+  복원은 배포 수락 환경에서 장기간 관찰한다.
+
+## 2026-08-02 P10 OS·Multimodal·Voice 완료
+
+- `core/windows_automation.py`에 창 Handle·PID·foreground 조회/검증과 Windows UI
+  Automation 접근성 트리를 구현했다. 우선순위는 API/CLI/COM/UIA/좌표이며 좌표 Tool은
+  `coordinate_control` 확인 권한과 이유를 요구하고 결과를 `UNVERIFIED`로 유지한다.
+- `core/vision_runtime.py`, `plugins/multimodal_runtime.py`에 화면 선택 영역 캡처,
+  OCR·표·차트 모드, 다중 이미지 순서 보존, 영상 균등 샘플링과 시간축·해시 Evidence를 추가했다.
+- `core/voice_runtime.py`에 Wake word 후보 재평가, 출력 참조 투영 기반 에코 제거,
+  250ms 지속 근접 발화 끼어들기, TTS 즉시 취소를 구현해 AudioProcessor와 HardwareManager에 연결했다.
+- 마이크 stream 오류는 사용자가 중지한 경우를 제외하고 exponential backoff로 최대 5회
+  자동 재연결한다. 장치 변경과 절전 복귀 후 재개 경로를 제공한다.
+- `core/gpu_scheduler.py`가 STT·Vision의 중앙 GPU admission과 VRAM 예산을 관리한다.
+  STT 우선순위가 높고 기본 예산은 CUDA VRAM 82%이며 환경변수로 제한할 수 있다.
+- 기본 pytest 수집에 P4~P10 안전 회귀 파일을 편입했다. P10 집중 38개 및 전체
+  `280 passed, 4 deselected`를 통과했다.
+- Codex 프로세스는 Windows 대화형 화면 세션에 접근하지 못해 실제 ImageGrab은
+  `screen grab failed`로 차단됐다. 성공으로 기록하지 않았으며 Jarvis GUI를 직접 실행한
+  사용자 세션에서 화면·UIA·스피커/마이크 끼어들기·절전 복귀 수락 테스트가 남아 있다.
+- 코드 커밋: `ea194cc`, `ca324fe`, `729e7b4`.
+
+## 2026-08-02 P9 Office·Cloud·Communication 완료
+
+- `core/office_runtime.py`, `plugins/office_editing.py`에 DOCX/XLSX/PPTX/HWPX의 기존
+  style·theme·media·layout·header 보호 파트를 해시 검증하는 템플릿 치환을 추가했다.
+  임시 복사본 편집 후 보호 파트가 바뀌지 않았을 때만 `os.replace`로 원자 반영한다.
+- PDF 렌더 결과를 PyMuPDF로 다시 열어 페이지 수와 비어 있지 않은 픽셀을 확인한다.
+  Word/Excel/PowerPoint/HWP COM은 Registry LocalServer 실행 파일이 실제 존재할 때만
+  사용 가능하다고 판정한다. 현재 PC는 COM class factory 미등록이므로 연결 불가 상태다.
+- `core/remote_runtime.py`, `plugins/cloud_communication.py`에 Google/Microsoft OAuth
+  Authorization Code + PKCE, refresh, Windows DPAPI 암호화 Token Vault를 구현했다.
+- Gmail·Google Calendar·Outlook·Slack·Teams는 로컬 draft 생성과 `external_send`
+  승인 적용을 분리하고, 적용 뒤 원격 Message/Event ID를 다시 조회해 검증한다.
+- Google Drive·OneDrive·Notion 메타데이터는 provider/account/remote ID 기반 SQLite
+  카탈로그에 동기화한다. Slack·Teams는 메시지 ID·작성자·snippet을 근거로 요약한다.
+- `.env.example`에 OAuth Client ID/Secret, redirect URI, Slack·Notion 설정을 추가했다.
+  비밀값은 Tool 인자나 SQLite 원장에 저장하지 않는다.
+- 코드 커밋: `a0fd348` (`[Feat] P9 서식 보존 Office 편집과 렌더링 QA 구축`),
+  `74e8db0` (`[Feat] P9 OAuth 클라우드 통신 승인 런타임 구축`).
+- 집중 테스트: Office 24개, P9 통합 관련 46개 통과. 실제 외부 계정 호출과 외부 전송은
+  자격증명 및 사용자 승인 없이 실행하지 않았으며, 설치형 COM도 지원 환경에서 별도 검증해야 한다.
+- 전체 회귀 테스트: `212 passed, 4 deselected`.
+
+## 2026-08-02 P7 Memory·RAG·Knowledge 완료
+
+- `core/knowledge_memory.py`에 Conversation/Task/Project/Preference/Fact/Case 의미 유형과
+  Fact/Inference/User Claim 사실성 계약을 추가했다. 모든 장기 기록은 출처, confidence,
+  기록·만료 시각, Workspace와 metadata를 보유한다.
+- 같은 subject/predicate의 다른 내용은 `conflicts_with`로 보존한다. 사용자 정정은 이전
+  기록을 `superseded` 처리하고 새 기록의 `supersedes_id`로 연결한다.
+- 비밀번호, API key, token, 주민등록번호, 카드·계좌·개인 키 등은 자동 기억에서 차단한다.
+- Markdown·JSON·CSV·코드 구조를 보존한 Chunking과 stable chunk ID, section, line range,
+  source hash를 구현했다. 검색 시 로컬 문서 수정·삭제를 자동 동기화한다.
+- RAG 검색에 metadata filter와 lexical/vector·recency reranking을 적용했다. 결과 citation을
+  답변 Context에 넣어 문서 기반 주장과 근거 Chunk를 연결한다.
+- 웹 문서는 주제별 TTL을 적용한다. 만료 결과는 기본 검색에서 제외하며
+  `rag_revalidate_web_document`의 실제 재검증 기록으로만 만료 시각을 갱신한다.
+- 코드 커밋: `d5ed707`, `da69694`.
+- 검증: P7 및 관련 회귀 25개 통과, 전체 `212 passed, 4 deselected`.
+- P7 Memory·RAG·Knowledge: **완료**.
+- 다음 해야 할 일: P8 Research·Browser Agent를 시작한다. 검색 결과 URL 실제 방문,
+  본문·게시일 추출과 공식 출처 우선순위 계약부터 구현한다.
+
+## 2026-08-02 P6 Tool Runtime·Plugin 완전 단일화 완료
+
+- `PluginRegistry`를 Tool 스키마와 실행의 유일한 공개 경계로 변경했다. 내장 Tool은
+  `legacy_runtime` Plugin을 통해 등록되며 Executor의 도메인별 우회 실행 분기를 제거했다.
+- Plugin, Tool, Intent 중복 이름과 잘못된 JSON Schema를 등록 시 fail-fast로 차단한다.
+  입력과 출력 모두 JSON Schema Draft 2020-12 검증을 통과해야 한다.
+- Tool 계약에 sync/async 실행 모드, timeout, retry budget, cancellable 선언을 추가하고
+  중앙 worker runtime에 timeout·재시도·취소 처리를 연결했다.
+- Plugin 계약에 버전·Python 의존성·지원 OS·인증 방식과 연결/인증/진단 API를 추가했다.
+- 앱 상단 `P` 버튼에 Plugin 진단 UI를 추가했다. 설치됨·연결됨·인증됨·검증됨을
+  별도 상태로 표시하며 SMTP 설정 누락 같은 진단 내용을 보여준다.
+- 코드 커밋: `772511e`, `3dab2e5`, `e09cc3e`.
+- 검증: P6 관련 35개 테스트 통과, 전체 `212 passed, 4 deselected`.
+- P6 Tool Runtime·Plugin 완전 단일화: **완료**.
+- 다음 해야 할 일: P7 Memory·RAG·Knowledge를 시작한다. 메모리 유형 분리와
+  사실·추측·출처·기록 시각을 담는 영속 계약부터 구현한다.
+
+## 2026-08-01 P5 Planner·Executor·Recovery 재설계 완료
+
+- `core/plan_runtime.py`에 실행 가능한 `PlanDAG`·`PlanStep`·`PlanCoordinator`와 SQLite
+  `PlanExecutionStore`를 추가했다. 중복 ID, 없는 의존성, 자기 의존, cycle을 실행 전에 차단한다.
+- 각 단계는 Tool/입력, 의존성, 사전조건, 예상 Artifact, 검증 계약, 승인 이유, 재시도 예산·
+  전략, 관찰, 오류 서명을 보유한다. 알 수 없는 사전조건은 fail-closed로 차단한다.
+- 동시에 ready인 독립 단계는 최대 4개 worker로 병렬 실행하고 의존 단계는 선행 완료 뒤 실행한다.
+- 실패 관찰로 새 plan revision을 만들되 완료 단계는 보존한다. 단계별 예산, 같은 오류 서명 2회,
+  전체 재계획 2회로 무한 반복을 차단한다.
+- 모든 최초·복구 실행은 동일 verify callback을 거친다. 기존 Recovery도 같은 Coordinator를
+  사용하며 의미가 다른 대체 Tool 하드코딩과 Workspace 밖 절대경로 보정을 제거했다.
+- 외부 전송·삭제·push 계약은 승인 이유와 `awaiting_approval` 상태로 Plan DB와
+  `agent_tasks.plan_id`에 영속화된다. 승인된 단계만 다시 pending으로 전환해 재개한다.
+- `Executor`는 기존 API 호환 facade로 남고 `ConversationService`, `PlanningService`,
+  `PlanCoordinator`, `ResponseComposer`로 책임을 분리했다.
+- 코드 커밋: `83049ac`, `d80388d`, `924fedc`, `1165b0c`.
+- 전체 검증: `212 passed, 4 deselected`; P5 전용 검증 9개 통과.
+- P5 Planner·Executor·Recovery 재설계: **완료**.
+- 다음 작업은 P6 Tool Runtime·Plugin 완전 단일화다. `core/tools.py`의 레거시 Tool을 Plugin으로
+  이전하고 Registry에서 중복 이름·Schema 충돌을 시작 시 차단하는 작업부터 진행한다.
+
+## 2026-08-01 P4 Workspace·Project Intelligence 완료
+
+- `WorkspaceManager`가 마지막 Workspace, 목록, 별칭, 프로젝트별 설정을
+  `data/workspaces.json`에 원자적으로 저장한다. 앱 singleton은 마지막 Workspace를 자동
+  복원하고, 테스트·독립 인스턴스는 명시적으로 요청할 때만 복원하여 상태를 격리한다.
+- `ProjectIndexer`는 안전한 경로 경계 검사와 `.gitignore` 규칙을 사용한다. 대형 생성 폴더를
+  제외하며 추가·수정·삭제 파일만 증분 갱신한다. SQLite 연결은 Windows 잠금이 남지 않게 닫는다.
+- manifest와 확장자를 분석해 언어·프레임워크·실행 가능한 테스트/검증 명령을 감지한다.
+- Workspace 선택·복원은 ProjectIndexer, Conversation Memory, RAG에 하나의 경로 해시
+  namespace를 적용하여 프로젝트 간 세션과 문서 검색을 격리한다.
+- 상단 UI에 Git 브랜치와 dirty `*`를 표시하며 5초마다 Git 상태와 증분 인덱스를 갱신한다.
+- Workspace Plugin은 목록, 별칭, 프로젝트 프로필, 새 프로젝트 생성 Tool을 제공한다.
+  `empty`, `python-basic`, `python-cli` 템플릿과 선택적 `.venv`, `git init`을 지원하며 실패 시
+  새 프로젝트 폴더 전체를 롤백한다.
+- 코드 커밋: `05e47dd`, `f7842a4`, `8f96909`, `87bb5e0`.
+- 전체 검증: `212 passed, 4 deselected`.
+- P4 Workspace·Project Intelligence: **완료**.
+- 다음 작업은 P5 Planner·Executor·Recovery 재설계다. Executor의 대화·계획·실행·검증·복구
+  책임을 분리하고 실행 가능한 Plan DAG 계약부터 정의한다.
+
+## 2026-08-01 P3 범용 Coding Agent 완료
+
+- `coding.change_repository` Intent와 `coding_execute_request` Tool을 추가해 자연어
+  코딩 요청을 CodingPlan→LLM 제안→원자 Transaction→검증으로 연결했다.
+- Coding LLM은 단일 JSON 객체만 반환하며 직접 파일을 쓰지 않는다. 기존 파일은
+  exact `old_text/new_text/expected_sha256`, 새 파일은 `create=true` 계약만 허용된다.
+- 새 파일도 임시 파일 원자 저장, diff review, 문법·관련 테스트·manifest 검증,
+  실패 rollback 대상이다. 실패 후 생성된 새 파일은 삭제되고 기존 파일은 원본 bytes로
+  복구된다.
+- `change_kind=feature`는 test 파일 edit를 반드시 포함해야 한다. 테스트 없는 새 기능은
+  저장 전에 거절되며 완료로 보고할 수 없다.
+- 검증 실패 로그를 Coding 모델에 다시 제공해 최대 시도 예산 안에서 새 최소 edit를
+  제안하고 동일 검증을 재실행한다.
+- 코드+테스트 자연어 E2E와 라우팅 데이터셋에 Coding 요청을 추가했다. “코드 수정하고
+  테스트 실행”의 실행 동사가 Windows Plugin으로 가던 충돌은 Coding Intent pattern
+  계약으로 해결했다.
+- 코드 커밋: `c3a9bde` (`[Feat] P3 자연어 Coding Agent 파이프라인 완성`)
+- 검증: 전체 `212 passed, 4 deselected`.
+- P3 범용 Coding Agent: **완료**.
+- 다음 해야 할 일: P4 Workspace·Project Intelligence를 시작한다. 마지막 Workspace
+  자동 복원, Workspace 목록/별칭/프로젝트 설정, 선택 직후 인덱싱과 `.gitignore` 기반
+  증분 감시를 우선 구현한다.
+
+## 2026-08-01 P3 검증 전략과 제한 복구 루프
+
+- CodingAgent가 프로젝트 manifest와 현재 인터프리터에서 사용 가능한 실행기를 함께
+  확인해 검증 명령을 구성한다. Python은 py_compile/관련 pytest와 설정된 Ruff/Mypy,
+  JS/TS는 node check 및 package scripts의 format:check/lint/typecheck/test/build,
+  Rust는 cargo check/test, Go는 go test를 지원한다.
+- 명령은 모두 `shell=False` 인자 배열이며 manifest에 선언되지 않았거나 설치되지 않은
+  도구를 실행하지 않는다.
+- `review_diff()`가 빈 diff, 2,000줄 초과 patch, 병합 충돌 표식을 원자적 저장 전에
+  차단한다.
+- `apply_with_recovery()`는 검증 실패로 전체 롤백된 결과와 로그를 repair callback에
+  전달한다. 새 exact-minimal patch만 최대 5회 범위에서 재적용·재검증하며 테스트에서
+  첫 문법 실패 후 두 번째 patch 성공을 확인했다.
+- 코드 커밋: `9629243` (`[Feat] P3 검증 전략과 제한 복구 루프 연결`)
+- 검증: 전체 `209 passed, 4 deselected`.
+- 다음 해야 할 일: P3의 남은 새 기능 테스트 생성 정책과 자연어 Coding 요청→계획→
+  edits 생성→transaction 실행을 연결한다. 생성 테스트도 제품 코드와 같은 최소 patch,
+  검증, diff review, rollback 계약을 통과해야 하며 테스트 없는 새 동작은 완료 처리하지
+  않도록 한다.
+
+## 2026-08-01 P3 심볼 영향 계획과 관련 테스트
+
+- CodingAgent에 `CodingPlan`과 `build_plan()`을 추가했다. 요청에서 코드 식별자를
+  추출하고 ProjectIndexer로 Python AST 심볼, 파일명, 본문 preview를 검색한다.
+- ProjectIndexer DB는 OS 임시 폴더에서 생성·삭제하므로 사용자 Workspace에
+  인덱스 부산물을 남기지 않는다.
+- 계획은 request, repository snapshot, related files/symbols, impact scope,
+  validation commands를 구조화해 반환한다. Coding Plugin의
+  `coding_plan_change` Tool로 Registry/Planner에서도 사용할 수 있다.
+- Python 변경은 `py_compile`과 대응하는 `test_<stem>.py` 또는 `<stem>_test.py`를
+  자동 선택한다. JavaScript 계열은 Node 설치 시 `node --check`를 선택한다.
+- 관련 pytest가 실패하는 실제 테스트에서 다중 파일 transaction이 원본으로 롤백되고
+  완료로 보고되지 않는 것을 확인했다.
+- 코드 커밋: `bf994d0` (`[Feat] P3 심볼 영향 계획과 관련 테스트 연결`)
+- 검증: 전체 `206 passed, 4 deselected`.
+- 다음 해야 할 일: P3 3차로 프로젝트 manifest에서 formatter/lint/type/build 명령을
+  안전하게 감지하고, 실패 로그를 구조화해 Coding 모델이 새 최소 patch를 제안한 뒤
+  제한 횟수 내 재검증하는 복구 루프를 구현한다. 최종 diff 자체 검토와 새 기능 테스트
+  생성 정책도 연결한다.
+
+## 2026-08-01 P3 원자적 Coding Transaction 1차
+
+- 기존 `filesystem_write_file`은 코딩 모델의 전체 파일 출력을 즉시 덮어써 여러 파일
+  계획, 사용자 변경 충돌, 검증 실패 롤백과 최종 diff 검토가 없었다.
+- `core/coding_agent.py`에 저장소 단위 Coding Transaction을 추가했다. README,
+  의존성 파일, 파일 구조, Git 브랜치·status를 분석하고 `.git/.venv/node_modules/
+  build/dist/IDE cache`를 제외한다.
+- `FileEdit`는 상대 경로, 정확히 한 번 존재하는 old/new text, 선택적 변경 전 SHA-256을
+  사용한다. Workspace escape, 전체 재생성용 빈 old_text, 다중 일치, 사용자 변경
+  충돌을 모두 적용 전에 차단한다.
+- UTF-8, UTF-8 BOM, CP949를 판별해 보존하고 임시 파일 fsync 후 `os.replace`로
+  적용한다. Python 파일은 기본 `py_compile`, 그 밖에는 안전한 인자 배열 검증 명령을
+  지원하며 실패하면 모든 변경 파일을 원본 bytes로 롤백한다.
+- `plugins/coding.py`가 `coding_analyze_repository`, `coding_apply_patch`를 Registry에
+  등록한다. 분석 snapshot, unified diff hash, 검증 출력, 변경 파일을 Evidence와
+  Artifact로 반환한다.
+- 코드 커밋: `dd9b8f0` (`[Feat] P3 원자적 Coding Transaction 기반 구축`)
+- 검증: 전체 `204 passed, 4 deselected`.
+- 다음 해야 할 일: P3 2차로 ProjectIndexer의 심볼/파일 검색을 CodingAgent 분석에
+  연결하고 구조화 변경 계획·영향 범위를 만든다. 이어서 Python/JS 등 언어별 formatter,
+  lint, type check, 관련 테스트 자동 선택과 실패 로그 기반 재수정 루프를 구현한다.
+
+## 2026-08-01 P2 의미 기반 Capability Router 완료
+
+- `IntentSchema`/`IntentResolution`에 `freshness`와 `requires_sources`를 추가했다.
+  Browser의 web.search는 `live + source required` 계약을 선언한다.
+- 직접 Intent가 없는 발화에서만 시간 표현과 정보 질문 표현을 함께 검사해 Registry의
+  live 검색 Capability를 찾는다. 특정 제품·인물·사이트를 나열하는 상황별 하드코딩은
+  사용하지 않았다.
+- 현재 날짜·현재 시간·현재 날씨는 직접 매칭되는 System/Weather Plugin이 우선한다.
+  현재 주가, 현재 공적 인물, 최근 뉴스처럼 전용 Plugin이 없는 질문은 출처가 필요한
+  web.search로 라우팅된다. “오늘 기분이 안 좋아” 같은 감정 대화는 검색하지 않는다.
+- `tests/data/intent_routing_cases.json`에 실제 사용자형 발화를 분리하고
+  `test_routing_dataset.py`가 전체 Plugin Registry를 로드해 기대 Intent, request type,
+  freshness를 검증한다. 이후 새 표현은 Executor 분기 대신 데이터셋과 Plugin 계약을
+  확장한다.
+- 코드 커밋: `9b4ed58` (`[Feat] P2 시간 민감 라우팅과 발화 회귀 완성`)
+- 검증: 전체 `198 passed, 4 deselected`.
+- P2 의미 기반 Capability Router: **완료**.
+- 다음 해야 할 일: P3 범용 Coding Agent를 시작한다. 저장소 분석 → 변경 계획 → patch
+  적용 → lint/type/test → diff 검토의 상태 기계를 만들고, 파일 전체 덮어쓰기보다
+  최소 diff를 기본으로 하며 실패 시 원복 가능한 체크포인트를 보존한다.
+
+## 2026-08-01 P2 Plugin 계약과 충돌 정책
+
+- `ToolSchema.__post_init__()`이 Tool 이름과 권한에서 부작용을 `read`, `execute`,
+  `change`, `external_send`로 정규화한다. 개별 Plugin은 필요할 때 명시적으로
+  override할 수 있으며 하드코딩된 사용자 상황 분기는 추가하지 않았다.
+- 출력 스키마가 없는 기존 Tool에는 `ToolRunResult`의 status/raw_output/evidence/
+  artifacts 공통 스키마가 적용된다. 검증 필수 여부도 CapabilityContract에 포함된다.
+- `IntentSchema`는 action에서 query/execute/change/external_send를 정규화한다.
+  Registry가 설치된 41개 Tool과 21개 Intent의 등록, 출력, 부작용, 요청 종류 일치를
+  전수 검사하며 현재 누락·불일치가 없다.
+- Executor는 선언형 Intent를 실행하기 전에 필수 입력뿐 아니라 요청 종류와 Tool
+  부작용의 일치를 검사한다. 조회 Intent가 변경/외부 전송 Tool을 호출할 수 없다.
+- 상위 Intent 점수가 12% 이내로 충돌하고 강한 pattern 근거가 없으면 실행하지 않고
+  두 후보 설명을 포함한 최소 확인 질문을 반환한다. 선택 근거·confidence·대안은
+  `[Router]` 로그에 남는다.
+- 코드 커밋: `9a5b642` (`[Feat] P2 Plugin 계약과 Intent 충돌 정책 연결`)
+- 검증: 전체 `187 passed, 4 deselected`.
+- 다음 해야 할 일: P2의 남은 시간 민감 질문 자동 웹 라우팅과 실제 사용자 발화 기반
+  회귀 데이터셋을 구현한다. 시간 민감도는 개별 제품명 하드코딩이 아닌 날짜·최신성·
+  현재 상태 요구 계약으로 판정하고 출처가 필요한 조회만 Browser Tool로 보낸다.
+
+## 2026-08-01 P2 의미 기반 Capability Router 1차
+
+- `IntentSchema`/`IntentResolution`에 `domain`, `action`, `target`, `constraints`,
+  `reference`, `confidence`, `request_type`, `routing_reason`, 상위 대안을 추가했다.
+- 기존 Plugin은 이름(`domain.action`)과 대상성 Slot 이름에서 표준 필드를 자동 유도해
+  기존 41개 Tool과 Intent 생성 코드를 깨뜨리지 않는다.
+- `ToolSchema`에 output schema, side effect, verification required를 추가하고
+  Registry가 불변 `CapabilityContract`를 제공한다.
+- `PluginRegistry.validate_tool_call()`로 등록 여부와 필수 입력을 검사하며,
+  Executor의 선언형 Intent 실행 전에 이 계약 검사를 강제한다.
+- Router는 hint/action/pattern 점수에 Intent 설명 토큰 겹침과 2순위 margin을 더해
+  신뢰도를 계산한다. 설명 유사도만으로 후보를 만들지 않아 일반적인 “파일” 발화가
+  Calendar 같은 도메인으로 잘못 들어가는 회귀를 방지했다.
+- 코드 커밋: `a866f0d` (`[Feat] P2 표준 의도와 Capability 계약 도입`)
+- 검증: 전체 `184 passed, 4 deselected`.
+- 다음 해야 할 일: P2 2차로 기존 Plugin Tool/Intent에 request type, side effect,
+  output schema, verification contract를 명시적으로 채운다. 이후 충돌 점수 임계값에
+  따른 최소 확인 질문과 query/change/send 분리 정책을 Executor에 연결한다.
+
+## 2026-08-01 P1 대화와 Task State 통합 완료
+
+- Executor의 작업 시작·종료·수정·취소·일시정지·재개를 허용 상태 전이표와
+  `transition_task()`를 통하도록 변경했다. 종료된 작업을 다시 실행 상태로 바꾸는
+  잘못된 명령은 거절된다.
+- 비정상 종료 후 재개는 기존 Task를 취소하고 새 Task를 만들지 않는다. 동일 Task를
+  `queued`로 복구해 목표·Slot·계획·Artifact·Evidence 연결을 보존한다.
+- 상단에 `☷` 작업 관리 버튼과 대화상자를 추가했다. 현재 세션·Workspace 범위의
+  Task만 표시하며 상태, 확인 질문, Intent, 마지막 Tool, 검증 상태, Artifact와
+  Evidence 수를 확인할 수 있다.
+- UI에서 paused/interrupted 작업 재개, 활성 작업 취소, completed/partial/failed/
+  unverified/cancelled/expired 기록 삭제를 지원한다. 실행 중 기록은 삭제할 수 없다.
+- GUI 작업 제어도 별도 우회 경로가 아니라 기존 Executor 제어 계약을 사용한다.
+- 코드 커밋: `dc36569` (`[Feat] P1 작업 전이와 관리 UI 완성`)
+- 검증: 전체 `181 passed, 4 deselected`; Qt offscreen Task 관리창 스모크 테스트 통과.
+- P1 대화와 Task State 통합: **완료**.
+- 다음 해야 할 일: `AGENT_RUNTIME_ROADMAP.md`의 P2 의미 기반 Capability Router를
+  시작한다. 표준 `domain/action/target/constraints/reference/confidence` 의도 타입과
+  Plugin Capability 계약을 먼저 정의하고 기존 키워드 점수 라우팅을 점진 교체한다.
+
+## 2026-07-27 P1 대화와 Task State 통합 1차
+
+- `agent_tasks`를 통합 상태의 중심으로 확장했다. Workspace, Intent/Slot,
+  pending 질문과 대화 문맥, 실행 계획, Artifact/Evidence, 마지막 Tool, 재시도,
+  만료 시각, 검증 상태와 문맥 신뢰도를 저장한다.
+- 기존 설치의 SQLite DB는 삭제하지 않고 `_ensure_column()` migration으로
+  새 필드를 추가한다.
+- Pending request와 recent intent, 작업 목록·작업 제어는 세션과 현재 Workspace를
+  함께 기준으로 조회한다. 다른 Workspace의 Task ID는 제어할 수 없다.
+- Intent 경로와 자율 Planner 경로 모두 실행 계획과 실제 Tool 결과 증거를 Task에
+  연결한다. Scratchpad는 실행 중 상태로 유지하되 영속 스냅샷은 Task에 저장한다.
+- 비정상 종료 당시 실행 중 작업은 `interrupted`로 복구하며 자동 실행하지 않는다.
+  확인 질문은 7일 후 `expired` 처리되어 새 요청을 가로채지 않는다.
+- `IntentResolution.confidence`와 Task의 `context_confidence`를 추가했다.
+- 허용 상태 전이표와 `transition_task()`를 추가했다. 아직 기존 Executor의 모든
+  제어 분기가 이 API를 강제 사용하지는 않으므로 P1 완료로 표시하지 않았다.
+- 코드 커밋: `1e74cec` (`[Feat] P1 통합 작업 상태 기반 구축`)
+- 회귀 테스트 기준선: `180 passed, 4 deselected`.
+- 다음 해야 할 일: P1의 남은 두 항목을 완료한다. Executor의 지시 수정·대상 교체·
+  취소·일시정지·재개를 `transition_task()` 기반으로 통일하고, UI에서 현재
+  Workspace의 queued/running/awaiting/interrupted Task를 조회·재개·취소하며
+  만료 pending을 관리할 수 있게 한다.
+
+## 2026-07-27 Codex급 Agent Runtime 개선 문서화 및 P0 착수
+
+- 기존 대화에서 합의한 모델 외 27개 상위 개선 방향을 `AGENT_RUNTIME_ROADMAP.md`에
+  번호와 P0~P12 대응표로 명시했다. Phase는 27개 방향을 대체하지 않고 구현 순서를
+  나타낸다.
+- 초기 README가 2026-06 CLI·Anthropic 중심 상태에 머물러 있어 현재 PyQt6·Ollama·Plugin·RAG·STT/TTS·웹 검색·문서·Windows·알람 구현과 실제 미완료 범위를 기준으로 전면 갱신했다.
+- `AGENT_RUNTIME_ROADMAP.md`를 새 단일 개선 로드맵으로 추가했다. 진실한 실행, 통합 Task State, 의미 기반 Router, Coding Agent, Workspace Intelligence, Orchestrator, Plugin 단일화, RAG·웹·Office·Cloud·OS·Voice·Automation·보안·관측성·배포까지 P0~P12와 수락 기준을 기록했다.
+- `Javis 로드맵.txt`와 `Level2 리팩토링 10단계.txt`의 기존 완료 표기는 당시 구성 요소 구현 기록이며 제품 수준 E2E 완료가 아니라는 상태 정정 안내를 추가했다.
+- `PROJECT_REVIEW.md`, `PLUGIN_ROADMAP.md`, `MODEL_ROUTING.md`, `DEPLOYMENT.md`를 2026-07-27 실제 구현·기술 부채·배포본 시점에 맞게 갱신했다.
+- P0 첫 구현으로 `core/tool_result.py`에 `ToolRunStatus`, `ToolRunResult`, `Evidence`, `Artifact` 타입을 추가했다. 구조화 Plugin 결과에서 파일·URL Artifact를 추출하며 검증 결과와 실행 시간을 함께 보존한다.
+- Executor의 선언형 Intent 실행과 자율 Tool 실행 검증 경로가 bool만 받지 않고 `ToolRunResult.succeeded`를 기준으로 상태를 판정한다. `ExecutionOutcome`도 실제 Tool 결과 계약을 선택적으로 전달한다.
+- 전용 Verifier가 없는 Tool을 성공으로 간주하던 기본 분기를 제거했다.
+  `VerificationResult.verified=False`가 `ToolRunStatus.UNVERIFIED`로 변환되며,
+  Executor와 Recovery는 이를 성공이나 복구 성공으로 취급하지 않는다.
+- Windows 앱 실행은 PID 존재, 창 종료는 대상 창 부재, 별칭 추가는 실제 사용자
+  별칭 저장소를 각각 확인하는 전용 Verifier를 연결했다.
+- Plugin SDK·Registry·ToolExecutor가 `str | ToolRunResult`를 함께 처리하도록
+  점진 이전 경계를 추가했다. `ToolRunResult.__str__`은 전환 기간의 레거시
+  소비자에 원문 결과만 제공한다.
+- 파일시스템 프로젝트 생성·파일 생성·파일 수정 Tool은 `ToolRunResult`를 직접
+  반환한다. 실제 경로·크기·변경 전후 SHA-256을 Evidence로, 생성·수정 대상을
+  Artifact로 기록하며 오류도 typed failure로 반환한다.
+- Executor는 직접 typed 결과를 재문자열 검증하지 않고 보존하되 Tool 이름 불일치는
+  실패 처리한다. ReAct·Multi-Agent·Scratchpad는 typed/legacy 결과를 모두 안전하게
+  소비하도록 호환 처리했다.
+- Calendar 생성은 저장된 ICS의 VCALENDAR·VEVENT·날짜 구조를 검증해 Evidence와
+  Calendar Artifact를 직접 반환한다.
+- Excel·Word·PowerPoint·PDF·HWPX 생성은 저장 후 각 라이브러리로 다시 열어
+  시트·셀, 문단, 슬라이드, 페이지·텍스트, HWPX 텍스트 구조를 검증한다.
+  Excel 셀 수정도 요청한 값의 실제 재로딩 일치를 확인한다.
+- 직접 `ToolRunResult` 성공을 반환하더라도 Evidence가 비어 있으면 Executor가
+  `UNVERIFIED`로 강등한다.
+- Browser 웹 검색은 DDGS 공급자·질문·검색 시각·출처 수와 URL Artifact를,
+  페이지 조회는 요청/최종 URL·HTTP 상태·조회 시각·본문 SHA-256을 Evidence로
+  반환한다. 스크린샷은 실제 PNG 크기와 이미지 Artifact도 확인한다.
+- Weather는 Open-Meteo 공급자·조회/관측 시각·좌표·위치 정밀도와 API URL을
+  Evidence/Artifact로 반환한다. 현재 기온 또는 관측 시각이 없으면 typed failure다.
+- Git Tool은 저장소 경로·브랜치·명령 전후 HEAD와 출력 SHA-256을 Evidence로
+  반환한다. Git 명령 비정상 종료는 typed failure다.
+- Windows Tool은 직접 실행 프로세스의 `poll()` 상태와 PID, 창 활성화·종료 후
+  상태, 사용자 별칭 저장소를 검증한다. UAC와 `.lnk` 실행 요청은 실제 프로세스를
+  확인할 수 없어 `UNVERIFIED`로 반환한다.
+- Mail 초안은 저장된 EML을 RFC 822로 재파싱해 수신자·제목을 확인한다. SMTP는
+  `send_message()`의 수신자 거부 결과가 비었을 때만 성공하며 비밀번호는 Evidence에
+  기록하지 않는다.
+- Alarm JSON에 `job_id`를 추가하고 Plugin이 Scheduler 메모리의 동일 ID·alarm
+  action을 재확인한다.
+- System Tools 시간·날짜는 OS 로컬 시계·타임존·UTC offset, Plugin 목록은 실제
+  Registry 스냅샷, repeat_text는 입력·출력 동일성을 Evidence로 반환한다.
+- `ToolExecutor._adapt_tool_output()`을 추가했다. Plugin typed 결과는 보존하고,
+  레거시 문자열은 `ToolVerifier` 결과를 통해 `ToolRunResult`로 변환한다. 검증기가
+  없는 레거시 Tool은 `UNVERIFIED`, 권한 거부와 파라미터 오류는 typed failure다.
+- 중앙 ToolExecutor 반환 경계는 모두 typed지만 개별 레거시 함수 자체는 아직
+  문자열을 반환하므로 읽기·쓰기·장치·자동화 순서의 직접 이전은 계속 필요하다.
+- 내장 `read_file`은 실제 파일 크기·SHA-256, `list_directory`는 절대 경로·항목
+  수를 Evidence로 직접 반환한다.
+- Workspace 설정·정보·트리는 실제 경로·파일 수와 Directory Artifact를 반환한다.
+  `ProjectIndexer.__init__()`가 사용하던 `WorkspaceManager.current_workspace`가
+  정의되어 있지 않던 런타임 버그를 호환 property 추가로 수정했다.
+- Project Indexer 인덱싱·파일/심볼 검색·파일 정보·트리는 프로젝트 루트·검색 건수와
+  대상 파일 Artifact를 직접 반환한다.
+- Semantic Memory 추가는 저장 후 재조회, 삭제는 삭제 후 부재를 검증한다. RAG 추가는
+  `documents` 저장소의 Chunk, 검색은 결과 source, 목록은 실제 catalog를 Evidence로
+  반환한다.
+- 내장 파일 쓰기·폴더 생성/삭제는 저장 바이트·해시와 삭제 후 부재를, 명령 실행은
+  실제 종료 코드와 stdout/stderr 해시를 Evidence로 직접 반환한다.
+- 마이크·카메라 목록은 시스템 장치 열거 결과를 반환하고, 카메라 캡처는 생성된
+  이미지의 크기·SHA-256을 확인한 경우에만 성공한다.
+- 자동화 작업은 Scheduler DB 재조회, 엔진 시작/중지는 실제 실행 상태와 스레드
+  생존 여부를 확인한다. 존재하지 않는 작업 ID의 활성화·삭제를 성공 처리하던
+  문제도 수정했다.
+- 코드 커밋: `efbc300` (`[Feat] 파일 장치 자동화 결과 직접 검증`)
+- 프로필·환경설정은 DB 재조회, Knowledge Graph는 엔티티·관계 재조회, Multi-Agent는
+  새 작업 상태, STT는 장치·전사 해시, Scheduler 호환 API는 DB와 스레드를 Evidence로
+  반환한다. Multi-Agent 최종 답변과 장치 스트림 개방 전 감지 시작은 검증 불가능한
+  범위를 성공으로 가장하지 않고 `UNVERIFIED`로 유지한다.
+- 구형 내장 웹 검색은 출처 URL, Vision은 입력 이미지 해시, PDF는 페이지 구조,
+  Excel은 재열기 셀 값 검증을 연결했다. PDF 전체 추출이 반복문에서 `page_num`을
+  잘못 참조하던 오류와 클래스 내 중복 `add_document` 정의도 제거했다.
+- 코드 커밋: `ee82336` (`[Feat] 지식 음성 호환 Tool 결과 타입화`)
+- TTS는 GUI가 직접 사용하는 문자열 API를 보존하면서 Registry용 typed 결과
+  `speak_text_result()`를 추가했다. provider·voice·본문 해시와 동기 재생 반환을
+  Evidence로 기록한다.
+- 모든 중앙 Tool 실행은 권한 거부도 포함해 Action Journal에 입력·상태·Evidence·
+  Artifact·지연 시간을 저장한다. password/token/secret/API key 계열 값은
+  `[REDACTED]`로 마스킹하며 Journal 기록 실패가 Tool 결과를 변경하지 않는다.
+- 일반 대화 경로의 시스템 프롬프트와 출력 후 조건 검사에 “실행하지 않은 외부 작업
+  완료 주장 금지”를 추가했다. 실행 요청처럼 보이는 발화에 모델이 생성·수정·삭제·
+  실행·전송 등의 완료를 주장하면 실제 미실행 사실로 교체한다.
+- `PresentedResponse`를 추가해 원문 기술 로그와 화면·음성용 본문을 분리하고
+  `main_qt.py`가 이 채널 계약을 사용하도록 연결했다.
+- 코드 커밋: `6d090e6` (`[Feat] 실행 증거 Journal과 응답 경계 연결`)
+- Recovery가 typed 결과를 다시 문자열 Verifier에 넣던 이중 판정을 제거했다.
+  재시도·파라미터 수정·대체 Tool 모두 `ToolRunResult.succeeded`만 성공으로
+  인정하며 미검증 결과를 복구 성공으로 승격하지 않는다.
+- `ToolRunStatus.PARTIAL`을 추가하고 전체 실행 종료를 `completed/partial/failed/
+  cancelled`로 구분한다. 부분 완료는 완료·실패 단계 수, 재시도 성공은 횟수를
+  `ExecutionOutcome`과 사용자 응답에 함께 표시한다.
+- Multi-Agent는 중앙 Tool Runtime이 문자열을 반환하면 계약 위반으로 차단한다.
+  PDF 텍스트 추출은 문자열 오류 메시지를 해석하지 않고 PDF를 직접 열어 페이지
+  범위와 추출 결과를 검증한다.
+- 코드 커밋: `fdfcef2` (`[Feat] P0 실행 상태 계약 완성`)
+- 회귀 테스트 기준선: `175 passed, 4 deselected`.
+- P0 진실한 실행 시스템: **완료**.
+- 다음 해야 할 일: `AGENT_RUNTIME_ROADMAP.md` 순서에 따라 P1 대화와 Task State
+  통합을 시작한다. Conversation·pending request·recent intent·Scratchpad를 하나의
+  Task 상태로 합치고 세션/Workspace 격리와 재시작 복구 정책을 구현한다.
+
+## 2026-07-27 웹 검색 답변 길이와 출처 표시 간소화
+
+- 검색 요약 LLM이 URL을 답변 본문에 직접 복사하지 않으면 기존 안전장치가 요약을 폐기하고 검색 결과 5건의 제목·URL·스니펫 전체를 사용자와 TTS에 노출했다. 단순히 제품명을 물은 질문에 지나치게 긴 답변이 나온 직접 원인이다.
+- 검색 근거 검증은 Tool 단계의 구조화 결과·실제 HTTP(S) URL 검사로 유지한다. 요약 LLM에는 이름·정답 질문은 한 문장, 상세·비교 요청도 최대 세 문장으로 제한한다.
+- 출처 URL 삽입은 LLM에게 맡기지 않고 Browser Plugin이 상위 결과 최대 2개를 `출처:` 한 줄로 자동 첨부한다. 요약 실패 시에도 원문 결과 전체를 덤프하지 않고 “결과를 요약하지 못했습니다”만 표시한다.
+- TTS는 기존 `출처:` 제거 규칙으로 핵심 답변만 읽고 URL은 읽지 않는다.
+- 실제 일반 사용자 권한 E2E에서 `캘러웨이 신형 드라이버는 뭐야?`에 한 문장 핵심 답변과 공식 Callaway URL을 포함한 출처 2개만 반환하는 것을 확인했다.
+
+## 2026-07-27 최신 정보 실제 웹 검색 및 출처 검증 연결
+
+- 첨부 로그의 타이틀리스트·테일러메이드 질문에는 Tool 실행 로그가 전혀 없고 `RAG context: []`도 비어 있었다. `MPH 140`, `TSi3`, `M5.5` 답변은 검색이나 RAG가 아니라 로컬 LLM 학습 기억의 환각이었다.
+- Browser Plugin에 `web.search` Intent와 `browser_web_search` Tool을 추가했다. 최신·신형·최근·출시·특정 연도·검색/찾기/확인 요청은 일반 대화로 보내지 않고 실제 웹 검색을 실행한다.
+- 구형 `duckduckgo-search`가 Windows 인증서 저장소 오류와 패키지 이전 경고를 발생시켜 후속 패키지 `ddgs 9.14.4`를 설치하고 requirements를 `ddgs>=9,<10`으로 변경했다. 앱과 같은 사용자 권한의 실제 검색에서 Titleist Newsroom을 포함한 결과와 URL 반환을 확인했다.
+- 검색은 원 질문과 `official 공식` 보강 질문을 함께 실행해 중복 URL을 제거한다. 공식·Newsroom·Media Center 결과를 우선하고 TikTok·Pinterest·Facebook·Instagram·포럼 계열은 감점한다.
+- `26년` 같은 두 자리 연도는 현재 세기의 `2026년`으로 정규화한다. 후속 “응 어떤 제품?”, “그럼 다른 제조사는?”는 최근 web.search query와 결합해 주제를 잃지 않는다.
+- Verifier는 결과가 비어 있거나 HTTP(S) 출처 URL이 없으면 실패 처리한다. 검색 결과 요약 LLM에는 검색 스니펫 밖의 제품명·연도를 추측하지 못하게 하고, 실제 URL을 답변에 인용하지 않으면 사용자 답변을 차단한다.
+- 출처 URL은 UI 텍스트에는 표시하지만 TTS 정규화 단계에서 제거해 긴 URL을 음성으로 읽지 않는다.
+- 실제 네트워크 검색은 샌드박스 내부에서는 Windows 인증서 저장소 접근 제한으로 실패했으나 앱과 동일한 사용자 권한에서는 성공했다. 배포 실행도 일반 사용자 권한이므로 같은 경로를 사용한다.
+
+## 2026-07-27 대상 선지정 대화 연결 및 코딩 품질 기준 보강
+
+- `test파일을 수정해줘`는 create/write Intent가 같은 `파일` 점수를 얻어 먼저 등록된 create Intent로 잘못 선택됐다. create Intent에는 `수정` 실행 힌트가 없어 “원하는 동작을 다시 말해 달라”는 부자연스러운 응답이 발생했다.
+- Filesystem write Intent 패턴에 `확장자 생략 파일명 + 파일 + 수정/작성/변경 동사`를 추가했다. Workspace에 stem이 같은 파일이 유일하면 `test파일`을 `test.py`로 확정한다.
+- 대상만 지정하고 실제 변경 내용이 없는 `test파일을 수정해줘`는 실행하지 않는다. filename Slot을 보존한 대기 작업으로 만들고 “파일에 어떤 내용을 작성할까요?”라고 묻는다. 다음 `"안녕" 출력 코드를 작성해줘`는 같은 작업의 instruction Slot으로 누적되어 바로 실행된다.
+- 대상 표현과 `수정해줘` 같은 일반 동작 문구를 제거한 뒤 실제 변경 요구가 남는지 판별하는 범용 instruction 추출기를 추가했다. 불충분한 요청을 코딩 모델에 보내 임의 변경하지 않는다.
+- 코딩 역할 프롬프트를 시니어 소프트웨어 엔지니어 기준으로 보강했다. 실행 가능성·정확성·유지보수성·기존 동작 보존을 요구하되 단순 작업에는 불필요한 추상화와 상용구를 만들지 않는다.
+- Python의 `print("안녕")` 한 줄은 문법적으로도 실행상으로도 완전한 프로그램이다. 실제 `.venv` Python으로 대상 파일을 실행해 표준 출력 `안녕`과 종료 코드 0을 확인했다. 코드 줄 수가 아니라 요구 충족·실행·검증 여부를 품질 기준으로 삼는다.
+- 사용자 지시의 따옴표 리터럴이 생성 결과에 실제 포함되는지 저장 전에 검사한다. 예를 들어 `"안녕"` 요청에 다른 문자열을 만든 경우 원본 파일을 보존하고 실패 처리한다.
+
+## 2026-07-27 파일 수정 미래형 응답 및 허위 성공 구조 보강
+
+- `test.py를 수정해줘`처럼 확장자와 수정 동사가 있지만 한글 `파일`·`코드` 키워드가 없는 요청은 기존 substring 라우터가 Intent를 찾지 못했다. 이 때문에 일반 대화 모델이 도구 실행 없이 “추가하겠습니다”라는 미래형 문장만 반환했다.
+- Plugin Intent 계약에 범용 `utterance_patterns`를 추가하고 IntentRouter가 선언된 정규식 패턴을 높은 우선순위로 평가하도록 확장했다. Filesystem Plugin은 `확장자 있는 파일명 + 수정/작성/변경 동사`와 `해당/그 파일 + 수정 문맥`을 실제 write Tool로 라우팅한다.
+- Workspace가 선택되지 않은 상태에서 파일 stem을 찾으려다 Slot 추출기 자체가 예외를 던지던 문제를 제거했다. 라우팅·Slot 추출은 예외 없이 부족한 정보를 질문하고, 실제 실행 단계에서만 Workspace 부재를 오류로 반환한다.
+- 코드 역할 OllamaClient는 일반 자비스 페르소나 대신 전용 코딩 시스템 프롬프트를 사용한다. 파일 수정 불가·사과·작업 예정 문장이 아니라 저장 가능한 전체 파일 원문만 출력하도록 역할 자체를 분리했다.
+- 실제 손상된 `C:\Users\ice31\lepo\test\test\test.py` 내용을 입력 문맥으로 사용한 로컬 `qwen2.5-coder:7b-instruct` 스모크에서 `print("안녕")` 생성과 Python 문법 통과를 확인했다. 스모크는 파일을 직접 덮어쓰지 않았다.
+- 파일 수정 Tool은 변경 전·후 SHA-256을 결과에 포함하고, 내용이 동일하거나 해시가 같으면 실패 처리한다. Verifier도 실제 파일 존재뿐 아니라 `changed=true`와 서로 다른 두 해시를 확인해야 성공으로 인정한다.
+- 현재 구조는 Codex 수준의 범용 개발 에이전트에는 아직 부족하다. 이후에는 저장소 인덱싱, 계획→패치→정적검사→테스트→diff 검토→복구 루프를 하나의 Coding Agent 파이프라인으로 묶어야 한다. 이번 수정은 그 전제인 “도구 없는 성공 응답 금지”와 실제 변경 증명부터 강화한 것이다.
+
+## 2026-07-27 코딩 모델 거절문 저장 및 후속 지시 유실 수정
+
+- 코딩 모델과 플러그인은 이미 연결되어 있었지만 `test파일에 "안녕" 출력 코드를 작성`에서 확장자 없는 파일 표현을 찾지 못해 파일명을 다시 질문했다.
+- 후속 답변 `test.py를 수정할거야`를 처리하면서 최초 Slot에 저장된 `"안녕" 출력` 지시를 후속 문장으로 덮어써 버렸고, 기본 자비스 페르소나가 남아 있던 코딩 모델이 거절문을 반환했다. 플러그인은 거절문을 코드로 검증하지 않고 파일에 저장했다.
+- Workspace에서 확장자를 제외한 파일명이 유일하면 `test파일`을 실제 `test.py`로 해석한다. `해당 파일`과 `그 파일`은 기존 최근 파일 해석을 유지한다.
+- 대기 작업에서 최초 작성 지시는 보존하고 후속 파일명 답변은 filename Slot만 채운다.
+- 코딩 LLM 호출에 전용 system 메시지를 추가해 사과·기능 부인 대신 완성 파일 원문만 반환하도록 했다. 실제 로컬 `qwen2.5-coder:7b-instruct` 스모크에서 `print("안녕")` 코드 반환을 확인했다.
+- 거절 문장, 빈 응답, 오류 응답을 저장 전에 차단한다. `.py` 파일은 `ast.parse()` 문법 검증을 통과해야만 기존 파일에 반영한다.
+- 모든 생성 결과는 메모리상의 성공 문장이 아니라 실제 파일 존재 및 코드 유효성 검증 후에만 성공 처리한다.
+
+## 2026-07-27 파일 생성과 내용 수정 Intent 분리
+
+- 첨부 로그에서 프로젝트·파일 생성 자체는 실제 검증되었지만, `해당 파일에 코딩`과 `test.py 파일을 수정` 요청이 `filesystem.create_file`로 오분류되어 빈 내용으로 기존 파일을 다시 생성하는 흐름이 확인됐다.
+- Filesystem Plugin에 `filesystem.write_file` Intent와 Tool을 별도로 추가했다. `코드`, `소스코드`, `코딩`, `수정`, `작성` 문맥은 새 파일 생성이 아니라 기존 파일 내용 작성으로 라우팅한다.
+- `해당 파일`·`그 파일` 표현은 현재 Workspace에서 가장 최근에 사용된 파일을 해석한다. 찾지 못하면 파일명을 질문하며 임의 성공 처리하지 않는다.
+- 코드 작성은 코드 역할 전용 LLM에 기존 파일 내용과 사용자 지시를 전달하고, 설명·Markdown 펜스를 제거한 완성 파일 원문만 저장한다. 빈 응답이나 오류 응답이면 기존 파일을 덮어쓰지 않는다.
+- 새 파일 생성은 배타적 생성 모드(`x`)를 사용해 같은 이름의 기존 파일을 절대 빈 내용으로 덮어쓰지 않는다.
+- 프로젝트 이름 질문에 `test`처럼 이름만 답해도 Slot으로 받아들이도록 후속 답변 파싱을 보완했다.
+- 생성·수정 완료 안내에서는 긴 Windows 절대 경로를 읽지 않고 파일명·폴더명만 표시한다. 실제 절대 경로와 검증 결과는 디버그 로그에 남는다.
+- 최근 파일 문맥→코드 모델 결과 저장, 기존 파일 생성 충돌 시 원본 보존, 이름만 제공한 후속 답변을 자동 테스트로 검증했다.
+
+## 2026-07-27 Workspace 실제 프로젝트·파일 생성 연결
+
+- 첨부 로그의 `launch_monitor 프로젝트가 생성되었습니다`와 `launch_monitor.py가 생성되었습니다`에는 Tool 호출·Verifier 로그가 없었다. Registry가 해당 실행 intent를 제공하지 않아 일반 대화 LLM이 성공 문장만 생성한 것이 원인이었다.
+- Filesystem Plugin에 범용 `filesystem.create_project`와 `filesystem.create_file` Intent/Slot 계약을 추가했다. 프로젝트명이나 확장자를 포함한 파일명이 없으면 추측해서 성공 처리하지 않고 사용자에게 필요한 이름을 질문한다.
+- 상단에서 명시적으로 선택한 Workspace를 생성 루트로 사용한다. 경로 정규화 후 Workspace 외부로 벗어나는 이름은 차단하며, 프로젝트 생성이 성공하면 이어지는 파일 작업이 프로젝트 내부에서 실행되도록 새 폴더를 현재 Workspace로 전환한다.
+- 생성 도구는 JSON으로 실제 절대 경로를 반환하고 `ToolVerifier`가 해당 디렉터리 또는 파일이 디스크에 존재하는지 확인한 경우에만 성공 문장을 표시한다.
+- 도구 실행으로 Workspace가 변경되면 응답 시 UI의 폴더명·경로도 새 Workspace로 갱신한다.
+- `get_workspace_info()`가 설정 여부를 반대로 판단하던 조건문 오류를 수정했다.
+- 프로젝트명 질문→후속 답변→실제 폴더 생성, 파일명 질문→후속 답변→실제 파일 생성 및 존재 검증 테스트를 추가했다.
+
+## 2026-07-27 내부 작업 ID 숨김 및 실제 알람 실행 연결
+
+- Executor가 확인 질문 뒤에 붙이는 `대기 작업 ID: ...`는 내부 추적 정보이므로 일반 UI와 TTS 응답에서는 `ResponsePresenter`가 제거한다. 원본 Executor 응답은 디버그 로그에 유지되어 문제 추적에는 영향이 없다.
+- TTS 영문 정규화는 특정 문구 치환이 아니라 약어 규칙을 사용한다. `ID`는 `아이디`, 발음 사전에 있는 `GAME`은 `게임`, 사전에 없는 `API`와 `GPU`는 각각 `에이피아이`, `지피유`로 읽는다.
+- 기존 “3분 뒤 알람”은 일반 대화 모델이 완료 문장만 생성했고 실제 예약 도구가 호출되지 않았으며, `AutomationEngine`도 앱 시작 시 가동되지 않아 알람이 울리지 않았다.
+- Plugin Registry에 `alarm` 플러그인과 선언형 `alarm.set_relative` intent를 추가했다. 시간 단위를 초로 정규화해 `AutomationEngine.add_alarm()`을 호출하며 특정 3분 문장에 종속되지 않는다.
+- 단발 알람은 절대 실행 시각과 `action_type=alarm`을 DB에 저장하고, 엔진 재시작 후에도 다시 적재한다. 실행 후 자동 비활성화되며 LLM을 거치지 않고 UI 알림과 TTS를 직접 발생시킨다.
+- 앱 시작 시 AutomationEngine을 가동한다. 자동화 알림에는 작업 ID를 노출하지 않고, 실제 음성 실행기가 있는 경우에만 백그라운드 TTS를 시작하도록 방어했다.
+- 1초 단발 알람의 실제 콜백 발생, 3분 요청의 180초 변환, 내부 ID 비노출, 약어 발음을 자동 테스트로 검증했다.
+
+## 2026-07-26 Windows 오프라인 배포 완료
+
+- 구현 커밋: `c72fdae` (`[배포] JARVIS 오프라인 설치본 및 앱 아이콘 구성`)
+- 앱·작업 표시줄·설치 프로그램·바로가기에 `assets/jarvis.ico`를 동일하게 적용했다.
+- Python 3.12와 전체 라이브러리, BGE-M3, faster-whisper large-v3, Whisper medium fallback, Ollama, `qwen2.5-coder:7b-instruct`, Playwright 브라우저를 포함한 페이로드는 20,501,193,600바이트이다.
+- 14GB 7-Zip SFX는 내부 무결성 검사는 통과했지만 Windows PE/SFX의 4GB 초과 실행 파일 한계로 실제 실행이 거부됐다. 물리적인 단일 EXE 요구는 포함 데이터 크기상 충족할 수 없어 Inno Setup 공식 `DiskSpanning` 설치 형식으로 전환했다.
+- 최종 배포물은 `release/installer` 폴더이다. `JARVIS-Setup.exe`와 자동 인식되는 `.bin` 8개로 구성되며 총 약 13.77GB이다. 사용자는 폴더 전체를 받은 뒤 Setup EXE 하나만 실행하면 된다.
+- 실제 Setup 무인 설치 결과 종료 코드 0, 설치 파일·바탕화면/시작 메뉴 바로가기·제거 프로그램 등록을 확인했다. 설치된 `JARVIS.exe` 패키징 스모크 결과도 종료 코드 0/`OK`이며 아이콘·Ollama·Qwen 포함 경로를 확인했다.
+- 공식 uninstaller 제거 결과 종료 코드 0이며 설치 폴더·바로가기·앱 제거 등록이 모두 정리됐다.
+- 배포 산출물은 코드 서명이 없어 다른 PC에서 Windows SmartScreen 경고가 나타날 수 있다. 공개 배포 전 Authenticode 코드 서명 인증서 적용이 권장된다.
+- HWP/Office 프로그램 본체, Google/Microsoft OAuth 로그인, 인터넷 TTS 및 실제 장치 권한은 라이선스·계정·하드웨어 특성상 설치본에 자동 활성화할 수 없다.
+- 다음 해야 할 일: 깨끗한 Windows VM 또는 별도 PC에서 일반 사용자 방식으로 `release/installer/JARVIS-Setup.exe`를 실행하고 실제 LLM 대화·마이크·카메라·도구 실행을 최종 수락 테스트한다. 공개 배포 전 코드 서명을 적용한다.
+
+## 2026-07-23 Windows 오프라인 배포 준비
+
+- 제공 이미지에서 외부 배경을 제거한 투명 아이콘을 `assets/jarvis_icon.png`, `assets/jarvis_icon_1024.png`, `assets/jarvis.ico`로 만들었다. PyInstaller 실행 파일, Qt 앱/창, 작업 표시줄, 바탕화면·시작 메뉴 바로가기에 같은 ICO를 사용한다.
+- PyInstaller onedir 배포 설정 `packaging/Jarvis.spec`과 설치·제거·릴리스 조립 스크립트를 추가했다. Python 3.12와 라이브러리는 실행 파일 배포 폴더에 포함된다.
+- 배포 실행에서는 사용자 DB를 `%LOCALAPPDATA%\JARVIS\data`에 저장하고, BGE-M3·Whisper·Hugging Face·Ollama·Playwright를 `_internal`의 포함 경로에서 찾도록 변경했다.
+- Ollama 서버가 실행 중이지 않으면 포함된 Ollama와 Qwen 모델로 로컬 서버를 시작하고 앱 종료 시 앱이 시작한 서버를 정리한다.
+- 최신 `dist/JARVIS` 빌드는 성공했으며 크기는 약 4.89GB이다. 패키지 경로 단위 테스트 4개도 통과했다.
+- `DEPLOYMENT.md`에 포함 항목과 외부 의존 기능을 구분해 기록했다. HWP/Office 본체, OAuth 계정 동의, 인터넷 서비스, 실제 마이크·카메라 권한은 설치 파일에 자동 내장할 수 없다.
+- 현재 Codex의 외부 실행 승인 사용량 한도로 7-Zip 설치, 빌드 EXE 직접 스모크 실행, 사용자 캐시의 Ollama/Playwright 복사가 거절되었다. 이 제한 때문에 `release/JARVIS-Offline-Setup.exe` 최종 조립은 아직 완료되지 않았다.
+- 다음 해야 할 일: 승인 제한이 해제된 뒤 7-Zip 설치 → `packaging/build_release.ps1` 실행 → 단일 EXE 무결성 검사 → 깨끗한 Windows VM에서 설치·대화·도구·STT/TTS·제거 E2E 검증을 수행한다.
+
 ## 📌 이번 업데이트 (2026-07-15) 주요 변경사항
 - ✅ **프로젝트 구조 통합**: Jarvis 폴더와 AI_-secretary_Agent 폴더를 하나로 통합, 프로젝트 루트에 모든 파일 배치
 - ✅ [Fix] core/tools.py TTS 오류 수정: pyttsx3 engine을 인스턴스 변수로 유지하여 재사용
@@ -331,8 +985,1103 @@ AI_-secretary_Agent/
 - [Update] Ollama 모델 성능 향상: llama3.1:8b-instruct-q3_K_S에서 llama3.1:latest로 변경 (기존에 설치된 성능 좋은 모델 사용)
 - [시도] 음성 끊김 문제 해결 2차 (브랜치: fix/tts-audio-stuttering): pyttsx3로 직접 재생 + AudioProcessor로 별도 분석하는 방식으로 변경 → 음성이 아예 안들리는 문제가 발생하여 롤백
 - [Fix] 두 번째 호출부터 음성이 나오지 않는 문제 해결 (브랜치: fix/tts-second-call-no-sound): pyttsx3 엔진을 매번 새로 생성하도록 변경 (상태 꼬임 방지)
+- [Feat] 프로그램 시작 시 가장 최근 세션 자동으로 불러오기 (브랜치: fix/load-last-session): main_qt.py에서 memory.list_sessions()로 최근 세션 찾고 load_session()으로 대화 불러오기, 최근 메시지를 UI에 표시
+- [Test] Qwen2.5-Coder 모델로 교체 + 시스템 프롬프트 강화 (브랜치: test/qwen2.5-coder-improvements):
+  - Ollama 모델을 qwen2.5-coder:7b-instruct로 변경
+  - core/react.py 시스템 프롬프트에 [중요 규칙] 추가 (도구 실행 후 Final Answer 반환 강제)
+  - core/scratchpad.py 추가 (Working Memory 모듈: Task/Observation/Failure 클래스, Scratchpad 싱글톤, get_context() 메서드로 LLM 입력용 텍스트 반환)
+  - core/planner.py 추가 (Planner 모듈: DecomposedTask dataclass, Planner 클래스로 사용자 요청을 작업으로 분해, Scratchpad에 저장, get_planner() 싱글톤, Context Manager 연동)
+  - core/executor.py 추가 (Executor 모듈: 작업 실행 루프 구조, Planner/Scratchpad/Tool/Reflection/Context 연동, _get_next_task/_execute_task/_reflect_and_replan/_generate_final_answer 메서드, get_executor() 싱글톤)
+  - core/reflection.py 추가 (Reflection 모듈: 실패 원인 분석, 복구 전략 제안, 재계획 필요 여부 반환, suggest_retry_params 메서드, get_reflection() 싱글톤)
+  - core/executor.py에 Reflection 연동: __init__에 get_reflection() 추가, _reflect_and_replan 메서드에서 Reflection.analyze_failure() 호출
+  - core/context.py 추가 (Context Manager 모듈: OS 상태/최근 대화/RAG 문서/Scratchpad 상태 통합, get_context_manager() 싱글톤)
+  - core/rag.py Vector RAG로 업그레이드: SimpleRAGManager → VectorRAGManager, Chroma DB + BGE Embedding + BGE Reranker 지원, 없으면 Simple RAG로 fallback
+  - Planner/Executor에 Context Manager 연동: decompose_goal/execute_goal에서 통합 컨텍스트 사용
+
+### 2026-07-16 추가 변경 사항 (Workspace & Personal Memory & UI 연동)
+
+- [Feat] core/workspace.py 추가 (WorkspaceManager: 작업 공간 설정, 경로 검증, 파일 트리 조회, get_workspace_manager() 싱글톤)
+- [Feat] core/tools.py에 Workspace 도구 추가: set_workspace(), get_workspace_info(), get_workspace_tree()
+- [Feat] core/tools.py 기존 파일 도구(읽기/쓰기/목록)에 Workspace 연동: Workspace가 설정된 경우 상대경로 처리
+- [Feat] requirements.txt에 watchdog>=4.0.0 추가
+- [Feat] core/observer.py 추가 (ObserverLayer: 파일 시스템 변경 감지, 이벤트 로그, get_observer_layer() 싱글톤)
+- [Feat] core/user_profile.py Personal Memory 확장:
+  - activity_log 테이블 (사용자 활동 기록): log_activity(), get_activity_log()
+  - favorite_paths 테이블 (자주 쓰는 경로): add_favorite_path(), get_favorite_paths()
+  - favorite_commands 테이블 (자주 쓰는 명령): add_favorite_command(), get_favorite_commands()
+  - project_settings 테이블 (프로젝트별 설정): set_project_settings(), get_project_settings(), get_all_project_settings()
+- [Feat] ui/main_window.py에 Workspace 기능 추가:
+  - 📁 Workspace 선택 버튼 (상단 DragTab에 위치)
+  - workspace_selected 시그널
+  - set_workspace_info() 메서드 (UI에 Workspace 이름 표시)
+  - _select_workspace() 메서드 (QFileDialog로 폴더 선택)
+- [Feat] main_qt.py에 Workspace 연동:
+  - get_workspace_manager() import 및 초기화
+  - window.workspace_selected 시그널 연결 → _on_workspace_selected() 메서드
+  - 선택한 Workspace를 Personal Memory(favorite_paths)에 자동 저장
+
+### 2026-07-16 추가 변경 사항 (Runtime & Permission & Knowledge Updater)
+
+- [Feat] core/runtime/ 폴더 추가 (Runtime Layer):
+  - event_bus.py (Event Bus: 이벤트 중앙 전달, subscribe/publish, get_event_bus() 싱글톤)
+  - action_journal.py (Action Journal: 모든 행동 기록, SQLite 기반, get_action_journal() 싱글톤)
+  - __init__.py (Runtime 패키지 초기화)
+- [Feat] core/permission.py 추가 (Permission Manager & Capability Registry):
+  - PermissionLevel Enum: SAFE/CONFIRM/SYSTEM/DENIED
+  - PermissionManager: 권한 요청/승인/거절, 상태 저장 (data/permissions.json)
+  - CapabilityRegistry: 플러그인 Capability 관리 (data/capabilities.json)
+  - get_permission_manager(), get_capability_registry() 싱글톤
+- [Feat] core/knowledge_updater.py 추가 (Knowledge Updater):
+  - Observer Layer 이벤트 → Event Bus → RAG 자동 인덱싱
+  - File created/modified/deleted 이벤트 처리
+  - Action Journal과 연동
+  - get_knowledge_updater() 싱글톤
+- [Update] core/observer.py: Event Bus 연동 (file_created/file_modified/file_deleted 이벤트 발행)
+- [Feat] ui/main_window.py: PermissionRequestDialog 추가 (권한 요청 대화상자)
+- [Feat] ui/main_window.py: JarvisMainWindow에 request_permission() 메서드 추가
+- [Feat] main_qt.py: PermissionManager UI 연동:
+  - AppSignals에 permission_request / permission_response 시그널 추가
+  - JarvisApp의 __init__에서 permission_callback 설정
+  - _on_permission_request 메서드로 UI에서 권한 요청 처리
+- [Feat] core/observer.py: Git/Chrome/VSCode 이벤트 감지 메서드 추가:
+  - check_git_status(repo_path): Git 저장소 상태 확인 → git_status 이벤트 발행
+  - check_processes(): 실행 중인 프로세스 확인 (Chrome/VSCode) → process_status 이벤트 발행
+- [Feat] plugins/ 폴더 구조 생성 + plugins/__init__.py
+- [Feat] core/plugin.py 추가 (Plugin SDK):
+  - BasePlugin: 플러그인 기본 클래스
+  - ToolSchema: 툴 스키마 dataclass
+  - PluginRegistry: 플러그인 등록/관리
+  - load_plugins_from_directory() 메서드
+- [Feat] plugins/system_tools.py 추가 (예제 플러그인: get_time / get_date 툴)
+- [Feat] core/tools.py: PluginRegistry 연동:
+  - execute_tool(): 플러그인 툴 fallback 추가
+  - get_tools_schema(): 플러그인 툴 스키마 추가
+
+### 2026-07-16 추가 변경 사항 (Knowledge Engine & Memory & Automation & Knowledge Graph & Multi-Agent)
+
+- [Feat] STEP 5 Knowledge Engine 완성:
+  - core/knowledge_updater.py에 Project Indexer 연동: 파일 생성/수정 시 Project Indexer에도 인덱싱
+  - core/project_indexer.py에 Workspace Manager 연동: Workspace 설정 시 자동으로 Project Root 설정
+- [Feat] STEP 6 Project Indexer 완성:
+  - core/tools.py에 Project Indexer 도구 추가: index_project, search_files, search_symbols, get_file_info, get_project_tree
+  - get_tools_schema()에 Project Indexer 도구 스키마 추가
+- [Feat] STEP 7 Memory 완전 분리:
+  - core/memory.py 전면 수정: EpisodeMemoryManager와 SemanticMemoryManager로 분리
+  - EpisodeMemoryManager: 대화 기록, 세션 관리
+  - SemanticMemoryManager: 의미 기반 지식 저장, 카테고리별 관리
+  - build_memory_context() 함수 추가: LLM 컨텍스트용 메모리 빌더
+  - core/tools.py에 Semantic Memory 도구 추가: add_semantic_memory, get_semantic_memory, search_semantic_memory, delete_semantic_memory
+- [Feat] STEP 10 Automation Engine 구현:
+  - core/scheduler.py 전면 수정: AutomationEngine 클래스 추가
+  - 스케줄 기반 LLM 작업 자동 실행, 작업 히스토리 관리
+  - core/tools.py에 Automation Engine 도구 추가: add_automation_job, list_automation_jobs, get_job_history, toggle_automation_job, delete_automation_job, start_automation_engine, stop_automation_engine, is_automation_engine_running
+- [Feat] STEP 11 Local Knowledge Graph 구현:
+  - core/knowledge_graph.py 신규 생성: Entity, Relation, KnowledgeGraph 클래스
+  - 엔티티-관계 모델, 서브그래프 탐색, LLM 컨텍스트용 지식 추출
+  - core/tools.py에 Knowledge Graph 도구 추가: add_entity, get_entity, search_entities, delete_entity, add_triple, get_relations, get_subgraph
+- [Feat] STEP 12 Multi-Agent 시스템 구현:
+  - core/multi_agent.py 신규 생성: AgentTask, MultiAgentOrchestrator 클래스
+  - Planner Agent: 작업 분해, Executor Agent: 작업 실행, Reflection Agent: 결과 분석
+  - 전체 파이프라인: 계획 → 실행 → 반성 → 최종 답변
+  - core/tools.py에 Multi-Agent 도구 추가: execute_multi_agent, get_task_history
 
 ### 다음 작업
 
 1. 일반 GUI 환경에서 한글 질의로 실제 스피커 음량을 최종 확인합니다.
 2. Ollama 디버그 로그의 전체 도구 스키마 출력을 필요 시 축소합니다.
+
+---
+
+## 📌 2026-07-22 Level 2 전수 검토·단계별 커밋
+
+### 이번 회차에서 반드시 유지한 결정
+
+- 모든 Tool 실행은 `ToolExecutor.execute_tool()`의 중앙 Permission 검사를 통과해야 합니다.
+- 권한 검사 중 예외가 발생하면 실행을 허용하지 않고 거부(fail closed)합니다.
+- 파일 접근은 `ALLOWED_PATHS` 내부로 제한하며, 비어 있으면 프로젝트 루트만 허용합니다.
+- 명령 실행은 실행 파일 allowlist, 인자 배열, `shell=False`를 사용하며 셸 연결·리다이렉션 문자를 차단합니다.
+- Tool 목록은 `get_tools_schema()`와 Plugin Registry를 단일 진실 공급원으로 사용합니다.
+- `data/chroma_db/chroma.sqlite3`는 런타임 데이터이며 이번 커밋들에 포함하지 않았습니다.
+
+### 단계별 커밋 기록
+
+- 1~3단계 기존 커밋: `[Refactor] Tool Registry 단일화, Executor를 chat_with_tools() 기반으로 전환, Permission Manager 실제 연결`
+  - 커밋 해시: `82159d0`
+- 4단계: `[Fix] 4단계 파일 및 명령 실행 보안 강화`
+  - 커밋 해시: `7047cdf`
+- 5~6단계: `[Fix] 5~6단계 검증 복구 및 반복 재계획 연결`
+  - 커밋 해시: `bf4b6c8`
+  - Executor와 Planner가 직접 의존하므로 실행 가능한 원자적 상태를 위해 하나로 묶음
+- 7단계: `[Fix] 7단계 멀티에이전트 API 호환성 수정`
+  - 커밋 해시: `12b5ed5`
+- 전수 검토 추가 수정: `[Fix] 런타임 모듈 간 API 연결 오류 수정`
+  - 커밋 해시: `e2f170f`
+- 8단계: `[Feat] 8단계 파일시스템 Git 브라우저 플러그인 추가`
+  - 커밋 해시: `86b17d5`
+- 검토 문서·테스트: `[Update] Level 2 검토 결과와 회귀 테스트 추가`
+  - 커밋 해시: `3096500`
+- 9단계: `[Feat] 9단계 로컬 벡터 RAG 설치 및 검증`
+  - 커밋 해시: `3cdf7e0`
+- 10단계: `[Feat] 10단계 역할 기반 하이브리드 LLM 라우팅 구현`
+  - 커밋 해시: `9efc895`
+- Browser 실환경·보안 검증: `[Fix] 브라우저 플러그인 SSRF 방어 및 Chromium 검증`
+  - 커밋 해시: `2ae6f19`
+
+### 검증 결과
+
+- 전체 Python 소스 `compileall` 통과
+- `test_level2_runtime.py` 회귀 테스트 4개 전부 통과
+- Tool Schema 70개, 고유 이름 70개 확인
+- browser/filesystem/git/system_tools 플러그인 자동 등록 확인
+- 허용 경로 접두사 우회, 셸 연결 문자, 무승인 파일 쓰기 차단 확인
+- Python 3.12 가상환경에서 Level 2 안전성 4개 + RAG 종단 테스트 1개, 총 5개 통과
+- `BAAI/bge-m3` 로컬 모델 1024차원 임베딩 확인
+- 한국어 문서 추가 → Chroma 벡터 검색 → Manager 재생성 후 영속 검색 확인
+- 하이브리드 라우팅·보안·RAG 신규 회귀 테스트 총 12개 통과
+
+### 9단계 환경 변경 및 유지사항
+
+- 프로젝트 `.venv`를 Python 3.12.13으로 재생성하고 `requirements.txt` 전체 설치 완료
+- 기존 깨진 Python 3.10 환경은 `.venv-python310-broken`으로 이동해 보존
+- `chromadb 1.5.9`, `sentence-transformers 5.6.0`, `torch 2.13.0+cpu` 확인
+- 기존 문서의 `BAAI/bge-small-ko-v1.5`는 존재하지 않는 모델 ID라서 사용 금지
+- 공식 `BAAI/bge-m3`를 `data/models/bge-m3`에 로컬 고정(약 2.29GB, Git 제외)
+- 실행 중 모델 자동 다운로드 금지. 로컬 모델이 없으면 Simple RAG로 fallback
+- Playwright 및 Chromium, 실제 Ollama/Anthropic, GUI·하드웨어 종단 검증은 아직 남아 있음
+
+### 10단계 하이브리드 LLM 결정사항
+
+- 실제 `.env`의 `LLM_PROVIDER`는 `hybrid`로 전환됨(비밀 파일이므로 Git에는 포함하지 않음)
+- 기본 역할 목록은 `HYBRID_CLAUDE_ROLES=reasoning`: Executor의 Tool Reasoner만 Claude 우선
+- 일반 대화·최종 응답·도구 실행·Permission·Memory·RAG는 Ollama/로컬에서 유지
+- `ANTHROPIC_MODEL=claude-sonnet-4-20250514`로 Ollama 모델 설정과 분리
+- API 키 미설정·placeholder·API 오류·예외·빈 응답이면 Ollama로 자동 fallback
+- placeholder `your_anthropic_api_key_here`는 유효한 API 키로 취급하지 않음
+- Anthropic 호출의 system role 메시지는 API 최상위 system 파라미터로 이동
+- `HybridLLMClient.get_routing_status()`에서 provider별 성공/실패/fallback 횟수와 마지막 지연시간 확인 가능
+- 현재 실제 Anthropic API 키가 없으므로 Claude 성공 경로는 mock 회귀 테스트만 완료됨
+
+### Browser 플러그인 실환경·보안 검증
+
+- `.venv`에 `playwright 1.61.0` 설치 및 Chromium 149 바이너리 설치 완료
+- 공개 페이지 `https://example.com/` 본문 추출과 전체 페이지 스크린샷 성공
+- URL은 http/https 및 80/443 포트만 허용하고 URL 자격 증명을 차단
+- localhost, loopback, 사설 IP, link-local metadata 주소 차단
+- DNS 이름이 사설 IP로 해석되는 경우 차단
+- redirect와 모든 HTTP(S) subresource를 재검증해 사설망 우회 차단
+- screenshot은 브라우저 실행 전에 저장 경로를 검증
+- 중앙 ToolExecutor에서 screenshot 실행 시 `browser`와 `filesystem_write` 권한 모두 확인
+- browser 단위·보안 테스트 12개와 Chromium integration 테스트 2개 통과
+- 기존 하이브리드·Level 2 안전성·RAG 테스트 12개도 재통과
+- Codex 인앱 Browser 연결은 프로젝트 외부 런타임이 `C:\Users\ice31\AppData`를 읽지 못하는 EPERM으로 실패했으나, 프로젝트 Playwright Chromium은 샌드박스 밖 종단 테스트 성공
+
+### 다음 해야 할 일
+
+1. **실제 Ollama와 GUI 기본 대화·Tool 호출 종단 테스트**
+2. 마이크·카메라·TTS는 장치 권한과 사용자 환경을 확인하며 개별 종단 테스트
+3. 실제 Anthropic API 키가 준비되면 Reasoner 성공 경로의 품질·비용·지연시간 비교
+4. mail/calendar OAuth 토큰 저장·권한·계정 선택 정책 설계
+5. 위 작업을 마칠 때 이 인수인계서에 결정·변경·커밋 해시·다음 작업을 다시 기록
+
+## 2026-07-22 실제 Ollama 도구 호출 호환성 검증
+
+- Ollama 서버 `0.32.1` 실행 상태와 `/api/version`, `/api/tags` 응답을 확인함.
+- `.env`의 `qwen2.5-coder:7b-instruct`가 실제 설치되어 있으며 일반 대화 호출이 성공함.
+- 해당 모델이 도구 요청을 native `tool_calls`가 아닌 본문 JSON(`{"name": ..., "arguments": ...}`)으로 반환하는 실제 호환성 문제를 확인함.
+- `core/llm.py`에서 등록된 도구 이름과 객체형 인자만 허용하는 안전한 legacy tool-call 파서를 추가함. 임의 JSON이나 미등록 도구는 도구 호출로 승격하지 않음.
+- `test_ollama_tool_compat.py` 회귀 테스트 4개 통과 및 실제 `get_date` 도구 선택 응답 변환 성공.
+- Anthropic 실호출은 사용자의 현재 운영 방침에 따라 이번 검증 범위에서 제외함.
+
+## 2026-07-22 GUI·장치 실제 통합 검증
+
+- Qt 이벤트 루프에서 사용자 입력 → 백그라운드 처리 → 중앙 Tool 실행 → GUI 응답 표시 경로를 검증함.
+- Permission 대화상자의 허용·거부 버튼 및 작업 스레드 → GUI → PermissionManager 반환 경로를 검증함.
+- Ollama 일반 `chat()`이 호출별 system 메시지를 누락해 Planner 지시가 전달되지 않던 문제를 수정함. 실제 Planner가 `get_date` 작업을 정상 JSON 분해함.
+- 실제 Executor가 Ollama로 `get_date`를 선택·실행·검증하고 `2026년 7월 22일` 최종 응답을 생성함.
+- 마이크 기본 장치 녹음, Whisper STT, 카메라 1프레임 캡처가 실제 성공함. STT 시작 로그의 이모지가 cp949 콘솔에서 실행을 중단시키던 문제를 수정함.
+- 이 PC에서는 pyttsx3의 SAPI COM 클래스가 등록되지 않아 실패했으므로, 고정된 PowerShell 명령과 환경변수로 .NET `System.Speech`를 호출하는 Windows fallback을 추가함. 실제 한국어 TTS 재생 성공.
+- 장치 테스트 중 녹음·카메라 프레임은 저장하지 않았음.
+
+## 2026-07-22 Observer·Scheduler·Mail·Calendar 및 테스트 안전화
+
+- Observer가 실제 임시 파일 변경 이벤트를 받고 정상 종료하는 경로를 검증함.
+- Scheduler/Automation의 전역 `schedule` 상태 공유를 인스턴스별 Scheduler로 분리하고, stop event 초기화·중복 작업 로드·DB 연결 누수·스케줄 입력 검증을 보강함.
+- 누락된 `schedule>=1.2.2` 의존성을 추가·설치하고 자동화 엔진 시작 → 중지 → 재시작 → 중지를 검증함.
+- import 즉시 장치·네트워크를 실행하던 기존 진단 스크립트는 기본 pytest 수집에서 제외함. 안전한 자동 테스트 파일을 `pytest.ini`에 명시하고 네트워크 테스트는 `integration` marker로 분리함.
+- Mail 플러그인 추가: 허용 경로 내 RFC 822 초안 저장, 환경변수 자격증명 기반 SMTP SSL 전송. 비밀번호를 Tool 인자로 받지 않으며 실제 전송은 `mail_send` 승인이 필요함.
+- Calendar 플러그인 추가: 허용 경로 내 표준 ICS 이벤트 생성, ISO 8601 시간 검증 및 종료 시간 검증.
+- 전체 기본 자동 테스트 38개 통과, 외부 네트워크 통합 테스트 2개는 기본 실행에서 제외됨. `compileall` 통과.
+- 실제 Mail/Calendar 계정 연동은 자격증명/OAuth가 없으므로 수행하지 않음. 현재 Calendar는 로컬 ICS 방식이며 Google/Outlook 양방향 동기화는 후속 OAuth 범위임.
+
+### 이번 실제 통합 검증 커밋
+
+- `37ddbcd` `[Fix] Ollama 도구 호출 JSON 호환성 보강`
+- `e594303` `[Fix] GUI 통합 흐름과 Windows 장치 호환성 보강`
+- `c6b6d8b` `[Fix] Observer Scheduler Automation 런타임 안정화`
+- `e7751a4` `[Feat] Mail Calendar 플러그인과 안전한 테스트 구분 추가`
+
+### 다음 작업
+
+1. GUI를 사용자가 직접 보는 일반 Windows 세션에서 입력·권한창·응답·음성 파형의 시각적 최종 확인.
+2. Observer/Scheduler/Automation을 실제 운영 프롬프트로 수 시간 이상 soak test하고 메모리·스레드·DB 증가량 기록.
+3. Mail SMTP 실제 계정 또는 Google/Outlook OAuth 공급자를 선택한 뒤 실제 전송·조회·캘린더 동기화 구현 및 승인 테스트.
+
+## 2026-07-22 Python 3.12 인터프리터 통일 및 Gmail 디버깅 로그 수정
+
+- 사용자가 첨부한 로그는 `C:\Users\ice31\AppData\Local\Programs\Python\Python310\python.exe`로 실행되어 프로젝트 `.venv`와 Playwright 설치 상태가 분리된 것이 첫 번째 원인이었음.
+- 로컬 JetBrains `.idea` 실행 구성의 `main`/`main_qt`와 프로젝트 SDK, TRAE/VS Code `.vscode` 인터프리터·디버그 구성을 모두 `$PROJECT_DIR$/.venv/Scripts/python.exe`(Python 3.12.13)로 변경함. 두 폴더는 기존 Git ignore 정책에 따라 커밋하지 않는 로컬 설정임.
+- `main_qt.py`에 잘못된 인터프리터 실행 시 실제·권장 Python 경로를 출력하는 runtime 경고를 추가함.
+- `.venv`에서 requirements 전체, pytest, Playwright 1.61 및 Chromium 설치 상태를 재동기화하고 `pip check` 통과.
+- 기본 자동 테스트 42개 통과, 실제 외부 Playwright integration 테스트 2개 통과.
+- Gmail OAuth 연결은 구현되지 않았는데도 Executor가 브라우저·SMTP·가상 도구를 반복 호출하며 완료했다고 보고하던 문제를 수정함. Gmail 연결 요청은 즉시 미지원 상태와 현재 SMTP 범위를 안내함.
+- `execute_multi_agent`와 `get_task_history`를 Action Reasoner의 자동 호출 목록에서 제외해 중첩 에이전트 루프와 가상 도구 생성을 방지함.
+- Recovery 성공/실패 반환값이 반대로 해석되어 실패 fallback을 성공 처리하던 핵심 버그를 수정하고, 복구 불가 실패 횟수에 종료 상한을 적용함.
+- Multi-Agent의 dict형 `tool_input` 처리, 등록 도구 검증, 오류 결과 실패 처리를 보강함.
+- 빈 RAG 리스트 `[]`가 사용자 질문에 참고 문서로 삽입되던 문제를 수정함.
+- 로컬 메일 초안은 SMTP 발신자 설정 없이도 생성할 수 있게 하고 실제 SMTP 전송에만 계정 설정을 요구함.
+- `data/permissions.json`은 사용자별 런타임 권한 상태이므로 Git ignore에 추가함.
+
+### PyCharm Jarvis 실행 구성 직접 복구
+
+- PyCharm 사용자 SDK `Python 3.12 (Python)`이 삭제된 `PycharmProjects/One_Of_Neglected-feat.AI-/Python/.venv`를 가리키던 원인을 확인함.
+- 사용자 SDK의 homePath와 classPath를 현재 프로젝트 `C:\Users\ice31\lepo\AI_-secretary_Agent\.venv`로 변경하고 기본 virtualenv base SDK도 Python 3.12.13 런타임으로 변경함.
+- 프로젝트의 선택 실행 구성은 `Python.Jarvis`, SDK는 `Python 3.12 (Python)`, 실행 스크립트는 `$PROJECT_DIR$/main_qt.py`, 작업 디렉터리는 `$PROJECT_DIR$`로 검증함.
+- 사용자 SDK 원본 백업: `jdk.table.xml.codex-backup-20260722`, `pySdk.xml.codex-backup-20260722`.
+
+## 2026-07-22 RTX 4060 CUDA 활성화
+
+- `.venv`의 `torch 2.13.0+cpu`를 공식 CUDA 12.8 wheel인 `torch 2.11.0+cu128`로 교체함(약 2.8GB).
+- `torch.cuda.is_available() == True`, CUDA build `12.8`, 장치 `NVIDIA GeForce RTX 4060 Laptop GPU` 확인.
+- `cuda:0`에서 2048×2048 행렬 곱 실제 실행 및 동기화 성공.
+- `.env`에 `RAG_DEVICE=cuda`, `WHISPER_DEVICE=cuda` 적용. `.env.example`은 이식성을 위해 기본 `auto`로 문서화함.
+- HardwareManager의 Whisper base 모델 파라미터가 `cuda:0`에 배치되는 것을 확인함.
+- VectorRAGManager가 Chroma SentenceTransformerEmbeddingFunction에 장치를 명시적으로 전달하도록 수정하고 BGE-M3 모델이 `cuda:0`에 배치되는 것을 확인함.
+- CUDA가 없는 환경에서는 `auto` 또는 요청 실패 시 CPU로 안전하게 fallback함.
+- 재설치용 `requirements-cuda.txt` 추가: 일반 requirements와 공식 cu128 PyTorch 고정 버전 포함.
+- GPU 통합 테스트 1개 통과, 기본 테스트 42개 통과, `pip check` 통과.
+
+## 2026-07-22 대화 문맥·실시간 날씨 응답 보강
+
+- GUI가 현재 요청 직전의 최근 대화 10개를 Executor에 전달하도록 연결함.
+- `ConversationContextResolver`를 추가해 대명사·생략·후속 질문을 최근 대화와 세션 활성 상태로 복원함.
+- LLM 해석이 엔티티를 누락하더라도 후속 질문 원문과 최근 사용자 대화를 실행 목표에 함께 보존하도록 방어함.
+- Open-Meteo 기반 `get_weather` 도구를 등록하고 현재·체감·최저·최고 기온, 습도, 강수확률 등을 구조화된 JSON으로 반환함.
+- 상세 한국 주소 검색 실패 시 국내 주요 도시 단위로 재조회하고 `location_precision=city`로 근사값임을 표시함.
+- 등록되지 않은 도구를 본문 JSON으로 지어낸 응답은 더 이상 단순 성공으로 처리하지 않고 즉시 오류로 종료함.
+- 외부 사실은 성공한 Tool Observation 원문을 최종 답변기에 전달함. 날씨 결과는 LLM 재서술 없이 검증된 수치에서 직접 표현해 숫자 누락·변조·환각을 차단함.
+- 플러그인 목록을 실제 Registry에서 반환하는 `list_plugins` 도구를 추가함.
+- 기본 테스트 47개 통과, 통합 테스트 4개는 기본 실행에서 제외, `compileall` 통과.
+- 실제 Ollama + Open-Meteo 전체 흐름에서 `온도는 어느 정도야?`가 앞선 `서울시 구로구 항동` 문맥을 이어받아 현재 27.8°C·체감 34.2°C를 답하고 서울시 기준 근사값임을 표시하는 것을 확인함(관측값은 실행 시점에 따라 변동).
+
+## 2026-07-22 멀티턴 질문·작업 재개·선제 알림 기반
+
+- `ExecutionOutcome`과 `PendingRequest`를 추가해 Executor의 문자열 응답과 작업 상태를 분리함. 기존 `execute_goal()` API는 유지함.
+- 정보가 부족하면 세션별로 원래 요청과 확인 질문을 보관하고 `awaiting_user` 상태로 응답함.
+- 다음 사용자 입력을 확인 질문의 답으로 받아 원래 요청·질문·추가 정보를 하나의 목표로 조립하고 중단 지점의 작업을 자동 재개함.
+- 질문 대기 중 `취소`, `그만`, `중단`, `cancel`, `stop`으로 작업을 취소할 수 있음.
+- 계획 준비, 계획 완료, 현재 Task, Tool 실행, 복구 시도 단계를 progress callback으로 GUI에 중간 표시함.
+- `AppSignals`에 진행 상황과 선제 메시지 신호를 추가하고 `JarvisApp.notify_user()`를 Observer·Scheduler 등 외부 이벤트의 공용 사용자 알림 진입점으로 제공함.
+- AutomationEngine에 결과 callback을 추가해 예약 작업 완료·실패 시 Jarvis가 사용자 입력 없이 먼저 GUI에 보고하고 대화 메모리에 저장함.
+- GUI의 중복 RAG 문자열 주입을 제거함. 사용자 발화는 원문 그대로 보존하고 RAG Context 조립은 Executor의 ContextManager 한 곳에서 담당함.
+- 질문 재개·취소·선제 알림 테스트를 추가함. 기본 테스트 50개 통과, 통합 테스트 4개 기본 제외, `compileall` 통과.
+
+### 다음 해야 할 일
+
+1. 대화형 작업 상태를 SQLite에 영속화해 프로그램 재시작 후에도 질문 대기 작업을 이어받기.
+2. 사용자의 수정·중단·우선순위 변경 명령과 동시에 여러 장기 작업을 식별하는 Task ID 기반 제어 추가.
+3. Observer 이벤트를 중요도·중복 억제 정책에 연결한 뒤 `notify_user()`로 선택적 선제 보고.
+4. 위 대화 상태 기반 위에 Browser·Office·IDE·Mail·Calendar MCP/API 연결 진행.
+
+## 2026-07-22 대화 작업 영속화·Task ID·Observer 선제 보고
+
+- `DialogueStateStore`를 추가하고 `data/dialogue_state.db` SQLite에 질문 대기 작업을 저장함. 프로그램 재시작 후에도 같은 세션의 작업을 이어받을 수 있음.
+- 대기 작업마다 8자리 Task ID를 부여하고 질문 응답에 ID를 함께 표시함.
+- `대기 작업 목록`/`작업 목록`, `작업 <ID> 재개: <답변>`, `작업 <ID> 취소` 명령을 지원함.
+- 질문 대기 중에도 `새 작업: <요청>`으로 기존 대기 작업을 유지한 채 별도 작업을 시작할 수 있음.
+- `ProactiveNotificationPolicy`를 추가해 Observer의 생성·수정·삭제 이벤트 중 코드·문서 파일만 사용자에게 선제 보고함.
+- `.git`, IDE 설정, 가상환경, 캐시·테스트 임시 폴더와 이미지 등 비핵심 파일은 보고하지 않음.
+- 동일 파일에서 생성·수정 이벤트가 연속 발생해도 30초 동안 한 번만 보고하도록 중복 억제함.
+- 앱 종료 시 Event Bus 구독을 해제해 callback 누적을 방지함.
+- 기본 테스트 53개 통과, 통합 테스트 4개 기본 제외, `compileall`과 `git diff --check` 통과.
+
+### 다음 해야 할 일
+
+1. Task ID를 실행 중·완료·실패 상태까지 확장하고 장기 작업의 중단·우선순위 변경을 지원.
+2. Observer 선제 알림을 사용자별 관심 경로·조용한 시간·알림 묶음 설정과 연결.
+3. 멀티턴 실행 기반 위에 Browser·Office·IDE부터 MCP/API 연결을 시작.
+4. 연결된 데이터 소스와 확정된 운영 규칙을 분류해 RAG 적재 정책 수립.
+
+## 2026-07-22 대화형 작업 제어 완성
+
+- SQLite `agent_tasks`에 모든 작업의 `queued`, `running`, `awaiting_user`, `paused`, `interrupted`, `completed`, `failed`, `cancelled` 상태와 우선순위·결과를 기록함.
+- 일반 실행도 시작 시 Task ID를 발급하며 진행 메시지에 ID를 표시함. 완료·실패·취소 결과가 영속 저장됨.
+- 비정상 종료 당시 실행 중이던 작업은 다음 실행에서 `interrupted`로 복구하며 `작업 <ID> 재개` 시 저장된 원래 목표를 자동 재실행함.
+- `작업 목록`, `작업 <ID> 상태`, `작업 <ID> 우선순위 <숫자>`, `일시정지`, `재개`, `취소` 명령을 지원함.
+- 실행 루프와 Tool 호출 직전에 협력적 pause/cancel 지점을 추가함. 이미 실행 중인 외부 Tool 자체는 즉시 강제 종료하지 않고 반환 직후 취소됨.
+- GUI가 AI 작업 중에도 제어 명령을 별도 스레드·신호로 처리하며 원래 작업의 processing 상태를 손상시키지 않음.
+- `작업 <ID> 수정: <지시>`는 기존 작업을 취소하고 수정된 목표를 다음 작업으로 자동 실행함.
+- 실행 중 `새 작업: <요청>`은 버리지 않고 SQLite 영속 큐에 Task ID와 함께 저장함. 현재 작업 종료 또는 앱 재시작 후 우선순위가 높은 작업부터 자동 실행함.
+- 문맥 해석기는 안전하게 추론 가능한 정보를 다시 묻지 않고, 여러 정보가 부족해도 가장 중요한 질문 하나만 하며, 정정 표현을 직전 요청의 수정으로 반영하도록 보강함.
+- 선제 알림은 assistant 대화 기록에 저장되므로 사용자가 `그 파일은?`, `무슨 변경이야?`처럼 답하면 최근 대화 문맥으로 이어짐.
+- 기본 테스트 60개 통과, 통합 테스트 4개 기본 제외, `compileall`과 `git diff --check` 통과.
+
+### 3번 기능 완료 기준 및 다음 단계
+
+- 질문→답변→작업 재개, 중간 보고, 선제 알림, 재시작 복구, 다중 작업 큐, 상태·우선순위·수정·일시정지·취소 제어까지 구현함.
+- 외부 Tool의 네트워크/프로세스 호출 도중 즉시 선점하는 강제 종료는 Tool별 취소 API가 있어야 하므로 향후 각 MCP 연결 단계에서 개별 적용함.
+- 다음 작업은 1번 목표인 MCP/API 연결이며 Browser → Excel → PowerPoint → Word/PDF → IDE → Drive → Mail → Calendar 순으로 진행.
+
+## 2026-07-22 캘린더 요청의 메일·날씨 오염 수정
+
+- 실제 로그에서 `.ics` 기능 문의가 Planner 반복 실행으로 들어간 뒤 오래된 날씨·메일 Memory에 끌려 `get_weather`, `mail_create_draft`, `mail_send_smtp`를 호출하는 문제를 재현함.
+- `.ics`·캘린더 파일 기능 문의는 Tool 파이프라인에 넣지 않고 `calendar_create_event` 지원 여부와 필요한 입력을 즉시 정확하게 답하도록 함.
+- Action Reasoner에 최종 Goal 우선·무관한 과거 Memory 무시 규칙과 캘린더→`calendar_create_event` 전용 라우팅 규칙을 추가함.
+- 명시적인 캘린더/일정 파일 목표에서 mail·weather 등 무관한 Tool 호출을 실행 전에 차단하는 도메인 검증을 추가함.
+- 모델이 `/path/to/...` 예시 경로를 반환하거나 바탕화면 저장을 요청받으면 실제 `C:\Users\ice31\Desktop\<일정 제목>.ics`로 교정함.
+- 로컬 `.env`의 `ALLOWED_PATHS`에 프로젝트 경로와 바탕화면을 명시적으로 추가함(`.env`는 Git 제외).
+- `경로 '...'는 허용되지 않습니다`와 권한 거부 결과를 Verifier가 성공으로 오판하지 않도록 공통 실패 판정을 보강함.
+- `calendar_create_event` 성공 시 실제 파일 존재와 VCALENDAR/VEVENT/DTSTART/DTEND 구조를 검증함.
+- 첨부 로그와 동일한 질문의 실제 Executor 회귀 실행에서 Tool 호출 없이 캘린더 기능을 안내하고 이메일과 무관함을 응답하는 것을 확인함.
+- 기본 테스트 63개 통과, 통합 테스트 4개 기본 제외, `compileall`과 `git diff --check` 통과.
+
+## 2026-07-22 캘린더 생성 Timeout·성공 오판 수정
+
+- 실제 생성 로그에서 Planner 빈 응답의 JSONDecodeError, Tool Selector 120초 timeout, timeout 문자열의 `simple_task` 성공 처리, 일정 시간 누락을 확인함.
+- 캘린더 생성 요청에 시작·종료 시간이 없으면 Planner/LLM 호출 전에 `awaiting_user` 작업으로 저장하고 “언제 시작해서 언제 끝나는지” 한 가지만 질문함.
+- 시간이 제공된 캘린더 목표는 LLM Planner를 건너뛰고 `calendar_create_event` 단일 작업을 결정적으로 생성함.
+- Planner와 native Tool Calling API에 도메인별 허용 도구 목록을 전달할 수 있도록 확장함.
+- 캘린더 목표에는 기존 71개 전체 도구가 아닌 `calendar_create_event` 하나만 노출함. Hybrid/Anthropic/Ollama와 기존 사용자 정의 LLM의 하위 호환 처리 포함.
+- Planner가 빈 응답 또는 `오류:`/`오류가 발생했습니다:` 응답을 반환하면 JSON 파싱 전에 명시적 실패로 처리하고 안전한 fallback Task를 생성함.
+- Tool Selector의 빈 응답·연결 오류·timeout 오류 문자열을 더 이상 `simple_task` 성공으로 처리하지 않고 terminal error로 종료함.
+- 성공한 실제 Tool Observation과 완료 Task가 있으면 Goal Evaluator LLM을 다시 호출하지 않고 완료해 불필요한 추가 timeout과 재계획을 방지함.
+- 첨부 로그와 동일한 생성 요청의 실제 Executor 회귀 실행에서 Ollama 호출 없이 시작·종료 시간 질문과 Task ID가 반환되는 것을 확인함.
+- 기본 테스트 68개 통과, 통합 테스트 4개 기본 제외, `compileall`과 `git diff --check` 통과.
+
+## 2026-07-22 Plugin Registry 기반 범용 Intent/Slot 리팩터링
+
+- 날짜만 답했을 때 같은 시작·종료 시간 질문을 반복한 원인은 Executor의 캘린더 전용 “시간 표현 2개” 정규식이 날짜 범위를 slot으로 인정하지 못했기 때문임.
+- Executor에서 `.ics`·캘린더 키워드 판별, 고정 capability 문구, 시간 누락 정규식, 바탕화면 경로 보정, 캘린더 단일 Planner 분기를 모두 제거함.
+- Plugin SDK에 `IntentSchema`, `SlotSchema`, `BasePlugin.get_intents()`, `BasePlugin.extract_slots()` 계약을 추가함.
+- Plugin Registry가 활성 플러그인의 intent 계약을 한 곳에서 제공하고, 범용 `IntentRouter`가 발화 매칭·기능 문의·slot 누적·다음 질문·실행 Tool 결정을 담당함.
+- `DialogueStateStore.intent_states`에 task별 intent 이름·누적 slot·원래 요청을 저장해 프로그램 재시작과 여러 차례 확인 질문에서도 정보를 잃지 않음.
+- Executor는 특정 플러그인 이름을 알지 않고 IntentRouter 결과가 질문이면 대기, 준비 완료면 계약의 Tool을 직접 실행·검증함.
+- 도메인 Tool 제한과 잘못된 Tool 차단도 하드코딩 키워드가 아니라 Registry intent 계약의 `tool_name`을 기준으로 동작함.
+- CalendarPlugin이 `calendar.create_event` intent와 title/start/end/path slot, 질문, capability 응답, 발화·실행 힌트를 선언함.
+- CalendarPlugin 내부 정규화가 `123이라는 이름`, 바탕화면/명시 경로, 한국어 연·월·일 범위, 오전·오후 시간을 누적 slot으로 변환함.
+- 날짜만 있는 일정은 표준 all-day iCalendar의 `DTSTART;VALUE=DATE`/`DTEND;VALUE=DATE`로 생성함.
+- 실제 사용자 흐름과 동일한 2턴 테스트에서 첫 요청 후 시작 날짜만 질문하고, `26년 7월22일에 시작해서 23일에 끝나` 답변을 start/end로 누적해 질문 반복 없이 `.ics` 파일 생성·구조 검증까지 통과함.
+- 리팩터링 전에 생성된 `ee5b7f3f` 같은 intent 상태 없는 기존 pending 작업도 원래 요청을 Registry로 다시 해석해 slot 상태를 자동 마이그레이션함.
+- 향후 Excel·PowerPoint·Browser 플러그인도 Executor 수정 없이 각 플러그인에 IntentSchema와 extract_slots만 추가해 같은 멀티턴 흐름을 사용할 수 있음.
+- 기본 테스트 70개 통과, 통합 테스트 4개 기본 제외, `compileall`과 `git diff --check` 통과.
+## 2026-07-22 생략형 후속 요청과 대기 작업 수명주기 보완
+
+- 원인: 세션에 대기 작업이 있으면 독립적인 새 요청도 무조건 그 작업의 슬롯 답변으로 소비했고, 완료된 Intent/Slot은 삭제되어 `다시 생성해줘` 같은 생략형 후속 요청이 범용 Planner로 떨어졌다.
+- `IntentResolution`에 명시적 Intent 및 실행 요청 여부를 추가했다. Registry가 독립적으로 인식한 새 실행 요청은 오래된 대기 작업을 안전하게 대체하며, 이전 슬롯을 재사용하지 않는다.
+- 완료된 Intent/Slot을 `recent_intents`에 세션별로 보존한다. 플러그인의 Intent 계약이 후속 표현으로 선언한 발화가 있을 때만 최근 Intent를 계승한다.
+- 업그레이드 전 세션처럼 `recent_intents`가 없으면 최근 대화에서 Plugin Registry의 Intent 계약을 찾아 슬롯을 복원한다. 부족한 슬롯은 플러그인이 선언한 질문으로 확인하며 Planner의 임의 도메인 추론을 차단한다.
+- 캘린더 플러그인은 계승된 제목이 변경되면 제목에서 파생된 `.ics` 파일명도 함께 변경한다.
+- 회귀 검증: 오래된 대기 작업 대체, 최근 Intent 계승, DB 기록이 없는 대화 이력 복원, Excel 오인 방지를 포함해 전체 `73 passed, 4 deselected`.
+
+## 2026-07-22 다중 입력 형식 날짜 정규화 보완
+
+- Core에서 특정 파일 종류나 날짜 문구를 판별하는 하드코딩은 사용하지 않는다. 후속 표현도 각 `IntentSchema.follow_up_hints`가 선언한다.
+- 채팅 전용 형식 예시 안내는 최종 구현에서 제거했다. 사용자가 특정 문법을 외우게 하지 않고 플러그인 정규화 계층이 자연어와 표준 날짜 표기를 받아들이는 방향이다.
+- 캘린더 플러그인의 한국어 날짜 정규화와 `dateparser` 표준 파서 fallback을 결합했다. `2026년 7월 26일`, `2026/7/26`, `2026-7-26`, `7월 26일` 및 추가 숫자/ISO 표기를 지원하며 날짜가 두 개면 시작/종료 슬롯을 함께 채운다.
+- `456이라는 이름으로 파일 생성해줘`처럼 종류가 생략된 독립 요청은 최근 캘린더 Intent로 강제 계승하지 않고 LLM 문맥 해석기의 확인 질문으로 보낸다. `다시`처럼 플러그인이 선언한 후속 표현이 있을 때만 최근 Intent를 계승한다.
+- 회귀 검증: 사용자가 제시한 슬래시 날짜 범위, 연도 없는 한국어 날짜, 일반 파일 요청의 캘린더 오인 방지를 포함해 전체 `76 passed, 4 deselected`.
+## 2026-07-22 업무 자동화 플러그인 Sprint 1
+
+- Gemini 제안과 기존 Codex 제안을 합쳐 `PLUGIN_ROADMAP.md`에 Office/HWP, 웹, 개발, OAuth·클라우드, 협업, Windows 제어 로드맵을 통합했다.
+- 무료 로컬 우선으로 Excel(openpyxl), Word(python-docx), PowerPoint(python-pptx), PDF(PyMuPDF), HWPX(python-hwpx) 플러그인을 실제 Registry에 연결했다.
+- Excel은 생성·조회·셀 수정, Word/PPTX/HWPX는 생성·텍스트 조회, PDF는 생성·텍스트 추출을 지원한다. 모든 경로는 SafetyLayer와 Permission을 거친다.
+- 한컴 프로그램이 현재 탐지되지 않아 pyhwpx COM은 연결하지 않았다. 대신 한컴 없이 동작하는 HWPX를 기본으로 선택했다. 구형 바이너리 `.hwp`와 라이브 한글 제어는 한컴 설치 확인 후 별도 어댑터로 추가한다.
+- Windows Control은 고정 앱 경로 사전 없이 Windows App Paths 레지스트리, PATH, 명시적 절대 실행 파일을 사용한다. `shell=False`, 인자 수 제한, `windows_api` 승인을 적용했다.
+- 공통 문서 슬롯 정규화기로 바탕화면·파일명·확장자를 처리하며 각 플러그인이 IntentSchema를 선언한다. Executor에 Office 전용 분기는 없다.
+- 새 라이브러리: `python-docx`, `python-pptx`, `python-hwpx`, `defusedxml`; 프로젝트 `.venv` 설치 및 requirements 반영.
+- Office/HWPX/PDF 실제 생성·재조회, Registry 노출, 문서 Intent 경로 해석, Windows 미등록 앱 차단 및 파일 검증 테스트를 추가했으며 전체 `81 passed, 4 deselected`.
+- 다음 해야 할 일: Sprint 2 Browser 세션/다운로드/검색/YouTube를 구현한 뒤 Sprint 3 IDE/GitHub로 진행한다. OAuth 공급자는 실제 주 계정을 확인한 뒤 하나씩 연결한다.
+## 2026-07-22 전체 플러그인 실행 점검 및 Windows Intent 수정
+
+- 실제 로그의 `메모장 실행해줄래?`가 실패한 원인은 Windows Tool 자체가 아니라 `windows_control`에 Intent 계약이 없어 85개 Tool을 포함한 Planner/Ollama 경로로 우회한 것이었다.
+- `windows.launch_app` Intent와 target slot을 선언했다. 정확한 사용자 문장은 Planner/LLM을 호출하지 않고 `windows_launch_app`으로 직접 실행된다.
+- 앱 별칭은 Core/Executor 하드코딩이 아니라 `data/app_aliases.json` 데이터 파일로 분리했다. 실행 파일은 App Paths 레지스트리, PATH, 명시 절대 경로 순으로 확인한다.
+- 실제 `Executor → IntentRouter → Permission → ToolExecutor → WindowsControl` 종단 경로로 메모장을 실행했고 WindowsApps Notepad PID 반환을 확인한 뒤 테스트 창을 종료했다.
+- Browser 실제 Chromium 본문 조회·스크린샷과 Weather 실제 Open-Meteo 호출을 별도 integration 테스트로 실행해 `3 passed`.
+- Excel/Word/PowerPoint/PDF/HWPX 실제 파일 왕복, Calendar ICS, Mail 로컬 초안·SMTP 설정 누락 차단, Filesystem tree/search, Git status/diff/log, System 도구, Windows 검색·없는 앱/창 차단을 직접 실행했다.
+- Git commit/push/pull, 실제 SMTP 발송처럼 외부 상태를 변경하는 Tool은 검증 목적으로 실행하지 않고 승인·안전 실패 경로만 확인했다.
+- 기본 전체 테스트 `87 passed, 4 deselected`; 플러그인 집중 테스트 `29 passed, 3 deselected`; 네트워크 integration `3 passed`.
+- 다음 해야 할 일: Browser 고도화 Sprint 2를 진행하되 각 신규 Tool에 자연어 Intent와 실제 종단 검증을 동시에 추가한다.
+## 2026-07-22 Windows 앱 자동 탐색 및 UAC 상승 실행
+
+- 사용자는 앱 경로를 매번 직접 입력할 필요가 없다. Windows App Paths, PATH, 로컬 학습 카탈로그, Program Files/LocalAppData Programs, 시스템 드라이브의 비시스템 최상위 앱 폴더를 제한 깊이·파일 수로 검색한다.
+- 검색은 `MAX_SEARCH_DEPTH=4`, `MAX_SCANNED_FILES=100000`으로 제한하고 Windows/Users/복구/시스템 폴더는 제외한다. 발견 결과는 머신 로컬 `data/discovered_apps.json`에 저장하며 Git에는 커밋하지 않는다.
+- 빈 App Paths 레지스트리 값은 더 이상 검색 성공으로 표시하지 않는다. 검색어가 비어 있으면 전체 앱을 임의 반환하지 않고 오류로 종료한다.
+- `windows_launch_app`에 `elevation=auto|never|always`를 추가했다. 일반 실행에서 WinError 740이 발생하면 동일 실행을 반복하지 않고 Windows `ShellExecuteW(..., runas, ...)`로 UAC 창을 한 번 요청한다.
+- UAC Tool 결과는 앱 실행 완료가 아니라 “관리자 권한 실행 요청 성공, UAC에서 승인 필요”로 정확히 표시한다. 자비스 Permission과 Windows UAC는 계속 별도 승인이다.
+- 실제 제한 검색으로 `C:\NIKKE\...\nikke.exe`, `C:\NIKKE_GOOGLE\...\nikke.exe`, 각 launcher를 발견했다. 사용자가 로그에서 선택한 `C:\NIKKE_GOOGLE\launcher\nikke_launcher_google.exe`를 `nikke`, `nikke.exe`, `니케` 별칭에 연결했다.
+- 자동 검색, 카탈로그, NIKKE 별칭, WinError 740의 단일 UAC 전환을 회귀 테스트했고 전체 `89 passed, 4 deselected`.
+- 다음 해야 할 일: 실제 GUI에서 `니케 실행해줘`를 호출하고 자비스 Permission 승인 뒤 나타나는 Windows UAC를 사용자가 직접 승인해 런처 기동을 확인한다.
+## 2026-07-22 사용자별 앱·시작 메뉴·C 드라이브 전체 검색 보완
+
+- Discord 실행 실패 원인은 `%LOCALAPPDATA%\Discord\app-*` 형태가 기존 `%LOCALAPPDATA%\Programs` 검색 범위 밖이었고, 이 PC에서는 Discord 설치 폴더 직접 열람도 Access Denied였기 때문이다.
+- Squirrel/Electron 계열을 위해 `%LOCALAPPDATA%` 바로 아래에서 검색어와 일치하는 앱 폴더를 우선 제한 검색한다.
+- 사용자/공용 시작 메뉴의 `.lnk`를 범용 앱 소스로 추가했다. 보호된 설치 폴더를 직접 읽을 수 없어도 Windows Shell `os.startfile`로 바로가기를 실행한다.
+- 빠른 검색이 모두 실패하면 사용자의 요청대로 C 시스템 드라이브 전체를 최종 fallback으로 검색한다. 접근 거부는 건너뛰고 링크는 따라가지 않으며, 발견 결과를 머신 로컬 카탈로그에 캐시한다.
+- 실제 환경에서 Discord를 `C:\Users\ice31\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Discord Inc\Discord.lnk`로 자동 해석했고 플러그인으로 실제 실행 요청 성공을 확인했다.
+- 전체 C 드라이브 fallback 활성/비활성, LOCALAPPDATA Electron 설치, 시작 메뉴 바로가기 해석·Shell 실행 회귀 테스트를 추가했다.
+- 다음 해야 할 일: 전체 테스트 후 커밋하고 GUI 재시작 뒤 `Discord 실행해줘`가 Planner 없이 직접 성공하는지 확인한다.
+## 2026-07-22 Windows 사용자 별칭 CRUD 연결
+
+- 별칭 요청이 실패한 원인은 Windows 플러그인에 실행·검색·포커스 Tool만 있고 별칭 추가 Tool/Intent가 없어서 Planner가 `windows_launch_app`을 대체 호출했기 때문이다.
+- `windows_add_app_aliases`, `windows_list_app_aliases`, `windows_remove_app_aliases` Tool을 추가하고 모두 `windows_api` Permission에 연결했다.
+- `windows.add_aliases`, `windows.list_aliases`, `windows.remove_aliases` Intent/Slot을 선언했다. `Discord 앱의 별칭에 디스코드와 디코를 추가해줘`는 Planner/LLM 없이 target=Discord, aliases=[디스코드, 디코]로 직접 실행된다.
+- 기본 프로젝트 별칭 `data/app_aliases.json`과 사용자 머신별 별칭 `data/user_app_aliases.json`을 분리했다. 사용자 파일은 Git ignore되며 임시 파일 후 replace 방식으로 안전하게 저장한다.
+- 실제 Discord 시작 메뉴 바로가기에 `디스코드`, `디코`를 추가했고 두 별칭이 동일한 `.lnk`로 해석되는 것을 확인했다.
+- 별칭 개수/길이 제한, 대상 앱 탐색 실패, 없는 별칭 삭제를 오류로 처리하며 실제 저장 없이 성공 응답하지 않는다.
+- 다음 해야 할 일: 전체 테스트 후 커밋하고 GUI 재시작 뒤 별칭 추가·목록·삭제 및 `디코 실행해줘`를 확인한다.
+
+## 2026-07-22 마이크·카메라 실제 장치 인식 복구
+
+- Windows 마이크/카메라 개인정보 권한과 실제 장치는 정상이었고, 기존 코드의 고정 장치 번호·고정 16kHz 녹음·반복 스트림 재생성이 인식 실패의 핵심 원인이었다.
+- `MICROPHONE_DEVICE=auto`, `CAMERA_INDEX=auto`를 기본값으로 추가했다. 필요할 때만 장치 번호 또는 마이크 이름 일부로 명시 선택할 수 있다.
+- 마이크는 Windows 기본 입력 장치의 네이티브 샘플레이트로 단일 지속 스트림을 열고 Whisper 입력 직전에 16kHz로 변환한다. 스트림이 실제로 열린 후에만 시작 성공을 반환한다.
+- GUI 작업 스레드에서 직접 `QTimer.singleShot`을 사용하지 않고 `voice_text_detected` Qt signal로 음성 인식 결과를 UI 스레드에 전달한다.
+- 카메라는 MSMF → DSHOW → 기본 백엔드 및 복수 장치 번호를 자동 탐색하고 워밍업 프레임 후 저장 성공 여부까지 검증한다. `list_audio_input_devices`, `list_camera_devices` 진단 Tool도 Registry에 등록했다.
+- 이 PC에서 실제 기본 마이크 index 1(44100Hz, RMS 입력 확인), RTX 4060 Whisper 지속 감지 시작·중지, 카메라 index 0 MSMF 640x480 캡처를 모두 확인했다.
+- 모의 장치 및 GUI 회귀를 포함한 전체 테스트는 `99 passed, 4 deselected`다.
+- 카메라 기능은 현재 프레임 캡처까지이며, 사진 속 사물·사람을 이해하는 Vision 모델 연결은 별도 후속 작업이다.
+
+## 2026-07-23 Whisper small 인식 모델 적용
+
+- 한국어 단어 인식률 개선을 위해 Whisper 기본 모델을 `base`에서 `small`로 변경했다.
+- 모델명은 코드에 고정하지 않고 `WHISPER_MODEL` 환경 설정으로 분리했다. 기본값과 이 PC의 `.env`는 모두 `small`이며 필요하면 이후 `medium` 등으로 교체할 수 있다.
+- Whisper `small` 모델 약 461MB를 실제 다운로드해 로컬 캐시에 저장했고 RTX 4060의 `cuda:0`에서 정상 로드되는 것을 확인했다.
+- 전체 테스트 결과는 `100 passed, 4 deselected`다.
+- 이번 변경은 모델 정확도 개선 단계다. 실제 사용 후에도 발화 절단·작은 목소리 문제가 남으면 다음 단계로 VAD와 입력 음량 정규화를 적용한다.
+
+## 2026-07-23 마이크 2초 무음 종료 복구
+
+- 음성은 인식되지만 답변 단계로 넘어가지 않던 원인은 2초 종료 기능 자체가 없는 것이 아니라, 주변 소음 RMS가 낮은 임계값보다 높아 매 입력 청크마다 마지막 음성 시간이 갱신되던 결함이었다.
+- 초기 주변 소음 측정값의 4배와 안전 하한 `0.0015 RMS` 중 큰 값을 음성 임계값으로 사용하도록 보정했다. 이 PC에서 기존 주변 입력 RMS 약 `0.00063`이 더 이상 음성으로 오인되지 않는다.
+- 마지막 음성 시각을 계속 덮는 방식 대신, 실제 무음이 시작된 시각을 별도로 기록해 연속 2초 무음 후 명령을 전송하는 상태 머신으로 변경했다.
+- `MICROPHONE_SILENCE_SECONDS=2.0`으로 종료 시간을 설정할 수 있으며, 지속 소음에서도 무한 대기하지 않도록 `MICROPHONE_MAX_COMMAND_SECONDS=15.0` 안전 제한을 추가했다.
+- 실제 마이크 index 1, 44100Hz 환경에서 자동 임계값 `0.001500`, 웨이크워드 감지, `2초 무음`, GUI 전달 콜백까지 종단 검증했다.
+- 전체 테스트 결과는 `102 passed, 4 deselected`다.
+
+## 2026-07-23 음성 환각·TTS 되먹임 및 호출어 규칙 복구
+
+- 사용자 로그의 가짜 입력은 TTS 음성이 마이크에 재유입되어 두 번의 박수로 오인되고, 실제 발화가 없는 버퍼를 Whisper가 `감사합니다`, `failed` 등으로 환각한 연쇄 오류였다.
+- 자비스가 말하는 동안 마이크 명령 처리를 완전히 일시 정지하고, 출력 종료 후 0.5초의 잔향 대기 시간을 둔다. 이 구간에서 수집된 웨이크워드·명령·박수 상태는 모두 폐기한다.
+- 지속 음성 입력에서 박수 호출을 제거했다. 별도 박수 감지 Tool은 유지하지만 기본 대화 입력은 호출어로만 열린다.
+- 음성 명령은 반드시 첫 단어가 설정된 `WAKE_WORD`와 정확히 같아야 한다. 기본값은 `자비스`이며 `자비`, 문장 중간의 `자비스`, 호출어 없는 음성은 무시한다.
+- 최소 0.2초 이상의 실제 음성 에너지가 있는 웨이크 버퍼만 Whisper에 전달하고, 호출 후에도 명령 발화가 0.25초 미만이면 결과를 입력하지 않는다.
+- 조용한 호출을 놓치지 않도록 음성 감도 하한을 `0.0005 RMS`로 낮췄다. 오작동 방지는 높은 음량 하한 대신 호출어 위치, TTS 차단, 실제 발화 길이의 결합 조건으로 처리한다.
+- `자비스 디코 켜`처럼 짧은 명령이 웨이크 버퍼 안에서 이미 끝났으면 추가 2초를 기다리지 않고 즉시 전송한다.
+- AI 처리 중 새 일반 입력을 더 이상 거절하지 않고 대기 작업으로 보존한다. 따라서 잘못된 작업이 실행 중이어도 사용자가 입력한 후속 명령이 유실되지 않는다.
+- Windows 플러그인에 범용 `windows_close_app` Tool과 Intent를 추가했다. `디코 꺼줘`는 별칭으로 Discord 창을 찾아 강제 프로세스 종료가 아닌 정상 창 닫기를 요청한다.
+- 전체 테스트 결과는 `107 passed, 4 deselected`다.
+
+## 2026-07-23 최초 호출·단독 자비스·한국어 STT 보완
+
+- 새 로그에서 최초 음성 호출은 웨이크워드 로그 자체가 없었고, 이후 음성은 `자비스 기콕 거`로 인식되었다. 채팅의 단독 `자비스`는 Planner가 112개 이전 메시지의 Gmail·날씨 문맥을 끌어와 세 작업을 임의 생성했다.
+- 채팅 입력이 설정된 `WAKE_WORD` 하나뿐이면 Planner·RAG·이전 문맥에 보내지 않고 `네, 보스. 말씀하세요.`로 즉시 응답한다.
+- 시작 직후 사용자의 목소리가 소음 보정 샘플에 들어가도 임계값이 과도하게 상승하지 않도록 자동 임계값 상한 `0.003 RMS`를 추가하고, 보정에는 중앙값 대신 낮은 20백분위 값을 사용한다.
+- 44.1kHz→16kHz 변환을 선형 보간에서 `scipy.signal.resample_poly`의 anti-aliasing 리샘플링으로 교체하고, DC 제거·최대 20배 음량 정규화를 추가했다.
+- Whisper 디코딩을 한국어·temperature 0·beam size 5·이전 텍스트 비의존 방식으로 통일했다. 내장 `listen` Tool도 동일한 단일 STT 경로를 사용한다.
+- 앱 기본/사용자 별칭과 Plugin Registry Intent 표현을 코드 하드코딩 없이 Whisper 힌트 어휘로 공급한다. Whisper가 `자비스디코...`처럼 호출어 뒤 공백을 누락해도 첫 호출어 경계를 복원한다.
+- `small`은 실제 합성 한국어 단명령에서도 오류가 남아 기본 및 로컬 모델을 `medium`으로 변경했다. 약 1.42GB를 캐시했고 RTX 4060에서 `medium + CUDA RAG` 동시 로드 integration 테스트가 통과했다.
+- 매우 짧은 한 음절 명령은 합성 음성에서도 `켜`→`케어` 형태가 남을 수 있으므로 100% 정확도를 보장하지 않는다. 실제 사용자 음성 로그를 계속 수집해 필요하면 다음 단계로 전용 VAD/한국어 STT 또는 사용자 음성 적응을 검토한다.
+- 전체 기본 테스트는 `111 passed, 4 deselected`, GPU integration은 `1 passed`다.
+
+## 2026-07-23 STT 오인식 후 Word 대기 작업 고착 복구
+
+- 로그에서 실제 발화가 `자비스, 디스코드, 워드`로 잘못 인식됐고, 웨이크 구간의 `디스코드, 워드`와 뒤쪽 무음 구간의 Whisper 환각 `고맙습니다`를 별도로 받아쓴 뒤 합친 것이 첫 오류를 악화했다.
+- 웨이크 구간과 후속 명령 구간의 텍스트를 이어 붙이지 않는다. 양쪽 오디오를 합쳐 전체 발화를 한 번 다시 받아쓰고, 최종 결과에서 호출어와 명령을 다시 분리한다.
+- 2초 종료 판정을 위해 쌓인 뒤쪽 무음은 30ms 프레임 RMS 기준으로 제거하고 실제 음성 끝에 0.2초만 남긴다. 무음에서 `고맙습니다` 같은 문장이 추가되는 현상을 줄인다.
+- `워드`, `PDF`, `엑셀`처럼 대상 명사만 인식되고 생성·작성 등 실행 동사가 없으면 Intent 대기 작업을 만들지 않는다. 원하는 동작을 다시 말해 달라고 안내하고 해당 턴을 종료한다.
+- Windows 실행·종료·검색·별칭 CRUD Intent에 각 동작의 `execution_hints`를 명시했다. `디코 종료해` 같은 새 명시적 명령은 기존 Word 대기 작업의 슬롯 답변으로 소비되지 않고 기존 작업을 취소·대체한다.
+- 사용자 로그의 두 재현 케이스인 `디스코드, 워드. 고맙습니다.`의 Word 대기 작업 차단과 `워드 생성해줘 → 디코 종료해`의 새 Intent 전환을 회귀 테스트로 추가했다.
+- 전체 테스트 결과는 `114 passed, 4 deselected`다.
+
+## 2026-07-23 faster-whisper large-v3 한국어 STT 고도화
+
+- `openai-whisper medium` 단독 방식에서 `faster-whisper 1.2.1 + CTranslate2 4.8.1 + large-v3`로 기본 STT 엔진을 교체했다. 기존 OpenAI Whisper medium은 초기화 실패 시 fallback으로 유지한다.
+- RTX 4060 기본 compute type은 `int8_float16`이다. 실제 모델 다운로드·CUDA 로드·추론과 CUDA RAG 동시 로드까지 확인했다.
+- faster-whisper에 내장된 Silero VAD를 활성화했다. 최소 음성 200ms, 최소 무음 400ms, 앞뒤 패딩 150ms를 적용해 무음·환경음이 Whisper로 넘어가는 양을 줄인다.
+- Plugin Registry의 앱 별칭과 Intent 표현을 최대 240자의 `hotwords`로 동적 전달한다. 초기 prompt와 hotwords 중복으로 decoder 448 토큰 한도를 넘었던 실제 오류를 수정했다.
+- segment별 `avg_logprob`, `no_speech_prob`, `compression_ratio`를 검사해 낮은 신뢰도·무음·반복 환각 결과를 실행 전에 폐기한다.
+- large-v3도 매우 짧은 합성 음성 `켜`를 `케어`로 표기했다. 이를 숨기지 않고 Registry 기반 한글 음소 보정기를 추가했다. 등록된 앱 별칭과 `target` 슬롯 Intent 동사 중 최상위 후보 점수 0.45 이상, 차순위와 0.08 이상 차이가 날 때만 보정한다.
+- 실제 검증에서 `자비스 디코 케어`가 `디코 켜`로 복원됐다. 이미 명확한 `디코 종료해`와 애매한 `디코 상태 알려줘`는 변경하지 않았다. 특정 앱이나 문장을 코드에 하드코딩하지 않는다.
+- 새 의존성: `faster-whisper>=1.2.1,<2` (`ctranslate2`, `av`가 함께 설치됨). large-v3 모델은 Hugging Face 로컬 캐시에 다운로드되어 다음 실행부터 재다운로드하지 않는다.
+- 전체 기본 테스트는 `118 passed, 4 deselected`, large-v3 + CUDA RAG integration은 `1 passed`다.
+
+## 2026-07-23 권한 영구 결정 및 관리 UI
+
+- 기존에는 SYSTEM 권한의 허용만 재사용하고 CONFIRM 권한은 저장돼 있어도 반복 요청했으며, 거부 상태는 미결정과 구분되지 않아 계속 팝업이 나타났다.
+- 권한 상태를 `undecided / allow / block` 3상태로 확장했다. 최초 권한 요청의 허용과 거부를 모두 `data/permissions.json`에 영구 저장하고 이후에는 팝업 없이 허용 또는 차단한다.
+- 기존 JSON의 `granted: true` 값은 로드 시 `allow`로 자동 마이그레이션한다. 사용자의 기존 허용 설정은 유지된다.
+- Jarvis 상단에 자물쇠 모양 권한 관리 버튼을 추가했다. 목록에서 각 권한의 허용 토글을 즉시 변경할 수 있고 변경 결과는 바로 저장된다. SAFE 권한은 항상 허용되므로 읽기 전용으로 표시한다.
+- 권한 요청창에도 선택이 영구 저장된다는 안내를 추가했다. 잘못 차단한 권한은 상단 권한 관리 목록에서 다시 허용할 수 있다.
+- 영구 허용 재사용, 영구 차단 재사용, 차단 후 허용 전환 회귀 테스트를 추가했다.
+
+## 2026-07-23 Windows 표준 최소화 동작 복구
+
+- Jarvis 최상위 창이 `Qt.Tool`로 등록되어 Windows 작업 표시줄에 일반 앱 창으로 나타나지 않았고, `showMinimized()` 실행 후 사라진 것처럼 보이거나 정상 복원하기 어려웠다.
+- 창 타입을 `Qt.Window`로 변경해 작업 표시줄에서 최소화·복원이 가능한 일반 최상위 창으로 등록했다. 기존 frameless와 always-on-top 속성은 유지한다.
+- 일반 모드와 미니 모드의 최소화 버튼을 공통 `minimize_window()` 메서드에 연결하고 `WindowMinimized` 상태를 명시적으로 설정한다.
+- 창 타입, 두 버튼의 최소화 연결, 최소화 상태를 검증하는 Qt 회귀 테스트를 추가했다.
+
+## 2026-07-23 사용자 응답에서 실행 경로·PID 분리
+
+- Windows 앱 실행 성공 결과의 전체 실행 파일 경로와 PID가 UI 및 TTS에 그대로 전달되고, 기존 특수문자 필터가 경로 구분자를 제거해 `CProgram Files...`처럼 더 알아보기 어려운 문장을 만들었다.
+- `core/response_presenter.py` 사용자 응답 변환 계층을 추가했다. 내부 도구 원문은 `[DEBUG]` 콘솔 로그에 그대로 남기고, 기본 화면·음성 응답은 `프로그램을 실행했습니다, 보스.`처럼 대화형 문장으로 변환한다.
+- `상세`, `원문`, `로그`, `경로`, `위치`, `PID`, `프로세스 아이디`, `실행 파일` 등을 사용자가 명시적으로 요청하면 기술 세부정보를 숨기지 않는다.
+- 상세정보 요청 시에도 경로 구분자와 PID 표기가 UI에서 망가지지 않도록 응답 문자 필터가 `:`, `/`, `\\`, 괄호, 하이픈을 보존하게 수정했다.
+- 특정 앱 이름이나 설치 경로를 하드코딩하지 않았으며 프로그램 실행 성공 결과 형식 전체에 적용한다.
+- 기본 숨김, 상세 요청 보존, 일반 문장 PID 제거, 대소문자 무관 상세 의도 감지 회귀 테스트를 추가했다. 전체 테스트 결과는 `118 passed, 4 deselected`다.
+
+## 2026-07-23 TTS 끊김 개선 및 목소리 선택 UI
+
+- 기존 `AudioProcessor.play_and_analyze_tts()`는 sounddevice 실시간 출력 callback 안에서 FFT 분석과 Qt 시그널 전송까지 수행해 출력 버퍼 underflow와 음성 끊김을 유발할 수 있었다.
+- WAV 재생을 `sd.play()`의 연속 출력 경로로 분리하고, 시각화 FFT는 재생 callback 밖에서 50ms 간격으로 수행한다. 원본 WAV의 스테레오 채널과 음량도 보존한다.
+- 동시에 들어온 여러 응답이 TTS로 겹쳐 재생되지 않도록 ToolExecutor에 TTS 전용 잠금을 추가해 순차 재생한다.
+- `core/tts_settings.py`를 추가해 Windows TTS 음성 목록과 선택값을 관리한다. 선택값은 `data/tts_settings.json`에 영구 저장되며 다음 실행에도 적용된다.
+- pyttsx3 COM 음성 열거가 실패하는 실제 환경을 확인해 Windows `System.Speech` 목록 조회 fallback을 추가했다. 현재 PC에서 Heami, Zira, David 3개 음성이 조회된다.
+- 상단에 스피커 모양 TTS 목소리 버튼을 추가했다. 목록에서 음성을 클릭하면 즉시 선택·저장하며 pyttsx3 기본 경로와 System.Speech fallback 모두 같은 선택을 사용한다.
+- 음성 선택 저장·복원, 잘못된 음성 차단, Windows 목록 fallback, 비차단 연속 재생과 스테레오 보존 테스트를 추가했다. TTS 음성 UI smoke test와 전체 `118 passed, 4 deselected`를 통과했다.
+
+## 2026-07-23 일반 창 동작·온라인 한국어 TTS·세션 관리
+
+- Jarvis의 `WindowStaysOnTopHint`를 제거하고 1초마다 창을 `raise_()`하던 visibility timer도 제거했다. 이제 일반 Windows 앱처럼 사용자가 선택한 창 순서에 따라 앞뒤로 이동한다.
+- Windows 오프라인 SAPI 음성 3개는 자비스 LLM의 한계가 아니라 이 PC에 설치된 음성 수다. 무료·API 키 없는 온라인 선택지로 `edge-tts 7.2.8` 공급자를 추가했다.
+- 음성 UI는 Windows 음성과 Edge 온라인 한국어 Neural 음성을 함께 표시한다. 실제 조회 결과 온라인 음성은 `HyunsuMultilingual`, `InJoon`, `SunHi` 3개이며 전체 목록은 6개다.
+- Edge 음성은 MP3로 합성되므로 faster-whisper가 이미 사용하는 PyAV로 디코딩해 기존 끊김 방지 재생 경로에 연결했다. 온라인 합성 실패 시 Windows 오프라인 음성으로 자동 대체한다.
+- `edge-tts`는 Microsoft Edge 온라인 음성에 접근하는 비공식 오픈소스 클라이언트다. 개인 사용 편의를 위한 현재 기본 확장이며 상업 배포 시 Azure Speech 같은 정식 계약 API로 교체해야 한다.
+- 대화 DB에 `conversation_sessions` 메타데이터 테이블을 추가했다. 기존 episodes는 시작 시 자동 마이그레이션되며 메시지가 없는 새 세션도 목록에 유지된다.
+- 상단 `💬` 버튼에 세션 관리 창을 추가했다. 세션 선택·새 세션 추가·영구 삭제·대화 리셋과 전체 대화 기록 보기를 지원한다.
+- 세션 리셋/삭제 시 episodes뿐 아니라 pending requests, agent tasks, intent states, recent intent까지 제거해 이전 작업 문맥에 다시 갇히지 않게 했다. 실행 중인 현재 세션은 안전을 위해 리셋·삭제·전환하지 않는다.
+- TTS 설정 JSON은 사용자별 상태이므로 `.gitignore`에 추가했다. 세션 CRUD·대화 표시·연결 상태 초기화·온라인/오프라인 음성 병합 회귀 테스트와 전체 `118 passed, 4 deselected`를 통과했다.
+
+## 2026-07-27 GPT-SoVITS 커스텀 음성 Anis
+
+- 사용자에게 사용 허가를 받은 동일 화자의 영상 3개를 로컬에 내려받았고, 보컬 분리·무음 분할·faster-whisper large-v3 전사를 수행했다. 다른 화자 혼입 위험을 줄이기 위해 최종 학습에는 장편 ASMR 원본에서 선별한 193개 구간만 사용했다.
+- GPT-SoVITS 공식 저장소와 Python 3.10 전용 `.gpt-sovits-venv`를 구성했다. Windows 한국어 전처리를 위해 `eunjeon 0.4.0`과 `setuptools<81`을 고정하고, CUDA 호환을 위해 `torch/torchaudio 2.7.1+cu126`을 사용한다.
+- 텍스트·HuBERT·시맨틱 전처리 결과는 각각 193건으로 검증했다. v3 SoVITS LoRA는 RTX 4060 8GB에 맞춰 batch 1, gradient checkpoint, rank 32로 9 epoch 학습했고 `Anis_e9_s1737_l32.pth`를 생성했다. GPT는 batch 4로 12 epoch 학습해 `Anis-e12.ckpt`를 생성했다.
+- `data/voices/Anis/profile.json` 프로필과 `core/custom_tts.py`를 추가했다. 음성 UI에서 `[커스텀] Anis`를 선택하면 로컬 API를 지연 시작하고, 합성 WAV를 기존 AudioProcessor로 재생한다. 커스텀 합성 실패 시 Windows/Edge 기본 음성으로 대체한다.
+- 실제 API 수동 합성, 서버 자동 시작 후 합성, ToolExecutor 전체 호출을 검증했다. 샘플은 `data/voice_training/anis/Anis_sample.wav`이며 로컬 학습 자료·가중치·외부 런타임은 Git 및 일반 배포에서 제외한다.
+- 데이터 준비 도구 `transcribe_voice_dataset.py`, `align_youtube_captions.py`, `finalize_gpt_sovits_semantics.py`를 추가했다. 캡션 정렬 결과는 문맥 중복 때문에 최종 학습에 사용하지 않았다.
+- 전체 테스트 결과는 `118 passed, 4 deselected`다.
+
+## 2026-07-27 일반 대화 라우팅 및 밝은 Anis 재학습
+
+- `안녕` 같은 일반 대화가 Planner로 넘어가 Gmail·날씨·PowerPoint 도구를 임의 실행하던 원인을 수정했다. Plugin Registry가 실행 의도를 찾지 못한 발화는 도구가 없는 대화 전용 LLM 경로로 처리하며, 최근 문맥은 생략어를 이해할 때만 사용한다.
+- 실제 Ollama smoke test에서 `안녕`이 Planner 로그나 Tool 호출 없이 `안녕하세요! 무엇을 도와드릴까요? 보스.`로 응답하는 것을 확인했다.
+- 사용자가 Anis를 선택한 경우에만 일반 대화 프롬프트에 밝고 활기차며 솔직하고 장난기 있는 친근한 화법을 적용한다. 특정 작품 대사·유행어 복제나 캐릭터 사칭은 하지 않는다.
+- Anis 합성 실패를 숨기고 Heami로 자동 대체하던 동작을 제거했다. 선택한 커스텀 음성이 실패하면 해당 오류를 그대로 반환하며, GPT-SoVITS HTTP 오류 본문도 로그에서 확인할 수 있다.
+- 추가로 사용 허가를 받은 밝은 대사 영상 `ZrB_BC_rpCg`를 보컬 분리·분할·전사했다. 33개 밝은 구간만 별도 학습해 `AnisBright_e12_s1188_l32.pth`와 `AnisBright-e15.ckpt`를 생성했으며 기존 ASMR 193개와 섞지 않았다.
+- Anis 프로필을 새 밝은 가중치와 3.39초의 정상 한글 기준 음성으로 교체했다. 프로필별 `sample_steps`와 `speed_factor`도 지원하며 Anis는 16단계로 설정했다.
+- 새 모델의 실제 합성 샘플 `data/voice_training/anis/Anis_bright_sample.wav`을 생성했다. 합성 시간은 약 2.3초이며 유효한 WAV로 검증했다.
+- 전체 테스트 결과는 `118 passed, 4 deselected`다.
+
+## 2026-07-27 Anis 숫자·영문 혼합 문장 합성 복구
+
+- 실제 날씨 답변의 `25.7C`, `32.4C` 같은 숫자·영문 혼합 텍스트에서 GPT-SoVITS가 NLTK `averaged_perceptron_tagger_eng` 부재로 HTTP 400을 반환해 음성이 나오지 않았다.
+- 필요한 공식 NLTK 품사 사전을 `external/GPT-SoVITS/nltk_data`에 설치했다. GPT-SoVITS 자식 프로세스 시작 시 프로젝트 내부 사전 경로를 `NLTK_DATA` 맨 앞에 자동 연결하므로 사용자 홈 설정에 의존하지 않는다.
+- 같은 형태의 날씨 문장을 새 Anis 모델로 다시 합성해 9.712초 WAV 생성에 성공했다. 평균 음량은 -19.6dB, 최대 음량은 -1.6dB로 무음 파일이 아님을 확인했다.
+
+## 2026-07-27 음성별 사용자 호칭 설정
+
+- TTS 설정에 음성 ID별 `voice_addresses` 영구 저장 구조를 추가했다. Windows·Edge·GPT-SoVITS를 포함해 각 음성마다 서로 다른 사용자 호칭을 지정할 수 있다.
+- Anis 프로필의 기본 호칭은 `지휘관님`이다. 사용자가 별도 값을 저장하지 않아도 Anis 선택 시 이 기본값이 적용된다.
+- 상단 `🔊` TTS 목소리 창에 `선택 음성의 호칭` 입력란과 `호칭 저장` 버튼을 추가했다. 음성을 클릭하면 해당 음성의 현재 호칭이 표시되고 수정값은 `data/tts_settings.json`에 저장된다.
+- 일반 대화와 최종 Tool 응답의 LLM 프롬프트에 선택 음성의 호칭을 전달한다. 기존 코드나 플러그인이 `보스`를 반환하더라도 UI·TTS 표시 직전 공통 개인화 계층에서 선택된 호칭으로 바꾼다.
+- 특정 음성 이름을 응답 변환 코드에 하드코딩하지 않았다. 커스텀 음성 프로필의 `default_address` 또는 UI에서 저장한 값을 사용한다.
+- 음성별 저장·복원·상호 독립성과 GUI 응답 경계 개인화 회귀 테스트를 포함한 전체 결과는 `119 passed, 4 deselected`다.
+
+## 2026-07-27 Anis 음질 재학습 및 저지연 스트리밍
+
+- 사용 허가를 받은 성우 본인 채널의 추가 영상 `aA-cdy58eeM`(발랄·애교), `BgVXsbq_C6I`(일상·투정), `mvdkdmjNDkw`(STAR ANIS PV, 진지·결의)를 학습 자료로 추가했다.
+- 3개 영상을 44.1kHz stereo로 정규화하고 HP5 main-vocal GPU 분리를 거쳐 49개 구간으로 나눴다. faster-whisper large-v3 전사 43개 중 타 등장인물·노래·효과음·겹친 대화를 제외한 단일 화자 25개만 최종 학습에 사용했다.
+- `AnisQuality` v3 SoVITS LoRA를 8 epoch, GPT를 12 epoch 학습해 `AnisQuality_e8_s800_l32.pth`와 `AnisQuality-e12.ckpt`를 생성했다. Anis 프로필은 새 가중치와 성우 본인 채널의 밝은 기준 음성으로 교체했다.
+- 기존에는 GPT-SoVITS 서버 시작 약 14.6초와 전체 WAV 합성 약 7.7초가 답변 표시 뒤에 순차 발생했다. 앱 시작 직후 선택된 커스텀 모델을 백그라운드에서 미리 로드하고 GPT-SoVITS mode 2 PCM 스트림을 도착 즉시 재생하도록 변경했다.
+- 웜업 후 같은 5.35초 샘플의 첫 PCM 도착은 1.38초, 전체 생성은 4.5초였다. 스트리밍을 지원하지 않는 커스텀 프로필은 문장 단위 합성과 다음 문장 병렬 준비 방식으로 자동 대체한다.
+- 커스텀 음성 프로필에 범용 `conversation_style`을 추가했다. Executor는 음성 ID를 하드코딩하지 않고 선택 프로필의 스타일을 일반 대화와 Tool 최종 답변 모두에 전달한다.
+- Anis 스타일은 평소 밝고 활달하며 장난스럽고 현실적인 투정을 자연스럽게 섞되, 사용자의 어려움·안전·실패·중요 결정에서는 장난을 멈추고 차분하고 진지하게 답하도록 구성했다. 음성 학습 자체가 LLM 말투를 학습하는 것은 아니므로 전사에서 도출한 스타일 규칙을 별도 적용한다.
+- 일반 대화 프롬프트는 감정·경험 발화에 먼저 구체적으로 반응하고 상투적인 접수 문장만 반환하지 않도록 보강했다. 현재 로컬 Qwen Coder는 스타일 지침을 완벽히 따르지 않을 수 있으며, 더 강한 캐릭터 말투 일관성은 향후 대화용 instruct 모델 또는 별도 LoRA가 필요하다.
+
+## 2026-07-27 AnisQuality 사용자 평가 후 즉시 롤백
+
+- 사용자가 `AnisQuality + streaming mode 2` 조합의 목소리와 톤이 이전보다 더 이상하다고 평가했다. 새 데이터 25개만 사용한 소규모 재학습의 연기 톤 과적합과, 품질을 일부 희생하는 mode 2 스트리밍을 동시에 적용해 원인을 분리할 수 없었던 변경이다.
+- 활성 가중치를 직전 `AnisBright-e15.ckpt` / `AnisBright_e12_s1188_l32.pth`로 되돌리고 기준 음성도 직전 밝은 데이터 구간으로 복구했다. Anis의 품질 저하형 스트리밍은 비활성화했다.
+- 앱 시작 시 백그라운드 모델 사전 로딩과 문장 단위 합성·다음 문장 병렬 준비는 유지한다. 복원 모델의 웜업 후 첫 문장 합성은 약 3.06초다.
+- 비활성 `AnisQuality` 가중치와 새 학습 데이터는 향후 A/B 비교용으로 보존하되 사용자 확인 전 활성 모델로 다시 사용하지 않는다.
+
+## 2026-07-27 Anis 문장 사이 장시간 무음 제거
+
+- `streaming_mode: 0` 롤백 뒤 fallback 파이프라인이 `안녕하세요! / 어떻게 도와드릴 수 있을까요? / 지휘관님.`을 세 개의 독립 API 요청으로 나눴고, 각 요청의 합성 시간이 문장 사이 긴 무음으로 나타났다.
+- AnisBright에서 GPT-SoVITS mode 1을 단독 검증했으나 첫 PCM이 88.53초 후 도착해 폐기했다.
+- 복원된 AnisBright 가중치와 기존 기준 음성은 그대로 유지하고 mode 2만 단독 검증했다. 동일 문장의 첫 PCM은 1.42초, 전체 생성은 4.75초였으며 5.83초짜리 연속 WAV로 생성됐다.
+- 활성 Anis 설정은 `AnisBright + streaming mode 2`다. 이전에 평가가 나빴던 `AnisQuality + mode 2`와 달리 모델·기준 음성은 직전 검증본이고, 한 번의 API 요청과 하나의 연속 PCM 출력으로 문장 사이 합성 공백이 없다.
+
+## 2026-07-27 역할별 모델 Router와 멀티모달 Vision 연결
+
+- NVIDIA 공개 모델과 Qwen/Gemma 후보를 현재 RTX 4060 Laptop 8GB 조건에서 비교했다. Nemotron 3 Nano Omni 30B-A3B는 전체 가중치 규모가 현재 장비에 크고, Nemotron Mini 4B는 공식적으로 영어 중심·4K 문맥이라 한국어 주 모델에서 제외했다.
+- `qwen3:4b`를 설치해 실제 검증했으나 현재 Ollama가 thinking 비활성 옵션을 적용하지 않아 짧은 요청에서도 내부 사고가 출력 한도를 소진했다. 활성 역할에는 사용하지 않고 향후 런타임 업데이트 후 재평가 대상으로 남겼다.
+- `qwen2.5:7b-instruct`와 `gemma3:4b`를 Ollama에 설치했다. 일반 대화·계획·추론·도구 선택은 Qwen 2.5 일반 Instruct, 코드·문서는 기존 Qwen 2.5 Coder, 이미지·화면은 Gemma 3 Vision으로 배정했다.
+- `core/model_registry.py`를 역할별 모델·temperature·출력 길이·`keep_alive`의 단일 진실 공급원으로 추가했다. `ModelRoleRouter`는 하드코딩된 사용자 문장 대신 Planner의 실제 도구 계약과 입력 modality로 전문 역할을 고른다.
+- Ollama 일반 대화는 `/api/generate` 문자열 평탄화 대신 `/api/chat` 역할 메시지를 사용한다. 과거 assistant 답변과 최신 user 발화를 구분하며 이미지 메시지의 base64 입력도 보존한다.
+- 기존 `analyze_image`의 메타데이터 출력만 하던 임시 구현을 실제 Gemma 3 이미지 분석으로 교체했다. Jarvis 아이콘을 넣은 실호출에서 이미지 내용에 대한 응답을 확인했다.
+- Anis 프로필에 범용 `assistant_name`을 추가했다. 선택 음성 이름만 부르면 이전 이름 변경 답변을 반복하지 않고 호출에 짧게 응답한다.
+- GPT-SoVITS 스트림은 첫 조각 즉시 재생 대신 프로필별 1초 PCM 선행 버퍼를 둔다. 실측에서 첫 생성 batch가 약 1.71초 음성을 포함했고 다음 batch까지 약 1.59초였으므로 재생 중 underflow 없이 이어질 여유를 확인했다.
+- 전체 테스트 결과는 `119 passed, 4 deselected`다. 상세 역할 구성과 모델 비교 근거는 `MODEL_ROUTING.md`에 기록했다.
+
+## 2026-07-27 실시간 시간·날씨와 혼합문 TTS 발음 복구
+
+- `현재 시각 몇시야?`가 시스템 도구가 아니라 일반 대화 Qwen으로 전달돼 직전 17시 치과 예약 문맥을 바탕으로 14시 30분을 지어냈고, 답변 뒤에 중국어 문장까지 생성한 로그를 확인했다. 날씨도 같은 이유로 실제 Open-Meteo 도구를 거치지 않을 수 있었다.
+- `system_tools`와 `weather` 플러그인에 Plugin Registry 기반 선언형 intent 계약을 추가했다. 현재 시각·날짜는 OS의 timezone-aware `datetime.now().astimezone()` 값을 사용하고, 날씨는 장소 slot이 있을 때만 Open-Meteo를 호출한다. 장소가 없으면 임의 추측하지 않고 어느 지역인지 묻는다.
+- BasePlugin/PluginRegistry에 범용 `present_result()` 계약을 추가했다. 실시간 도구의 검증용 원문과 화면·음성용 자연어 표현을 플러그인 자체가 함께 소유하므로 Executor에 시간·날씨 전용 분기를 하드코딩하지 않았다.
+- 서울 실시간 조회에서 Open-Meteo 관측 시각 `2026-07-27T13:30`, 기온 30.4도, 체감 36.1도, 습도 71퍼센트가 반환되는 실제 네트워크 경로를 확인했다. 동 단위 좌표를 못 찾고 Seoul fallback을 사용하면 도시 기준 근삿값임을 응답에 표시한다.
+- `core/tts_normalizer.py`를 추가했다. 화면에 보이는 원문은 유지하면서 TTS에 넘기는 문자열만 시각(`17:05` → `오후 다섯 시 오 분`), 소수·온도·퍼센트, 일반 숫자, 영단어 발음으로 변환한다.
+- 영단어는 철자별 고정 사전이 아니라 g2pK의 CMU 발음 사전을 이용한다. 예를 들어 소문자 `wet`은 `웻`으로 변환하며, `API` 같은 대문자 약어는 철자 읽기가 필요한 경우를 위해 유지한다.
+- 사용자가 중국어·일본어·한자·번역 원문을 요청하지 않았는데 모델이 CJK 문자를 섞으면 사용자 응답 경계에서 해당 오염 문장만 제거한다. 요청한 경우에는 원문을 보존한다.
+- `g2pk==0.9.4`를 requirements에 추가했고 현재 가상환경에도 설치했다. 시간 실호출은 로컬 OS 시각과 2초 이내 일치했으며 전체 테스트 결과는 `119 passed, 4 deselected`다.
+
+## 2026-07-27 날씨 slot·대문자 영단어·그대로 읽기 보정
+
+- `오늘 날씨 알려줄래?`에서 `알려줄래`를 지역명으로 추출해 조회를 시도한 회귀를 수정했다. 날씨 domain 표현 앞뒤를 분리한 뒤 시간 부사·요청 동사·한국어 조사를 제거하며, 지역이 남지 않으면 반드시 확인 질문을 한다.
+- `서울시 구로구 항동의 날씨를 알려줘`는 이제 location을 `서울시 구로구 항동`으로 추출한다. 기존 사용자 응답의 `항동의 를의` 같은 조사 중복이 제거됐다.
+- 대문자 6자 이하를 모두 약어로 취급하던 TTS 규칙을 제거했다. CMU 발음 사전에 있는 `GAME`은 대소문자와 무관하게 `게임`으로 변환하고, 사전에 없는 `API`, `GPU` 같은 실제 약어만 원형을 유지한다.
+- 일반 숫자 정규식이 뒤의 한글과 붙으면 실패하던 word-boundary 조건을 숫자 lookaround로 교체해 `71퍼센트`도 `칠십일퍼센트`로 읽는다.
+- `hello를 읽어봐`가 일반 대화 모델로 전달돼 `[GAME]하로`를 생성한 문제를 해결했다. system_tools 플러그인에 `repeat_text` 도구와 `speech.repeat_text` intent를 선언해 사용자가 지정한 문자열을 LLM 변형 없이 그대로 화면에 반환하고, TTS 발음 계층에서만 변환한다.
+- TTS가 성공했더라도 읽은 본문에 `오류:`라는 단어가 있으면 실패로 기록하던 로그 판정을 `TTS 오류:` 접두어 검사로 좁혔다.
+- 실제 Executor에서 지역 없는 날씨 질문이 확인 질문으로 전환되고 `hello를 읽어봐`가 정확히 `hello`를 반환하는 것을 검증했다. 전체 테스트 결과는 `119 passed, 4 deselected`다.
+
+## 2026-08-02 TTS 자기 음성 오인 취소·실시간 정보 실패 계약·RAM 조사
+
+- 음성 끊김 로그의 직접 원인은 메모리 오류가 아니라 마이크가 재생 중인 TTS를 사용자 끼어들기로 잘못 판정해 `cancel_event`를 발생시킨 것이었다. 출력 시작 0.55초는 판정에서 제외하고, 출력 기준 에너지의 2.2배 이상·절대 RMS 0.015 이상인 입력이 0.70초 지속될 때만 끼어들기로 인정하도록 보수적으로 조정했다.
+- WAV 및 GPT-SoVITS 스트리밍 재생 함수가 실제 완주 여부를 bool로 반환한다. 취소된 재생은 더 이상 `음성으로 읽어드렸습니다`라는 성공 결과가 되지 않고 typed `ToolRunStatus.CANCELLED`로 전달된다.
+- 날씨 intent에 `freshness=live`, `requires_sources=True` 계약을 선언했다. 실시간 Tool이 실패하면 LLM이 임의 수치를 생성하는 일반 대화 경로로 빠지지 않고 동일 intent/slot을 `awaiting_user`로 보존해 더 구체적인 조회 대상을 받아 재시도한다. 이를 위해 running 작업의 정상적인 `awaiting_user` 전이를 허용했다.
+- 실제 Open-Meteo 네트워크 통합 테스트를 통과했다. 전체 회귀는 `305 passed, 4 deselected`, 별도 실시간 날씨 검증은 `1 passed, 3 deselected`다.
+- 시스템 RAM 조사 당시 물리 RAM 31.7GB 중 24.79GB(78.2%)가 사용 중이고 6.91GB가 사용 가능했다. 주요 Working Set은 Ollama llama-server 4.50GB, Chrome 합계 2.94GB, PyCharm 합계 2.50GB, Python 합계 2.28GB, ChatGPT 합계 1.85GB, NexonPlug 합계 1.77GB, Discord 합계 1.25GB였다. 자비스 Python 프로세스는 Working Set 2.10GB, Private 6.52GB였고 Ollama는 Working Set 4.50GB, Private 5.38GB였다. GPU는 8GB 중 약 3.05GB 사용으로 고갈 상태가 아니었다.
+
+## 2026-08-02 런타임 정체성·호출어·대화 설정 영속화
+
+- `너의 호칭을 아니스로 변경해줘`가 일반 대화 LLM으로 들어가 말로만 동의하고 실제 설정은 바뀌지 않던 문제를 해결했다. `preferences` Plugin과 `set_runtime_preference` Tool을 추가해 이름·호출어·사용자 호칭·응답 스타일·응답 언어를 선언형 Intent/Slot 계약으로 저장한다.
+- 설정 키와 검증 규칙은 `core/assistant_settings.py`의 Registry가 단일 진실 공급원이다. 문장별 특수 분기가 아니라 설정 종류와 값 추출 후 공통 저장·재조회 계약을 사용한다.
+- 비서 이름을 변경하면 기본적으로 음성 호출어도 같은 값으로 즉시 동기화한다. 이후 `호출어를 ...로 바꿔줘`로 호출어만 별도 변경할 수도 있다. 마이크의 첫 단어 판정, Whisper 후보 평가·초기 프롬프트, 단독 호출어 채팅, 시작 안내가 매번 영구 설정을 읽는다.
+- 일반 대화·Tool 최종 응답·Action Reasoner·Context 대화 화자·멀티 에이전트 프롬프트와 상단 UI 이름도 같은 설정을 사용한다. 사용자 호칭과 응답 스타일 역시 기존 음성 프로필 값 위에 명시적 사용자 설정을 우선 적용한다.
+- 사용자가 이미 요청한 값에 따라 현재 DB의 `assistant_name`과 `wake_word`를 모두 `아니스`로 저장했다. 새 코드를 반영하려면 실행 중인 앱을 한 번 재시작해야 한다.
+- 사용자별 DB 값에 따라 테스트가 달라지지 않도록 마이크·GUI 회귀 테스트는 명시적 테스트 설정을 주입한다. 전체 결과는 `308 passed, 4 deselected`다.
+
+## 2026-08-02 queued 일반 대화 무한 재실행 복구
+
+- 사용자가 말하지 않았는데 `렙해줘`가 계속 입력된 로그는 STT 환각이나 TTS 되먹임이 아니었다. 과거 AI busy 상태에서 생성된 `queued` 작업을 GUI가 자동 재개했지만, Tool이 필요 없는 일반 대화 조기 반환 경로가 영속 작업 상태를 `completed`로 전환하지 않아 같은 task ID를 매 응답 뒤 다시 디스패치한 것이 원인이었다.
+- Executor의 일반 대화·지원 여부·모호성·지원 불가 조기 종료를 공통 terminal 경계로 묶었다. 기존 queued task로 실행된 경우 `queued → running → completed`와 결과 저장을 보장하며, 추가 질문이 필요하면 새 task를 만들지 않고 동일 task를 `awaiting_user`로 전환한다.
+- GUI에도 동일 task ID가 여전히 디스패치 중이면 다시 꺼내지 않는 in-flight 가드를 추가했다. 다음 queued 작업은 AI 텍스트 응답 직후가 아니라 현재 TTS가 완전히 종료된 후 시작해 음성 스레드 중첩도 방지한다.
+- 실제 사용자 DB에 남아 있던 원인 task `5dfa96c9`(`렙해줘`)를 복구 사유와 함께 `cancelled`로 전환했다. 현재 queued 작업 수는 0개다.
+- 동일 상황의 영속 상태 회귀 테스트를 추가했고 전체 결과는 `309 passed, 4 deselected`다.
+
+## 2026-08-02 복합 설정·프로필 조회·대화 출력 오염 복구
+
+- `내 호칭은 지휘관님으로 불러주고 대신 대답은 반말로 해`에서 첫 설정만 저장되던 문제를 해결했다. 하나의 Preference Intent가 주 설정과 `additional_changes`를 함께 추출·검증·저장하므로 한 문장에 포함된 호칭과 말투가 모두 반영된다.
+- `내 메일주소 말해봐`를 `speech.repeat_text`로 오분류하던 원인은 `말해봐` 하나만으로 literal repeat Intent가 매치된 것이었다. literal repeat는 이제 따옴표로 지정한 문자열 또는 영문·숫자 token의 읽기/발음 요청에만 매치된다.
+- Preferences Plugin에 사용자 프로필 저장·조회 Tool/Intent를 추가했다. 과거 세션에서 사용자가 직접 제공한 `ice318@naver.com`을 `email` 프로필로 복구했으며 실제 Executor 조회가 `저장된 메일 주소는 ice318@naver.com입니다.`를 반환하는 것을 확인했다. 화면 필터도 이메일의 `@`와 `+`를 보존한다.
+- 호출별 system 메시지가 있는데도 전역의 옛 Jarvis system prompt를 앞에 중복 삽입하던 LLM 경로를 수정했다. 이제 명시적 대화/역할 프롬프트가 전역 기본 프롬프트를 대체하므로 `GAME` 접미사와 존댓말·반말 충돌이 줄어든다.
+- 일반 대화가 사용자 질문을 그대로 복사하거나 `user/assistant/system` 역할표시, 러시아어·중국어·일본어 문자를 누출하면 한 번 재작성한 뒤 출력 경계에서 다시 제거한다. 반말 설정을 소형 모델이 무시한 경우 흔한 한국어 존댓말 종결어미도 최종 경계에서 반말로 정규화한다.
+- `내 말 따라하지마`, `짧게 답해`, `자세히 답해` 같은 직접적인 대화 방식 지시도 영구 `response_style` 설정으로 연결한다. 현재 실제 설정은 `지휘관님`, `사용자 발화를 그대로 반복하지 말고 핵심에 직접 답하는 자연스러운 반말`이다.
+- 전체 회귀 결과는 `316 passed, 4 deselected`다.
+
+## 2026-08-02 검증 기반 동적 응답 표현 계층
+
+- Plugin별 `present_result()`가 만든 고정 문장을 사용자에게 그대로 반복하던 구조 위에 `core/response_realizer.py`를 추가했다. Tool의 원본 결과와 검증 상태는 그대로 보존하고, 검증에 성공한 응답의 표현만 현재 비서 이름·사용자 호칭·응답 스타일에 맞춰 자연스러운 1~2문장으로 바꾼다.
+- 이메일, 날짜·시각, 온도·습도·개수 같은 측정값, 따옴표로 지정된 값, 생성 파일명은 보호 사실로 추출한다. LLM 표현 결과에서 하나라도 누락·변경되거나 성공을 실패처럼 표현하면 해당 문장을 폐기하고 Plugin의 안전한 원문으로 자동 복귀한다.
+- 사용자가 그대로 말해 달라고 한 `repeat_text`, TTS·STT 자체 Tool은 의미 변형을 막기 위해 표현 계층을 통과하지 않는다. 긴 절대 경로와 PID 같은 내부 정보는 사용자가 상세 정보를 요구하지 않았다면 자연어 응답에서 생략할 수 있다.
+- 권한·보안 경고, 검증 불가, 실패 응답은 사실 왜곡 위험 때문에 아직 동적 표현 대상이 아니며 기존의 명시적인 안전 문장을 유지한다. 즉 유연성은 검증된 성공 응답에만 적용되고 실행 판정 자체에는 관여하지 않는다.
+- 변경값 거부·원문 fallback·literal bypass·파일명 보존 회귀 테스트를 추가했다. 전체 결과는 `320 passed, 4 deselected`다.
+
+## 2026-08-02 역할별 전문가 작업공간·Photoshop 기반 추가
+
+- 메인 대화창은 유지하면서 역할별 모델·도구·Artifact를 별도 UI에서 다루는 `SpecialistWorkspaceRegistry`와 공통 작업공간 창을 추가했다. 상단 `S` 버튼의 Hub와 음성·채팅 명령이 같은 선언형 Registry를 사용한다.
+- 1차 작업공간은 `document`와 `photoshop`이다. `문서 작업모드 실행해줘`, `포토샵 전문가 작업공간 열어줘`처럼 모드/작업공간을 여는 의도가 명시된 경우에만 GUI 명령으로 처리하며, 일반적인 문서·이미지 편집 요청을 가로채지 않는다.
+- 문서 전문가 창에는 Word·Excel·한글·PowerPoint·PDF 진입 버튼, 작업 파일 목록, 텍스트 파일 직접 검토·수정, 전문가 요청 입력, 공통 Executor의 진행·최종 결과 패널을 배치했다. 향후 앱별 상세 GUI는 이 공통 프레임 안에 추가한다.
+- Photoshop 전문가 창에는 이미지/PSD 선택, 일반 이미지 미리보기, 요청·결과 패널, Photoshop 연결 상태 진단을 배치했다. `plugins/photoshop.py`는 Windows COM으로 설치·연결 상태, 문서 열기, 활성 문서 속성을 typed Evidence/Artifact와 함께 제공한다. 현재 PC의 Uninstall Registry에서는 Photoshop 설치가 발견되지 않았으므로 실제 COM 성공으로 표기하지 않았다.
+- 모델 Registry에 `image_editing` 역할을 추가했다. 현재는 GPU 메모리 중복을 피하기 위해 기존 Vision 모델을 공유하지만 Photoshop Tool+image 입력은 일반 Vision과 구분된 역할/temperature/token 정책으로 라우팅된다.
+- offscreen 환경에서 메인 UI와 두 전문가 창의 동시 생성·종료를 확인했다. 전문가·GUI·Plugin 대상 테스트 `19 passed`, 전체 회귀 결과는 `325 passed, 4 deselected`다.
+- 코드 커밋: `f7bc434`.
+- 다음 해야 할 일: 사용자가 각 작업공간에 원하는 앱별 세부 GUI를 정하면 document 내 Word/Excel/HWP/PPT/PDF 전용 Canvas와 Photoshop 레이어·마스크·히스토리 패널을 순차 추가한다. Photoshop 실제 설치 환경에서는 COM 수락 테스트가 필요하다.
+
+## 2026-08-02 대화 기반 Knowledge Memory·Vector RAG 폐쇄 루프
+
+- 운영 상태 점검 당시 대화 Episode는 457개였지만 Semantic Memory, Knowledge Memory, Knowledge Graph, Chroma embedding이 모두 0건이었다. 일반 대화는 원문만 저장됐고 대화→장기기억 추출 연결이 없었으며, 일반 대화 경로에는 RAG/장기기억 문맥도 주입되지 않아 사용자가 성장감을 느낄 수 없는 상태였다.
+- `ConversationMemoryConsolidator`를 추가했다. `기억해`, `앞으로`, `항상`, 명시적 선호, 사용자 사실, 프로젝트 결정·정정처럼 지속성이 있는 발화만 후보가 된다. 잡담·일회성 명령은 LLM 추출 호출조차 하지 않는다.
+- 후보는 reasoning 역할 모델이 preference/fact/project/case와 안정적인 subject/predicate/content로 구조화한다. 0.75 미만 신뢰도, 사용자 원문에 없는 숫자·이메일, 원문과 어휘 근거가 부족한 생성 내용, 자격증명·민감식별정보는 저장하지 않는다. 모델 호출 실패 시 보수적인 규칙 추출로 fallback한다.
+- 통과한 기록은 typed `KnowledgeMemoryStore`와 Chroma RAG에 `memory://` 출처로 동시에 저장된다. 완전히 같은 기억은 기존 record ID를 반환해 중복을 만들지 않고, 정정은 이전 기록을 superseded 처리한다.
+- RAG는 현재 Workspace 기억뿐 아니라 global 사용자 기억도 함께 검색한다. 일반 대화의 system 문맥과 Planner/Executor Context 모두 현재 질문에 관련된 기억만 전달하며, 지금 사용자 발화가 과거 기억과 충돌하면 현재 발화를 우선하도록 명시했다.
+- 기존 사용자 프로필과 canonical 설정도 시작 시 idempotent하게 RAG로 이관한다. 레거시 `이름=자비스`, `응답_스타일=보스.`처럼 현재 canonical 설정과 충돌하는 키는 superseded 및 Vector 삭제한다.
+- 실제 운영 DB에는 현재 유효한 이름·호출어·호칭·응답 스타일·이메일 5건만 활성화했고, Chroma 검색에서 5개 memory Chunk가 반환됨을 확인했다. 신규 테스트 7개와 전체 `332 passed, 4 deselected`를 통과했다.
+- 코드 커밋: `d3eeaff`.
+- 다음 해야 할 일: 장기기억을 사용자가 조회·정정·삭제하고 자동 기억 여부를 조절할 수 있는 Memory 관리 UI를 추가한다. Tool별 기본값 자동 적용은 별도의 typed Preference→Slot mapping 계약으로 확장한다.
+
+## 2026-08-03 독립 시안 제작 전문가 작업공간
+
+- 기존 Photoshop 전문가 창은 유지하고 `mockup`을 별도 Specialist Workspace로 등록했다. 상단 S Hub 또는 `시안 제작 전문가 작업공간 열어줘`, `시안 작업모드 실행해줘`로 연다.
+- UI에서 `학습용 시안`과 `제작용 사진` 목록·추가·삭제 버튼을 별도 객체로 분리했다. 학습용에는 완성된 기존 시안, 제작용에는 새 결과물에 실제 사용할 사진만 입력하도록 설명과 상태를 분리했다.
+- `MockupDesignRuntime`은 참고 시안별 SHA-256, median 화면 비율·방향, quantized 대표 색상과 다중 이미지 Vision 분석을 `MockupStyleProfile` JSON으로 영속화한다. 모델에게는 인물·제품 정체가 아니라 레이아웃·타이포 위계·여백·장식 규칙만 분석하도록 제한했다.
+- 제작은 Photoshop/CorelDRAW가 없어도 Pillow 로컬 렌더러로 수행한다. 학습 비율과 palette, 새 사진을 사용해 PNG를 별도 출력하며 원본을 수정하지 않는다. 입력 사진 해시·참고 시안 해시·프로필 ID·렌더러 버전을 같은 이름의 JSON에 기록한다.
+- Plugin Registry에 `mockup_learn_style`, `mockup_render`, `mockup_list_styles` typed Tool을 추가했고 Model Registry에는 `mockup_design` 다중 이미지 역할을 추가했다. 스타일 분석은 GPU Vision 모델, 결과 합성은 CPU 로컬 렌더러로 분리해 VRAM 중복을 피한다.
+- 현재 렌더러는 색상·비율·카드형 레이아웃을 재현하는 기능적 1차 백엔드다. 참고 시안과 픽셀 수준으로 동일한 생성형 style transfer라고 주장하지 않는다. 고급 품질은 8GB VRAM에 맞는 선택형 IP-Adapter/ControlNet 또는 사용자가 지정하는 템플릿 편집 백엔드를 추가해야 한다.
+- synthetic 참고 시안 2장과 제작 사진으로 실제 PNG·provenance JSON 생성, 프로필 재로드, UI 입력 분리, 자연어 작업공간 라우팅을 검증했다. 대상 테스트 `26 passed`, 전체 `336 passed, 4 deselected`다.
+- 코드 커밋: `95fecec`.
+- 다음 해야 할 일: 사용자가 원하는 실제 시안 샘플로 레이아웃 유형을 분류한 뒤 해당 유형 전용 recipe(텍스트 위치, 로고, 컷아웃, 마스크, 폰트)를 추가한다. 고급 생성형 백엔드를 쓸지는 품질·VRAM·다운로드 용량을 비교 후 결정한다.
+
+## 2026-08-03 시안 제작 생성형 백엔드 연결
+
+- RTX 4060 Laptop 8GB에서 상주 메모리를 줄이기 위해 SDXL 대신 `Stable Diffusion 1.5 fp16 + IP-Adapter Plus SD1.5`를 선택했다. 참고 시안 여러 장은 contact sheet로 이미지 인코더에 전달하고 Vision 분석의 영문 스타일 요약과 제작 지시를 함께 조건으로 사용한다.
+- 생성형 모델은 앱 시작 때 로드하지 않는다. 시안 작업공간의 `생성형 모델 준비` 버튼 또는 `mockup_prepare_generation` Tool이 `data/models/mockup_generation`에 추론 파일만 최초 다운로드하며, 실제 생성 요청에서 lazy load하고 CPU offload를 적용한다. 모델 파일은 Git 및 설치 소스에 포함하지 않는다.
+- 제작용 원본 사진은 생성 모델에 다시 그리게 하지 않고, 생성된 스타일 배경 위에 Pillow 카드 레이아웃으로 합성한다. `auto`는 모델·CUDA가 준비되면 생성형을, 아니면 기존 로컬 합성을 선택한다. `generative`와 `local`을 UI 및 Tool argument로 명시할 수도 있다.
+- IP-Adapter load 이후 일반 attention slicing을 활성화하면 전용 attention processor가 덮어써져 tuple 오류가 발생하므로 사용하지 않는다. VAE slicing과 model CPU offload만 사용한다.
+- 현재 PC에 CUDA 빌드 `torch 2.11.0+cu128`, `torchvision 0.26.0+cu128`, NumPy 1.26.4를 맞췄다. 생성형 런타임은 `diffusers 0.37.1`, `accelerate 1.14.0`이다. 잘못 내려받은 중복 FP32/BIN과 미사용 safety-checker 약 7.9GB를 제거해 앱 모델 폴더를 약 4.54GB로 정리했다.
+- 실제 SD1.5/IP-Adapter 추론으로 24-step 768×512 PNG를 생성했다. 모델 로딩 포함 약 20초, GPU 추론 약 5.5초였고 출력은 `data/mockup_outputs/backend_smoke_test.png`에서 확인했다. 합성 계약 테스트는 Fake backend를 사용해 CI에서 모델 다운로드나 GPU를 요구하지 않는다.
+- 자동 모드에서 생성형 추론이 실패하면 사유를 provenance와 UI에 남기고 로컬 합성으로 복구한다. 사용자가 생성형을 명시한 경우에는 실패를 숨기지 않는다. 대상 테스트 `7 passed`, 전체 회귀 `339 passed, 4 deselected`를 통과했다.
+- 모델과 라이선스 원문: https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5 및 https://huggingface.co/h94/IP-Adapter . 공개 배포 전에는 각 라이선스 조건과 안전 필터 정책을 별도로 검토해야 한다.
+- 코드 커밋: `ca2feb3`.
+- 다음 해야 할 일: 실제 사용자 참고 시안으로 생성 품질을 평가하고, 텍스트·로고 위치와 인물/제품 컷아웃을 픽셀 단위로 재현해야 하는 유형에는 segmentation 및 ControlNet/템플릿 recipe를 추가한다. 현재 구현은 가중치 재학습이 아니라 reference-conditioned generation이다.
+
+## 2026-08-03 메인·전문가 UI 시각 개편 및 일반 Z-order 복구
+
+- 메인 좌측 상단의 비서 이름 라벨을 제거했다. `set_assistant_identity()`는 호출어·응답·TTS에 필요한 runtime identity만 저장하며 제목 바에 `아니스` 같은 이름을 다시 표시하지 않는다.
+- 메인 창은 기존처럼 `Window`이며 `WindowStaysOnTopHint`를 사용하지 않는다. 문서·Photoshop·시안 전문가 작업공간도 메인 창의 owned child가 아니라 독립 top-level 창으로 생성하고 always-on-top flag가 없음을 테스트한다. 처음 열 때만 일반 앱처럼 focus하며 이후에는 다른 앱과 정상적인 Windows Z-order를 따른다.
+- 기존의 큰 회전 원, scan line, 강한 네온을 표시하던 메인 배경을 차분한 navy gradient, 상태별 cyan/violet glow, 낮은 대비의 48px grid로 교체했다. 좌측 이름 자리를 제거하고 상단 도구는 W/A/V/C/T/P/S compact control로 정리했다.
+- 메인 메시지·상태·Workspace·입력창에 Segoe UI 기반의 새 토큰을 적용했다. 전문가 Hub·문서·Photoshop·시안 창은 같은 surface/border/accent/focus/scrollbar/button 규칙과 22px 외곽 여백, 14px 간격을 공유한다.
+- offscreen 실제 렌더로 메인과 문서 전문가 창을 PNG 캡처해 시각 구조를 확인한 뒤 임시 캡처는 삭제했다. UI 집중 테스트 `15 passed`, 전체 회귀 `339 passed, 4 deselected`를 통과했다.
+- 코드 커밋: `ac7573b`.
+- 다음 해야 할 일: 실제 Windows 디스플레이 배율(100%/125%/150%)에서 글자 잘림과 도구 버튼 hit area를 수락 검사하고, 사용자가 세부 GUI 요구를 정하면 각 전문가 Canvas를 같은 디자인 토큰으로 확장한다.
+
+## 2026-08-03 둥근 메인 패널과 음성 파형 복원
+
+- frameless 메인 창에 `WA_TranslucentBackground`를 적용하고 14px rounded `QPainterPath` 안에서만 gradient·glow·grid를 그린다. 외곽에는 낮은 대비의 1px border를 추가했으며 상단 DragTab도 좌우 상단 radius를 공유한다. 미니 모드는 10px radius를 사용한다.
+- 기존 원형 HUD를 되살리지 않고 중앙 상태·Workspace 아래에 28-bar 수평 음성 파형을 배치했다. 비활성일 때는 얇은 기준선만 남고 실제 amplitude/frequency band를 받으면 중심 기준의 짧은 rounded bar가 반응한다.
+- `LISTENING`과 사용자 마이크 입력은 cyan gradient, `RESPONDING`과 비서 TTS 출력은 violet gradient로 표시한다. 실제 `audio_update`, 상태 기반 fallback, `set_soundbar_speaking`, reset 경로가 같은 위젯을 갱신한다. 미니 모드의 기존 compact soundbar도 유지한다.
+- offscreen 렌더에서 입력 cyan·출력 violet 파형과 네 모서리 투명 라운딩을 각각 확인하고 임시 캡처를 삭제했다. 창·상태 집중 테스트 `4 passed`, 전체 회귀 `339 passed, 4 deselected`를 통과했다.
+- 코드 커밋: `48a52ec`.
+- 다음 해야 할 일: 실제 마이크/TTS 재생 중 amplitude 범위를 관찰해 너무 작거나 포화되는 장치가 있으면 AGC 시각화 gain만 조절한다. 음성 처리 원본에는 영향을 주지 않는다.
+
+## 2026-08-03 호출어·말투 일관성·웹 학습 폐쇄 루프 보강
+
+- 로그의 `아니스 메모장 켜줘` 실패는 설정된 호출어가 애플리케이션명에 남아 `아니스 메모장`을 찾았기 때문이었다. UI에는 원문을 보존하되 Executor에 전달하기 직전에 설정된 호출어가 문장 첫머리에 있을 때만 제거한다. 문장 중간의 캐릭터명이나 호출어만 말한 입력은 손대지 않는다.
+- `반말로 대답해`, `대답할 때 반말로 해`처럼 어순이 달라도 `response_style`로 추출한다. 호칭+말투 복합 명령에서는 주 설정 값을 덮지 않고 `additional_changes`로 함께 저장한다.
+- 대화 생성 경로뿐 아니라 Tool 성공·실패·권한·Proactive 알림을 포함한 GUI 최종 출력 경계에서도 현재 `response_style`을 적용한다. 쉼표 뒤에 호칭이 붙은 `완료했습니다, 지휘관님.`도 `완료했어, 지휘관님.`으로 변환된다.
+- 이전 `웹 검색을 통해 ... 말투에 반영` 로그는 `web.search`로만 실행됐으며 운영 RAG에 `web-learning` 문서가 0건이었다. 즉 당시에는 학습되지 않았다.
+- `web.research_and_apply_preference` 복합 Intent를 추가했다. 실제 방문한 출처 본문을 짧게 요약해 canonical 설정에 저장하고 `web-learning://` 출처로 RAG에 기록한 뒤, 같은 문서 ID가 다시 검색되는 경우에만 성공을 반환한다. `조사를 통해 말투를 학습했어?`는 별도 상태 Intent로 설정과 RAG를 함께 조회한다.
+- 로컬 LLM의 빈 JSON/형식 오류에는 축약 근거로 한 번 재시도한다. 게임명·캐릭터명 정체성이 응답 지침에 섞이거나 캐릭터명이 잘렸거나 말투 특성이 빈약한 결과는 설정/RAG에 저장하지 않는다.
+- 실제 웹 종단 검사에서 첫 시도는 요약 JSON 오류로 실패했고, 보강 후 저장·재조회까지 성공했지만 `니스는...승리의 여신이라는 성격`이라는 저품질 문장을 품질 게이트 설계 근거로 확인했다. 해당 RAG 문서 `web-learning-a1502c884807214e`는 삭제했고 `response_style`은 `자연스러운 반말로 대답`으로 복구했다. 검증되지 않은 캐릭터 말투는 현재 운영 설정에 남기지 않았다.
+- 전체 회귀 결과는 `346 passed, 4 deselected`다.
+
+## 2026-08-03 웹 학습 검색 품질·한국어 말투 자연스러움 개선
+
+- 사용자 로그의 첫 요청은 검색 결과 0건이 아니었다. Tool은 약 70초 동안 실행된 뒤 학습 품질 검증에서 실패했지만 Executor가 모든 live/source 실패를 `실시간 출처를 확인하지 못함`으로 바꿔 원인을 잘못 안내했다. 웹 학습은 이제 `검색은 완료됐지만 말투 학습 품질 검증에 실패`와 실제 실패 이유를 표시하며, 일반 실시간 검색 실패와 구분한다.
+- `...라는 게임에서 나오는...`뿐 아니라 `...라는 게임에 등장하는 '...'라는 캐릭터` 표현도 동일한 `(게임, 캐릭터)` 구조로 추출한다. 사용자 문장을 그대로 검색어로 쓰지 않고 `게임명 캐릭터명 캐릭터 성격 대사 말투 공식 자료` 형태의 안정적인 검색 대상으로 정규화한다.
+- 학습 검색은 일반 검색어 외에 정확한 게임·캐릭터명과 `대사·대화`, `성격·말투`를 조합한 검색식을 추가한다. 후보 제목·snippet에서 캐릭터명, 게임명, 대화 특성을 점수화하고 육성·티어·스킬 공략은 감점해 실제 방문 순서를 정한다.
+- 실제 재검사에서 6개 페이지를 방문했지만 TikTok 탐색 페이지, 육성 공략, 티어표, 캐릭터 DB가 섞여 있었다. 기존에는 각 페이지 첫 1,200자만 LLM에 전달해 메뉴·광고가 대부분이었다. 이제 캐릭터명과 말투·대사·대화·성격·보이스 주변 문맥을 최대 1,800자로 발췌하고, 캐릭터명과 게임 문맥 및 대화 특성이 함께 있는 출처만 학습 근거로 사용한다. 최소 2개 관련 출처가 없으면 저장하지 않는다.
+- 요약 모델이 `아니스의 말투는...` 같은 설명형 문장을 반환하면 동적으로 추출한 게임·캐릭터 정체성 접두사를 제거하고 `...하게 대답해` 형태의 재사용 가능한 행동 지침으로 정규화한 뒤 품질 게이트를 적용한다. 잘린 이름, 게임 세계관 혼입, 말투 특성 부족은 계속 차단한다.
+- 반말 후처리가 문장 끝만 바꿔 `말씀해 주시면 ... 확인하겠어`처럼 높임말과 반말이 섞였다. `말씀해 주시면→말해 주면`, `원하시면→원하면`, `하겠습니다→할게` 등 고신뢰 연결 표현을 먼저 변환하고, `좋습니다→좋어` 같은 오류를 만들던 포괄적 `습니다→어` 규칙은 제거했다.
+- 실제 최종 웹 재검사는 관련 자료 방문 후에도 요약 모델 결과에 캐릭터 정체성이 포함돼 기존 품질 게이트가 저장을 차단했다. 따라서 운영 설정과 RAG에는 저품질 결과가 추가되지 않았으며, 현재 설정은 기존의 자연스러운 반말을 유지한다. 이 결과를 바탕으로 설명형→행동 지침 정규화를 추가했다.
+- 전체 회귀 결과는 `352 passed, 4 deselected`다.
+
+## 2026-08-08 실제 YouTube 말투 학습·응답 사실성·반말 일관성 보강
+
+- 새 로그에서 `browser_learning_status`의 정확한 canonical 결과가 ResponseRealizer를 거치며 `아니스 말투는 아직 학습하지 않았어요`로 임의 변경됐다. 상태·영상 학습 Tool은 사실을 보존해야 하므로 표현기 제외 도구로 등록했다.
+- YouTube URL과 `보고 학습해` 요청이 일반 대화로 빠져 영상을 열지 않은 LLM이 `봤다`, `이해했다`고 거짓 완료 응답을 했다. `web.video_learning` Intent와 `browser_learn_video_preference` Tool을 추가해 URL·대상 화자·반영 설정을 typed Slot으로 요구한다. URL만 있고 화자가 없으면 누구의 말투인지 질문하며, `이 영상`, `더 제대로` 후속 발화는 최근 Intent Slot의 화자를 이어받는다.
+- 영상 Tool은 `yt-dlp`로 다운로드 없이 실제 YouTube metadata와 한국어 수동/자동 자막 URL을 확인한다. JSON3/VTT 자막을 파싱하며 자막이 없거나 80자 미만이면 학습했다고 주장하지 않는다.
+- 영상 전체 자막에는 여러 화자가 섞이므로 그것만으로 특정 인물 말투를 학습하지 않는다. `data/voice_training/<화자>`의 curated/bright/aligned list에서 화자 분리 문장을 동적으로 찾고, 이것을 주 근거로 사용하며 영상 자막은 보조 맥락으로만 전달한다. 화자 분리 코퍼스가 없으면 실패로 처리한다.
+- 로컬 LLM의 JSON 형식 실패에는 압축된 화자 문장으로 한 번 재시도한다. 결과가 여전히 모호하면 화자 코퍼스에서 `님` 호칭, 반말, 질문·감탄, 장난/활달 표현, 진지/보호 표현을 직접 측정해 재현 가능한 행동 지침을 만든다. 이 폴백은 특정 캐릭터명이 아니라 코퍼스 언어 특징을 사용한다.
+- 실제 `PnKJOnjDy_g` 영상에서 한국어 자막 37,946자와 Anis 화자 분리 문장 3,969자를 확인했고 `web-learning-64b2bde90b77fed3`으로 저장·재조회했다. `ZrB_BC_rpCg` 영상도 자막 568자와 같은 화자 코퍼스를 결합해 `web-learning-405af1fdcc20f456`으로 저장·재조회했다.
+- 현재 운영 `response_style`은 `호칭에는 님을 붙이고, 밝고 장난스러운 질문과 감탄을 자연스럽게 섞는 자연스러운 반말로 대답해. 중요한 상황에서는 차분하고 진지하게 말해`이며 학습 상태 Tool에서 `rag_recalled=True`를 확인했다.
+- `반말로 말해줘`, `호칭만 님을 붙이고 반말을 사용해`를 설정 Intent로 인식하도록 hint/action/pattern과 Slot 추출을 보강했다. 호칭+반말 복합 설정은 `호칭에는 님을 붙이고 나머지는 자연스러운 반말로 대답`으로 저장한다.
+- `알겠습니다/알겠어요/봤어요/필요하신가요/없으시나요` 같은 잔여 높임말을 고신뢰 반말로 변환하고, 표현기에는 사용자의 수행 요청을 명령형으로 되돌리지 말라는 계약과 실제로 열지 않은 URL을 봤다고 주장하지 않는 계약을 추가했다.
+- 웹 학습 실패 안내에서 내부 `RAG` 중첩 오류 문구를 제거하고 검색 실패와 말투 품질 실패를 구분한다. TTS 직후 잔향을 STT가 잡는 빈도를 낮추기 위해 microphone 입력 cooldown을 0.5초에서 1.2초로 늘렸다.
+- `시안 작업 모드 켜줘`는 AI 비동기 큐를 거치지 않고 Specialist Registry에서 동기적으로 창을 연 뒤 즉시 반환하는 기존 정상 경로다. 로그에 `_process_ai`가 없는 것은 명령 유실이 아니라 이 전용 UI 경로의 동작이다.
+- 전체 회귀 결과는 `358 passed, 4 deselected`다.
+
+## 2026-08-08 시안 제작 전문가 생성·미리보기·편집 파이프라인 개편
+
+- 저장된 스타일 목록에 `선택 프로필 삭제` 버튼과 Runtime/Plugin Registry의 `mockup_delete_style` 도구를 추가했다. 프로필 JSON만 안전하게 삭제하며 학습에 사용한 원본 이미지는 건드리지 않는다.
+- 제작 지시 입력란은 더 이상 첫 줄을 이미지 제목으로 출력하지 않는다. 지시 전체를 디자인 생성 조건으로만 사용하고, 사용자가 명시적으로 텍스트 삽입 편집을 수행하지 않는 한 어떤 지시문도 결과 이미지에 그리지 않는다.
+- 스타일 학습 프롬프트를 다시 작성해 캔버스 분할, 시선 흐름, 주·보조 소재 관계, 여백, 겹침, 프레임, 배경 질감, 색상 대비와 타이포그래피 위계를 분석한다. 프로필에는 사용자 지시 → 제작 소재 정체성 → 참고 디자인 문법 순의 우선순위를 가진 `design_recipe`가 저장된다.
+- 렌더링 때 참고 시안과 제작 소재를 Vision 모델이 함께 보고, 각 제작 소재의 정규화 위치·크기·fit·회전을 JSON 구성 계획으로 결정한다. 계획 응답이 유효하지 않을 때는 기존 순차 격자 대신 주 소재와 보조 소재의 시각적 위계를 갖는 비대칭 편집 레이아웃으로 복구한다.
+- UI의 제작 버튼은 이제 OS 임시 폴더의 draft만 생성한다. 지정 출력 폴더에는 아무것도 기록하지 않으며, 오른쪽 아래 `미리보기 저장`을 눌러 경로를 확정했을 때 PNG와 provenance JSON을 함께 저장한다.
+- 미리보기 아래에 자연어 `AI 수정` 입력을 추가했다. 생성형 모델이 준비된 경우 현재 결과를 조건 이미지로 사용해 수정 지시를 최우선으로 재생성한다. 생성형 모델이 준비되지 않은 상태에서는 로컬 편집인 것처럼 위장하지 않고 준비 필요 오류를 표시한다.
+- 비파괴 수동 편집 도구로 좌·우 회전, 좌우·상하 반전, 밝기·대비·채도·선명도 조정, 실행 취소·다시 실행을 추가했다. 각 편집은 새 임시 버전으로 쌓이며 원본과 이전 버전을 덮어쓰지 않는다.
+- 시안 집중 테스트 `16 passed`, 전체 회귀 `362 passed, 4 deselected`를 통과했다.
+
+## 2026-08-08 한국어 자연화 및 에이전트 응답 정책 적용
+
+- MIT 라이선스의 `epoko77-ai/im-not-ai`가 공개한 한국어 문체 분류와 의미 보존 원칙을 참고하되, 원본 스킬 전체를 복사하거나 Claude 전용 다중 에이전트 구조를 이식하지 않았다. 아니스의 로컬 음성 대화 지연과 기존 말투 설정을 고려한 독자적인 `core/korean_naturalizer.py`를 추가했다.
+- 자연화기는 코드 블록·인라인 코드·URL·이메일·Windows 경로·수치와 단위를 먼저 마스킹해 보호한다. 번역투, 상투 문구, 기계적 나열과 접속사, 과잉 완곡 표현, 반복 종결을 측정해 light/standard/heavy 경로를 판정한다.
+- 모든 화면·TTS 답변에는 의미를 바꾸지 않는 공백·문장부호·중복 접속사 정리만 적용한다. 짧은 일상 대화에는 별도 LLM 호출을 추가하지 않는다. 일반 대화의 긴 초안이 180자 이상이면서 자연스러움 점수가 기준을 넘을 때만 기존 repair 호출을 재사용한다.
+- ConversationService와 검증된 Tool 결과의 ResponseRealizer 프롬프트에 자연스러운 한국어 지침을 공통 연결했다. 사용자가 저장한 말투·호칭을 최우선으로 두고, 수치·날짜·고유명사·인용·파일명·코드·검증된 도구 결과를 변경하지 못하게 했다.
+- `asgeirtj/system_prompts_leaks` 원문은 시스템 프롬프트나 RAG에 넣지 않았다. 대신 일반 대화/도구 실행 분리, 검증 전 성공 주장 금지, 최신 정보 재검증, 꼭 필요한 질문만 하기, 내부 라우팅 정보 비노출 원칙을 프로젝트 소유 `core/agent_prompt_policy.py`로 작성해 두 응답 경로에 연결했다.
+- 출처와 라이선스, 실제 사용 범위를 `THIRD_PARTY_NOTICES.md`에 기록했다. 자연화 및 정책 집중 테스트 13개가 통과했고 새 테스트 파일을 기본 pytest 목록에 추가했다.
+
+## 2026-08-08 누적형 말투 학습 확장
+
+- `core/style_learning.py`에 사실 RAG와 분리된 `StyleLearningStore`를 추가했다. 각 말투 학습 기록은 대상, 재사용 가능한 행동 지침, 출처 유형, 출처 URI, 근거 요약, 신뢰도, 활성 상태와 생성 시간을 JSON으로 유지한다. 동일 근거는 해시 ID로 중복 제거하며 최근·고신뢰 기록을 합성해 응답 프롬프트에 제공한다.
+- `browser_research_and_apply_preference`와 `browser_learn_video_preference`가 기존 `response_style` 및 RAG 저장에 더해 구조화된 말투 기록도 남긴다. 웹 학습은 관련 출처 수에 따라 신뢰도를 계산하고, 영상 학습은 실제 자막·화자 분리 근거와 URL을 기록한다.
+- 사용자가 직접 준 문장과 대화 예시를 처리하는 `style_learning` 플러그인을 추가했다. `learn_response_style_from_examples`, `list_learned_response_styles`, `set_learned_response_style_active` 도구로 학습·조회·활성화를 수행하며, 다양한 예시 형식을 Router가 억지로 파싱하지 않고 전체 근거를 말투 분석 모델에 전달한다.
+- 직접 제공된 예시에서는 사실·주제·명령을 저장하지 않고 호칭, 높임 수준, 문장 길이, 질문·감탄, 장난기와 진지함 전환 같은 관찰 가능한 말투 특징만 추출한다. 시스템 프롬프트 무시, 권한 우회, 도구 실행, 비밀번호·API 키, 파일 삭제·전송 같은 내용은 말투 지침으로 저장할 수 없다.
+- `korean_writing_guidance()`는 활성 학습 기록을 런타임에 조회하므로 앱을 다시 빌드하지 않아도 다음 응답부터 반영된다. 사용자가 직접 지정한 현재 `response_style`이 최우선이고, 누적 학습 프로필은 그 아래 보조 지침으로 적용된다.
+- 운영 파일 `data/style_learning_profiles.json`은 Git에서 제외했다. 브라우저 테스트는 임시 저장소를 주입해 실제 사용자 학습 파일을 오염시키지 않는다.
+
+## 2026-08-08 Obsidian Knowledge Graph 작업공간
+
+- 전문가 작업공간 Registry에 `knowledge_graph`를 추가했다. 메인 UI의 `S` 목록과 “지식 그래프 열어줘”, “그래프 뷰 실행해줘” 같은 자연어 명령이 동일한 선언형 Registry를 통해 창을 연다.
+- `ObsidianVault.build_graph()`가 `wiki/` Markdown의 JSON 호환 frontmatter와 `[[wikilinks]]`를 파싱해 노드·연결·필터 facet을 만든다. 기본 최대 300개, 최대 1,000개로 제한하며 `raw/` 대화 원문은 기본 제외한다.
+- 제목·본문·주제 검색, 기억 유형·행동·주제·최소 중요도 필터, 선택 노드 기준 제한 깊이 BFS 국소 그래프를 지원한다. 노드 크기는 중요도와 링크 차수, 색상은 기억 유형을 반영한다.
+- 노드 클릭 시 frontmatter와 Markdown 본문을 미리보고, 더블클릭 또는 버튼으로 해당 파일을 `obsidian://open` URI를 통해 Obsidian에서 연다. Vault 폴더 변경을 감지해 자동 갱신하며 RAG 동기화와 lint 버튼도 제공한다.
+- 최초 계획한 PyQt WebEngine+Cytoscape 조합은 호환 버전을 맞춰도 이 Windows 환경에서 HTML 로드 시 네이티브 종료 코드 `0xC0000409`를 재현했다. 앱 전체 종료 위험과 약 134MB 런타임 증가를 피하기 위해 외부 브라우저 엔진 없는 Qt `QGraphicsView` 네이티브 캔버스로 교체했다.
+- `read_note()`는 Vault 밖 경로를 거부하며 `open_note()`도 실제 Vault 문서만 연다. 그래프 API·라우팅·UI 집중 테스트는 `14 passed`; 실제 오프스크린 창 생성도 `graph_ui_ok`로 확인했다.
+- 전체 GUI 회귀를 함께 실행한 첫 시도는 변경 코드가 아니라 기존 `torch/lib/c10.dll`의 Windows DLL 초기화 오류(WinError 1114)로 수집 전에 중단됐다. 독립 그래프 테스트는 새 프로세스에서 정상 통과했다.
+- 새 프로세스 전체 회귀 재실행은 `386 passed, 4 deselected`로 통과했다. 코드 커밋: `dd79d7e`.
+
+## 2026-08-08 Torch c10.dll 시작 오류 복구
+
+- Knowledge Graph WebEngine 가능성을 시험하는 동안 로컬 `.venv`의 PyQt가 6.11에서 6.10으로 내려갔고, Windows에서 `PyQt6.QtWidgets`를 먼저 로드한 뒤 Torch 2.11 CUDA를 가져오면 `c10.dll`이 WinError 1114로 실패하는 조합을 재현했다. Torch 파일 손상이 아니라 Qt DLL 로딩 순서·버전 충돌이었다.
+- 사용하지 않는 `PyQt6-WebEngine`과 `PyQt6-WebEngine-Qt6`을 제거하고 `.venv`를 원래 `PyQt6 6.11.0 / PyQt6-Qt6 6.11.1`로 복원했다. `PyQt → torch`와 `ui.main_window → torch` 조합 모두 CUDA 사용 가능 상태로 확인했다.
+- `core/tools.py`는 실제로 사용하지 않던 `openai-whisper`를 모듈 import 시 불러오지 않는다. 마이크 녹음 도구는 sounddevice/numpy 준비 여부만 확인한다.
+- `core/hardware.py`는 CUDA 장치 확인에 Torch/CTranslate2를 먼저 import하지 않고 `nvidia-smi`를 사용한다. faster-whisper와 OpenAI Whisper/Torch 폴백은 실제 STT 모델 초기화 시점에만 불러온다.
+- 선택 STT DLL이 실패해도 메인 앱을 종료하지 않고 텍스트 기능을 유지하며, 마이크 시작 시 명확한 비활성 사유를 반환한다. 정상 환경에서는 기존처럼 faster-whisper CUDA 경로를 사용한다.
+- 실제 `main_qt.py` 실행에서 Vector RAG CUDA, faster-whisper `large-v3` CUDA, 마이크 장치, Anis TTS, GUI 준비 상태를 모두 확인한 뒤 테스트 프로세스만 종료했다. 전체 회귀는 `386 passed, 4 deselected`를 통과했다.
+- 복구 커밋: `a81d905`.
+
+## 2026-08-08 시안 구조 학습·원형 스티커 렌더링 교정
+
+- 사용자 제공 참고 4장과 기존 결과 3장을 비교했다. 기존 `ec4c8...` 프로필의 Vision 문장은 실제 4장을 “세 개의 원형 패널이 수직 배열”로 오인했고, 렌더러는 프로필과 무관하게 둥근 직사각형 카드·참고 콜라주 배경을 사용했다. 이는 스타일 학습이 아니라 피상적 색상 조건과 고정 카드 합성이었다.
+- 학습 단계에 이미지별 OpenCV 기하 계측을 추가했다. 각 참고 이미지의 비율·정사각 여부·중앙 대형 원의 중심과 반지름을 독립 측정하고, 전체 참고의 60% 이상에서 반복된 특징만 합의 구조로 채택한다. 파일명이나 특정 인물·문구를 기준으로 분기하지 않는다.
+- `MockupStyleProfile` 스키마 v2에 `style_features`, `layout_family`, `primary_frame`, `border_style`, `text_policy`, 증거 투표 수와 신뢰도를 저장한다. Vision 결과는 보조 분석이며 구조 계측과 충돌하면 렌더링에 사용하지 않는다.
+- 기존 프로필도 참고 원본이 남아 있으면 첫 로드 때 자동 재계측한다. 사용자 `스티커 시안` 프로필은 원형 4/4·정사각 4/4, `circular_sticker`, 신뢰도 1.0으로 교정됐으며 잘못된 이전 Vision 문장은 비권위 legacy 분석으로 구분했다.
+- 합의 구조가 원형 스티커이면 SD/IP-Adapter의 자유 생성과 기존 카드 폴백을 사용하지 않는다. 1600×1600 흰 캔버스, 큰 중앙 원형 원본 사진 마스크, 안쪽 점선 링, 선택적 하단 문구 영역을 결정적으로 렌더링한다. 여러 제작 사진은 직사각 카드가 아니라 원 내부 원형 인물 클러스터로 배치한다.
+- 참고 이미지 픽셀은 결과 배경에 복사하지 않고 제작용 사진만 사용한다. `제작 지시`와 `이미지에 표시할 문구` UI/Tool Slot을 분리했으며 문구가 비어 있으면 지시문이나 임의 글자를 출력하지 않는다.
+- 제공된 실제 제작 사진 해시 `17435d...`로 기존 프로필을 렌더링해 참고 콜라주·카드 없이 원형 사진, 점선 링, 하단 응원 문구가 나오는 결과를 원본 해상도로 육안 검사했다. 렌더러 provenance는 `structured-circular-sticker-v2`와 네 가지 품질 체크를 기록한다.
+- 시안 집중 테스트 13개와 전체 회귀 `388 passed, 4 deselected`를 통과했다.
+- 코드 커밋: `3d4da8d`.
+
+## 2026-08-08 시안 실시간 보정과 원본 보존 AI 수정
+
+- 사용자 로그에서 최초 결과는 `structured-circular-sticker-v2`였지만 AI 수정부터 `ai-image-edit`로 전환됐다. 이 경로는 완성 PNG를 SD/IP-Adapter에 다시 넣어 얼굴·표정·의상·윤곽·문구를 매 세대 새로 그렸고, 수정 횟수만큼 누적 열화됐다.
+- 모든 시안 미리보기 metadata에 profile ID, 제작 원본 경로·해시, 표시 문구, 구조 edit state와 revision을 유지한다. AI 수정은 이전 PNG를 생성 모델에 전달하지 않고 매번 프로필과 원본 제작 사진에서 다시 렌더링한다.
+- 구조 수정기는 배경·테두리 색, 점선/실선, 문구 변경·삭제를 검증된 state로 누적한다. 인식하지 못한 모호한 지시는 얼굴을 변형해 억지로 반영하지 않고 원본 보존 재렌더링과 빈 적용 항목을 명시한다. 이전 방식으로 저장돼 원본 provenance가 없는 결과는 원본 사진으로 한 번 다시 만들도록 안내한다.
+- 실제 현재 `28243f...` 스티커 프로필과 사용자 제공 `KakaoTalk_...png`로 연속 수정했다. 배경 보라색+실선은 `background_color=#8b4cc2`, `border_style=solid`로 적용됐고 다음 모호한 수정은 직전 결과와 PNG 바이트가 동일해 누적 변형이 없음을 확인했다.
+- 기존 콤보+슬라이더+적용 버튼을 밝기·대비·채도·선명도 네 슬라이더로 교체했다. 각 범위는 0~100%, 기본/중립은 50%이며 옆에 현재 퍼센트를 작게 표시한다. 적용 버튼과 적용 후 중앙 초기화를 제거했다.
+- slider valueChanged를 120ms debounce해 즉시 비동기 미리보기에 반영한다. 항상 동일한 무보정 base에 네 보정값을 한 번씩 적용하고 드래그 중 같은 history 항목을 교체하므로 누적 보정과 무제한 undo history 생성을 막는다. 새 구조/AI/회전 결과에도 사용자가 선택한 슬라이더 위치를 유지하고 다시 적용한다.
+- 시안 집중 테스트는 실제 Qt event loop에서 슬라이더 이동만으로 `pillow-live-adjustment-v2` 결과가 생기고 72% 위치가 유지되는 것까지 검증했다. 전체 회귀는 `392 passed, 4 deselected`를 통과했다.
+- 코드 커밋: `90144e7`.
+## 2026-08-13 Obsidian형 동적 Knowledge Graph
+
+- 기존 정적 방사형 Knowledge Graph를 Qt 기반 실시간 force-directed 그래프로 전환했다. 노드 반발력, 링크 스프링 장력, 중요도 기반 중심 중력, 속도 감쇠를 적용하며 안정화 후 타이머가 자동 정지해 유휴 CPU 사용을 줄인다.
+- 노드를 직접 드래그할 수 있고 연결선이 즉시 추종한다. 드래그를 끝내면 주변 노드가 새 위치에 맞게 다시 안정화된다.
+- 노드 hover/click 시 선택 노드와 1단계 이웃 및 연결선을 강조하고 나머지를 흐리게 표시한다. 기존 클릭 미리보기와 더블클릭 Obsidian 열기는 유지했다.
+- 상단에 `움직임 일시정지/재개`와 `다시 배치` 제어를 추가했다. 빈 캔버스 이동과 휠 확대·축소도 그대로 지원한다.
+- WebEngine이나 외부 JavaScript/CDN을 사용하지 않는 기존 안정성 원칙을 유지했다.
+- `test_specialist_workspaces.py`에 물리 이동, 링크 끝점 추종, 노드 이동 가능 상태, 애니메이션 일시정지·재개 회귀 테스트를 추가했다.
+## 2026-08-14 시안 제작 AI 가변 장면 설계 전환
+
+- 시안 생성의 기본 경로에서 `circular_sticker` 등 이름이 붙은 고정 렌더러 분기를 제거했다. 과거 함수는 이전 결과 호환을 위해 남아 있지만 `render()`에서는 호출되지 않는다.
+- 학습용 참고 이미지의 Vision 분석·계측 특징, 제작용 원본, 사용자 지시, 표시 문구를 함께 Vision 모델에 전달하여 매 생성마다 schema v3 장면 설계도(JSON)를 만들도록 전환했다.
+- 장면 설계도는 캔버스, 제작 이미지별 위치·크기·모양·fit·focal point·회전·z-order, 장식, 텍스트 영역을 표현한다. 특정 시안 패턴을 코드에서 선택하지 않는다.
+- 제작용 이미지는 모두 정확히 한 번 배치되어야 하며 누락된 설계도는 거절한다. 사용자가 별도로 지정하지 않은 문구는 렌더링하지 않는다.
+- AI 수정은 색상/점선 정규식 분기가 아니라 기존 장면 설계도와 수정 명령을 모델에 전달해 새 설계도를 생성한다. 새 설계도가 실질적으로 달라지지 않으면 성공으로 표시하거나 파일을 덮어쓰지 않고 명확한 오류를 반환한다.
+- 수정 결과는 직전 PNG를 diffusion 입력으로 누적하지 않고 항상 제작용 원본과 갱신된 설계도에서 다시 렌더링해 인물 왜곡과 반복 열화를 막는다.
+- 렌더러 식별자는 생성 `ai-scene-plan-renderer-v3`, 수정 `ai-scene-plan-edit-v3`이다. 전체 회귀 테스트는 `394 passed, 4 deselected`이다.
+## 2026-08-14 시안 스타일 선택 UX 및 설계도 자동 교정
+
+- 저장된 스타일 목록 위에 `현재 적용할 스타일` 카드를 추가했다. 미선택 상태는 주황색 경고와 `선택되지 않음`, 선택 상태는 청록색 강조와 프로필 이름·참고 이미지 수를 표시한다.
+- 스타일 미선택 시 생성 버튼을 비활성화하고 `스타일을 먼저 선택해 주세요`로 표시한다. 프로필을 클릭하면 `선택한 스타일로 시안 제작`으로 바뀌며 활성화된다.
+- Vision 장면 설계도에서 제작용 이미지 인덱스가 누락되거나 JSON/텍스트 영역이 잘못되면 검증 오류와 이전 응답을 모델에 돌려보내 최대 3회 자동 교정한다. 최초 형식 실수를 즉시 사용자 오류로 노출하지 않는다.
+- 초기 설계와 아트 디렉터 품질 검토 모두 동일한 검증·재시도 경로를 사용한다. 3회에도 실패하면 어떤 단계의 설계도 교정이 실패했는지 명확히 반환한다.
+- 관련 집중 테스트 `19 passed`, 전체 회귀 테스트 `396 passed, 4 deselected`를 통과했다.
+## 2026-08-14 품질 검토 단계 필수 제작 이미지 보존
+
+- 실제 실행에서 초기 설계도는 유효했지만 아트 디렉터 품질 검토 모델이 `assets`에서 제작 이미지 0번을 삭제하고 3회 교정에도 복구하지 못하는 사례를 확인했다.
+- 품질 검토는 유효한 초기 AI 설계를 baseline으로 받는다. 검토 응답이 제작 이미지나 필수 표시 문구를 누락하면, 해당 필수 요소만 직전의 유효한 AI 설계에서 복원하고 검토 모델이 변경한 배경·장식·기타 요소는 유지한다.
+- 이 처리는 원형 시안 전용 좌표나 템플릿을 생성하지 않는다. 이미 모델이 작성하고 검증된 요소의 정체성·배치를 비파괴 편집 불변조건으로 보존한다.
+- 복원한 항목은 장면 설계도의 `restored_required_elements`에 기록한다. 집중 테스트 `20 passed`, 전체 회귀 테스트 `397 passed, 4 deselected`를 통과했다.
+## 2026-08-14 시안 제작 AI 학습 렌더링 안정화
+
+- 문제 사례 `data/mockup_outputs/3.json`을 재현해 기본 자동 모드가 IP-Adapter에 참고 이미지 픽셀을 전달하면서 참고 인물·문구를 배경에 재생성하고, 4장의 정사각형 학습 자료와 달리 16:9 설계와 작은 우측 하단 피사체를 허용하는 원인을 확인했다.
+- 자동 모드는 이제 AI가 작성한 장면 설계도를 원본 보존 렌더러로 실행한다. 생성형 배경은 UI에서 위험 안내가 붙은 실험 모드를 명시적으로 선택할 때만 사용하며, 메타데이터에 참고 픽셀 전달 여부를 기록한다.
+- 고정된 스티커 템플릿을 복원하지 않고, 각 스타일 프로필에서 3장 이상·신뢰도 0.8 이상으로 반복 측정된 캔버스 비율, 피사체 점유율, 대표 프레임, 텍스트 영역만 고신뢰도 품질 제약으로 적용한다. 혼합된 참고 자료에는 강제하지 않는다.
+- AI 수정 설계가 원본과 같으면 수정 명령을 강조해 두 번 재시도한다. 품질 검토가 반영된 수정을 되돌리거나 JSON 형식 오류를 반복하면 유효한 1차 설계도를 보존한다.
+- 문제 프로필과 제작 원본으로 실모델 재검사해 1600×1596, 원본 보존 백엔드, 참고 픽셀 미전달, 학습된 0.78 피사체 점유율과 하단 텍스트 영역 적용을 확인했다.
+- 집중 테스트 `24 passed`, 전체 테스트 `401 passed, 4 deselected`를 통과했다.
+## 2026-08-14 Vision 초기 설계 JSON 실패 복구
+
+- Vision 모델이 최초 장면 설계 단계에서 3회 연속 JSON을 반환하지 않으면 시안 생성 전체가 중단되던 문제를 수정했다.
+- 최초 설계에 한해 선택한 스타일 프로필의 실제 측정값(대표 비율, 피사체 점유율, 대표 프레임)과 제작 이미지 수를 사용해 중립적인 복구 설계도를 만든다. 명명된 고정 템플릿은 사용하지 않으며, 표시 문구가 있으면 별도 텍스트 요소로 보존한다.
+- 수정 명령 단계에서는 임의 복구로 사용자의 의도를 왜곡하지 않고 기존처럼 명확한 실패를 반환한다.
+- 제작 이미지 1장과 다중 이미지 5장 누락 방지, 문구 보존, 자동 모드 원본 보존 렌더링을 테스트했다.
+- 집중 테스트 `26 passed`, 전체 테스트 `403 passed, 4 deselected`를 통과했다.
+## 2026-08-14 시안 수정 명령 의미 검증 개선
+
+- 저장 결과 4·5의 메타데이터를 비교해 얼굴 전체 표시 요청 후에도 `fit=cover`가 유지되고 focal 좌표만 미세 변경된 채 성공 처리된 문제를 확인했다. 문구 중앙 요청도 학습 프로필의 하단 배치 강제 규칙에 덮였다.
+- Vision 장면 설계 프롬프트의 손상된 한글을 깨끗한 한국어로 교체하고 x/y가 중심이 아닌 왼쪽 위 좌표임을 명시했다. 사용자 지시가 학습 스타일보다 우선하며 신체 보존 요청에는 contain을 선택하도록 지시했다.
+- 학습 프로필의 텍스트 위치 강제 보정을 제거했다. 캔버스·프레임처럼 반복 측정 가능한 구조는 유지하되 문구 위치는 사용자의 명시적 지시를 우선한다.
+- 얼굴·머리·인물·전신 등의 전체 보존 요청과 문구 중앙 요청은 범용 명시 제약으로 검증해 각각 `fit=contain`과 실제 캔버스 중앙 좌표를 적용한다. 특정 인물이나 특정 시안 전용 분기는 없다.
+- 수정 Vision 응답이 제작 이미지를 누락하거나 JSON 생성에 실패해도, 명확하게 판별 가능한 사용자 제약만 기존 설계도에 적용하는 안전한 수정 복구 경로를 추가했다. 모호한 지시는 임의로 추측하지 않는다.
+- 집중 테스트 `28 passed`, 전체 테스트 `405 passed, 4 deselected`를 통과했다.
+## 2026-08-14 시안 중앙 문구 및 수정 실패 UX 보정
+
+- 6번 결과를 분석해 원형 사진이 둘로 분할된 것이 아니라 중앙 문구의 `#ffffffcc` 배경 상자가 사진 위를 가로질러 가린 현상임을 확인했다.
+- `문구를 스티커 중앙` 요청은 캔버스 중앙이 아니라 첫 번째 주 프레임의 경계 안에서 중앙 좌표를 계산한다. 중앙 오버레이는 배경을 투명하게 만들어 사진을 가르는 흰 띠가 생기지 않게 했다.
+- AI 수정 시작 시 저장 버튼을 일시 비활성화하고, 수정 실패 시 이전 미리보기가 유지되며 저장하면 수정 전 결과가 저장된다는 안내를 로그에 표시한다. 수정 성공 때만 새 미리보기가 히스토리에 추가된다.
+- 집중 테스트 `28 passed`, 전체 테스트 `405 passed, 4 deselected`를 통과했다.
+## 2026-08-14 시안 설계 구조화 출력 전환
+
+- 반복된 JSON 파싱·제작 asset 누락 오류의 근본 원인이 Ollama의 구조화 출력 기능을 사용하지 않고 자유문장에 JSON을 요구한 호출 구조임을 확인했다.
+- `OllamaClient.chat_structured()`를 추가해 Ollama `/api/chat`의 `format`에 JSON Schema를 전달한다. `VisionRuntime.analyze()`가 선택적으로 스키마를 전달하며 기존 커스텀 Vision 어댑터도 호환된다.
+- 시안 장면 설계는 canvas/assets/decorations/texts/rationale와 asset/text 필수 필드를 정의한 JSON Schema로 모델 출력을 제약한다. 설명문이나 빈 asset 응답을 문자열 파싱으로 반복하는 의존성을 줄였다.
+- 장면 변경 비교에서 복구·검증 메타데이터만 달라진 경우를 시각적 변경으로 오판하지 않게 했다. 수정 재시도에는 최초 제작 지시가 아니라 실제 `edit_instruction`을 전달한다.
+- 문구 크기·색상, 인물 전체 보존, 문구 중앙처럼 명확한 수정은 전체 장면을 다시 생성하지 않고 기존 설계도에 구조화 패치로 즉시 적용한다. 모호하고 창의적인 수정만 Vision 설계 경로를 사용한다.
+- 학습된 피사체 점유율보다 지나치게 큰 배치도 양방향으로 교정하고, 중앙 문구의 최소 가독성 크기를 보장한다.
+- 관련 테스트 `45 passed`, 전체 테스트 `409 passed, 4 deselected`를 통과했다.
+
+## 2026-08-14 시안 연속 수정의 이전 상태 보존
+
+- 저장 결과 8·9·10의 JSON을 비교해 `글씨 크기를 절반으로 줄여줘`가 `font_size 0.2 → 0.1`로 반영된 뒤, `잘리지 않게 원형으로 만들어줘` 단계에서 Vision 모델이 글씨 크기를 다시 0.2로 되돌린 사실을 확인했다. 종전에는 전체 장면 설계도를 매번 교체하여, 마지막 명령과 무관한 이전 수정까지 덮어쓸 수 있었다.
+- 자연어 수정 명령에서 텍스트·캔버스·제작 이미지·장식의 대상 범위를 추출하고, 대상이 명확한 경우 해당 그룹만 기존 설계도에 병합하는 쓰기 마스크를 추가했다. 대상이 명시되지 않은 창의적 요청은 기존처럼 전체 AI 재설계를 허용한다.
+- `글씨` 표현과 `절반으로 줄여줘`를 범용 텍스트 크기 제약으로 지원한다. 원형·원 형태 복구 요청은 주 제작 이미지 프레임을 정사각형 ellipse로 맞추고, 직선 투명 여백 때문에 원의 양쪽이 잘려 보이지 않도록 cover 배치를 적용한다.
+- 실제 8번 저장 메타데이터를 시작점으로 `절반 축소 → 원형 잘림 복구`를 연속 재현해 최종 결과에서 `font_size=0.1` 유지, 정사각 ellipse, cover 적용을 확인했다.
+
+## 2026-08-14 시안 AI 범용 수정 패치·의미 검증 전환
+
+- 11·12·13 결과를 조사해 마지막 AI 수정이 실제 시각 변화 없이 성공으로 표시되는 문제와, 저장 이미지 경로는 현재 히스토리를 사용하면서 JSON 메타데이터는 별도 전역 상태를 사용해 서로 다른 단계가 저장될 수 있는 문제를 확인했다.
+- AI 수정은 더 이상 전체 장면 설계도를 재생성하지 않는다. 모델은 canvas/assets/texts/decorations/visible_copy의 최소 변경분과 성공 조건을 JSON Schema 기반 `SCENE_EDIT_PATCH_JSON_SCHEMA`로 반환하며, 엔진이 직전 설계도에 해당 필드만 적용한다.
+- 패치 적용 뒤 별도 의미 검증 모델이 사용자 명령·수정 전후 설계도·실제 변경 필드를 비교한다. 이에 더해 코드 검증기가 명령한 영역 밖의 변경, 복합 명령의 위치·색상·크기·배경·원형 프레임 필드 누락을 거부한다. 검증 실패 사유는 최대 3회의 재해석 프롬프트에 전달한다.
+- 일부 키워드만 처리되면 성공하던 조기 반환을 제거했다. 모든 명령은 먼저 전체 패치 해석과 의미 검증을 거치며, 모델이 반복 실패한 경우에만 명확히 계산할 수 있는 범용 좌표·색상·크기 제약을 안전 복구로 적용하고 동일한 완전성 검증을 통과해야 한다.
+- 텍스트 위치 제약은 상·하·좌·우·중앙 좌표 체계로 계산한다. 좌우 배치 시 상자 폭과 align도 함께 변경해 좌표만 미세하게 바뀌고 화면상 중앙에 남는 현상을 방지한다.
+- AI 수정 중 버튼을 비활성화하고 작업 serial을 부여해 늦게 끝난 이전 스레드가 최신 미리보기를 덮어쓰지 못하게 했다. 저장은 `preview_metadata` 전역 복사본 대신 현재 `preview_history[preview_index]`의 이미지와 메타데이터를 한 쌍으로 사용한다.
+- 실제 Ollama에 `문구를 오른쪽 아래로 옮기고 파란색으로 바꿔줘` 복합 명령을 실행해 불완전한 모델 패치를 거부하고 `texts[0].x`, `texts[0].y`, `texts[0].color`을 함께 적용하는 것을 확인했다. 관련 집중 테스트 36개와 전체 테스트 `414 passed, 4 deselected`를 통과했다.
+# 2026-08-14 시안 수정 대상 결속 및 타이포그래피 품질 보강
+
+- 14~17번 결과를 재현해 스티커의 좌우 방향어가 글자 위치로 잘못 연결되고, 중앙 이동 뒤에도 오른쪽 정렬이 남으며, 볼드가 장면 스키마에 없던 문제를 확인했다.
+- 수정 지시를 절 단위로 나눠 글자와 사진·스티커 대상에 결속한다. 방향·색상·크기는 같은 대상에만 적용하고 명령하지 않은 장면 그룹은 변경하지 않는다.
+- 텍스트 장면에 font_weight(normal/bold)를 추가해 실제 Pillow 폰트 선택까지 연결했다. 중앙 배치는 정렬·투명 배경·패딩을 함께 정규화하고, 프레임 안쪽 요청은 안전 여백으로 글자 상자를 제한한다.
+- 모든 asset/text 좌표에 x+width<=1, y+height<=1을 강제하고 패딩을 상자 크기에 비례해 제한한다.
+- Vision 패치 프롬프트에 허용 변경 그룹과 절 단위 최근접 대상 규칙을 전달한다. 코드 검증기는 명령하지 않은 그룹 변경을 계속 차단한다.
+- 저장된 14번 설계도에서 15~17번 실제 명령을 순서대로 재현해 원형 프레임, 내부 글자, 빨강→흰색, 중앙 정렬, 크기 증가와 볼드가 누적 유지됨을 이미지로 확인했다.
+# 2026-08-14 시안 설계·편집 파이프라인 근본 개선
+
+- Vision 모델이 이미지 관찰과 복잡한 JSON 설계를 동시에 맡던 구조를 분리했다. Vision은 참고/제작 이미지의 관찰 사실만 만들고, 로컬 reasoning 모델이 JSON Schema 기반 장면 설계와 최소 변경 패치를 생성한다.
+- 사진 프레임 크기와 사진 내부 확대를 구분하기 위해 asset `zoom`을 장면 스키마·정규화·패치·Pillow 렌더러 전체에 추가했다. `focal_x/focal_y`와 결합해 상반신 크롭이나 프레임 내부 이동을 원형 프레임 왜곡 없이 표현한다.
+- 편집 검증을 변경 필드명 확인에서 전후 상태 검증으로 강화했다. 이미 만족된 색상/위치는 허용하되, 텍스트 배경 제거 누락, 사진 확대를 프레임 확대로 오해한 패치, 원형 프레임의 타원 왜곡, 사진 내부 이동의 잘못된 좌표 변경은 차단한다.
+- 복합 문장도 가장 가까운 대상에 속성을 결합하며 `배경 없이`, 배경 제거+기존 파란색 유지, 위치+색상+굵기 같은 요청을 한 번의 패치로 처리한다. 특정 인물명이나 특정 결과 파일에 종속된 분기는 넣지 않았다.
+- 실제 로컬 모델로 기존 18번 요청의 텍스트박스 제거가 `ai-scene-patch-v5`에서 `texts[0].background`만 바꾸는 것을 확인했다. 별도 일반 명령인 사진 확대+프레임 내부 왼쪽 이동도 `zoom`+`focal_x`로 처리됨을 확인했다.
+- 검증: `test_mockup_design.py` 43개 통과, 전체 `421 passed, 4 deselected`.
+
+# 2026-08-14 자원 효율형 기억·Obsidian 동기화 파이프라인
+
+- 매 대화 직후 reasoning LLM과 임베딩을 호출하던 장기 기억 통합을 제거했다. 대화 시점에는 `memory_events.db`에 정제된 이벤트만 기록하고, 20건 누적·15분 유휴·세션 전환 시 최대 32건을 배치 통합한다. 실패한 이벤트는 처리 완료로 표시하지 않아 다음 유휴 주기에 재시도한다.
+- 시안 작업공간처럼 사용자가 승인·저장한 성공 결과는 작업공간 RAG에 즉시 기록하면서 별도 승인 이벤트 감사 기록도 남긴다. 이미 색인한 결과는 통합 대기열에 다시 넣지 않아 중복 임베딩을 방지한다.
+- 실행·생성·수정·검색·저장 등 반복 행동을 정규화한 signature로 집계한다. 기본 승격 기준은 3회 이상이면서 서로 다른 세션 2개 이상이며, 단발 명령을 습관으로 오인하지 않는다.
+- Obsidian 역동기화는 `.anis/vault_index.db`의 문서 해시를 사용한다. 사용자가 고친 문서와 새 문서만 RAG에 증분 반영하고, 삭제 문서는 RAG에서도 제거하며, 변경 없는 문서는 임베딩하지 않는다. raw 대화 로그는 계속 RAG 색인 대상에서 제외한다.
+- 장기 기억 수명주기를 추가했다. 만료 시간이 지난 active 기억은 `expired`로 전환하고 RAG 문서를 제거한다. 동일 subject/predicate의 충돌 기억은 임의로 하나를 선택하지 않고 충돌 목록으로 노출하며, 명시적 정정은 기존 `superseded` 흐름을 유지한다.
+- RAG 검색마다 trace/chunk/source를 기록하고, ContextManager가 답변 프롬프트에 실제 포함한 근거만 included/used로 표시한다. 메인 UI의 디버그용 중복 검색을 제거해 한 요청당 검색·임베딩 경로를 단일화했다. 동시 작업공간 검색은 thread-local trace로 서로 섞이지 않는다.
+- 메인 채팅과 전문가 작업공간은 동일한 이벤트/검색 사용량 계층을 공유하지만 namespace는 유지한다. 전체 회귀 테스트 `427 passed, 4 deselected`를 통과했다.
+
+# 2026-08-15 시안 얼굴 프레이밍·Windows 실제 글꼴 적용
+
+- 저장 결과 19·20의 JSON과 원본 사진을 재현해 두 가지 독립 원인을 확인했다. 얼굴 요청은 장면 모델이 프레임 width/height만 바꾸고 원본 사진의 얼굴 좌표를 측정하지 않았으며, 글꼴은 장면 JSON만 변경된 뒤 한글 표시명과 Windows 폰트 파일명이 달라 맑은 고딕 fallback으로 렌더링되고 있었다.
+- 얼굴·머리 표시 요청은 OpenCV Haar 검출로 제작 원본의 가장 큰 얼굴 중심과 크기를 측정한다. `얼굴만/얼굴 위주`는 안전 여백 35%를 포함한 zoom과 focal 좌표를 계산하고, `얼굴이 보이게/잘리지 않게/모두 보이게`는 contain과 zoom 1을 사용한다. 한국어 경로는 `np.fromfile + cv2.imdecode`로 읽어 Windows `cv2.imread` 실패를 피한다.
+- zoom 선행 크롭 뒤 ImageOps.fit에서 focal 좌표를 두 번 적용하던 문제를 제거했다. zoom 크롭 후에는 이미 얼굴 중심으로 잘렸으므로 최종 fit은 중앙 정렬한다.
+- 글꼴 렌더러가 Windows HKLM/HKCU Fonts 레지스트리의 지역화된 표시명을 실제 TTF/TTC 경로로 해석한다. 실제 PC에서 `궁서 → H2GSRB.TTF`, `휴먼둥근헤드라인 → HMKMRHD.TTF`를 확인했다.
+- 20번 저장 설계도를 실제 원본으로 재렌더링해 `focal_y=0.141`, `zoom=4.0`과 얼굴·머리 전체 표시를 시각 확인했다. 관련 시안 테스트 47개와 전체 회귀 테스트 `429 passed, 4 deselected`를 통과했다.
+2026-08-15 시안 수정 멱등성 판정 개선
+- AI 수정 패치가 현재 설계도와 같다는 이유만으로 3회 재시도 후 오류 처리하던 문제를 수정했다.
+- 글꼴·글자 크기·얼굴 프레이밍 등 측정 가능한 요청은 모델 호출 전에 현재 상태를 검증한다.
+- 이미 반영된 요청은 `verified-idempotent-edit-v1` 정상 결과로 반환하며, 미리보기 이력을 중복 생성하지 않고 UI에 이미 적용된 상태임을 안내한다.
+- 모델 패치 실패 후 결정적 제약 적용 결과가 현재 상태와 같을 때도 오류가 아닌 정상 멱등 동작으로 처리한다.
+2026-08-15 시안 범용 장식 편집 파이프라인 확장
+- AI 수정 패치가 장식 목록 전체 교체뿐 아니라 decoration 단위 add/update/remove를 지원한다.
+- ellipse/line 장식의 dash, dash_length, gap_length를 실제 Pillow 렌더링에 연결했다.
+- 텍스트 명령의 색상·선 종류·프레임 안쪽/바깥쪽 관계를 현재 asset 좌표에 상대적으로 계산해 장식 장면 요소로 변환한다.
+- 참고 이미지와 설명 스케치 관찰 결과도 동일한 장면 패치 스키마로 변환하도록 모델 지침을 확장했다.
+2026-08-15 시안 참고 스타일 배치와 수치 검증 보강
+- 저장된 111.json을 분석해 200픽셀 요청이 320픽셀 설계값으로 잘못 통과하고, lower_overlay 참고 스타일이 문구 배치에 사용되지 않은 원인을 수정했다.
+- 픽셀 단위 글자 크기를 1600px 기준 정규화 좌표와 대조해 정확한 값이 아니면 모델 패치를 거부한다.
+- 학습 스타일의 text_region=lower_overlay를 주 프레임 내부 하단 중앙 좌표로 변환한다.
+- 왼쪽/오른쪽/위/아래/밑/상단/하단 위치 요청의 이미 만족된 상태를 프레임 상대 여백으로 검증한다.
+2026-08-15 시안 제작 전문가 근본 재설계
+- 단일 Vision 모델이 관찰·설계·검증을 모두 담당하던 구조를 역할/산출물 계약 기반 전문가 팀으로 변경했다. 시안 팀은 기억, 스타일 Vision, 피사체 분석, 디자인 설계, 레이어 렌더링, 실제 이미지 검수, 최소 교정을 순차 실행하며 결과 metadata에 team_events를 남긴다.
+- Qwen2.5-VL 7B를 style_vision/visual_critic/subject_analysis 역할로 등록하고 keep_alive=0으로 구성했다. reasoning 설계 모델과 분리해 VRAM에 동시에 무거운 모델이 남지 않도록 했다.
+- 텍스트 BGE RAG와 분리된 VisualStyleIndex를 추가했다. 로컬 CLIP이 준비되면 CLIP을 쓰고, 설치 전에도 색상·명도·에지·구도 기반 이미지 descriptor로 검색한다. 참고 이미지와 사용자가 승인 저장한 결과를 SQLite 이미지 인덱스에 기록한다.
+- scene_plan을 버전형 layer_graph로 변환하고 Qt SVG 엔진으로 실제 최종 PNG를 렌더링한다. 편집 가능한 SVG 원본도 PNG 옆에 저장한다. 기존 API renderer 값은 호환 유지하고 render_engine으로 실제 엔진을 기록한다.
+- 텍스트 레이어에 자간, 행간, 윤곽선, 그림자, 곡선 경로, opacity/blend 속성을 추가했다. 사진/장식/텍스트는 고유 ID·z·mask·transform을 가진 레이어로 유지된다.
+- SubjectAnalysisRuntime을 추가해 얼굴 위치와 안전 텍스트 영역을 설계 입력에 제공한다. 준비된 BiRefNet은 지연 로드하고 없으면 OpenCV GrabCut/얼굴 검출로 폴백한다.
+- 최종 렌더링 PNG를 Vision이 다시 검수해 얼굴 잘림, 겹침, 안전 여백, 대비, 시선 흐름과 지시 충족도를 판정한다. 실패 시 최대 2회만 구조화 패치로 교정하며 실패 결과를 무한 반복하지 않는다.
+- 네 장의 참고 이미지를 실제 가중치 학습이라고 표시하지 않는다. 승인 결과 20개 이상일 때만 SDXL LoRA 학습 manifest를 생성하는 post-training gate를 추가했다.
+
+2026-08-15 시안 원형·다색 문구·실이미지 검수 안정화
+- 사용자가 `정지언은 빨간색, 테스트는 파란색`처럼 명시한 문구는 모델이 맞춤법이나 이름을 임의 변경하지 못하도록 원문 구간과 색상을 결정론적으로 추출해 text span 레이어에 보존한다.
+- Qt SVG 렌더러는 text span별 색을 실제 `<tspan>`으로 출력하고, 글자 수와 텍스트 상자 폭을 기준으로 글꼴 크기를 안전하게 축소하며 clipPath로 캔버스 밖 넘침을 차단한다.
+- 투명 원형 스티커는 PNG를 RGB로 강제 변환하지 않고 RGBA로 저장해 원 밖이 검게 변하던 문제를 제거했다.
+- 얼굴 검출은 frontal/alt/profile cascade와 좌우 반전, 눈 쌍 기반 대체 검출을 순차 사용한다. 기존 21번 제작 원본에서도 얼굴 좌표가 실제 검출됨을 확인했다.
+- 렌더링 Vision 검수 이미지는 허용되지 않은 Windows 임시 폴더가 아니라 프로젝트 내부 `data/runtime/mockup_reviews`에 생성한다. 검수 자체가 실패하거나 최종 품질 불합격이면 결과를 완료로 표시하지 않는다.
+- 동일 수정 명령도 JSON만 보고 성공 처리하지 않고 실제 이미지를 재렌더링·검수한 뒤 기존 미리보기 경로를 유지하는 멱등 동작으로 처리한다.
+
+2026-08-15 시안 렌더링 sequence×list 오류 수정
+- `can't multiply sequence by non-int of type 'list'`는 Qt 렌더러가 아니라 VisualStyleIndex 유사도 계산에서 발생했다. 기존 CLIP 항목의 vector_json이 중첩 배열로 저장되어 목록끼리 곱하려 한 것이 원인이다.
+- CLIP 텐서는 저장 전에 항상 1차원으로 펼치고 숫자로 변환한다. 검색 시에도 과거에 저장된 다중 중첩 배열을 재귀적으로 평탄화해 기존 프로필 때문에 앱이 중단되지 않게 했다.
+- 현재 질의 임베딩과 차원이 다른 손상·구버전 벡터는 안전하게 건너뛴다. 중첩 레거시 벡터 검색 회귀 테스트를 추가했다.
+
+2026-08-15 시안 얼굴 전용 크롭·진짜 원형·문구별 글꼴 수정
+- 23번 결과를 실제 원본과 저장 scene_plan으로 재현해 Qt SVG 레이어 엔진이 asset의 zoom/focal 좌표를 무시하던 원인을 수정했다. cover 렌더링 전에 원본 픽셀을 얼굴 중심 좌표로 자른 뒤 SVG에 포함하므로 `얼굴만 보이게` 요청이 전신 사진으로 되돌아가지 않는다.
+- `스티커를 원형으로` 요청은 사진 레이어만 ellipse로 바꾸지 않고 캔버스 배경도 투명으로 전환한다. 따라서 사각 흰 캔버스 안의 원형 사진이 아니라 원 밖 알파가 투명한 실제 원형 PNG가 생성되며, 이미 ellipse인 장면도 캔버스가 불투명이면 수정 완료로 오판하지 않는다.
+- `'정지원'은 빨간색 맑은 고딕, '테스트'는 파란색 궁서체`처럼 한 문장 안에서 문구별 색상과 글꼴을 함께 추출해 span에 보존한다. 맑은 고딕·궁서 등 한국어 표시명을 Windows 실제 패밀리명으로 변환하고, headless Qt에 malgun/batang/gulim 폰트를 명시 등록한다.
+- QtSvg가 tspan별 한글 글꼴 변경 시 네모 글리프로 렌더링하는 문제를 피해 각 문구를 독립 text 노드로 배치하되 전체 문장은 한 줄 중앙 정렬을 유지한다.
+- Visual 검수 결과에 violations가 있는데 passed=true인 모순 응답은 실패로 강제해 실제 결함을 성공으로 통과시키지 않는다.
+- 23번 입력으로 얼굴 중심 원형 크롭, 투명 바깥 영역, 안쪽 하단 문구, 빨강 맑은 고딕과 파랑 궁서가 실제 출력되는 것을 재렌더링해 확인했다. 전체 회귀 테스트 `433 passed, 4 deselected`를 통과했다.
+
+2026-08-15 시안 Vision 검수 과잉 차단 수정
+- Vision 검수기가 사용자가 요청하지 않은 피사체 시선 방향을 품질 결함으로 만들고, 이미지 픽셀만 보고 문구별 색상·글꼴이 미적용됐다고 오판해 정상 미리보기를 폐기하던 문제를 수정했다.
+- 색상·글꼴·정확 문구·원형 알파·얼굴 확대·스티커 안쪽 하단 위치는 Vision의 추측이 아니라 편집 가능한 scene_plan 레이어를 기준으로 결정론적으로 검증한다. 이 명시적 계약 위반만 미리보기를 차단한다.
+- Vision의 대비·미학 관찰은 `visual_advice`로 남기되 사용자가 지시하지 않은 시선 흐름이나 의도된 하단 오버레이는 실패 조건으로 사용하지 않는다. 프롬프트에도 눈·코·입의 실제 가림과 단순 하단 중첩을 구분하도록 명시했다.
+- `ㅈㅈㅈ`처럼 완성형 한글이 아닌 자모 문구도 정확 문구·색상·글꼴 파서가 인식하도록 범위를 확장했다. 해당 오류 메시지의 빨강 고딕/파랑 궁서 계약을 회귀 테스트로 고정했다.
+- 전체 회귀 테스트 `433 passed, 4 deselected`를 통과했다.
+
+## 2026-08-15 원형 스티커 편집 범위 충돌 수정
+
+- 증상: 기존 시안에서 "스티커를 원 형태로 만들어줘"라고 수정하면 `명령하지 않은 영역을 변경했습니다: ['canvas']` 오류가 발생했다.
+- 원인: 원형 스티커는 사진 레이어를 타원 마스크로 바꾸는 것뿐 아니라 바깥 캔버스를 투명하게 만들어야 하지만, 편집 범위 판정은 `assets`만 허용하고 내부 보정은 `canvas.background`도 변경해 서로 충돌했다.
+- 수정: 원형·원 모양·동그란 스티커 요청의 허용 범위를 `assets + canvas`로 일치시켰다.
+- 추가 수정: 규칙 기반 편집 대체 경로에서 학습 스타일의 하단 문구 규칙을 다시 적용하던 동작을 제거했다. 따라서 원형 변환만 요청했을 때 기존 문구 위치·색상·폰트는 바뀌지 않는다.
+- 실데이터 검증: `data/mockup_outputs/24.json`을 대상으로 동일 명령을 실행해 캔버스 투명화, `ellipse` 마스크 적용, 문구 y 위치 `0.45 → 0.45` 보존을 확인했다.
+- 테스트: `test_mockup_architecture.py` 11개 통과, 전체 테스트 `433 passed, 4 deselected`.
+
+## 2026-08-15 시안 미리보기 탐색 및 참고사진 드롭 개선
+
+- 새 미리보기는 100% 원본 크기가 아니라 현재 미리보기 영역에 여백을 두고 전체 이미지가 보이는 배율로 자동 맞춤된다. 이미지 위젯은 가로·세로 중앙에 배치된다.
+- 확대·축소 후 이미지 위에서 마우스 왼쪽 버튼을 누른 채 드래그하면 가로·세로 스크롤 위치가 함께 이동한다. 드래그 가능 상태와 이동 중 상태는 손 모양 커서로 표시한다.
+- 기존 `100%` 버튼은 실제 동작에 맞게 `전체 맞춤`으로 변경했다. 창 크기가 바뀌어도 전체 맞춤 상태라면 새 영역에 자동으로 다시 맞춘다.
+- 수정 참고사진 목록을 파일 드롭 전용 위젯으로 설정하고 viewport 드롭, drag-move, 복사 동작을 명시해 탐색기에서 이미지 파일을 끌어 놓을 수 있게 했다.
+- 집중 UI 테스트 13개 및 전체 회귀 테스트 `435 passed, 4 deselected` 통과.
+
+## 2026-08-15 원형 스티커 실제 렌더링 수정
+
+- 증상: "스티커는 원으로 만들어줘"라는 자연스러운 표현을 초기 생성과 수정에서 놓쳤고, 설계도에는 `ellipse`가 있어도 Qt SVG가 래스터 이미지의 `clipPath`를 무시해 최종 PNG가 네모로 보였다. 이후 수정기는 설계도만 보고 이미 원형이라고 판단하여 `실제 시각 변경이 없습니다` 오류를 냈다.
+- 명령 해석: `원형`, `원 형태`, `원 모양`, `원으로`, `동그란/동그랗게`를 하나의 원형 의도로 판정하는 공통 함수를 추가하고 초기 제약, 편집 범위, 패치 검증, 시각 품질 계약에서 공유한다.
+- 렌더링: 타원·둥근 사각형 마스크는 SVG clipPath에만 의존하지 않고 원본 래스터의 알파 채널에 직접 적용한 PNG로 SVG에 삽입한다. Qt 렌더러에서도 실제 출력 픽셀이 정확한 원형이 된다.
+- 원형 스티커는 `contain`으로 사진 네모가 원 안에 떠 있지 않도록 `cover`를 강제해 원 전체를 사진으로 채운다.
+- 실데이터 검증: `25.json`에 동일 수정 명령을 실행해 `ellipse + cover + transparent canvas`, 프레임 모서리 알파 `0`, 상단 중앙 알파 `255`를 확인했다.
+- 관련 집중 테스트 63개 및 전체 회귀 테스트 `435 passed, 4 deselected` 통과.
+
+## 2026-08-15 최신 미리보기 기준 비파괴 AI 편집 수정
+
+- 증상: 점선 테두리만 추가해도 문구 내용·색상이 바뀌고, 이후 글꼴만 변경해도 기존 점선의 색상·위치·유형이 다시 바뀌었다. 26→29번 결과의 저장된 scene_plan을 비교해 재현했다.
+- 원인 1: 색상 문장에서 발견한 짧은 단어를 `parse_explicit_colored_copy()`가 새 표시 문구로 오인했고, 텍스트 서식 변경과 텍스트 내용 변경이 같은 의도로 처리됐다.
+- 원인 2: 모델 패치 직후에는 범위 필터가 있었지만 얼굴 보정·정확 문구 보정·렌더 후 자동 검수 같은 후처리기가 요청 범위 밖 레이어를 다시 변경할 수 있었다.
+- 수정: 문구 내용 변경은 텍스트 대상과 작성·교체·삭제 동작이 명시됐을 때만 허용한다. 글꼴·색상·크기·위치 요청은 기존 `content`와 `spans`를 보존한다.
+- 수정: 모델과 모든 후처리가 끝난 뒤에도 현재 미리보기 설계도를 기준으로 최종 쓰기 장벽을 적용한다. 요청한 `canvas/assets/texts/decorations` 그룹만 반영하며, 렌더 후 자동 검수·교정에도 같은 기준을 적용한다.
+- 수정: 로그의 적용 항목은 모델이 주장한 필드가 아니라 이전/최종 scene_plan의 실제 leaf diff에서 다시 계산한다.
+- 수정: AI 작업 시작 시 현재 히스토리 항목을 깊은 복사하고 기준 출력 경로를 리비전 토큰으로 함께 전달한다. 작업 도중 실행 취소·다시 실행으로 화면이 바뀌면 오래된 비동기 결과를 폐기한다. 이미 적용된 요청의 메타데이터도 현재 히스토리 항목에 동기화한다.
+- 실데이터 검증: `26.json`과 문제의 `27.json`을 사용한 점선 요청에서 최종 변경은 `decorations[0]`만 남고 텍스트·사진 레이어가 완전히 보존됨을 확인했다.
+- 테스트: 비파괴 범위, 텍스트 내용/서식 분리, 오래된 비동기 결과 폐기 회귀 테스트를 추가했고 전체 `438 passed, 4 deselected`를 통과했다.
+- 구현 커밋: `fe0c38e` (`최신 미리보기 기준 비파괴 편집 보강`).

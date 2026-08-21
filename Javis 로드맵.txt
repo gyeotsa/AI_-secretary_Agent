@@ -1,879 +1,496 @@
-# 개인 AI 비서 개발 가이드
+# Jarvis 개인 AI OS 개발 로드맵
 
-> Claude Code처럼 동작하는 나만의 AI 비서를 단계별로 구축하는 실전 가이드
+> Jarvis가 내 PC를 이해하고, 내 일을 대신하는 개인 AI OS로 만들기 위한 단계별 로드맵
+
+> 2026-07-27 상태 정정: 아래 12 STEP의 `완료`는 당시 파일·클래스 구현 여부를
+> 기록한 역사적 표기입니다. 최근 실제 사용 검토에서 Planner/Executor/Reflection/
+> Multi-Agent/Project Indexer/Observer가 존재하더라도 Codex 수준의 폐쇄 실행 루프와
+> 장시간 E2E가 완성된 것은 아님을 확인했습니다. 현행 우선순위와 수락 기준은
+> `AGENT_RUNTIME_ROADMAP.md`를 단일 진실 공급원으로 사용합니다.
+
+## 2026-07-27 현행 우선순위
+
+1. 모든 Tool 결과를 타입과 증거로 표현하고 허위 완료를 구조적으로 차단
+2. 대화·pending request·Intent Slot·Artifact를 하나의 Task State로 통합
+3. 키워드 중심 라우터를 의미 기반 Capability Router로 발전
+4. 저장소 분석→patch→lint/test→diff 검토를 수행하는 Coding Agent 구축
+5. Workspace 자동 복원·증분 인덱싱·프로젝트별 Memory/RAG 연결
+6. Planner·Executor·Verifier·Recovery를 분리한 재계획 가능 Orchestrator 구축
+
+완료 판정은 코드 존재가 아니라 자동 회귀 테스트와 실제 종단 실행을 모두 통과한
+경우에만 사용합니다.
 
 ---
 
-## Phase 1 — 기반 구축 (2~3주)
-
-### 목표
-터미널에서 AI와 대화하고, 대화 내용을 저장하는 가장 단순한 형태
-
-### 기술 스택
-- **언어**: Python 3.11+
-- **핵심 라이브러리**: `anthropic` (또는 `openai`), `sqlite3`, `readline`
-- **파일 구조**:
+## 최종 아키텍처
 
 ```
-my_assistant/
-├── main.py           # 진입점
+                    Jarvis
+
+┌─────────────────────────────────┐
+│       Conversation Layer        │
+└────────────────┬────────────────┘
+                 │
+          Agent Runtime
+                 │
+┌────────────────┼────────────────┐
+│                │                │
+Planner    Context Engine   Observer
+│                │                │
+Executor   Memory/RAG      Event Bus
+│                │                │
+└────────────────┼────────────────┘
+                 │
+         Permission Manager
+                 │
+          Tool Runtime
+                 │
+  Windows / Browser / Apps
+```
+
+---
+
+## 12 STEP 로드맵 (완료 현황)
+
+### STEP 1: Agent Runtime 구축 (가장 중요) → ✅ 완료
+**목표**: Jarvis의 심장, Agent Runtime을 구축합니다.
+
+**구현된 컴포넌트**:
+- [core/runtime/](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/runtime/) 폴더 생성
+  - [core/runtime/event_bus.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/runtime/event_bus.py): 이벤트 중앙 전달 시스템
+  - [core/runtime/action_journal.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/runtime/action_journal.py): 모든 행동 기록 시스템
+- [core/planner.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/planner.py): 계획 수립 에이전트
+- [core/executor.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/executor.py): 작업 실행 에이전트
+- [core/context.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/context.py): 컨텍스트 관리자
+- [core/observer.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/observer.py): PC 상태 감시자
+- [core/permission.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/permission.py): 권한 관리자
+- [core/workspace.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/workspace.py): 작업 공간 관리자
+
+---
+
+### STEP 2: Permission Manager → ✅ 완료
+**목표**: 안전한 권한 관리 시스템을 구축합니다.
+
+**구현 내용**:
+- PermissionLevel Enum: SAFE / CONFIRM / SYSTEM / DENIED
+- [core/permission.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/permission.py)
+  - PermissionManager: 권한 요청/승인/거절, 상태 저장
+  - CapabilityRegistry: 플러그인 Capability 관리
+- UI 연동: [ui/main_window.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/ui/main_window.py)에 PermissionRequestDialog 추가
+
+**권한 분류**:
+- **SAFE**: 읽기, 검색, 계산
+- **CONFIRM**: 삭제, 종료, 메일 전송, Git Push, 파일 이동
+- **SYSTEM**: Camera, Microphone, Clipboard, Keyboard, Mouse, Browser, Windows API, Power, Registry, Shell
+
+---
+
+### STEP 3: Tool Runtime & Plugin → ✅ 완료
+**목표**: 플러그인 기반의 도구 런타임을 구축합니다.
+
+**구현 내용**:
+- [core/plugin.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/plugin.py): Plugin SDK
+  - BasePlugin: 플러그인 기본 클래스
+  - ToolSchema: 툴 스키마 dataclass
+  - PluginRegistry: 플러그인 등록/관리
+- [plugins/](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/plugins/) 폴더
+  - [plugins/system_tools.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/plugins/system_tools.py): 예제 플러그인
+- [core/tools.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/tools.py): Plugin 연동
+
+**원칙**: Tool은 모두 Plugin으로 구현합니다!
+
+---
+
+### STEP 4: Observer → ✅ 완료
+**목표**: 사용자가 말하지 않아도 계속 보고 있는 감시 시스템을 구축합니다.
+
+**구현 내용**:
+- [core/observer.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/observer.py)
+  - 파일 감시 (Downloads 폴더 등)
+  - Git 상태 감지
+  - 프로세스 감시 (Chrome, VSCode 등)
+  - Event Bus 연동
+
+**동작 흐름**:
+```
+Downloads 새 PDF → Event → Observer → Indexer → Memory Update → UI Update
+```
+
+---
+
+### STEP 5: Knowledge Engine → ✅ 완료
+**목표**: RAG 기반의 지식 엔진을 구축합니다.
+
+**구현 내용**:
+- [core/knowledge_updater.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/knowledge_updater.py)
+  - Observer → Event Bus → RAG 자동 인덱싱
+  - Project Indexer 연동
+  - Action Journal 연동
+- [core/rag.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/rag.py): RAG 시스템 (ChromaDB 기반)
+
+**지식 범위**: File → Project → Preference → History → Calendar → Conversation → Browser → Mail → Windows
+
+---
+
+### STEP 6: Project Indexer → ✅ 완료
+**목표**: Claude Code 수준의 프로젝트 인덱서를 구축합니다.
+
+**구현 내용**:
+- [core/project_indexer.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/project_indexer.py)
+  - 프로젝트 트리 분석
+  - 파일/심볼 인덱싱
+  - README, Package, Function, Class, Import, Dependency 분석
+  - Workspace Manager 연동
+- [core/tools.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/tools.py)에 Project Indexer 도구 추가
+
+**동작 흐름**:
+```
+프로젝트 열기 → Tree → README → Package → Function → Class → Import → Dependency → Embedding
+```
+
+---
+
+### STEP 7: Memory 분리 → ✅ 완료
+**목표**: Memory를 4개로 완전히 분리합니다.
+
+**구현 내용**:
+- [core/memory.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/memory.py) 전면 수정
+  1. **Conversation Memory**: 대화 기록
+  2. **Preference Memory**: 사용자 취향 (via [core/user_profile.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/user_profile.py))
+  3. **Episode Memory**: 오늘 한 일
+  4. **Semantic Memory**: 항상 유지되는 지식
+- build_memory_context() 함수 추가: LLM 컨텍스트용 메모리 빌더
+- [core/tools.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/tools.py)에 Semantic Memory 도구 추가
+
+---
+
+### STEP 8: Planner → ✅ 완료
+**목표**: Goal → Task → Subtask → Priority → Execute 플로우를 구축합니다.
+
+**구현 내용**:
+- [core/planner.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/planner.py)
+  - 목표 분석
+  - 작업 분해
+  - 우선순위 설정
+  - 실행 계획 수립
+
+**동작 흐름**:
+```
+Goal → Task → Subtask → Priority → Execute
+```
+
+---
+
+### STEP 9: Reflection → ✅ 완료
+**목표**: 실패를 기억하고 개선하는 시스템을 구축합니다.
+
+**구현 내용**:
+- [core/reflection.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/reflection.py)
+  - 실패 기록
+  - 원인 분석
+  - 개선점 학습
+  - 다음 실행 시 반영
+
+**예시**:
+```
+Excel 저장 실패 → Permission 문제 → 다음부터 관리자 권한 요청
+```
+
+---
+
+### STEP 10: Automation Engine → ✅ 완료
+**목표**: Jarvis를 Jarvis답게 만드는 자동화 엔진을 구축합니다.
+
+**구현 내용**:
+- [core/scheduler.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/scheduler.py) 전면 수정
+  - AutomationEngine 클래스
+  - 스케줄 기반 자동 작업 실행
+  - LLM과 연동
+  - 작업 히스토리 관리
+- [core/tools.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/tools.py)에 Automation Engine 도구 추가
+
+**예시**:
+```
+오후 6시 → Git Commit 안됨 → Jarvis → "오늘 변경사항을 Commit할까요?"
+회의 시작 10분 전 → Teams 실행 → 회의자료 열기
+```
+
+---
+
+### STEP 11: Local Knowledge Graph → ✅ 완료
+**목표**: 로컬 지식 그래프를 구축합니다.
+
+**구현 내용**:
+- [core/knowledge_graph.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/knowledge_graph.py) 신규 생성
+  - Entity: 엔티티 모델
+  - Relation: 관계 모델
+  - KnowledgeGraph: 지식 그래프 관리자
+  - 서브그래프 탐색
+  - LLM 컨텍스트용 지식 추출
+- [core/tools.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/tools.py)에 Knowledge Graph 도구 추가
+
+**예시**:
+```
+지원 → Project → Jarvis → core/tools.py → Git → Commit → Issue
+```
+
+이렇게 관계를 저장하면 "지난번 수정했던 TTS 코드"만 말해도 찾을 수 있습니다!
+
+---
+
+### STEP 12: Multi-Agent → ✅ 완료
+**목표**: 전문 에이전트 시스템을 구축합니다.
+
+**구현 내용**:
+- [core/multi_agent.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/multi_agent.py) 신규 생성
+  - AgentTask: 에이전트 작업 모델
+  - MultiAgentOrchestrator: 멀티 에이전트 오케스트레이터
+  - Planner Agent: 작업 분해
+  - Executor Agent: 작업 실행
+  - Reflection Agent: 결과 분석
+- [core/tools.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/tools.py)에 Multi-Agent 도구 추가
+
+**전문 에이전트 목록**:
+- Coding Agent
+- Research Agent
+- Scheduler Agent
+- Office Agent
+- Browser Agent
+- Vision Agent
+- Voice Agent
+- Memory Agent
+
+**동작 흐름**:
+```
+사용자 요청 → Planner → 전문 에이전트 배정 → Executor → 실행 → Reflection → 최종 답변
+```
+
+---
+
+## 추가 구현된 기능
+
+### 기반 시스템
+- ✅ **Event Bus**: [core/runtime/event_bus.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/runtime/event_bus.py)
+- ✅ **Action Journal**: [core/runtime/action_journal.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/runtime/action_journal.py)
+- ✅ **Capabilities Registry**: [core/permission.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/permission.py)
+- ✅ **Scratchpad**: [core/scratchpad.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/scratchpad.py)
+- ✅ **RAG**: [core/rag.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/rag.py)
+
+### 확장 기능
+- ✅ **Multimodal**: [core/multimodal.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/multimodal.py)
+- ✅ **Audio Processor**: [core/audio_processor.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/audio_processor.py)
+- ✅ **Hardware Manager**: [core/hardware.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/hardware.py)
+
+### UI
+- ✅ **QT UI**: [ui/main_window.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/ui/main_window.py), [main_qt.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/main_qt.py)
+
+---
+
+## 프로젝트 파일 구조
+
+```
+AI_-secretary_Agent/
 ├── core/
-│   ├── llm.py        # API 호출 래퍼
-│   └── memory.py     # 대화 저장
-├── config.py         # 설정값
-└── .env              # API 키 (절대 커밋 금지)
+│   ├── runtime/
+│   │   ├── __init__.py
+│   │   ├── action_journal.py
+│   │   └── event_bus.py
+│   ├── __init__.py
+│   ├── audio_processor.py
+│   ├── context.py
+│   ├── executor.py
+│   ├── hardware.py
+│   ├── harness.py
+│   ├── knowledge_graph.py
+│   ├── knowledge_updater.py
+│   ├── llm.py
+│   ├── memory.py
+│   ├── mode_manager.py
+│   ├── multi_agent.py
+│   ├── multimodal.py
+│   ├── observer.py
+│   ├── permission.py
+│   ├── planner.py
+│   ├── plugin.py
+│   ├── project_indexer.py
+│   ├── rag.py
+│   ├── react.py
+│   ├── reflection.py
+│   ├── scheduler.py
+│   ├── scratchpad.py
+│   ├── state_machine.py
+│   ├── tools.py
+│   ├── user_profile.py
+│   └── workspace.py
+├── plugins/
+│   ├── __init__.py
+│   └── system_tools.py
+├── ui/
+│   ├── __init__.py
+│   ├── main_window.py
+│   └── visualizer.py
+├── data/
+│   └── chroma_db/
+├── Agent 인수인계.txt
+├── Javis 로드맵.txt
+├── README.md
+├── config.py
+├── main.py
+├── main_qt.py
+└── requirements.txt
 ```
 
 ---
 
-### Step 1-1. 환경 세팅
+## 다음 단계 (선택 사항)
 
-```bash
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install anthropic python-dotenv
-```
-
-`.env` 파일:
-```
-ANTHROPIC_API_KEY=sk-ant-xxxxxxxx
-```
+1. **일반 GUI 환경에서 테스트**: 한글 질의로 실제 스피커 음량 확인
+2. **Ollama 디버그 로그 최적화**: 전체 도구 스키마 출력 축소
+3. **실제 플러그인 개발**: filesystem, browser, camera, mail, calendar, git, office, windows, docker, spotify, discord, youtube, notion, obsidian 등
+4. **사용자 경험 개선**: UI/UX 최적화
+5. **성능 최적화**: 인덱싱 속도, 메모리 사용량 등
 
 ---
-
-### Step 1-2. LLM 호출 래퍼 (`core/llm.py`)
-
-```python
-import os
-import anthropic
-from dotenv import load_dotenv
-
-load_dotenv()
-
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-
-SYSTEM_PROMPT = """
-당신은 지원의 개인 AI 비서입니다.
-- 간결하고 실용적으로 답변하세요.
-- 모르는 것은 솔직하게 모른다고 하세요.
-- 한국어로 대화하세요.
-"""
-
-def chat(messages: list[dict]) -> str:
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
-        system=SYSTEM_PROMPT,
-        messages=messages
-    )
-    return response.content[0].text
-```
-
----
-
-### Step 1-3. 대화 히스토리 저장 (`core/memory.py`)
-
-```python
-import sqlite3
-import json
-from datetime import datetime
-
-DB_PATH = "assistant.db"
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS conversations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            role TEXT,
-            content TEXT,
-            timestamp TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-def save_message(session_id: str, role: str, content: str):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT INTO conversations VALUES (NULL, ?, ?, ?, ?)",
-        (session_id, role, content, datetime.now().isoformat())
-    )
-    conn.commit()
-    conn.close()
-
-def load_session(session_id: str) -> list[dict]:
-    conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute(
-        "SELECT role, content FROM conversations WHERE session_id=? ORDER BY id",
-        (session_id,)
-    ).fetchall()
-    conn.close()
-    return [{"role": r[0], "content": r[1]} for r in rows]
-```
-
----
-
-### Step 1-4. CLI 메인 루프 (`main.py`)
-
-```python
-import uuid
-from core.llm import chat
-from core.memory import init_db, save_message, load_session
-
-def main():
-    init_db()
-    session_id = str(uuid.uuid4())
-    messages = []
-
-    print("🤖 AI 비서 시작. 종료: 'exit' 입력\n")
-
-    while True:
-        try:
-            user_input = input("나: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print("\n종료합니다.")
-            break
-
-        if user_input.lower() in ("exit", "quit", "종료"):
-            break
-        if not user_input:
-            continue
-
-        messages.append({"role": "user", "content": user_input})
-        save_message(session_id, "user", user_input)
-
-        response = chat(messages)
-        messages.append({"role": "assistant", "content": response})
-        save_message(session_id, "assistant", response)
-
-        print(f"\n비서: {response}\n")
-
-if __name__ == "__main__":
-    main()
-```
-
-### Phase 1 체크리스트
-- [ ] `python main.py`로 대화 가능
-- [ ] DB에 대화 내용 저장됨
-- [ ] Ctrl+C로 안전하게 종료됨
-
----
-
-## Phase 2 — 핵심 기능 (1~2개월)
-
-### 목표
-도구(Tool)를 써서 실제 작업을 수행하고, 사용자를 기억하는 진짜 비서
-
-### 기술 스택 추가
-- `anthropic` Tool Use (function calling)
-- `duckduckgo-search` 또는 `tavily-python` (웹 검색)
-- `subprocess` (코드/명령어 실행)
-
----
-
-### Step 2-1. Tool Use 개념 이해
-
-Claude의 Tool Use는 3단계로 동작합니다.
-
-```
-1. 사용자 메시지 전송
-        ↓
-2. Claude가 "이 툴을 써야겠다" 판단 → tool_use 블록 반환
-        ↓
-3. 우리 코드가 실제로 툴 실행 → 결과를 tool_result로 전달
-        ↓
-4. Claude가 결과를 보고 최종 답변 생성
-```
-
----
-
-### Step 2-2. 도구 정의 (`core/tools.py`)
-
-```python
-import os
-import subprocess
-
-# 도구 스펙 정의 (Claude에게 알려줄 형태)
-TOOL_SPECS = [
-    {
-        "name": "read_file",
-        "description": "로컬 파일을 읽어 내용을 반환합니다.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "읽을 파일 경로"}
-            },
-            "required": ["path"]
-        }
-    },
-    {
-        "name": "write_file",
-        "description": "파일에 내용을 씁니다.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "content": {"type": "string"}
-            },
-            "required": ["path", "content"]
-        }
-    },
-    {
-        "name": "run_command",
-        "description": "터미널 명령어를 실행하고 결과를 반환합니다.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "실행할 셸 명령어"}
-            },
-            "required": ["command"]
-        }
-    },
-    {
-        "name": "web_search",
-        "description": "웹에서 최신 정보를 검색합니다.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "검색어"}
-            },
-            "required": ["query"]
-        }
-    }
-]
-
-# 실제 도구 구현
-def read_file(path: str) -> str:
-    try:
-        with open(os.path.expanduser(path), "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception as e:
-        return f"오류: {e}"
-
-def write_file(path: str, content: str) -> str:
-    try:
-        with open(os.path.expanduser(path), "w", encoding="utf-8") as f:
-            f.write(content)
-        return f"✓ {path} 저장 완료"
-    except Exception as e:
-        return f"오류: {e}"
-
-def run_command(command: str) -> str:
-    try:
-        result = subprocess.run(
-            command, shell=True, capture_output=True,
-            text=True, timeout=30
-        )
-        output = result.stdout + result.stderr
-        return output[:3000] if output else "(출력 없음)"
-    except subprocess.TimeoutExpired:
-        return "오류: 30초 초과"
-    except Exception as e:
-        return f"오류: {e}"
-
-def web_search(query: str) -> str:
-    try:
-        from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
-        return "\n\n".join(
-            f"제목: {r['title']}\n내용: {r['body']}\nURL: {r['href']}"
-            for r in results
-        )
-    except Exception as e:
-        return f"검색 실패: {e}"
-
-# 도구 실행 디스패처
-TOOL_HANDLERS = {
-    "read_file": lambda inp: read_file(inp["path"]),
-    "write_file": lambda inp: write_file(inp["path"], inp["content"]),
-    "run_command": lambda inp: run_command(inp["command"]),
-    "web_search": lambda inp: web_search(inp["query"]),
-}
-
-def execute_tool(tool_name: str, tool_input: dict) -> str:
-    handler = TOOL_HANDLERS.get(tool_name)
-    if not handler:
-        return f"알 수 없는 도구: {tool_name}"
-    return handler(tool_input)
-```
-
----
-
-### Step 2-3. Tool Use 루프 (`core/llm.py` 업데이트)
-
-```python
-from core.tools import TOOL_SPECS, execute_tool
-
-def chat_with_tools(messages: list[dict]) -> str:
-    while True:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            tools=TOOL_SPECS,
-            messages=messages
-        )
-
-        # 도구 사용 없이 바로 텍스트 응답
-        if response.stop_reason == "end_turn":
-            text_blocks = [b.text for b in response.content if b.type == "text"]
-            return "\n".join(text_blocks)
-
-        # 도구 사용 요청 처리
-        if response.stop_reason == "tool_use":
-            # Claude의 응답 메시지 추가
-            messages.append({"role": "assistant", "content": response.content})
-
-            # 각 도구 실행 후 결과 수집
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    print(f"  🔧 [{block.name}] 실행 중...")
-                    result = execute_tool(block.name, block.input)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result
-                    })
-
-            # 결과를 user 메시지로 전달하고 루프 계속
-            messages.append({"role": "user", "content": tool_results})
-```
-
----
-
-### Step 2-4. 개인화 메모리 (`core/user_profile.py`)
-
-```python
-import json
-import os
-
-PROFILE_PATH = "user_profile.json"
-
-DEFAULT_PROFILE = {
-    "name": "",
-    "preferences": {},
-    "facts": [],        # 기억할 사실들: ["서울 거주", "Python 개발자"]
-    "shortcuts": {}     # 커스텀 단축 명령어
-}
-
-def load_profile() -> dict:
-    if os.path.exists(PROFILE_PATH):
-        with open(PROFILE_PATH) as f:
-            return json.load(f)
-    return DEFAULT_PROFILE.copy()
-
-def save_profile(profile: dict):
-    with open(PROFILE_PATH, "w", encoding="utf-8") as f:
-        json.dump(profile, f, ensure_ascii=False, indent=2)
-
-def build_profile_context(profile: dict) -> str:
-    """시스템 프롬프트에 주입할 사용자 정보"""
-    if not profile.get("name") and not profile.get("facts"):
-        return ""
-    lines = ["## 사용자 정보"]
-    if profile.get("name"):
-        lines.append(f"- 이름: {profile['name']}")
-    for fact in profile.get("facts", []):
-        lines.append(f"- {fact}")
-    return "\n".join(lines)
-```
-
-시스템 프롬프트에 동적으로 주입:
-```python
-# llm.py 수정
-from core.user_profile import load_profile, build_profile_context
-
-def get_system_prompt() -> str:
-    profile = load_profile()
-    profile_context = build_profile_context(profile)
-    base = """당신은 개인 AI 비서입니다. 파일 읽기/쓰기, 웹 검색, 명령어 실행이 가능합니다."""
-    return f"{base}\n\n{profile_context}" if profile_context else base
-```
-
-### Phase 2 체크리스트
-- [ ] "현재 폴더의 파일 목록 알려줘" → `run_command` 실행됨
-- [ ] "구글 최신 뉴스 검색해줘" → `web_search` 실행됨
-- [ ] 사용자 이름 기억함
-- [ ] 연속 도구 사용 (검색 후 파일 저장) 가능
-
----
-
-## Phase 3 — 확장 기능 (2~3개월)
-
-### 목표
-나만의 문서를 지식으로 활용(RAG) + 음성 + 자동화
-
-### 기술 스택 추가
-- `chromadb` 또는 `faiss` (벡터 DB)
-- `sentence-transformers` (임베딩)
-- `openai-whisper` (STT)
-- `pyttsx3` 또는 ElevenLabs API (TTS)
-- `schedule` (스케줄러)
-
----
-
-### Step 3-1. RAG 파이프라인 (`core/rag.py`)
-
-RAG(Retrieval-Augmented Generation)는 "내 문서를 AI의 기억으로 만드는" 기술입니다.
-
-```
-문서 추가 시:
-  PDF/TXT 파일 → 청크 분할 → 임베딩 벡터 생성 → 벡터 DB 저장
-
-질문 시:
-  질문 → 임베딩 → 유사 청크 검색 → 컨텍스트에 주입 → LLM 답변
-```
-
-```python
-import chromadb
-from sentence_transformers import SentenceTransformer
-import re
-
-# 임베딩 모델 (한국어 지원)
-embedder = SentenceTransformer("jhgan/ko-sroberta-multitask")
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
-collection = chroma_client.get_or_create_collection("my_docs")
-
-def chunk_text(text: str, chunk_size=500, overlap=50) -> list[str]:
-    """텍스트를 청크로 분할"""
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    chunks, current = [], ""
-    for sent in sentences:
-        if len(current) + len(sent) > chunk_size:
-            if current:
-                chunks.append(current.strip())
-            current = current[-overlap:] + sent
-        else:
-            current += " " + sent
-    if current:
-        chunks.append(current.strip())
-    return chunks
-
-def add_document(file_path: str, doc_id: str = None):
-    """문서를 RAG DB에 추가"""
-    with open(file_path, encoding="utf-8") as f:
-        text = f.read()
-
-    chunks = chunk_text(text)
-    embeddings = embedder.encode(chunks).tolist()
-    doc_id = doc_id or file_path
-
-    collection.add(
-        documents=chunks,
-        embeddings=embeddings,
-        ids=[f"{doc_id}_chunk_{i}" for i in range(len(chunks))],
-        metadatas=[{"source": file_path, "chunk": i} for i in range(len(chunks))]
-    )
-    print(f"✓ {len(chunks)}개 청크 저장 완료")
-
-def search_docs(query: str, top_k=3) -> str:
-    """관련 문서 청크 검색"""
-    query_emb = embedder.encode([query]).tolist()
-    results = collection.query(query_embeddings=query_emb, n_results=top_k)
-
-    if not results["documents"][0]:
-        return ""
-
-    context_parts = []
-    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-        context_parts.append(f"[출처: {meta['source']}]\n{doc}")
-
-    return "\n\n---\n\n".join(context_parts)
-```
-
-RAG를 시스템 프롬프트에 동적 주입:
-```python
-# chat 함수에서 RAG 컨텍스트 주입
-def chat_with_rag(messages: list[dict]) -> str:
-    last_user_msg = messages[-1]["content"]
-    rag_context = search_docs(last_user_msg)
-
-    system = get_system_prompt()
-    if rag_context:
-        system += f"\n\n## 관련 문서 (참고하여 답변)\n{rag_context}"
-
-    # 이후 chat_with_tools 호출
-    ...
-```
-
----
-
-### Step 3-2. 음성 인터페이스 (`core/voice.py`)
-
-```python
-import subprocess
-import tempfile
-import os
-
-def listen() -> str:
-    """마이크에서 음성을 녹음하고 텍스트로 변환 (Whisper 사용)"""
-    import whisper
-    import sounddevice as sd
-    import numpy as np
-    import scipy.io.wavfile as wav
-
-    print("🎤 말씀하세요... (3초)")
-    sample_rate = 16000
-    recording = sd.rec(
-        int(3 * sample_rate), samplerate=sample_rate,
-        channels=1, dtype='int16'
-    )
-    sd.wait()
-
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        wav.write(f.name, sample_rate, recording)
-        model = whisper.load_model("base")
-        result = model.transcribe(f.name, language="ko")
-        os.unlink(f.name)
-        return result["text"].strip()
-
-def speak(text: str):
-    """텍스트를 음성으로 출력"""
-    import pyttsx3
-    engine = pyttsx3.init()
-    engine.setProperty('rate', 180)
-    engine.say(text)
-    engine.runAndWait()
-```
-
-음성 모드 CLI 추가:
-```python
-# main.py에 --voice 옵션 추가
-import sys
-voice_mode = "--voice" in sys.argv
-
-while True:
-    if voice_mode:
-        user_input = listen()
-        print(f"나: {user_input}")
-    else:
-        user_input = input("나: ")
-
-    response = chat_with_tools(messages)
-    print(f"\n비서: {response}\n")
-
-    if voice_mode:
-        speak(response)
-```
-
----
-
-### Step 3-3. 스케줄러 (`core/scheduler.py`)
-
-```python
-import schedule
-import time
-import threading
-from core.llm import chat_with_tools
-
-scheduled_jobs = []
-
-def add_job(description: str, interval_minutes: int, prompt: str):
-    """정기 실행 작업 등록"""
-    def job():
-        print(f"\n⏰ 스케줄 실행: {description}")
-        messages = [{"role": "user", "content": prompt}]
-        result = chat_with_tools(messages)
-        print(f"결과: {result}\n")
-
-    schedule.every(interval_minutes).minutes.do(job)
-    scheduled_jobs.append({"desc": description, "interval": interval_minutes})
-    print(f"✓ 등록됨: {description} (매 {interval_minutes}분)")
-
-def run_scheduler():
-    """백그라운드 스레드로 스케줄러 실행"""
-    def loop():
-        while True:
-            schedule.run_pending()
-            time.sleep(30)
-    thread = threading.Thread(target=loop, daemon=True)
-    thread.start()
-
-# 사용 예
-# add_job("아침 할 일 요약", 1440, "오늘 해야 할 일을 정리해서 ~/daily.txt에 저장해줘")
-# run_scheduler()
-```
-
-### Phase 3 체크리스트
-- [ ] "지난달 작성한 보고서 내용 기반으로 답해줘" → RAG 검색됨
-- [ ] 음성으로 말하면 음성으로 대답
-- [ ] 매일 아침 자동으로 할 일 목록 생성
-
----
-
-## Phase 4 — 고도화 (3개월+)
-
-### 목표
-스스로 계획하고 실행하는 자율 에이전트 + 플러그인 확장
-
-### 기술 스택 추가
-- `langgraph` 또는 자체 에이전트 루프
-- `mcp` (Model Context Protocol)
-- `Pillow`, `pdf2image` (멀티모달)
-
----
-
-### Step 4-1. 에이전트 루프 설계
-
-ReAct(Reason + Act) 패턴으로 복잡한 작업을 단계별로 해결합니다.
-
-```
-[사용자 목표]
-    ↓
-[Thought: 어떻게 할까 생각]
-    ↓
-[Action: 도구 실행]
-    ↓
-[Observation: 결과 확인]
-    ↓ (목표 달성될 때까지 반복)
-[Final Answer]
-```
-
-```python
-# core/agent.py
-
-AGENT_SYSTEM = """
-당신은 자율적으로 작업을 계획하고 실행하는 AI 에이전트입니다.
-
-복잡한 작업을 받으면:
-1. 작업을 작은 단계로 분해하세요.
-2. 각 단계에 필요한 도구를 선택하세요.
-3. 실행 결과를 보고 다음 단계를 결정하세요.
-4. 최종 결과를 명확히 보고하세요.
-
-불확실하면 사용자에게 확인을 요청하세요.
-"""
-
-class Agent:
-    def __init__(self, max_iterations=10):
-        self.max_iterations = max_iterations
-
-    def run(self, goal: str) -> str:
-        messages = [{"role": "user", "content": f"목표: {goal}"}]
-        iteration = 0
-
-        while iteration < self.max_iterations:
-            iteration += 1
-            print(f"\n[에이전트 루프 {iteration}/{self.max_iterations}]")
-
-            response = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=8096,
-                system=AGENT_SYSTEM,
-                tools=TOOL_SPECS,
-                messages=messages
-            )
-
-            if response.stop_reason == "end_turn":
-                final = "\n".join(
-                    b.text for b in response.content if b.type == "text"
-                )
-                return final
-
-            if response.stop_reason == "tool_use":
-                messages.append({"role": "assistant", "content": response.content})
-                results = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        print(f"  🔧 {block.name}({block.input})")
-                        result = execute_tool(block.name, block.input)
-                        results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result
-                        })
-                messages.append({"role": "user", "content": results})
-
-        return "최대 반복 횟수 초과. 작업을 분할해서 시도해주세요."
-
-# 사용 예
-# agent = Agent()
-# result = agent.run("내 Downloads 폴더의 PDF 파일들을 요약해서 summary.md로 저장해줘")
-```
-
----
-
-### Step 4-2. MCP 서버 연동
-
-MCP(Model Context Protocol)는 Claude가 외부 서비스와 표준화된 방식으로 통신하는 프로토콜입니다. 이미 만들어진 MCP 서버를 연동하거나, 나만의 MCP 서버를 만들 수 있어요.
-
-```python
-# 기존 MCP 서버 활용 예시 (GitHub, Slack, Google Drive 등)
-# Claude Code에서 사용하는 방법과 동일
-
-# ~/.config/claude/claude_desktop_config.json
-{
-    "mcpServers": {
-        "github": {
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-github"],
-            "env": {"GITHUB_TOKEN": "your_token"}
-        },
-        "filesystem": {
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
-        }
-    }
-}
-```
-
-나만의 MCP 서버 제작:
-```python
-# my_mcp_server.py
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp import types
-
-server = Server("my-assistant-tools")
-
-@server.list_tools()
-async def list_tools():
-    return [
-        types.Tool(
-            name="get_weather",
-            description="현재 날씨 조회",
-            inputSchema={
-                "type": "object",
-                "properties": {"city": {"type": "string"}},
-                "required": ["city"]
-            }
-        )
-    ]
-
-@server.call_tool()
-async def call_tool(name: str, arguments: dict):
-    if name == "get_weather":
-        city = arguments["city"]
-        # 실제 날씨 API 호출
-        return [types.TextContent(type="text", text=f"{city} 현재 22°C, 맑음")]
-
-async def main():
-    async with stdio_server() as (read, write):
-        await server.run(read, write, server.create_initialization_options())
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
-```
-
----
-
-### Step 4-3. 멀티모달 처리 (`core/vision.py`)
-
-```python
-import base64
-from pathlib import Path
-
-def encode_image(image_path: str) -> tuple[str, str]:
-    """이미지를 base64로 인코딩"""
-    path = Path(image_path)
-    suffix_to_media = {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp"
-    }
-    media_type = suffix_to_media.get(path.suffix.lower(), "image/jpeg")
-    with open(path, "rb") as f:
-        return base64.standard_b64encode(f.read()).decode("utf-8"), media_type
-
-def chat_with_image(text: str, image_path: str) -> str:
-    """이미지 + 텍스트 질문"""
-    img_data, media_type = encode_image(image_path)
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2048,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": media_type, "data": img_data}
-                },
-                {"type": "text", "text": text}
-            ]
-        }]
-    )
-    return response.content[0].text
-
-# 사용 예
-# result = chat_with_image("이 다이어그램을 설명해줘", "~/Desktop/diagram.png")
-# result = chat_with_image("이 코드의 문제점을 찾아줘", "screenshot.png")
-```
-
----
-
-### Step 4-4. 플러그인 시스템 (`core/plugins.py`)
-
-```python
-import importlib
-import os
-from pathlib import Path
-
-PLUGINS_DIR = Path("plugins")
-
-class PluginManager:
-    def __init__(self):
-        self.plugins = {}
-        self.extra_tools = []
-
-    def load_all(self):
-        """plugins/ 폴더의 모든 플러그인 자동 로드"""
-        if not PLUGINS_DIR.exists():
-            return
-        for py_file in PLUGINS_DIR.glob("*.py"):
-            if py_file.name.startswith("_"):
-                continue
-            module = importlib.import_module(f"plugins.{py_file.stem}")
-            if hasattr(module, "PLUGIN_TOOLS"):
-                self.extra_tools.extend(module.PLUGIN_TOOLS)
-                print(f"  🔌 플러그인 로드: {py_file.stem}")
-
-# plugins/notion.py 예시
-PLUGIN_TOOLS = [
-    {
-        "name": "add_notion_page",
-        "description": "Notion에 새 페이지를 추가합니다.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "content": {"type": "string"}
-            },
-            "required": ["title", "content"]
-        }
-    }
-]
-
-def add_notion_page(title: str, content: str) -> str:
-    import requests
-    # Notion API 호출
-    headers = {"Authorization": f"Bearer {os.getenv('NOTION_TOKEN')}"}
-    # ... (실제 API 구현)
-    return f"✓ Notion 페이지 생성: {title}"
-```
-
-### Phase 4 체크리스트
-- [ ] "내 GitHub PR 목록 정리해줘" 자율 실행됨
-- [ ] 이미지를 보여주며 "이거 설명해줘" 가능
-- [ ] 플러그인 폴더에 파일 추가하면 자동으로 새 도구 활성화
-- [ ] MCP 서버로 Slack, Notion 등 연동
-
----
-
-## 추천 개발 흐름
-
-```
-1주차: Phase 1 완성 → 매일 써보기
-2~3주차: Phase 2 도구 하나씩 추가 (파일 → 검색 → 실행)
-1~2개월차: RAG 구축 (내 문서들 먹이기)
-이후: 필요한 기능부터 선택적으로 구현
-```
 
 ## 참고 자료
+
 - [Anthropic API 공식 문서](https://docs.anthropic.com)
 - [Model Context Protocol](https://modelcontextprotocol.io)
 - [ChromaDB 문서](https://docs.trychroma.com)
 - [LangGraph (에이전트 프레임워크)](https://langchain-ai.github.io/langgraph/)
+
+---
+
+## Jarvis 5단계 진화 로드맵 (최종 비전)
+
+### Level 1: AI Assistant (현재 단계)
+**특징**: 질문 → LLM → Tool → 답변
+- ChatGPT에 Tool을 붙인 수준
+- 예: "엑셀 만들어." → 엑셀 생성 → 끝
+
+---
+
+### Level 2: Agent OS (기반 완료, 세부 보완 필요)
+**특징**: Planner → Executor → Reflection → Memory → Permission → Plugin → Observer
+- 여기까지가 위 12 STEP 로드맵
+- Jarvis가 코딩, 문서 작업, 브라우저, Git, Windows 제어를 꽤 잘 함
+- **하지만 아직 명령을 기다림**
+
+---
+
+### Level 3: Proactive Jarvis (진짜 재미있는 단계)
+**특징**: Jarvis가 먼저 말함!
+- Event를 감지하고 먼저 행동
+- 예:
+  - "보스, 오늘 Commit 안 했습니다."
+  - "보스, 회의까지 15분 남았습니다."
+  - "보스, Downloads에 계약서가 생겨 자동으로 정리했습니다."
+- **필요한 것**: Goal Manager
+  - 현재 목표 기억 (예: Jarvis 개발 → Git 유지 → 메일 확인 → 운동)
+
+---
+
+### Level 4: Digital Twin
+**특징**: 사용자를 모델링
+- Jarvis가 사용자의 패턴을 앎
+- 예:
+  - 보스는 아침에는 코딩, 오후에는 문서, 밤에는 게임
+  - 회의자료는 항상 PPT → 다운로드 → Teams
+  - Python 프로젝트는 항상 VSCode
+- **기반**: Knowledge Graph
+- 결과: "평소처럼 해." 라고만 말해도 Jarvis가 무슨 뜻인지 앎
+
+---
+
+### Level 5: Cognitive Architecture (거의 AGI 연구 수준)
+**특징**: Jarvis 안에 여러 개의 "뇌"가 있음
+- 전문 Agent들: Planner, Critic, Researcher, Coder, Vision, Memory, Scheduler, Browser, Office
+- Planner가 작업을 적절한 Agent에게 분배
+- **Meta Learning**: 자기 자신을 개선
+  - Task 실패 → 왜 실패? → Prompt 수정 → Tool 선택 변경 → Memory 업데이트 → 다음부터 개선
+- 이게 Claude Code도 많이 사용하는 방식
+
+---
+
+### 최종 비전: Personal AI Operating System
+**개념**: Windows 자체가 Jarvis 중심으로 동작
+- Windows 위에 AI 하나가 있는 것이 아니라, Windows 자체가 Jarvis 중심
+- 구조:
+  ```
+  Windows → Jarvis Kernel → Permission → Plugin → Knowledge → Memory → Automation → Applications
+  ```
+- 사용자는 프로그램을 실행하지 않음
+- 그냥 "Jarvis, 이번 프로젝트 계속하자." 한마디면 됨
+- Jarvis가 전부 준비:
+  - VSCode 실행
+  - Git 상태 확인
+  - 어제 작업 복원
+  - 관련 문서 열기
+  - 필요한 터미널 실행
+
+---
+
+### 진정한 최종 목표: AI 동료
+**개념**: 단순한 데스크톱 비서가 아니라, 사용자의 디지털 업무 전반을 담당하는 개인 AI 플랫폼
+- 장기 목표를 기억
+- 작업을 며칠 또는 몇 주에 걸쳐 이어서 진행
+- 새로운 도구를 스스로 학습해 사용
+- 사용자의 피드백을 통해 행동 방식을 개선
+- 필요할 때만 개입하고 평소에는 조용히 백그라운드에서 환경을 관리
+
+**핵심 순환**:
+```
+Windows → Observer → Knowledge Engine → Planner → Action → Learning → Observer (계속 순환)
+```
+→ 24시간 살아 있음!
+
+---
+
+## 현재 상태 평가 (Level 2 - Agent OS)
+
+**✅ Level 2 Agent Runtime 완료! 진정한 Jarvis 중앙 실행 엔진!**
+
+현재 Executor가 완전히 재설계됐습니다! 더 이상 "Task Runner"가 아닌 진정한 Agent Runtime입니다!
+
+### 새로 구현된 Executor 메서드:
+- **initialize()**: 초기화
+- **execute_goal()**: 메인 메서드
+- **run_iteration()**: 한 번의 반복 실행 (핵심!)
+- **build_context()**: 모든 Context 조립 (Conversation + Memory + Workspace + OS + Task + Scratchpad)
+- **select_task()**: 다음 Task 선택
+- **reason_next_action()**: 다음 Action Reasoning
+- **select_tool()**: LLM 기반 Best Tool 선택 (Rule-based 아님!)
+- **request_permission()**: Permission 체크
+- **execute_tool()**: Tool 실행
+- **verify_execution()**: 실행 결과 검증
+- **process_observation()**: Observation 처리
+- **reflect()**: Reflection
+- **update_memory()**: Memory 업데이트
+- **evaluate_goal()**: Goal 평가 (달성 여부 확인)
+- **recover()**: 실패 복구 (Retry → Alternative → Fallback)
+- **finalize()**: 최종 종료 처리
+- **generate_response()**: 최종 답변 생성
+
+### Level 2 완료!
+이제 Jarvis는:
+- Planner와 협력하고,
+- Context를 조립하고,
+- 적절한 Tool을 선택하고,
+- 권한을 확인하고,
+- 실행 결과를 검증하고,
+- 실패를 복구하고,
+- Memory와 Scratchpad를 갱신하며,
+- 목표 달성 여부를 계속 판단합니다!
+
+---
+
+## 다음 단계 (Level 3 - Proactive Jarvis)
+
+**Level 2 완료! 이제 Level 3로 넘어갈 준비가 됐습니다!**
+1. **Observer Event를 처리하는 시스템을 구축하세요! (예: Downloads에 파일이 생기면 사용자에게 알려주거나 자동으로 정리하는 등)**
+2. **Goal Manager를 구축하세요! (Level 3 Proactive Jarvis 핵심!)**
+3. **Project Indexer, Automation Engine, Knowledge Graph, Semantic Memory 등의 Tools를 실제로 테스트하고 개선하세요!**
+
+---
+
+**상태: Level 2 (Agent Runtime) 완료! Level 3 (Proactive Jarvis) 준비 중! 🎉🚀**

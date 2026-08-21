@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "description": "Jarvis lightweight bootstrap asset manifest. Release automation fills URLs and SHA-256 values.",
+  "assets": [],
+  "roles": ["core", "conversation", "coding", "vision", "stt", "tts", "rag"]
+}

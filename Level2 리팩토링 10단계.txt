@@ -1,0 +1,211 @@
+
+# Level2 리팩토링 10단계 - 진행 현황
+
+> 이 문서는 2026-07-22 기반 리팩터링의 완료 기록입니다. 이후 실제 GUI 사용에서
+> 대화 문맥 단절, Tool 없는 성공 응답, 부분 검증, Workspace·Coding Agent 한계가
+> 추가로 확인되었습니다. 현재 개선 계획과 완료 기준은 `AGENT_RUNTIME_ROADMAP.md`,
+> 최신 구현 상태는 `PROJECT_REVIEW.md`를 기준으로 합니다.
+
+## 🎯 프로젝트 목표
+Level 2 (Agent OS) 완성을 위해 기존 코드의 문제점을 개선하고, 실제로 도구를 완벽하게 다룰 수 있는 기반을 구축합니다.
+
+---
+
+## 📂 단계별 진행 현황
+
+### ✅ 1단계: Tool Registry 단일화
+- **상태**: 완료
+- **목표**: 단일 진실 공급원(SSOT)으로 도구 관리
+- **작업 내용**:
+  - `core/tools.py`의 `get_tools_schema()`와 `execute_tool()`을 유일한 진실 공급원으로 지정
+  - `planner.py`, `executor.py`, `react.py`에 있던 하드코딩된 도구 리스트 전부 제거
+  - 모든 컴포넌트가 `get_tools_schema()`를 통해 동적으로 도구 목록을 가져오도록 수정
+  - 58개 도구가 전체 활성화됨 (기존 17개 → 58개)
+- **변경 파일**:
+  - `core/tools.py`
+  - `core/planner.py`
+  - `core/executor.py`
+  - `core/react.py`
+
+---
+
+### ✅ 2단계: Executor를 chat_with_tools() 기반으로 전환
+- **상태**: 완료
+- **목표**: Native Tool Calling으로 안정성 향상
+- **작업 내용**:
+  - 기존 `self.llm.chat()` + JSON 텍스트 파싱 방식 제거
+  - `core/llm.py`의 `chat_with_tools()` (native function calling)로 교체
+  - `_extract_json()` 메서드 제거
+  - Reasoner/ToolSelector 로직이 훨씬 단순하고 안정적으로 변경
+- **변경 파일**:
+  - `core/executor.py`
+  - `core/llm.py`
+
+---
+
+### ✅ 3단계: Permission Manager 실제 연결
+- **상태**: 완료
+- **목표**: 실제 권한 체크 시스템 연동
+- **작업 내용**:
+  1. **권한 항목 확장** (`core/permission.py`)
+     - `data_delete`: 파일 외 데이터(메모리/지식그래프/스케줄 등) 삭제 권한
+     - `automation`: 스케줄러/자동화 엔진/멀티에이전트 등 자동 실행 작업 권한
+  2. **도구-권한 매핑 테이블** (`TOOL_PERMISSION_MAP` 추가)
+     - 58개 도구 전체를 위험도별로 8개 카테고리에 매핑
+     - 위험도가 낮은 도구(단순 조회 등)는 매핑 없이 통과
+  3. **Executor 권한 체크 연동**
+     - `Executor.request_permission()`이 하드코딩 `return True` 대신 실제 `PermissionManager.request_permission()` 호출
+     - `main_qt.py`의 UI 승인 다이얼로그가 정상적으로 작동하도록 연동
+- **변경 파일**:
+  - `core/permission.py`
+  - `core/executor.py`
+
+---
+
+### ✅ 4단계: run_command / 파일 접근 보안 강화
+- **상태**: 완료
+- **목표**: 보안 강화 및 안전한 실행 환경 구축
+- **작업 내용**:
+  1. **config.py & .env.example**
+     - `ALLOWED_COMMANDS` 추가 (기본: dir,ls,cd,echo,type,cat,pwd,whoami,date,time,ver,python,pip,git,node,npm)
+     - `Config` 클래스에 `ALLOWED_COMMANDS` 프로퍼티 추가
+     - ALLOWED_PATHS 주석 업데이트 (비우면 프로젝트 루트만 허용)
+  2. **core/harness.py**
+     - `validate_path`: ALLOWED_PATHS가 비어있으면 프로젝트 루트만 허용하도록 변경
+     - `parse_command`: shlex로 명령어 안전하게 파싱하는 함수 추가
+     - `validate_command`: allowlist 방식으로 변경, (bool, str, list) 반환으로 수정
+  3. **core/tools.py**
+     - `_resolve_and_validate_path`: 경로 검증 헬퍼 함수 추가
+     - `read_file`, `write_file`, `list_directory`, `create_directory`, `delete_directory`, `add_document`: 경로 검증 강화
+     - `run_command`: shell=False 기본, Windows 내장 명령어(echo, dir 등) 처리
+- **변경 파일**:
+  - `config.py`
+  - `.env.example`
+  - `core/harness.py`
+  - `core/tools.py`
+
+---
+
+### ✅ 5단계: Reflection/Verify/Recover 파이프라인 연결
+- **상태**: 완료
+- **목표**: 실행 결과 검증, 실패 복구, 학습 기능 완성
+- **작업 내용**:
+  1. `core/verifier.py` 신규 생성: 도구별 정교한 검증 로직 구현
+     - 파일 작성/읽기/삭제, 명령 실행, 문서 추가 등 각 도구에 맞는 검증
+     - VerificationResult 데이터클래스로 결과 반환
+  2. `core/recovery.py` 신규 생성: 다단계 복구 전략 구현
+     - Retry → Parameter 수정 → Alternative Tool → Fallback 순서로 시도
+     - RecoveryResult 데이터클래스로 결과 반환
+  3. `Executor`에 완전 연결:
+     - `__init__`에서 `verifier`와 `recovery_manager` 초기화
+     - `verify_execution` → ToolVerifier 사용
+     - `recover` → RecoveryManager 사용
+     - `reflect` → 실패/성공 분석 및 Reflection 모듈 호출
+     - `process_observation` → 성공 시 retry count 리셋
+     - `run_iteration`에서 reflect에 적절한 파라미터 전달
+- **변경 파일**:
+  - `core/verifier.py` (신규)
+  - `core/recovery.py` (신규)
+  - `core/executor.py`
+
+---
+
+### ✅ 6단계: Planner 반복 재호출
+- **상태**: 완료
+- **목표**: 매 iteration마다 재계획 필요 여부 체크
+- **작업 내용**:
+  1. `Planner.should_replan()` 메서드 추가
+     - 연속 실패 3회 이상 → 재계획 필요
+     - 대기 Task가 없는데 목표 미달성 → 재계획 필요
+  2. `Executor`에 `_consecutive_failures` 변수 추가
+     - 성공 시 → 0으로 리셋
+     - 실패 시 → 1 증가
+     - 복구 성공 시 → 0으로 리셋
+  3. `Executor.run_iteration()`에서 매 반복마다 `should_replan()` 호출
+     - 재계획 필요 시 → `planner.decompose_goal()` 재호출
+     - 재계획 성공 → consecutive_failures 리셋
+- **변경 파일**:
+  - `core/planner.py`
+  - `core/executor.py`
+
+---
+
+### ✅ 7단계: multi_agent.py import 버그 수정
+- **상태**: 완료
+- **목표**: 멀티에이전트 기능 정상 작동
+- **작업 내용**:
+  1. `core/multi_agent.py`에서 `from core.llm import chat_with_tools` → `from core.llm import get_llm_client`로 변경
+  2. `MultiAgentOrchestrator.__init__`에서 `self.llm = get_llm_client()`로 초기화
+  3. 모든 `chat_with_tools(...)` 호출 → `self.llm.chat_with_tools(...)[0]`로 변경 (텍스트만 사용)
+  4. `Scratchpad.add_task()`/`add_observation()`/`add_failure()` 호출을 Scratchpad의 실제 메서드 시그니처에 맞춰 수정
+- **변경 파일**:
+  - `core/multi_agent.py`
+
+---
+
+### ✅ 8단계: 실제 플러그인 개발 착수
+- **상태**: 1차 완료 (2026-07-22)
+- **목표**: 유용한 플러그인들 실제 구현
+- **작업 계획**:
+  1. `plugins/filesystem.py`: 파일 시스템 고급 도구 (디렉토리 트리, 파일 검색 등)
+  2. `plugins/git.py`: Git 연동 (commit, push, pull, status 등)
+  3. `plugins/browser.py`: Playwright 기반 브라우저 자동화
+  4. `plugins/mail.py`: 메일 전송/수신 (SMTP/IMAP)
+  5. `plugins/calendar.py`: 캘린더 연동
+
+- **구현 결과**:
+  1. `plugins/filesystem.py`: 안전 경로 기반 트리 조회·파일 패턴 검색
+  2. `plugins/git.py`: status/diff/log/commit/push/pull (`shell=False`, 인자 배열 실행)
+  3. `plugins/browser.py`: Playwright 기반 본문 조회·스크린샷(선택 의존성 미설치 시 명확한 오류)
+  4. 플러그인 자동 로딩을 멱등화하고 LLM 도구 스키마에 동적으로 반영
+  5. 모든 내장/플러그인 실행 진입점에 중앙 Permission 검사를 적용
+- **후속 범위**: mail/calendar는 OAuth·계정 정책 설계가 필요하므로 8단계 확장 작업으로 보류
+- **브라우저 실환경 검증 (2026-07-22)**:
+  1. `playwright 1.61.0` 및 Chromium 149 설치 완료
+  2. `https://example.com/` 본문 추출·전체 페이지 스크린샷 종단 테스트 통과
+  3. localhost, loopback, 사설망, link-local metadata 주소, URL 자격 증명, 비표준 포트 차단
+  4. DNS 이름이 사설 IP로 해석되는 경우와 redirect/subresource 사설망 우회 차단
+  5. screenshot 실행 전 경로 검증 및 browser+filesystem_write 중앙 권한 확인
+  6. browser 단위·보안 테스트 12개, Chromium integration 테스트 2개 통과
+
+---
+
+### ✅ 9단계: RAG 의존성 실제 설치·검증
+- **상태**: 완료 (2026-07-22)
+- **목표**: RAG 시스템 정상 작동
+- **작업 계획**:
+  1. `requirements.txt` 수정: `chromadb`, `sentence-transformers` 주석 해제
+  2. `core/rag.py`에서 한국어를 포함한 다국어 공식 모델 `BAAI/bge-m3`를 로컬 경로로 고정
+  3. RAG 기능 테스트: 문서 추가 → 검색 → 결과 반환
+- **구현 결과**:
+  1. Python 3.12 가상환경 재생성, 기존 깨진 Python 3.10 환경은 `.venv-python310-broken`으로 보존
+  2. `chromadb 1.5.9`, `sentence-transformers 5.6.0`, `torch 2.13.0+cpu` 설치 확인
+  3. 존재하지 않는 `BAAI/bge-small-ko-v1.5` 대신 공식 다국어 모델 `BAAI/bge-m3` 사용
+  4. 모델을 `data/models/bge-m3`에 로컬 고정(실행 중 암묵적 다운로드 금지)
+  5. Chroma Collection에 로컬 embedding function을 실제 연결
+  6. 한국어 문서 추가 → 벡터 검색 → RAG 재시작 → 영속 검색 회귀 테스트 통과
+
+---
+
+### ✅ 10단계: 로컬 LLM 한계 인지 및 하이브리드 방안 검토
+- **상태**: 구현 및 오프라인 fallback 검증 완료 (2026-07-22)
+- **목표**: 모델 성능과 안정성의 균형
+- **작업 계획**:
+  1. `core/llm.py`에 Claude API 클라이언트 추가
+  2. Tool Selector/Reasoner는 Claude API, 나머지는 로컬 모델로 분리
+  3. 성능 비교 테스트
+- **구현 결과**:
+  1. `LLM_PROVIDER=hybrid`와 역할 목록 `HYBRID_CLAUDE_ROLES=reasoning` 추가
+  2. Executor의 Tool Reasoner만 `HybridLLMClient` 사용, 일반 응답·메모리·RAG·실행은 로컬 유지
+  3. Claude 모델 설정을 Ollama의 `MODEL_NAME`과 분리해 `ANTHROPIC_MODEL` 사용
+  4. API 키 없음, placeholder 키, API 오류, 예외, 빈 응답 시 Ollama 자동 fallback
+  5. system role 메시지를 Anthropic API 최상위 system 파라미터로 정규화
+  6. Provider별 성공/실패/fallback 횟수와 마지막 지연시간 측정 기능 추가
+  7. 실제 `.env`를 hybrid로 전환했으며 현재 API 키 미설정 상태에서는 Ollama만 호출
+  8. 하이브리드 라우팅 회귀 테스트 7개 통과
+- **남은 실환경 확인**: 실제 Anthropic API 키 입력 후 Claude 성공 경로의 품질·비용·지연시간 비교
+
+---
+
+## 📝 다음 단계
+실제 Ollama·GUI·마이크·카메라·TTS 종단 테스트 또는 mail/calendar OAuth 설계

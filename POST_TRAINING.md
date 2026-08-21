@@ -1,0 +1,39 @@
+# 아니스 Post-training 운영 설계
+
+Post-training은 현재 실행 품질을 대신하는 기능이 아니다. 먼저 Runtime에서 검증된 실행
+이력과 사용자 피드백을 축적하고, 오프라인 평가에서 기존 버전보다 나아진 경우에만
+별도 Adapter를 배포한다.
+
+## 구현된 데이터 흐름
+
+1. `Executor.execute_turn()`이 개인정보가 마스킹된 trajectory를 `learning.db`에 기록한다.
+2. 라우팅 근거, Tool Loadout, reasoning level, Tool 입력·결과와 최종 상태가 연결된다.
+3. 사용자 피드백은 원본 응답과 정정 답변을 연결한다.
+4. `python scripts/export_post_training_data.py`가 SFT, DPO, verifier-RL 후보를 JSONL로 내보낸다.
+5. 내보낸 데이터는 `review_required=true`이며 자동 학습이나 자동 배포를 수행하지 않는다.
+
+## 학습 진입 기준
+
+- 개인정보·비밀·로컬 경로를 다시 사람이 검사한다.
+- 학습/검증/테스트 세트를 세션 단위로 분리해 누수를 막는다.
+- 같은 실패와 중복 문장을 제거한다.
+- 일반 대화, 문맥 유지, Tool 선택, Tool 인자, 실패 복구, 코딩, 웹 근거를 균형 있게 포함한다.
+- 최소 500개의 고품질 승인 SFT 사례와 200개의 선호 쌍이 쌓이기 전에는 QLoRA/DPO를 시작하지 않는다.
+- 모델 학습 전후에 동일한 애플리케이션 평가 세트를 실행한다.
+
+## 권장 실험
+
+- 기반 모델: 현재 로컬 7B 역할 모델
+- 방식: 4bit QLoRA, Adapter 역할별 분리
+- SFT 대상: 한국어 응답, 문맥 질문, Intent/Slot 및 Tool 인자
+- DPO 대상: 사용자가 직접 정정한 chosen/rejected 쌍
+- Verifier-RL 대상: 파일·코드·문서처럼 실제 결과를 결정론적으로 검증할 수 있는 작업만
+- 배포: conversation/tool-selection/code Adapter를 별도로 유지하고 평가를 통과한 Adapter만 활성화
+
+## 금지 사항
+
+- 웹 문서나 대화 전체를 검토 없이 학습하지 않는다.
+- 실패한 Tool 결과를 성공 보상으로 사용하지 않는다.
+- LLM Judge 점수만으로 배포하지 않는다.
+- 실행 중인 프로그램이 스스로 모델 가중치나 운영 Skill을 변경하지 않는다.
+- 사용자 승인 없이 외부 데이터 업로드나 클라우드 학습을 시작하지 않는다.

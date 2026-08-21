@@ -1,0 +1,4 @@
+# RTX/NVIDIA Windows 환경용. 일반 requirements 설치 후 CUDA PyTorch로 교체합니다.
+-r requirements.txt
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128

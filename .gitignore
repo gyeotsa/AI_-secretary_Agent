@@ -5,8 +5,18 @@
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/permissions.json
+data/tts_settings.json
+data/style_learning_profiles.json
+data/workspaces.json
+data/simple_rag.json
+data/chroma_db/
+data/mockup_styles/
+data/mockup_outputs/
 
 # Python
+.pytest_cache/
+.pytest-tmp/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -15,6 +25,7 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+release/
 downloads/
 eggs/
 .eggs/
@@ -29,9 +40,19 @@ wheels/
 *.egg
 
 # 가상 환경
+.venv*/
 venv/
 ENV/
 env/
+
+# 로컬 ML 모델
+data/models/
+data/logs/
+data/diagnostics/
+data/cache/
+data/browser_profiles/
+data/AnisKnowledgeVault/
+data/obsidian_settings.json
 
 # IDE
 .vscode/
@@ -43,3 +64,14 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+data/discovered_apps.json
+data/user_app_aliases.json
+data/voice_training/
+external/GPT-SoVITS/
+.gpt-sovits-venv/
+data/voices/*/reference.wav
+data/voices/*/*.pth
+data/voices/*/*.ckpt
+assets/jarvis_icon_chroma.png
+assets/jarvis_icon_v2.png
+assets/jarvis_icon_final.png

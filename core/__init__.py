@@ -1,4 +1,7 @@
-# Package initialization
-from . import llm, memory, harness
+"""Jarvis core package.
 
-__all__ = ["llm", "memory", "harness"]
+Submodules are intentionally not imported here. Eager imports made lightweight
+modules such as ``core.plugin`` depend on every LLM/UI dependency being installed.
+"""
+
+__all__ = []

@@ -2,22 +2,51 @@ import sys
 import math
 import random
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, 
-                             QFrame, QHBoxLayout, QLineEdit, QPushButton)
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect
-from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush
+                             QFrame, QHBoxLayout, QLineEdit, QPushButton, 
+                             QFileDialog, QDialog, QMessageBox, QScrollArea,
+                             QCheckBox, QListWidget, QListWidgetItem)
+from PyQt6.QtWidgets import QTextEdit, QInputDialog
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect, QRectF
+from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush, QPainterPath
 from .visualizer import AudioVisualizer
 from core.state_machine import State
+from core.specialist_workspaces import get_specialist_workspace_registry
+from .specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindow, MockupWorkspaceWindow
+from .knowledge_graph_workspace import KnowledgeGraphWindow
+
+MAIN_STYLE = """
+QWidget { color: #dce8f5; font-family: "Segoe UI"; font-size: 12px; }
+QFrame#topBar {
+    background: rgba(10, 18, 31, 238); border-bottom: 1px solid #213247;
+    border-top-left-radius: 14px; border-top-right-radius: 14px;
+}
+QPushButton#toolbarButton {
+    color: #8da2b8; background: transparent; border: 1px solid transparent;
+    border-radius: 8px; font-size: 11px; font-weight: 600; padding: 4px;
+}
+QPushButton#toolbarButton:hover { color: #ecf8ff; background: #16263a; border-color: #29445f; }
+QPushButton#toolbarButton:pressed { background: #0e1a2a; }
+QPushButton#closeButton { color: #8da2b8; background: transparent; border: 0; border-radius: 8px; }
+QPushButton#closeButton:hover { color: #ffffff; background: #d64f63; }
+QLabel#status { color: #6de8ff; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
+QLabel#workspace { color: #718ba4; font-size: 11px; padding: 4px; }
+QLabel#userMessage { color: #9cb8ce; font-size: 14px; padding: 12px 20px; }
+QLabel#assistantMessage { color: #edf7ff; font-size: 15px; font-weight: 500; padding: 12px 20px; }
+QLineEdit#commandInput {
+    color: #eef8ff; background: rgba(13, 25, 42, 242); border: 1px solid #29445f;
+    border-radius: 12px; padding: 13px 16px; font-size: 13px; selection-background-color: #217d9b;
+}
+QLineEdit#commandInput:hover { border-color: #3c607f; }
+QLineEdit#commandInput:focus { border-color: #54d8ef; background: rgba(16, 31, 51, 250); }
+QToolTip { color: #eaf7ff; background: #101d2d; border: 1px solid #29445f; padding: 5px; }
+"""
 
 class DragTab(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(40)
+        self.setObjectName("topBar")
         self.drag_position = None
-        self.setStyleSheet("""
-            QFrame {
-                background: transparent;
-            }
-        """)
     
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -59,6 +88,7 @@ class MiniControlBar(QFrame):
             }
         """
         
+        button_style = "\n".join(line.split("# ", 1)[0] for line in button_style.splitlines())
         self.minimize_btn = QPushButton("─")
         self.minimize_btn.setStyleSheet(button_style)
         self.minimize_btn.setFixedSize(17, 17)  # 버튼 크기 조금 키움
@@ -106,8 +136,10 @@ class MiniControlBar(QFrame):
 class SoundBarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(145, 25)
-        self.bar_count = 12
+        self.setMinimumWidth(280)
+        self.setMaximumWidth(430)
+        self.setFixedHeight(44)
+        self.bar_count = 28
         self.bar_heights = [0] * self.bar_count
         self.is_speaking = False
         self.is_active = False
@@ -118,20 +150,22 @@ class SoundBarWidget(QWidget):
         
     def set_speaking(self, speaking):
         self.is_speaking = speaking
-        self.is_active = speaking
+        self.is_active = True
+        if not any(self.freq_bands):
+            self.freq_bands = [38.0, 64.0, 46.0]
         
     def set_audio_data(self, amplitude: float, freq_bands: list[float]):
         """실제 오디오 데이터로 사운드바 업데이트"""
         self.is_active = True
         self.freq_bands = freq_bands
         
-        bar_per_band = self.bar_count // len(freq_bands)
+        bar_per_band = max(1, self.bar_count // len(freq_bands))
         for i in range(self.bar_count):
             band_idx = min(i // bar_per_band, len(freq_bands) - 1)
             band_energy = freq_bands[band_idx]
-            height = (amplitude / 100) * 25 * (band_energy / 100 * 2)
+            height = (amplitude / 100) * 19 * (band_energy / 100 * 2)
             offset = random.randint(-1, 1)
-            self.bar_heights[i] = max(0, min(28, int(height + offset)))
+            self.bar_heights[i] = max(2, min(18, int(height + offset)))
         self.update()
         
     def set_audio_level(self, level):
@@ -142,6 +176,7 @@ class SoundBarWidget(QWidget):
     def reset(self):
         self.is_active = False
         self.bar_heights = [0] * self.bar_count
+        self.freq_bands = [0.0, 0.0, 0.0]
         self.update()
         
     def update_bars(self):
@@ -150,44 +185,50 @@ class SoundBarWidget(QWidget):
             
         if self.is_speaking:
             for i in range(self.bar_count):
-                band_idx = min(i // 4, len(self.freq_bands) - 1)
+                band_idx = min(i * len(self.freq_bands) // self.bar_count, len(self.freq_bands) - 1)
                 band_energy = self.freq_bands[band_idx]
-                height = (band_energy / 100) * 25
+                height = (band_energy / 100) * 18
                 offset = random.randint(-2, 2)
-                self.bar_heights[i] = max(0, min(28, int(height + offset)))
+                self.bar_heights[i] = max(2, min(18, int(height + offset)))
         else:
             for i in range(self.bar_count):
-                band_idx = min(i // 4, len(self.freq_bands) - 1)
+                band_idx = min(i * len(self.freq_bands) // self.bar_count, len(self.freq_bands) - 1)
                 band_energy = self.freq_bands[band_idx]
-                height = (band_energy / 100) * 20
+                height = (band_energy / 100) * 15
                 offset = random.randint(-1, 1)
-                self.bar_heights[i] = max(0, min(20, int(height + offset)))
+                self.bar_heights[i] = max(2, min(15, int(height + offset)))
         self.update()
         
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        bar_width = (self.width() - 20) // self.bar_count
-        gap = 2
+
+        available = self.width() - 28
+        gap = 4
+        bar_width = max(2, (available - gap * (self.bar_count - 1)) // self.bar_count)
+        total_width = bar_width * self.bar_count + gap * (self.bar_count - 1)
+        start_x = (self.width() - total_width) // 2
+        center_y = self.height() // 2
+        painter.setPen(QPen(QColor(82, 120, 145, 45), 1))
+        painter.drawLine(12, center_y, self.width() - 12, center_y)
         
         for i in range(self.bar_count):
             height = self.bar_heights[i]
-            x = 10 + i * (bar_width + gap)
-            y = self.height() - height - 5
+            x = start_x + i * (bar_width + gap)
+            y = center_y - max(1, height // 2)
             
             gradient = QLinearGradient(x, y, x, y + height)
             if self.is_speaking:
-                gradient.setColorAt(0.0, QColor(153, 69, 255))
-                gradient.setColorAt(1.0, QColor(80, 20, 120))
+                gradient.setColorAt(0.0, QColor(193, 166, 255))
+                gradient.setColorAt(1.0, QColor(112, 76, 220))
             else:
-                gradient.setColorAt(0.0, QColor(0, 212, 255))
-                gradient.setColorAt(1.0, QColor(0, 100, 150))
+                gradient.setColorAt(0.0, QColor(108, 232, 255))
+                gradient.setColorAt(1.0, QColor(32, 135, 170))
             
             painter.setBrush(QBrush(gradient))
             painter.setPen(Qt.PenStyle.NoPen)
             if height > 0:
-                painter.drawRoundedRect(x, y, bar_width, height, 2, 2)
+                painter.drawRoundedRect(x, y, bar_width, max(2, height), 2, 2)
 
 
 class CircularSoundBarWidget(QWidget):
@@ -289,10 +330,525 @@ class CircularSoundBarWidget(QWidget):
             if height > 0:
                 painter.drawLine(int(inner_x), int(inner_y), int(outer_x), int(outer_y))
 
+class PermissionRequestDialog(QDialog):
+    def __init__(self, permission_name: str, permission_description: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("JARVIS 권한 요청")
+        self.setFixedSize(450, 200)
+        self.result_value = False
+        
+        # UI 스타일
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0a0a1a;
+                border: 2px solid #00d4ff;
+            }
+            QLabel {
+                color: #00d4ff;
+                font-family: Consolas;
+            }
+            QPushButton {
+                background-color: rgba(0, 212, 255, 20);
+                color: #00d4ff;
+                border: 2px solid #00d4ff;
+                border-radius: 8px;
+                padding: 8px 20px;
+                font-family: Consolas;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 212, 255, 40);
+            }
+            QPushButton:pressed {
+                background-color: rgba(0, 212, 255, 60);
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+        
+        # 권한 이름 라벨
+        title_label = QLabel(f"⚠️  권한 요청: {permission_name}")
+        title_font = QFont("Orbitron", 14, QFont.Weight.Bold)
+        title_label.setFont(title_font)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # 권한 설명 라벨
+        desc_label = QLabel(f"{permission_description}\n선택한 결과는 권한 설정에 영구 저장됩니다.")
+        desc_label.setWordWrap(True)
+        desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(desc_label)
+        
+        # 버튼 레이아웃
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(20)
+        
+        deny_btn = QPushButton("거부")
+        deny_btn.clicked.connect(self._on_deny)
+        button_layout.addWidget(deny_btn)
+        
+        allow_btn = QPushButton("허용")
+        allow_btn.clicked.connect(self._on_allow)
+        button_layout.addWidget(allow_btn)
+        
+        layout.addLayout(button_layout)
+    
+    def _on_allow(self):
+        self.result_value = True
+        self.accept()
+    
+    def _on_deny(self):
+        self.result_value = False
+        self.reject()
+
+
+class PermissionSettingsDialog(QDialog):
+    """저장된 권한을 한 화면에서 확인하고 영구 허용/차단하는 대화상자."""
+
+    def __init__(self, permission_manager, parent=None):
+        super().__init__(parent)
+        self.permission_manager = permission_manager
+        self.setWindowTitle("JARVIS 권한 관리")
+        self.resize(560, 520)
+        self.setStyleSheet("""
+            QDialog, QScrollArea, QWidget { background-color: #0a0a1a; }
+            QLabel { color: #c7f7ff; }
+            QCheckBox { color: #00d4ff; font-weight: bold; spacing: 10px; }
+            QPushButton { color: #00d4ff; border: 1px solid #00d4ff;
+                          border-radius: 6px; padding: 7px 16px; }
+        """)
+        layout = QVBoxLayout(self)
+        intro = QLabel("허용된 권한은 다시 묻지 않고 실행하며, 차단된 권한은 요청창 없이 거부합니다.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        rows = QVBoxLayout(content)
+        for permission in self.permission_manager.get_all_permissions():
+            row = QFrame()
+            row_layout = QHBoxLayout(row)
+            labels = QVBoxLayout()
+            name = QLabel(f"{permission.name}  ({permission.id})")
+            name.setStyleSheet("font-weight: bold; color: #ffffff;")
+            description = QLabel(permission.description)
+            description.setStyleSheet("color: #8db8c0;")
+            labels.addWidget(name)
+            labels.addWidget(description)
+            row_layout.addLayout(labels, 1)
+            toggle = QCheckBox("허용")
+            toggle.setChecked(self.permission_manager.check_permission(permission.id))
+            if permission.level.value == "safe":
+                toggle.setEnabled(False)
+                toggle.setToolTip("안전 권한은 항상 허용됩니다.")
+            else:
+                toggle.toggled.connect(
+                    lambda checked, permission_id=permission.id:
+                    self._set_permission(permission_id, checked)
+                )
+            row_layout.addWidget(toggle)
+            rows.addWidget(row)
+        rows.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+        close_button = QPushButton("닫기")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+
+    def _set_permission(self, permission_id: str, allowed: bool):
+        if allowed:
+            self.permission_manager.grant_permission(permission_id)
+        else:
+            self.permission_manager.revoke_permission(permission_id)
+
+
+class TTSVoiceDialog(QDialog):
+    """Select a voice and configure its user address."""
+
+    def __init__(self, settings_manager, parent=None):
+        super().__init__(parent)
+        self.settings_manager = settings_manager
+        self.setWindowTitle("JARVIS TTS 목소리")
+        self.resize(520, 400)
+        self.setStyleSheet("""
+            QDialog, QListWidget { background-color: #0a0a1a; color: #c7f7ff; }
+            QLabel { color: #00d4ff; }
+            QListWidget { border: 1px solid #00d4ff; border-radius: 6px; }
+            QListWidget::item { padding: 10px; }
+            QListWidget::item:selected { background-color: #16495a; color: #ffffff; }
+            QPushButton { color: #00d4ff; border: 1px solid #00d4ff;
+                          border-radius: 6px; padding: 7px 16px; }
+        """)
+        layout = QVBoxLayout(self)
+        guide = QLabel("사용할 목소리를 클릭하고, 음성별 사용자 호칭을 설정하세요.")
+        layout.addWidget(guide)
+        self.voice_list = QListWidget()
+        voices = self.settings_manager.list_voices(refresh=True)
+        for index, voice in enumerate(voices):
+            language = f" · {voice.languages}" if voice.languages else ""
+            provider = {
+                "edge": "온라인",
+                "gpt-sovits": "커스텀",
+            }.get(voice.provider, "Windows")
+            item = QListWidgetItem(f"[{provider}] {voice.name}{language}")
+            item.setData(Qt.ItemDataRole.UserRole, (voice.id, voice.name))
+            self.voice_list.addItem(item)
+            if voice.id == self.settings_manager.selected_voice_id:
+                self.voice_list.setCurrentRow(index)
+        self.voice_list.itemClicked.connect(self._select_voice)
+        layout.addWidget(self.voice_list)
+        self.status_label = QLabel(
+            f"현재 목소리: {self.settings_manager.selected_voice_name or '한국어 기본 음성'}"
+        )
+        layout.addWidget(self.status_label)
+        address_row = QHBoxLayout()
+        address_row.addWidget(QLabel("선택 음성의 호칭"))
+        self.address_input = QLineEdit()
+        self.address_input.setPlaceholderText("예: 보스, 지휘관님, 주인님")
+        self.address_input.setMaxLength(30)
+        address_row.addWidget(self.address_input, 1)
+        self.save_address_button = QPushButton("호칭 저장")
+        self.save_address_button.clicked.connect(self._save_address)
+        address_row.addWidget(self.save_address_button)
+        layout.addLayout(address_row)
+        self.address_status = QLabel("")
+        layout.addWidget(self.address_status)
+        self._load_selected_address()
+        if not voices:
+            self.status_label.setText("사용 가능한 Windows TTS 음성을 찾지 못했습니다.")
+        close_button = QPushButton("닫기")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+
+    def _select_voice(self, item):
+        voice_id, voice_name = item.data(Qt.ItemDataRole.UserRole)
+        if self.settings_manager.select_voice(voice_id, voice_name):
+            self.status_label.setText(f"현재 목소리: {voice_name}")
+            self._load_selected_address()
+        else:
+            self.status_label.setText("목소리 설정에 실패했습니다.")
+
+    def _selected_voice_id(self):
+        item = self.voice_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole)[0] if item else ""
+
+    def _load_selected_address(self):
+        voice_id = self._selected_voice_id()
+        self.address_input.setText(
+            self.settings_manager.get_voice_address(voice_id) if voice_id else ""
+        )
+        self.address_status.setText("")
+
+    def _save_address(self):
+        voice_id = self._selected_voice_id()
+        if not voice_id:
+            self.address_status.setText("먼저 목소리를 선택하세요.")
+            return
+        if self.settings_manager.set_voice_address(voice_id, self.address_input.text()):
+            self.address_input.setText(self.settings_manager.get_voice_address(voice_id))
+            self.address_status.setText("이 음성의 호칭을 저장했습니다.")
+        else:
+            self.address_status.setText("빈 호칭은 저장할 수 없습니다.")
+
+
+class SessionManagerDialog(QDialog):
+    session_selected = pyqtSignal(str)
+    session_created = pyqtSignal(str)
+    session_deleted = pyqtSignal(str)
+    session_reset = pyqtSignal(str)
+
+    def __init__(self, memory_manager, current_session_id: str, parent=None):
+        super().__init__(parent)
+        self.memory_manager = memory_manager
+        self.current_session_id = current_session_id
+        self.setWindowTitle("JARVIS 대화 세션")
+        self.resize(760, 560)
+        self.setStyleSheet("""
+            QDialog, QListWidget, QTextEdit { background-color: #0a0a1a; color: #d8faff; }
+            QLabel { color: #00d4ff; }
+            QListWidget, QTextEdit { border: 1px solid #26677a; border-radius: 6px; }
+            QListWidget::item { padding: 9px; }
+            QListWidget::item:selected { background-color: #16495a; }
+            QPushButton { color: #00d4ff; border: 1px solid #00d4ff;
+                          border-radius: 6px; padding: 7px 12px; }
+        """)
+        layout = QVBoxLayout(self)
+        content = QHBoxLayout()
+        self.session_list = QListWidget()
+        self.session_list.setMinimumWidth(275)
+        self.history = QTextEdit()
+        self.history.setReadOnly(True)
+        content.addWidget(self.session_list, 1)
+        content.addWidget(self.history, 2)
+        layout.addLayout(content)
+
+        buttons = QHBoxLayout()
+        new_button = QPushButton("새 세션")
+        select_button = QPushButton("선택")
+        reset_button = QPushButton("대화 리셋")
+        delete_button = QPushButton("삭제")
+        close_button = QPushButton("닫기")
+        new_button.clicked.connect(self._create_session)
+        select_button.clicked.connect(self._select_session)
+        reset_button.clicked.connect(self._reset_session)
+        delete_button.clicked.connect(self._delete_session)
+        close_button.clicked.connect(self.accept)
+        for button in (new_button, select_button, reset_button, delete_button):
+            buttons.addWidget(button)
+        buttons.addStretch()
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+        self.session_list.currentItemChanged.connect(self._show_history)
+        self.session_list.itemDoubleClicked.connect(lambda _item: self._select_session())
+        self._load_sessions()
+
+    def _load_sessions(self):
+        self.session_list.clear()
+        current_row = 0
+        for index, session in enumerate(self.memory_manager.list_session_details()):
+            marker = "현재 · " if session["session_id"] == self.current_session_id else ""
+            item = QListWidgetItem(
+                f"{marker}{session['title']}\n{session['message_count']}개 메시지 · {session['end_time'][:16]}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, session["session_id"])
+            self.session_list.addItem(item)
+            if session["session_id"] == self.current_session_id:
+                current_row = index
+        if self.session_list.count():
+            self.session_list.setCurrentRow(current_row)
+
+    def _selected_id(self):
+        item = self.session_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else ""
+
+    def _show_history(self, current, _previous=None):
+        if current is None:
+            self.history.clear()
+            return
+        session_id = current.data(Qt.ItemDataRole.UserRole)
+        messages = self.memory_manager.load_session(session_id)
+        lines = []
+        from core.assistant_settings import get_assistant_settings
+        assistant_name = get_assistant_settings().assistant_name
+        for message in messages:
+            speaker = "나" if message["role"] == "user" else assistant_name
+            lines.append(f"{speaker}\n{message['content']}")
+        self.history.setPlainText("\n\n".join(lines) or "아직 대화 내용이 없습니다.")
+
+    def _create_session(self):
+        title, accepted = QInputDialog.getText(self, "새 세션", "세션 이름:", text="새 대화")
+        if accepted and title.strip():
+            self.session_created.emit(title.strip())
+            self.accept()
+
+    def _select_session(self):
+        session_id = self._selected_id()
+        if session_id:
+            self.session_selected.emit(session_id)
+            self.accept()
+
+    def _reset_session(self):
+        session_id = self._selected_id()
+        if session_id and QMessageBox.question(
+            self, "대화 리셋", "이 세션의 대화 내용과 대기 작업을 모두 지울까요?"
+        ) == QMessageBox.StandardButton.Yes:
+            self.session_reset.emit(session_id)
+            self.accept()
+
+    def _delete_session(self):
+        session_id = self._selected_id()
+        if session_id and QMessageBox.question(
+            self, "세션 삭제", "선택한 세션을 영구 삭제할까요?"
+        ) == QMessageBox.StandardButton.Yes:
+            self.session_deleted.emit(session_id)
+            self.accept()
+
+
+class TaskManagerDialog(QDialog):
+    task_control_requested = pyqtSignal(str, str)
+
+    def __init__(self, state_store, session_id: str, workspace_path: str, parent=None):
+        super().__init__(parent)
+        self.state_store = state_store
+        self.session_id = session_id
+        self.workspace_path = workspace_path
+        self.setWindowTitle("JARVIS 작업 관리")
+        self.resize(820, 580)
+        self.setStyleSheet("""
+            QDialog, QListWidget, QTextEdit { background-color: #0a0a1a; color: #d8faff; }
+            QLabel { color: #00d4ff; }
+            QListWidget, QTextEdit { border: 1px solid #26677a; border-radius: 6px; }
+            QListWidget::item { padding: 9px; }
+            QListWidget::item:selected { background-color: #16495a; }
+            QPushButton { color: #00d4ff; border: 1px solid #00d4ff;
+                          border-radius: 6px; padding: 7px 12px; }
+        """)
+        layout = QVBoxLayout(self)
+        scope = workspace_path or "Workspace 없음"
+        layout.addWidget(QLabel(f"현재 세션 · {scope}"))
+        content = QHBoxLayout()
+        self.task_list = QListWidget()
+        self.task_list.setMinimumWidth(330)
+        self.details = QTextEdit()
+        self.details.setReadOnly(True)
+        content.addWidget(self.task_list, 1)
+        content.addWidget(self.details, 1)
+        layout.addLayout(content)
+
+        buttons = QHBoxLayout()
+        self.resume_button = QPushButton("재개")
+        self.cancel_button = QPushButton("취소")
+        self.delete_button = QPushButton("기록 삭제")
+        refresh_button = QPushButton("새로고침")
+        close_button = QPushButton("닫기")
+        self.resume_button.clicked.connect(lambda: self._request("재개"))
+        self.cancel_button.clicked.connect(lambda: self._request("취소"))
+        self.delete_button.clicked.connect(self._delete_record)
+        refresh_button.clicked.connect(self._load_tasks)
+        close_button.clicked.connect(self.accept)
+        for button in (self.resume_button, self.cancel_button, self.delete_button, refresh_button):
+            buttons.addWidget(button)
+        buttons.addStretch()
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+        self.task_list.currentItemChanged.connect(self._show_details)
+        self._load_tasks()
+
+    def _load_tasks(self):
+        self.task_list.clear()
+        tasks = self.state_store.list_tasks(
+            self.session_id, include_finished=True, workspace_path=self.workspace_path
+        )
+        for task in tasks:
+            item = QListWidgetItem(
+                f"{task.task_id} [{task.status}]\n{task.goal[:70]}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, task)
+            self.task_list.addItem(item)
+        if self.task_list.count():
+            self.task_list.setCurrentRow(0)
+        else:
+            self.details.setPlainText("현재 범위에 저장된 작업이 없습니다.")
+
+    def _selected_task(self):
+        item = self.task_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _show_details(self, current, _previous=None):
+        task = current.data(Qt.ItemDataRole.UserRole) if current else None
+        if not task:
+            self.details.clear()
+            return
+        self.details.setPlainText(
+            f"상태: {task.status}\n목표: {task.goal}\n"
+            f"확인 질문: {task.pending_question or '-'}\n"
+            f"Intent: {task.intent_name or '-'}\n마지막 도구: {task.last_tool or '-'}\n"
+            f"검증 상태: {task.verification_status or '-'}\n"
+            f"Artifact: {len(task.artifacts)}개 · Evidence: {len(task.evidence)}개\n"
+            f"갱신 시각: {task.updated_at}"
+        )
+        self.resume_button.setEnabled(task.status in {"paused", "interrupted"})
+        self.cancel_button.setEnabled(task.status in {"queued", "running", "paused", "interrupted", "awaiting_user"})
+        self.delete_button.setEnabled(task.status in {
+            "completed", "partial", "failed", "unverified", "cancelled", "expired"
+        })
+
+    def _request(self, action: str):
+        task = self._selected_task()
+        if task:
+            self.task_control_requested.emit(task.task_id, action)
+            self.accept()
+
+    def _delete_record(self):
+        task = self._selected_task()
+        if not task:
+            return
+        if QMessageBox.question(
+            self, "작업 기록 삭제", "선택한 종료 작업 기록을 삭제할까요?"
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        if not self.state_store.delete_task(
+            self.session_id, task.task_id, self.workspace_path
+        ):
+            QMessageBox.warning(self, "작업 기록 삭제", "실행 중인 작업은 삭제할 수 없습니다.")
+        self._load_tasks()
+
+
+class PluginDiagnosticsDialog(QDialog):
+    """Shows installation, connection, authentication and verification separately."""
+
+    def __init__(self, plugin_registry, parent=None):
+        super().__init__(parent)
+        self.plugin_registry = plugin_registry
+        self.setWindowTitle("Plugin 상태 및 진단")
+        self.resize(760, 520)
+        layout = QVBoxLayout(self)
+        guide = QLabel("설치 · 연결 · 인증 · 계약 검증은 서로 다른 상태입니다.")
+        guide.setStyleSheet("color: #00d4ff; padding: 6px;")
+        layout.addWidget(guide)
+        self.plugin_list = QListWidget()
+        self.plugin_list.currentItemChanged.connect(self._show_details)
+        layout.addWidget(self.plugin_list, 2)
+        self.details = QTextEdit()
+        self.details.setReadOnly(True)
+        layout.addWidget(self.details, 1)
+        buttons = QHBoxLayout()
+        refresh = QPushButton("새로 진단")
+        close = QPushButton("닫기")
+        refresh.clicked.connect(self.refresh)
+        close.clicked.connect(self.accept)
+        buttons.addStretch()
+        buttons.addWidget(refresh)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        self.refresh()
+
+    @staticmethod
+    def _mark(value):
+        return "정상" if value else "필요"
+
+    def refresh(self):
+        self.plugin_list.clear()
+        for status in self.plugin_registry.get_plugin_statuses():
+            item = QListWidgetItem(
+                f"{status.name}  v{status.version}  | "
+                f"설치 {self._mark(status.installed)} · 연결 {self._mark(status.connected)} · "
+                f"인증 {self._mark(status.authenticated)} · 검증 {self._mark(status.verified)}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, status)
+            self.plugin_list.addItem(item)
+        if self.plugin_list.count():
+            self.plugin_list.setCurrentRow(0)
+
+    def _show_details(self, current, _previous):
+        status = current.data(Qt.ItemDataRole.UserRole) if current else None
+        if not status:
+            self.details.clear()
+            return
+        diagnostics = "\n".join(f"- {item}" for item in status.diagnostics) or "- 발견된 문제가 없습니다."
+        self.details.setPlainText(
+            f"Plugin: {status.name}\nVersion: {status.version}\n"
+            f"설치됨: {status.installed}\n연결됨: {status.connected}\n"
+            f"인증됨: {status.authenticated}\n검증됨: {status.verified}\n"
+            f"활성화됨: {status.enabled}\n\n진단\n{diagnostics}"
+        )
+
 class JarvisMainWindow(QWidget):
     command_triggered = pyqtSignal(str)
     text_submitted = pyqtSignal(str)
     close_requested = pyqtSignal()  # 종료 요청 시그널
+    workspace_selected = pyqtSignal(str)  # Workspace 선택 시그널
+    # 권한 요청 시그널: (permission_name, permission_description) -> return bool
+    permission_requested = pyqtSignal(str, str)
+    session_selected = pyqtSignal(str)
+    session_created = pyqtSignal(str)
+    session_deleted = pyqtSignal(str)
+    session_reset = pyqtSignal(str)
+    task_control_requested = pyqtSignal(str, str)
+    specialist_prompt_submitted = pyqtSignal(str)
     
     def __init__(self, audio_processor=None):
         super().__init__()
@@ -304,6 +860,16 @@ class JarvisMainWindow(QWidget):
         self.normal_geometry = None
         self.is_speaking = False
         self.audio_processor = audio_processor
+        self.current_workspace_path = ""
+        self.current_workspace_name = ""
+        self.permission_manager = None
+        self.tts_settings_manager = None
+        self.memory_manager = None
+        self.dialogue_state_store = None
+        self.plugin_registry = None
+        self.current_session_id = ""
+        self.specialist_registry = get_specialist_workspace_registry()
+        self.specialist_windows = {}
         
         # 원형 사운드바 상태 변수
         self.soundbar_bar_count = 80
@@ -318,9 +884,11 @@ class JarvisMainWindow(QWidget):
             self.audio_processor.audio_update.connect(self._on_audio_update)
     
     def init_ui(self):
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | 
-                           Qt.WindowType.WindowStaysOnTopHint | 
-                           Qt.WindowType.Tool)
+        # 일반 앱처럼 작업 표시줄에 표시하고 다른 창의 앞뒤로 이동할 수 있게 한다.
+        self.setWindowFlags(Qt.WindowType.Window |
+                           Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setStyleSheet(MAIN_STYLE)
         
         screen = QApplication.primaryScreen().geometry()
         window_width = 800
@@ -339,66 +907,83 @@ class JarvisMainWindow(QWidget):
         tab_layout = QHBoxLayout(self.drag_tab)
         tab_layout.setContentsMargins(15, 5, 10, 0)
         
-        self.title_label = QLabel("JARVIS")
-        title_font = QFont("Orbitron", 16, QFont.Weight.Bold)
-        self.title_label.setFont(title_font)
-        self.title_label.setStyleSheet("color: #00d4ff; letter-spacing: 6px;")
-        tab_layout.addWidget(self.title_label)
+        button_style = ""
         
-        self.sound_bar = SoundBarWidget(self)
-        self.sound_bar.hide()
-        tab_layout.addWidget(self.sound_bar)
+        # Workspace 선택 버튼
+        self.workspace_btn = QPushButton("W")
+        self.workspace_btn.setObjectName("toolbarButton")
+        self.workspace_btn.setStyleSheet(button_style)
+        self.workspace_btn.setFixedSize(35, 35)
+        self.workspace_btn.setToolTip("작업 폴더 선택")
+        self.workspace_btn.clicked.connect(self._select_workspace)
+        tab_layout.addWidget(self.workspace_btn)
+
+        self.permission_btn = QPushButton("A")
+        self.permission_btn.setObjectName("toolbarButton")
+        self.permission_btn.setStyleSheet(button_style)
+        self.permission_btn.setFixedSize(35, 35)
+        self.permission_btn.setToolTip("권한 관리")
+        self.permission_btn.clicked.connect(self.show_permission_settings)
+        tab_layout.addWidget(self.permission_btn)
+
+        self.voice_btn = QPushButton("V")
+        self.voice_btn.setObjectName("toolbarButton")
+        self.voice_btn.setStyleSheet(button_style)
+        self.voice_btn.setFixedSize(35, 35)
+        self.voice_btn.setToolTip("TTS 목소리 및 호칭 설정")
+        self.voice_btn.clicked.connect(self.show_tts_voice_settings)
+        tab_layout.addWidget(self.voice_btn)
+
+        self.session_btn = QPushButton("C")
+        self.session_btn.setObjectName("toolbarButton")
+        self.session_btn.setStyleSheet(button_style)
+        self.session_btn.setFixedSize(35, 35)
+        self.session_btn.setToolTip("대화 세션 관리")
+        self.session_btn.clicked.connect(self.show_session_manager)
+        tab_layout.addWidget(self.session_btn)
+
+        self.task_btn = QPushButton("☷")
+        self.task_btn.setObjectName("toolbarButton")
+        self.task_btn.setStyleSheet(button_style)
+        self.task_btn.setFixedSize(35, 35)
+        self.task_btn.setToolTip("현재 작업 관리")
+        self.task_btn.clicked.connect(self.show_task_manager)
+        tab_layout.addWidget(self.task_btn)
+
+        self.plugin_btn = QPushButton("P")
+        self.plugin_btn.setObjectName("toolbarButton")
+        self.plugin_btn.setStyleSheet(button_style)
+        self.plugin_btn.setFixedSize(35, 35)
+        self.plugin_btn.setToolTip("Plugin 상태 및 진단")
+        self.plugin_btn.clicked.connect(self.show_plugin_diagnostics)
+        tab_layout.addWidget(self.plugin_btn)
+
+        self.specialist_btn = QPushButton("S")
+        self.specialist_btn.setObjectName("toolbarButton")
+        self.specialist_btn.setStyleSheet(button_style)
+        self.specialist_btn.setFixedSize(35, 35)
+        self.specialist_btn.setToolTip("전문가 작업공간")
+        self.specialist_btn.clicked.connect(self.show_specialist_hub)
+        tab_layout.addWidget(self.specialist_btn)
         
         tab_layout.addStretch()
         
-        button_style = """
-            QPushButton {
-                background-color: transparent;
-                color: #888888;
-                border: none;
-                font-size: 18px;
-                font-weight: bold;
-                padding: 5px 10px;
-            }
-            QPushButton:hover {
-                background-color: rgba(136, 136, 136, 30);
-                color: #ffffff;
-            }
-            QPushButton:pressed {
-                background-color: rgba(136, 136, 136, 60);
-            }
-        """
-        
         self.minimize_btn = QPushButton("─")
+        self.minimize_btn.setObjectName("toolbarButton")
         self.minimize_btn.setStyleSheet(button_style)
         self.minimize_btn.setFixedSize(35, 35)
-        self.minimize_btn.clicked.connect(self.showMinimized)
+        self.minimize_btn.clicked.connect(self.minimize_window)
         tab_layout.addWidget(self.minimize_btn)
         
         self.size_btn = QPushButton("□")
+        self.size_btn.setObjectName("toolbarButton")
         self.size_btn.setStyleSheet(button_style)
         self.size_btn.setFixedSize(35, 35)
         self.size_btn.clicked.connect(self.toggle_window_mode)
         tab_layout.addWidget(self.size_btn)
         
         self.close_btn = QPushButton("✕")
-        self.close_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: #888888;
-                border: none;
-                font-size: 18px;
-                font-weight: bold;
-                padding: 5px 10px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 68, 68, 30);
-                color: #ff4444;
-            }
-            QPushButton:pressed {
-                background-color: rgba(255, 68, 68, 60);
-            }
-        """)
+        self.close_btn.setObjectName("closeButton")
         self.close_btn.setFixedSize(35, 35)
         self.close_btn.clicked.connect(self.close_requested.emit)  # 종료 시그널 보내기
         tab_layout.addWidget(self.close_btn)
@@ -408,7 +993,7 @@ class JarvisMainWindow(QWidget):
         # 미니 모드용 컨트롤 바
         self.mini_control_bar = MiniControlBar(self)
         self.mini_control_bar.hide()
-        self.mini_control_bar.minimize_btn.clicked.connect(self.showMinimized)
+        self.mini_control_bar.minimize_btn.clicked.connect(self.minimize_window)
         self.mini_control_bar.size_btn.clicked.connect(self.toggle_window_mode)
         self.mini_control_bar.close_btn.clicked.connect(self.close_requested.emit)  # 종료 시그널 보내기
         self.main_layout.addWidget(self.mini_control_bar)
@@ -423,46 +1008,46 @@ class JarvisMainWindow(QWidget):
         center_layout.setContentsMargins(30, 20, 30, 20)
         
         self.status_label = QLabel("SYSTEM READY")
+        self.status_label.setObjectName("status")
         status_font = QFont("Orbitron", 11)
         self.status_label.setFont(status_font)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_label.setStyleSheet("color: #00d4ff; letter-spacing: 3px;")
+        
+        # Workspace 정보 라벨
+        self.workspace_label = QLabel("Workspace: 없음")
+        self.workspace_label.setObjectName("workspace")
+        workspace_font = QFont("Consolas", 9)
+        self.workspace_label.setFont(workspace_font)
+        self.workspace_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.user_text_label = QLabel("")
+        self.user_text_label.setObjectName("userMessage")
         user_font = QFont("Consolas", 10)
         self.user_text_label.setFont(user_font)
         self.user_text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.user_text_label.setStyleSheet("color: #00a8cc; padding: 10px;")
         self.user_text_label.setWordWrap(True)
         
         self.assistant_text_label = QLabel("")
+        self.assistant_text_label.setObjectName("assistantMessage")
         assistant_font = QFont("Consolas", 10)
         self.assistant_text_label.setFont(assistant_font)
         self.assistant_text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.assistant_text_label.setStyleSheet("color: #9945ff; padding: 10px;")
         self.assistant_text_label.setWordWrap(True)
+
+        self.sound_bar = SoundBarWidget(self)
+        self.sound_bar.setToolTip("청록색은 사용자 입력 음성, 보라색은 비서 출력 음성을 나타냅니다.")
         
         self.text_input = QLineEdit()
-        self.text_input.setPlaceholderText("SPEAK OR TYPE YOUR COMMAND...")
-        self.text_input.setStyleSheet("""
-            QLineEdit {
-                background: rgba(0, 20, 40, 200);
-                color: #00d4ff;
-                border: 2px solid #00d4ff;
-                border-radius: 15px;
-                padding: 12px 18px;
-                font-size: 13px;
-                font-family: Consolas;
-            }
-            QLineEdit:focus {
-                border: 2px solid #00ffcc;
-            }
-        """)
+        self.text_input.setObjectName("commandInput")
+        self.text_input.setPlaceholderText("메시지 또는 작업 명령을 입력하세요")
         self.text_input.returnPressed.connect(self._on_text_submitted)
         
         center_layout.addStretch()
         center_layout.addSpacing(20)
         center_layout.addWidget(self.status_label)
+        center_layout.addWidget(self.workspace_label)
+        center_layout.addSpacing(10)
+        center_layout.addWidget(self.sound_bar, 0, Qt.AlignmentFlag.AlignHCenter)
         center_layout.addSpacing(20)
         center_layout.addWidget(self.user_text_label)
         center_layout.addWidget(self.assistant_text_label)
@@ -477,13 +1062,40 @@ class JarvisMainWindow(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        radius = 14.0 if self.window_mode != "mini" else 10.0
+        panel_path = QPainterPath()
+        panel_path.addRoundedRect(QRectF(self.rect().adjusted(1, 1, -1, -1)), radius, radius)
+        painter.setClipPath(panel_path)
         
         if self.window_mode == "mini":
-            gradient = QRadialGradient(self.width()/2, self.height()/2, self.width()/2)
-            gradient.setColorAt(0.0, QColor(20, 20, 30))
-            gradient.setColorAt(1.0, QColor(5, 5, 10))
+            gradient = QLinearGradient(0, 0, 0, self.height())
+            gradient.setColorAt(0.0, QColor(14, 23, 37))
+            gradient.setColorAt(1.0, QColor(7, 12, 20))
             painter.fillRect(self.rect(), gradient)
             return
+
+        active = self.current_state in [State.PROCESSING, State.EXECUTING, State.RESPONDING]
+        background = QLinearGradient(0, 0, 0, self.height())
+        background.setColorAt(0.0, QColor(20, 16, 35) if active else QColor(13, 18, 31))
+        background.setColorAt(1.0, QColor(6, 10, 18))
+        painter.fillRect(self.rect(), background)
+        glow = QRadialGradient(self.width() * 0.55, self.height() * 0.45,
+                               max(self.width(), self.height()) * 0.62)
+        accent = QColor(125, 92, 246, 42) if active else QColor(57, 203, 230, 34)
+        glow.setColorAt(0.0, accent)
+        glow.setColorAt(0.56, QColor(accent.red(), accent.green(), accent.blue(), 10))
+        glow.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 0))
+        painter.fillRect(self.rect(), glow)
+        painter.setPen(QPen(QColor(72, 108, 137, 18), 1))
+        for x in range(0, self.width(), 48):
+            painter.drawLine(x, 40, x, self.height())
+        for y in range(40, self.height(), 48):
+            painter.drawLine(0, y, self.width(), y)
+        painter.setClipping(False)
+        painter.setPen(QPen(QColor(55, 82, 108, 150), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(panel_path)
+        return
         
         if self.current_state in [State.PROCESSING, State.EXECUTING, State.RESPONDING]:
             gradient = QRadialGradient(self.width()/2, self.height()/2, self.width()/2)
@@ -681,9 +1293,9 @@ class JarvisMainWindow(QWidget):
             }
             self.status_label.setText(state_texts.get(state, "SYSTEM READY"))
             if state in [State.PROCESSING, State.EXECUTING, State.RESPONDING]:
-                self.status_label.setStyleSheet("color: #9945ff; letter-spacing: 3px;")
+                self.status_label.setStyleSheet("color: #b69cff; letter-spacing: 2px;")
             else:
-                self.status_label.setStyleSheet("color: #00d4ff; letter-spacing: 3px;")
+                self.status_label.setStyleSheet("color: #6de8ff; letter-spacing: 2px;")
             
             # LISTENING/RESPONDING 상태일 때 사운드바 활성화, IDLE일 때 리셋
             if state in [State.LISTENING, State.RESPONDING]:
@@ -691,9 +1303,12 @@ class JarvisMainWindow(QWidget):
                 self.soundbar_is_active = True
                 self.soundbar_freq_bands = [60, 60, 60]
                 self._update_soundbar_bars(60, self.soundbar_freq_bands)
+                self.sound_bar.set_speaking(self.is_speaking)
+                self.sound_bar.set_audio_data(60, self.soundbar_freq_bands)
             else:
                 self.soundbar_is_active = False
                 self.soundbar_bar_heights = [0] * self.soundbar_bar_count
+                self.sound_bar.reset()
             
             self.update()
     
@@ -804,7 +1419,7 @@ class JarvisMainWindow(QWidget):
             self.showMaximized()
             self.drag_tab.show()
             self.center_widget.show()
-            
+
             # 원형 사운드바 상태 유지
             if self.current_state in [State.LISTENING, State.RESPONDING]:
                 if self.current_state == State.RESPONDING:
@@ -847,6 +1462,10 @@ class JarvisMainWindow(QWidget):
                 self.soundbar_bar_heights = [0] * self.soundbar_bar_count
                 
         self.update()
+
+    def minimize_window(self):
+        """Windows 작업 표시줄로 창을 최소화한다."""
+        self.setWindowState(self.windowState() | Qt.WindowState.WindowMinimized)
     
     def show_user_text(self, text: str):
         self.user_text_label.setText(f"> {text}")
@@ -899,6 +1518,142 @@ class JarvisMainWindow(QWidget):
         if event.buttons() & Qt.MouseButton.LeftButton and self.window_mode == "mini" and hasattr(self, 'drag_position'):
             self.move(event.globalPosition().toPoint() - self.drag_position)
             event.accept()
+    
+    def _select_workspace(self):
+        # Workspace 폴더 선택 대화상자 열기
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "작업 폴더 선택",
+            "",
+            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontResolveSymlinks
+        )
+        if folder_path:
+            self.workspace_selected.emit(folder_path)
+    
+    def set_workspace_info(self, name: str, path: str = "", git_status=None):
+        # Workspace 정보 UI에 표시
+        self.current_workspace_name = name
+        self.current_workspace_path = path
+        if name:
+            suffix = ""
+            if git_status and git_status.get("is_repository"):
+                marker = "*" if git_status.get("dirty") else ""
+                suffix = f" · {git_status.get('branch', 'detached')}{marker}"
+            self.workspace_label.setText(f"Workspace: {name}{suffix}")
+            self.workspace_label.setToolTip(path or name)
+            self.workspace_label.setStyleSheet("color: #77d9c4; padding: 4px;")
+        else:
+            self.workspace_label.setText("Workspace: 없음")
+            self.workspace_label.setStyleSheet("color: #718ba4; padding: 4px;")
+
+    def set_assistant_identity(self, name: str):
+        """Keep the runtime identity without placing a name badge in the title bar."""
+        self.assistant_identity = " ".join(str(name or "").strip().split()) or "JARVIS"
+    
+    def request_permission(self, permission_name: str, permission_description: str) -> bool:
+        """권한 요청 대화상자를 보여주고 사용자 응답을 반환"""
+        dialog = PermissionRequestDialog(permission_name, permission_description, self)
+        dialog.exec()
+        return dialog.result_value
+
+    def set_permission_manager(self, permission_manager):
+        self.permission_manager = permission_manager
+
+    def show_permission_settings(self):
+        if self.permission_manager is None:
+            QMessageBox.warning(self, "권한 관리", "권한 관리자가 아직 준비되지 않았습니다.")
+            return
+        PermissionSettingsDialog(self.permission_manager, self).exec()
+
+    def set_tts_settings_manager(self, settings_manager):
+        self.tts_settings_manager = settings_manager
+
+    def show_tts_voice_settings(self):
+        if self.tts_settings_manager is None:
+            QMessageBox.warning(self, "TTS 목소리", "TTS 설정 관리자가 아직 준비되지 않았습니다.")
+            return
+        TTSVoiceDialog(self.tts_settings_manager, self).exec()
+
+    def set_memory_manager(self, memory_manager):
+        self.memory_manager = memory_manager
+
+    def set_current_session(self, session_id: str):
+        self.current_session_id = session_id
+
+    def clear_conversation_display(self):
+        self.user_text_label.setText("")
+        self.assistant_text_label.setText("")
+
+    def show_session_manager(self):
+        if self.memory_manager is None:
+            QMessageBox.warning(self, "대화 세션", "대화 저장소가 아직 준비되지 않았습니다.")
+            return
+        dialog = SessionManagerDialog(self.memory_manager, self.current_session_id, self)
+        dialog.session_selected.connect(self.session_selected.emit)
+        dialog.session_created.connect(self.session_created.emit)
+        dialog.session_deleted.connect(self.session_deleted.emit)
+        dialog.session_reset.connect(self.session_reset.emit)
+        dialog.exec()
+
+    def set_dialogue_state_store(self, state_store):
+        self.dialogue_state_store = state_store
+
+    def set_plugin_registry(self, plugin_registry):
+        self.plugin_registry = plugin_registry
+
+    def set_specialist_team_runtime(self, runtime):
+        self.specialist_team_runtime = runtime
+
+    def show_plugin_diagnostics(self):
+        if self.plugin_registry is None:
+            QMessageBox.information(self, "Plugin 진단", "Plugin Registry가 아직 연결되지 않았습니다.")
+            return
+        PluginDiagnosticsDialog(self.plugin_registry, self).exec()
+
+    def show_specialist_hub(self):
+        dialog = SpecialistHubDialog(self.specialist_registry.all(), self)
+        dialog.workspace_requested.connect(self.open_specialist_workspace)
+        dialog.exec()
+
+    def open_specialist_workspace(self, key: str):
+        spec = self.specialist_registry.get(key)
+        if spec is None:
+            QMessageBox.warning(self, "전문가 작업공간", f"등록되지 않은 작업공간입니다: {key}")
+            return None
+        window = self.specialist_windows.get(spec.key)
+        if window is None:
+            # Top-level ownership lets workspaces participate in normal Windows Z-order.
+            if spec.key == "mockup":
+                window = MockupWorkspaceWindow(
+                    spec, team_runtime=getattr(self, "specialist_team_runtime", None)
+                )
+            elif spec.key == "knowledge_graph":
+                window = KnowledgeGraphWindow()
+            else:
+                window = SpecialistWorkspaceWindow(spec)
+            if hasattr(window, "prompt_submitted"):
+                window.prompt_submitted.connect(self.specialist_prompt_submitted.emit)
+            self.specialist_windows[spec.key] = window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        return window
+
+    def show_specialist_result(self, text: str):
+        for window in self.specialist_windows.values():
+            if window.isVisible() and hasattr(window, "show_result"):
+                window.show_result(text)
+
+    def show_task_manager(self):
+        if self.dialogue_state_store is None:
+            QMessageBox.warning(self, "작업 관리", "작업 상태 저장소가 아직 준비되지 않았습니다.")
+            return
+        dialog = TaskManagerDialog(
+            self.dialogue_state_store, self.current_session_id,
+            self.current_workspace_path, self,
+        )
+        dialog.task_control_requested.connect(self.task_control_requested.emit)
+        dialog.exec()
     
     def _on_text_submitted(self):
         text = self.text_input.text().strip()

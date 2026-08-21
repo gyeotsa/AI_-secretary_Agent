@@ -1,11 +1,14 @@
 import sys
-import threading
 import numpy as np
 import sounddevice as sd
-import tempfile
-import os
+import time
 from scipy.io import wavfile
 from PyQt6.QtCore import QObject, pyqtSignal
+
+try:
+    import av
+except ImportError:
+    av = None
 
 
 class AudioProcessor(QObject):
@@ -21,69 +24,174 @@ class AudioProcessor(QObject):
         self._is_speaking = False  # 자비스가 말하는 중인지
         self._sample_rate = 44100  # 기본 샘플 레이트
         self._chunk_size = 4096  # 한 번에 처리할 샘플 수 (음성 끊김 방지)
+        from core.voice_runtime import get_voice_duplex_controller
+        self.duplex = get_voice_duplex_controller()
+        self.duplex.interrupt_callback = self.cancel_playback
+
+    def cancel_playback(self):
+        self.duplex.cancel_event.set()
+        try:
+            sd.stop()
+        except Exception:
+            pass
         
     def play_and_analyze_tts(self, wav_path: str):
         """WAV 파일을 재생하면서 오디오 데이터를 분석합니다 (자비스 TTS용)"""
+        completed = False
         try:
             self._is_speaking = True
             self._is_running = True
             
-            # WAV 파일 읽기
-            sr, data = wavfile.read(wav_path)
+            sr, data = self._read_tts_audio(wav_path)
             self._sample_rate = sr
             
-            # 스테레오면 모노로 변환
-            if len(data.shape) > 1:
-                data = data.mean(axis=1)
-            
-            # 데이터를 float32로 정규화 (-1 ~ 1)
-            data = data.astype(np.float32)
-            peak = np.max(np.abs(data))
-            if peak == 0:
+            # 원본 음량과 채널을 보존한 float32 재생 데이터로 변환한다.
+            if np.issubdtype(data.dtype, np.integer):
+                scale = float(max(abs(np.iinfo(data.dtype).min), np.iinfo(data.dtype).max))
+                playback_data = data.astype(np.float32) / scale
+            else:
+                playback_data = np.clip(data.astype(np.float32), -1.0, 1.0)
+            if not np.any(playback_data):
                 raise ValueError("TTS generated a silent WAV file")
-            data /= peak
 
-            position = 0
-            finished = threading.Event()
-            
-            # 오디오 재생 + 분석
-            def callback(outdata, frames, time, status):
-                if status:
-                    print(status, file=sys.stderr)
-                nonlocal position
-                remaining = len(data) - position
-                if remaining <= frames:
-                    # 남은 데이터가 부족하면 0으로 채우기
-                    outdata[:remaining, 0] = data[position:]
-                    outdata[remaining:, 0] = 0
-                    position = len(data)
-                else:
-                    outdata[:, 0] = data[position:position + frames]
-                    position += frames
-                
-                # 현재 프레임 분석
-                if len(outdata[:, 0]) > 0:
-                    amplitude, freq_bands = self._analyze_audio(outdata[:, 0], sr)
+            analysis_data = playback_data.mean(axis=1) if playback_data.ndim > 1 else playback_data
+            # sd.play의 내부 콜백에는 복사 작업만 남기고 FFT/Qt 시그널은 이 스레드에서
+            # 낮은 주기로 처리해 출력 underflow와 끊김을 방지한다.
+            sd.play(playback_data, sr, blocking=False)
+            analysis_window = max(512, int(sr * 0.05))
+            started_at = time.monotonic()
+            self.duplex.start_output()
+            while not self.duplex.cancel_event.is_set():
+                position = int((time.monotonic() - started_at) * sr)
+                if position >= len(analysis_data):
+                    break
+                chunk = analysis_data[position:position + analysis_window]
+                if len(chunk):
+                    amplitude, freq_bands = self._analyze_audio(chunk, sr)
+                    self.duplex.update_output(float(np.sqrt(np.mean(chunk * chunk))))
+                    self.duplex.update_output_samples(chunk)
                     self.audio_update.emit(amplitude, freq_bands, True)
-                if position >= len(data):
-                    raise sd.CallbackStop()
-            
-            with sd.OutputStream(
-                samplerate=sr,
-                channels=1,
-                callback=callback,
-                blocksize=self._chunk_size,
-                finished_callback=finished.set,
-            ):
-                finished.wait()
+                time.sleep(0.05)
+            sd.wait()
+            completed = not self.duplex.cancel_event.is_set()
                 
         except Exception as e:
             print(f"[AudioProcessor] TTS 분석 오류: {e}")
         finally:
             self._is_speaking = False
             self._is_running = False
+            self.duplex.finish_output()
             # 마지막으로 0 레벨 신호 보내기
             self.audio_update.emit(0.0, [], False)
+        return completed
+
+    def play_streaming_tts(self, pcm_chunks, prebuffer_seconds: float = 1.0):
+        """Play GPT-SoVITS PCM with enough initial audio to prevent underflow."""
+        stream = None
+        pending = b""
+        buffered = bytearray()
+        stream_format = None
+        completed = False
+        try:
+            self._is_speaking = True
+            self._is_running = True
+            self.duplex.start_output()
+            for sample_rate, channels, sample_width, chunk in pcm_chunks:
+                if self.duplex.cancel_event.is_set():
+                    break
+                if sample_width != 2:
+                    raise ValueError(f"지원하지 않는 스트림 샘플 폭: {sample_width}")
+                current_format = (sample_rate, channels, sample_width)
+                if stream_format is None:
+                    stream_format = current_format
+                elif current_format != stream_format:
+                    raise ValueError("TTS 스트림 도중 오디오 형식이 변경되었습니다.")
+                self._sample_rate = sample_rate
+                frame_bytes = sample_width * channels
+                data = pending + chunk
+                complete = len(data) - (len(data) % frame_bytes)
+                pending = data[complete:]
+                if complete:
+                    buffered.extend(data[:complete])
+
+                prebuffer_bytes = max(
+                    frame_bytes,
+                    int(max(0.0, prebuffer_seconds) * sample_rate) * frame_bytes,
+                )
+                if stream is None and len(buffered) >= prebuffer_bytes:
+                    stream = sd.RawOutputStream(
+                        samplerate=sample_rate,
+                        channels=channels,
+                        dtype="int16",
+                    )
+                    stream.start()
+                if stream is None:
+                    continue
+                pcm = bytes(buffered)
+                buffered.clear()
+                samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+                if channels > 1:
+                    samples = samples.reshape(-1, channels).mean(axis=1)
+                if len(samples):
+                    # Publish the reference before the blocking device write starts;
+                    # otherwise the microphone sees the first playback block while
+                    # echo suppression still has an empty reference.
+                    amplitude, freq_bands = self._analyze_audio(samples, sample_rate)
+                    self.duplex.update_output(float(np.sqrt(np.mean(samples * samples))))
+                    self.duplex.update_output_samples(samples)
+                    self.audio_update.emit(amplitude, freq_bands, True)
+                stream.write(pcm)
+            if stream is None and buffered and stream_format is not None:
+                sample_rate, channels, _sample_width = stream_format
+                stream = sd.RawOutputStream(
+                    samplerate=sample_rate,
+                    channels=channels,
+                    dtype="int16",
+                )
+                stream.start()
+                pcm = bytes(buffered)
+                buffered.clear()
+                stream.write(pcm)
+            if stream is None and self.duplex.cancel_event.is_set():
+                completed = False
+            elif stream is None:
+                raise ValueError("GPT-SoVITS가 빈 음성 스트림을 반환했습니다.")
+            else:
+                completed = not self.duplex.cancel_event.is_set()
+        except Exception as exc:
+            print(f"[AudioProcessor] 스트리밍 TTS 오류: {exc}")
+            raise
+        finally:
+            if stream is not None:
+                try:
+                    stream.stop()
+                finally:
+                    stream.close()
+            self._is_speaking = False
+            self._is_running = False
+            self.duplex.finish_output()
+            self.audio_update.emit(0.0, [], False)
+        return completed
+
+    @staticmethod
+    def _read_tts_audio(media_path: str):
+        """로컬 WAV와 온라인 Neural TTS MP3를 공통 배열로 읽는다."""
+        if str(media_path).casefold().endswith(".wav"):
+            return wavfile.read(media_path)
+        if av is None:
+            raise RuntimeError("MP3 TTS 재생을 위해 av 패키지가 필요합니다.")
+        chunks = []
+        sample_rate = 0
+        with av.open(media_path) as container:
+            for frame in container.decode(audio=0):
+                sample_rate = frame.sample_rate
+                chunk = frame.to_ndarray()
+                if chunk.ndim == 2:
+                    chunk = chunk.T
+                chunks.append(chunk)
+        if not chunks or not sample_rate:
+            raise ValueError("TTS 오디오를 디코딩하지 못했습니다.")
+        return sample_rate, np.concatenate(chunks, axis=0)
     
     def start_listen_analysis(self):
         """사용자 음성 입력을 실시간으로 분석합니다 (STT용)"""
