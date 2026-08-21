@@ -27,7 +27,15 @@ class ToolLoadoutSelector:
     @staticmethod
     def _tokens(text: str) -> set[str]:
         normalized = re.sub(r"[^0-9a-zA-Z가-힣]+", " ", str(text).casefold())
-        return {token for token in normalized.split() if len(token) > 1}
+        words = {token for token in normalized.split() if len(token) > 1}
+        # Korean particles make exact word overlap brittle ("상태" vs "상태를").
+        # Character n-grams are language-agnostic and keep the Registry itself as
+        # the capability source instead of introducing another hard-coded tool list.
+        for word in tuple(words):
+            if len(word) >= 3:
+                words.update(word[index:index + 2] for index in range(len(word) - 1))
+                words.update(word[index:index + 3] for index in range(len(word) - 2))
+        return words
 
     def select(self, request: str, resolution: IntentResolution | None = None,
                required_tools: Iterable[str] = ()) -> ToolLoadout:
@@ -44,7 +52,9 @@ class ToolLoadoutSelector:
             descriptor = self._tokens(f"{contract.name} {contract.description}")
             overlap = len(query & descriptor)
             if overlap:
-                scored.append((overlap / max(1, len(query)), contract.name))
+                query_ratio = overlap / max(1, len(query))
+                descriptor_ratio = overlap / max(1, min(len(descriptor), 24))
+                scored.append((query_ratio * 0.7 + descriptor_ratio * 0.3, contract.name))
         scored.sort(key=lambda item: (-item[0], item[1]))
         selected.extend(name for _, name in scored[:self.max_tools])
         unique = tuple(dict.fromkeys(selected))[:self.max_tools]

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "default_search": "youtube",
+  "default_media": "youtube",
+  "providers": {
+    "youtube": {
+      "label": "YouTube",
+      "aliases": ["유튜브", "youtube", "yt"],
+      "search_url": "https://www.youtube.com/results?search_query={query}",
+      "media_resolver": "yt_dlp_search"
+    },
+    "google": {
+      "label": "Google",
+      "aliases": ["구글", "google"],
+      "search_url": "https://www.google.com/search?q={query}"
+    },
+    "naver": {
+      "label": "Naver",
+      "aliases": ["네이버", "naver"],
+      "search_url": "https://search.naver.com/search.naver?query={query}"
+    },
+    "duckduckgo": {
+      "label": "DuckDuckGo",
+      "aliases": ["덕덕고", "duckduckgo", "ddg"],
+      "search_url": "https://duckduckgo.com/?q={query}"
+    }
+  }
+}

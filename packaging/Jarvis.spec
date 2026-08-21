@@ -12,10 +12,11 @@ hiddenimports = collect_submodules("plugins") + [
 datas = [
     (os.path.join(repo_root, "assets", "jarvis.ico"), "assets"),
     (os.path.join(repo_root, "assets", "jarvis_icon_1024.png"), "assets"),
+    (os.path.join(repo_root, "config", "web_providers.json"), "config"),
 ]
 binaries = []
 
-for package in ("faster_whisper", "ctranslate2", "whisper", "diffusers", "accelerate"):
+for package in ("faster_whisper", "ctranslate2", "whisper", "diffusers", "accelerate", "yt_dlp"):
     package_datas, package_binaries, package_hidden = collect_all(package)
     datas += package_datas
     binaries += package_binaries

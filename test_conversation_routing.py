@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from core.dialogue_state import DialogueStateStore
 from core.executor import Executor
 from core.intent_router import IntentRouter
-from core.plugin import PluginRegistry
+from core.plugin import BasePlugin, PluginRegistry, ToolSchema
 
 
 class RecordingLLM:
@@ -98,3 +98,31 @@ def test_conversation_guard_does_not_rewrite_ordinary_chat(tmp_path):
     outcome = executor.execute_turn("오늘 숙제를 다 끝냈어", "ordinary-chat")
 
     assert outcome.response == "정말 잘 마무리했네. 고생했어!"
+
+
+class DescriptorOnlyPlugin(BasePlugin):
+    def __init__(self):
+        super().__init__()
+        self.name = "descriptor_only"
+
+    def get_tools(self):
+        return [ToolSchema(
+            "inspect_presentation_format",
+            "프레젠테이션 서식과 슬라이드 구성을 검사합니다",
+            {"type": "object", "properties": {}},
+            side_effect="read",
+        )]
+
+    def execute_tool(self, tool_name, tool_input):
+        return "검사 결과"
+
+
+def test_unmatched_action_uses_registry_descriptors_but_social_chat_does_not(tmp_path):
+    executor = make_executor(tmp_path)
+    registry = PluginRegistry()
+    registry.register_plugin(DescriptorOnlyPlugin())
+    executor.intent_router = IntentRouter(registry)
+
+    assert executor._should_attempt_registry_execution("프레젠테이션 서식을 검사해줘") is True
+    assert executor._should_attempt_registry_execution("프레젠테이션 서식 검토 부탁해") is True
+    assert executor._should_attempt_registry_execution("안녕, 오늘 기분은 어때?") is False

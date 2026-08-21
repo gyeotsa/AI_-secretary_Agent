@@ -75,9 +75,21 @@ class Executor:
     """
     _EXECUTION_REQUEST_PATTERN = re.compile(
         r"(?:생성|작성|수정|변경|삭제|저장|전송|발송|실행|설치|등록|예약|열기|닫기|"
-        r"켜기|끄기|다운로드|업로드).{0,20}(?:해\s*줘|해주세요|해줄래|부탁|실행|처리)"
-        r"|(?:만들어|고쳐|지워|보내|실행해|설치해|등록해|예약해|열어|닫아|켜|꺼)\s*(?:줘|주세요|줄래)?",
+        r"켜기|끄기|다운로드|업로드|검색|조회|분석|진단|검사|점검|편집|변환|재생).{0,20}"
+        r"(?:해\s*줘|해주세요|해줄래|부탁|실행|처리)"
+        r"|(?:만들어|고쳐|지워|보내|실행해|설치해|등록해|예약해|열어|닫아|켜|꺼|"
+        r"찾아|검색해|조회해|분석해|진단해|검사해|점검해|편집해|변환해|"
+        r"재생해|틀어)\s*(?:줘|주세요|줄래)?",
         re.IGNORECASE | re.DOTALL,
+    )
+    _GENERIC_ACTION_REQUEST_PATTERN = re.compile(
+        r"(?:해\s*줘|해주세요|해줄래|해볼래|해봐|부탁해|부탁합니다|"
+        r"실행해|처리해|줘|주세요|줄래)[.!?\s]*$",
+        re.IGNORECASE,
+    )
+    _SOCIAL_ONLY_PATTERN = re.compile(
+        r"^(?:안녕|반가워|고마워|감사해|잘\s*지내|심심해|힘들어|오늘\s*기분.{0,12})[.!?\s]*$",
+        re.IGNORECASE,
     )
     _UNVERIFIED_COMPLETION_CLAIM_PATTERN = re.compile(
         r"(?:생성|작성|수정|변경|삭제|저장|전송|발송|실행|설치|등록|예약|다운로드|업로드)"
@@ -225,7 +237,10 @@ class Executor:
                 "clarification_quality", 1.0 if specific else 0.0,
                 success=specific, context={"question": question[:500]},
             )
-        execution_request = bool(self._EXECUTION_REQUEST_PATTERN.search(goal))
+        execution_request = bool(
+            self._EXECUTION_REQUEST_PATTERN.search(goal)
+            or self._GENERIC_ACTION_REQUEST_PATTERN.search(goal)
+        )
         if execution_request and outcome.status == "completed":
             verified = bool(outcome.tool_result and outcome.tool_result.succeeded
                             and outcome.tool_result.evidence)
@@ -460,13 +475,14 @@ class Executor:
                 intent_resolution, goal, session_key, agent_task_id, progress_callback
             )
 
-        # Registry가 실행 의도를 찾지 못한 발화는 일반 대화다. Planner에 보내면
-        # 작은 로컬 모델이 "반드시 도구를 골라야 한다"고 오해해 날씨·문서 도구를
-        # 임의 호출할 수 있으므로, 도구가 없는 대화 전용 경로로 분리한다.
+        # 선언형 Intent가 없는 요청도 Registry 설명과 의미 있게 맞는 실행 요청이면
+        # 동적 Tool Loadout을 거쳐 Planner가 처리한다. 예전에는 이 지점에서 모두
+        # 일반 대화로 종료되어 등록된 도구 대부분이 사실상 접근 불가능했다.
         if (not intent_resolution.matched
                 and hasattr(self, "llm")
                 and hasattr(self, "tool_executor")):
-            return terminal_outcome(self._respond_conversationally(goal, history))
+            if not self._should_attempt_registry_execution(goal):
+                return terminal_outcome(self._respond_conversationally(goal, history))
 
         resolved = self.context_resolver.resolve(goal, history, session_key)
         if resolved.needs_clarification:
@@ -1347,6 +1363,29 @@ class Executor:
         resolution = self.intent_router.resolve(goal)
         loadout = self.tool_loadout.select(goal, resolution)
         return list(loadout.tool_names)
+
+    def _should_attempt_registry_execution(self, goal: str) -> bool:
+        """Route broad action requests without forcing ordinary chat into tools."""
+        normalized = " ".join(str(goal or "").split())
+        if not normalized or self._SOCIAL_ONLY_PATTERN.fullmatch(normalized):
+            return False
+        if not (
+            self._EXECUTION_REQUEST_PATTERN.search(normalized)
+            or self._GENERIC_ACTION_REQUEST_PATTERN.search(normalized)
+        ):
+            return False
+        if not hasattr(self, "intent_router"):
+            return False
+        if not hasattr(self, "tool_loadout"):
+            self.tool_loadout = ToolLoadoutSelector(self.intent_router.registry)
+        loadout = self.tool_loadout.select(normalized, IntentResolution())
+        # A non-empty, descriptor-grounded loadout is required. This prevents a
+        # generic verb such as "해줘" from making the local model invent a tool.
+        return bool(
+            loadout.tool_names
+            and loadout.reason == "registry_descriptor_match"
+            and loadout.confidence >= 0.08
+        )
 
     def _tool_domain_error(self, action: Dict[str, Any]) -> Optional[str]:
         if action.get("action_type") != "use_tool":

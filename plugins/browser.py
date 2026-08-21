@@ -2,10 +2,13 @@
 import json
 import re
 import hashlib
+import os
+import sys
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit, quote_plus
 import ipaddress
 import socket
 import time
@@ -29,8 +32,9 @@ class BrowserPlugin(BasePlugin):
         super().__init__()
         self.name = "browser"
         self.description = "Playwright 기반 웹 페이지 조회 및 스크린샷"
-        self.dependencies = ["playwright"]
+        self.dependencies = ["playwright", "yt_dlp"]
         self._research_agent = None
+        self._provider_catalog = self._load_provider_catalog()
 
     def get_tools(self) -> List[ToolSchema]:
         return [
@@ -85,10 +89,65 @@ class BrowserPlugin(BasePlugin):
                 "type": "object", "properties": {"profile": {"type": "string", "default": "default"}},
                 "additionalProperties": False,
             }, ["browser"], side_effect="read"),
+            ToolSchema("browser_open_url", "검증한 공개 URL을 기본 브라우저에서 엽니다", {
+                "type": "object", "properties": {"url": {"type": "string"}},
+                "required": ["url"], "additionalProperties": False,
+            }, ["browser"], side_effect="execute"),
+            ToolSchema("browser_site_search", "설정된 웹 서비스에서 검색 결과 화면을 실제로 엽니다", {
+                "type": "object", "properties": {
+                    "query": {"type": "string"},
+                    "provider": {"type": "string"},
+                }, "required": ["query", "provider"], "additionalProperties": False,
+            }, ["browser"], side_effect="execute"),
+            ToolSchema("browser_play_media", "설정된 미디어 서비스에서 첫 결과를 찾아 재생 페이지를 엽니다", {
+                "type": "object", "properties": {
+                    "query": {"type": "string"},
+                    "provider": {"type": "string"},
+                }, "required": ["query", "provider"], "additionalProperties": False,
+            }, ["browser"], side_effect="execute", timeout_seconds=90, cancellable=True),
         ]
 
     def get_intents(self) -> List[IntentSchema]:
         return [
+            IntentSchema(
+                "web.site_search",
+                "지정한 웹 서비스의 검색 결과 화면 열기",
+                "browser_site_search",
+                ["유튜브에서 검색", "사이트에서 검색", "웹사이트에서 찾아", "검색 결과 열어"],
+                [SlotSchema("query", "검색어", "무엇을 검색할까요?"),
+                 SlotSchema("provider", "검색 서비스", "어느 사이트에서 검색할까요?")],
+                execution_hints=["검색", "찾아", "열어"],
+                utterance_patterns=[
+                    r"(?:유튜브|youtube|네이버|구글|duckduckgo|덕덕고).{0,60}(?:검색|찾아)",
+                    r"(?:검색|찾아).{0,40}(?:유튜브|youtube|네이버|구글|duckduckgo|덕덕고)",
+                ],
+                request_type="execute", freshness="live", requires_sources=True,
+            ),
+            IntentSchema(
+                "media.play",
+                "음악·영상 등 미디어를 검색해 재생 페이지 열기",
+                "browser_play_media",
+                ["노래 틀어", "음악 틀어", "영상 재생", "유튜브 재생", "재생해줘"],
+                [SlotSchema("query", "재생할 미디어", "어떤 노래나 영상을 재생할까요?"),
+                 SlotSchema("provider", "미디어 서비스", "어느 서비스에서 재생할까요?")],
+                execution_hints=["틀어", "재생", "들려"],
+                follow_up_hints=["그 노래", "그 영상", "다른 버전", "다음 곡"],
+                utterance_patterns=[
+                    r".{1,80}(?:노래|음악|영상|뮤직비디오).{0,20}(?:틀어|재생|들려)",
+                    r".{1,80}(?:틀어\s*줘|재생해\s*줘|들려\s*줘)",
+                ],
+                request_type="execute", freshness="live", requires_sources=True,
+            ),
+            IntentSchema(
+                "web.open_url",
+                "사용자가 지정한 공개 웹 주소 열기",
+                "browser_open_url",
+                ["링크 열어", "주소 열어", "웹페이지 열어"],
+                [SlotSchema("url", "열 URL", "열 웹 주소를 알려주세요.")],
+                execution_hints=["열어", "접속"],
+                utterance_patterns=[r"https?://\S+.{0,20}(?:열어|접속)"],
+                request_type="execute", freshness="live", requires_sources=True,
+            ),
             IntentSchema(
                 "web.video_learning",
                 "사용자가 제공한 YouTube 영상의 실제 자막을 분석해 설정과 RAG에 반영",
@@ -149,6 +208,24 @@ class BrowserPlugin(BasePlugin):
     def extract_slots(self, intent_name: str, text: str,
                       current_slots: Dict[str, Any]) -> Dict[str, Any]:
         slots = dict(current_slots)
+        if intent_name == "web.open_url":
+            match = re.search(r"https?://\S+", text)
+            if match:
+                slots["url"] = match.group(0).rstrip(".,!?)]}")
+            return slots
+        if intent_name in {"web.site_search", "media.play"}:
+            provider = self._provider_from_text(text, media=intent_name == "media.play")
+            if not provider:
+                default_key = "default_media" if intent_name == "media.play" else "default_search"
+                provider = str(self._provider_catalog.get(default_key, "youtube"))
+            slots["provider"] = provider
+            query = self._extract_service_query(text, provider, media=intent_name == "media.play")
+            previous = str(slots.get("query", "")).strip()
+            if query:
+                slots["query"] = query
+            elif previous:
+                slots["query"] = previous
+            return slots
         if intent_name == "web.video_learning":
             url = re.search(r"https?://(?:www\.)?(?:youtube\.com/watch\?[^\s]+|youtu\.be/[^\s]+)", text)
             if url:
@@ -214,6 +291,158 @@ class BrowserPlugin(BasePlugin):
         return (game_name, character_name) if game_name and character_name else None
 
     @staticmethod
+    def _load_provider_catalog() -> Dict[str, Any]:
+        path = Path(__file__).resolve().parent.parent / "config" / "web_providers.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"웹 서비스 설정을 읽을 수 없습니다: {exc}") from exc
+        providers = payload.get("providers")
+        if not isinstance(providers, dict) or not providers:
+            raise RuntimeError("웹 서비스 설정에 providers가 없습니다.")
+        for key, provider in providers.items():
+            if not isinstance(provider, dict) or "search_url" not in provider:
+                raise RuntimeError(f"웹 서비스 설정이 올바르지 않습니다: {key}")
+        return payload
+
+    def _provider_from_text(self, text: str, media: bool = False) -> str:
+        normalized = str(text or "").casefold()
+        for key, provider in self._provider_catalog["providers"].items():
+            aliases = [key, str(provider.get("label", "")), *provider.get("aliases", [])]
+            if any(str(alias).casefold() in normalized for alias in aliases if alias):
+                return key
+        default_key = "default_media" if media else "default_search"
+        return str(self._provider_catalog.get(default_key, "youtube"))
+
+    def _provider(self, provider_key: str, media: bool = False) -> tuple[str, Dict[str, Any]]:
+        providers = self._provider_catalog["providers"]
+        requested = str(provider_key or "").strip().casefold()
+        if not requested:
+            requested = str(self._provider_catalog.get(
+                "default_media" if media else "default_search", "youtube"
+            )).casefold()
+        for key, provider in providers.items():
+            aliases = [key, str(provider.get("label", "")), *provider.get("aliases", [])]
+            if requested in {str(alias).casefold() for alias in aliases if alias}:
+                return key, provider
+        labels = ", ".join(str(item.get("label", key)) for key, item in providers.items())
+        raise ValueError(f"지원하지 않는 웹 서비스입니다. 사용 가능: {labels}")
+
+    def _extract_service_query(self, text: str, provider_key: str, media: bool = False) -> str:
+        normalized = " ".join(str(text or "").split()).strip()
+        _, provider = self._provider(provider_key, media=media)
+        aliases = [provider_key, str(provider.get("label", "")), *provider.get("aliases", [])]
+        for alias in sorted((str(item) for item in aliases if item), key=len, reverse=True):
+            normalized = re.sub(re.escape(alias), " ", normalized, flags=re.I)
+        normalized = re.sub(r"^(?:자비스|아니스)[아야]?[\s,.:：-]*", "", normalized).strip()
+        normalized = re.sub(r"^(?:에서|으로|로)\s+", "", normalized).strip()
+        if media:
+            normalized = re.sub(
+                r"(?:에서\s*)?(?:노래|음악|영상|비디오|뮤직비디오)?\s*"
+                r"(?:을|를)?\s*(?:재생|틀어|들려|보여)(?:\s*줘|\s*주세요|\s*줄래)?[.!?]*$",
+                "", normalized, flags=re.I,
+            )
+        else:
+            normalized = re.sub(
+                r"(?:에서\s*)?(?:을|를)?\s*(?:검색|찾아|조회)(?:\s*해|\s*해줘|\s*해주세요|\s*해줄래)?[.!?]*$",
+                "", normalized, flags=re.I,
+            )
+        return " ".join(normalized.split()).strip(" ,.!?")
+
+    @staticmethod
+    def _open_external_url(url: str) -> None:
+        if sys.platform == "win32" and hasattr(os, "startfile"):
+            os.startfile(url)  # type: ignore[attr-defined]
+            return
+        if not webbrowser.open(url, new=2):
+            raise RuntimeError("기본 브라우저에 URL을 전달하지 못했습니다.")
+
+    @staticmethod
+    def _with_autoplay(url: str) -> str:
+        parsed = urlsplit(url)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query["autoplay"] = "1"
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+
+    def _open_url(self, tool_input: Dict[str, Any]) -> ToolRunResult:
+        try:
+            url = self._validate_url(str(tool_input.get("url", "")))
+            self._open_external_url(url)
+            return ToolRunResult.successful(
+                tool_name="browser_open_url",
+                raw_output=f"브라우저에서 페이지를 열었습니다: {url}",
+                evidence=[Evidence("browser_dispatch", "운영체제 기본 브라우저에 URL을 전달했습니다.",
+                                   {"url": url, "page_loaded_verified": False})],
+                artifacts=[Artifact("url", url, {"opened": True})],
+            )
+        except Exception as exc:
+            return ToolRunResult.failed(tool_name="browser_open_url", error=str(exc))
+
+    def _site_search(self, tool_input: Dict[str, Any]) -> ToolRunResult:
+        try:
+            query = " ".join(str(tool_input.get("query", "")).split())
+            if not query:
+                raise ValueError("검색어가 필요합니다.")
+            key, provider = self._provider(str(tool_input.get("provider", "")))
+            url = str(provider["search_url"]).format(query=quote_plus(query))
+            url = self._validate_url(url)
+            self._open_external_url(url)
+            label = str(provider.get("label", key))
+            return ToolRunResult.successful(
+                tool_name="browser_site_search",
+                raw_output=f"{label}에서 '{query}' 검색 결과를 열었습니다.",
+                evidence=[Evidence("site_search_dispatch", "검색 결과 URL을 기본 브라우저에 전달했습니다.",
+                                   {"provider": key, "query": query, "url": url,
+                                    "page_loaded_verified": False})],
+                artifacts=[Artifact("url", url, {"provider": key, "query": query})],
+            )
+        except Exception as exc:
+            return ToolRunResult.failed(tool_name="browser_site_search", error=str(exc))
+
+    def _resolve_media_url(self, query: str, provider_key: str) -> str:
+        _, provider = self._provider(provider_key, media=True)
+        if provider.get("media_resolver") != "yt_dlp_search":
+            return str(provider["search_url"]).format(query=quote_plus(query))
+        try:
+            import yt_dlp
+        except ImportError as exc:
+            raise RuntimeError("미디어 재생 검색에 필요한 yt-dlp가 설치되지 않았습니다.") from exc
+        options = {
+            "quiet": True, "no_warnings": True, "skip_download": True,
+            "extract_flat": "in_playlist", "playlistend": 1,
+        }
+        with yt_dlp.YoutubeDL(options) as downloader:
+            info = downloader.extract_info(f"ytsearch1:{query}", download=False)
+        entries = list((info or {}).get("entries") or [])
+        if not entries:
+            raise RuntimeError("재생할 검색 결과를 찾지 못했습니다.")
+        entry = entries[0]
+        candidate = str(entry.get("webpage_url") or entry.get("url") or "")
+        if candidate and not candidate.startswith(("http://", "https://")):
+            candidate = f"https://www.youtube.com/watch?v={candidate}"
+        return self._with_autoplay(self._validate_url(candidate))
+
+    def _play_media(self, tool_input: Dict[str, Any]) -> ToolRunResult:
+        try:
+            query = " ".join(str(tool_input.get("query", "")).split())
+            if not query:
+                raise ValueError("재생할 미디어 이름이 필요합니다.")
+            key, provider = self._provider(str(tool_input.get("provider", "")), media=True)
+            url = self._resolve_media_url(query, key)
+            self._open_external_url(url)
+            label = str(provider.get("label", key))
+            return ToolRunResult.successful(
+                tool_name="browser_play_media",
+                raw_output=f"{label}에서 '{query}' 재생 페이지를 열었습니다.",
+                evidence=[Evidence("media_playback_dispatch", "첫 검색 결과의 재생 URL을 브라우저에 전달했습니다.",
+                                   {"provider": key, "query": query, "url": url,
+                                    "audio_playback_verified": False})],
+                artifacts=[Artifact("url", url, {"provider": key, "query": query})],
+            )
+        except Exception as exc:
+            return ToolRunResult.failed(tool_name="browser_play_media", error=str(exc))
+
+    @staticmethod
     def _validate_url(url: str) -> str:
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -257,6 +486,12 @@ class BrowserPlugin(BasePlugin):
             route.abort()
 
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
+        if tool_name == "browser_open_url":
+            return self._open_url(tool_input)
+        if tool_name == "browser_site_search":
+            return self._site_search(tool_input)
+        if tool_name == "browser_play_media":
+            return self._play_media(tool_input)
         if tool_name == "browser_research":
             return self._research_web(tool_input)
         if tool_name == "browser_research_and_apply_preference":
@@ -935,6 +1170,8 @@ class BrowserPlugin(BasePlugin):
             )
 
     def present_result(self, tool_name: str, result: str) -> str:
+        if tool_name in {"browser_open_url", "browser_site_search", "browser_play_media"}:
+            return result
         if tool_name == "browser_research":
             try:
                 payload = json.loads(result)

@@ -176,6 +176,7 @@ class BasePlugin(ABC):
         self.auth_required = False
         self.auth_type = "none"
         self.auto_discover = True
+        self.registry: Optional["PluginRegistry"] = None
 
     @abstractmethod
     def get_tools(self) -> List[ToolSchema]: ...
@@ -228,6 +229,7 @@ class PluginRegistry:
         if collisions: raise PluginContractError(f"중복 Tool 이름: {', '.join(sorted(collisions))}")
         if intent_collisions: raise PluginContractError(f"중복 Intent 이름: {', '.join(sorted(intent_collisions))}")
         for tool in tools: self._validate_schema_definition(tool)
+        plugin.registry = self
         plugin.on_load()
         self.plugins[plugin.name] = plugin
         self._tools.update({tool.name: (plugin, tool) for tool in tools})
@@ -239,6 +241,7 @@ class PluginRegistry:
         plugin = self.plugins.get(plugin_name)
         if plugin is None: return
         plugin.on_unload()
+        plugin.registry = None
         self._event_bus.unsubscribe("*", plugin.on_event)
         del self.plugins[plugin_name]
         self._tools = {k: v for k, v in self._tools.items() if v[0] is not plugin}

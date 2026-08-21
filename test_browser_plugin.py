@@ -7,6 +7,8 @@ import pytest
 from plugins.browser import BrowserPlugin
 from core.tools import ToolExecutor
 from core.tool_result import ToolRunResult
+from core.intent_router import IntentRouter
+from core.plugin import PluginRegistry
 import core.permission as permission_module
 
 
@@ -52,6 +54,49 @@ def test_invalid_screenshot_path_is_rejected_before_browser_launch():
     assert isinstance(result, ToolRunResult)
     assert result.raw_output.startswith("오류:")
     assert "허용되지 않습니다" in result.raw_output
+
+
+def test_site_search_and_media_play_are_routed_from_natural_korean():
+    registry = PluginRegistry()
+    registry.register_plugin(BrowserPlugin())
+    router = IntentRouter(registry)
+
+    search = router.resolve("유튜브에서 고양이 영상을 검색해줘")
+    play = router.resolve("아이유 좋은날 노래 틀어줘")
+
+    assert search.intent_name == "web.site_search" and search.ready
+    assert search.slots == {"provider": "youtube", "query": "고양이 영상"}
+    assert play.intent_name == "media.play" and play.ready
+    assert play.slots == {"provider": "youtube", "query": "아이유 좋은날"}
+
+
+def test_site_search_opens_provider_url_without_claiming_page_load(monkeypatch):
+    plugin = BrowserPlugin()
+    opened = []
+    monkeypatch.setattr(plugin, "_validate_url", lambda url: url)
+    monkeypatch.setattr(plugin, "_open_external_url", opened.append)
+
+    result = plugin.execute_tool("browser_site_search", {
+        "provider": "youtube", "query": "고양이 영상",
+    })
+
+    assert result.succeeded and opened
+    assert "youtube.com/results" in opened[0]
+    assert result.evidence[0].data["page_loaded_verified"] is False
+
+
+def test_media_play_opens_resolved_result_without_false_audio_claim(monkeypatch):
+    plugin = BrowserPlugin()
+    opened = []
+    monkeypatch.setattr(plugin, "_resolve_media_url", lambda *_args: "https://youtube.com/watch?v=test&autoplay=1")
+    monkeypatch.setattr(plugin, "_open_external_url", opened.append)
+
+    result = plugin.execute_tool("browser_play_media", {
+        "provider": "youtube", "query": "테스트 노래",
+    })
+
+    assert result.succeeded and opened == ["https://youtube.com/watch?v=test&autoplay=1"]
+    assert result.evidence[0].data["audio_playback_verified"] is False
 
 
 def test_tool_executor_checks_browser_and_file_write_permissions(monkeypatch):

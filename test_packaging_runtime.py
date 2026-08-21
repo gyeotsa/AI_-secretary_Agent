@@ -4,6 +4,13 @@ from pathlib import Path
 from core.runtime_services import RuntimeServiceManager
 
 
+def test_packaging_spec_includes_web_provider_catalog_and_media_resolver():
+    spec = Path("packaging/Jarvis.spec").read_text(encoding="utf-8")
+
+    assert '"web_providers.json"' in spec
+    assert '"yt_dlp"' in spec
+
+
 def test_frozen_runtime_configures_bundled_model_and_browser_paths(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.frozen", True, raising=False)
     monkeypatch.setattr("sys._MEIPASS", str(tmp_path), raising=False)
