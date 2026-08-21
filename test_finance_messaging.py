@@ -5,9 +5,14 @@ from core.desktop_messaging import DesktopMessagingRuntime
 from core.dialogue_state import DialogueStateStore
 from core.executor import ExecutionOutcome, Executor
 from core.intent_router import IntentRouter
+from core.plan_runtime import (
+    PlanCoordinator, PlanDAG, PlanExecutionStore, PlanRunResult, PlanStep, StepStatus,
+)
 from core.planner import _parse_json_object
 from core.plugin import PluginRegistry
 from core.rag import VectorRAGManager
+from core.tool_result import Evidence, ToolRunResult
+from core.task_contracts import SupervisorRuntime, TaskContractStore
 from core.windows_automation import WindowInfo
 from plugins.desktop_messaging import DesktopMessagingPlugin
 from plugins.finance import FinancePlugin
@@ -105,6 +110,172 @@ def test_executor_routes_independent_message_before_context_rewrite(tmp_path):
         "goal": "카카오 톡으로 형택이에게 테스트 라고 보내줄래?",
         "slots": {"provider": "kakaotalk", "recipient": "형택이", "message": "테스트"},
     }
+
+
+def _executor_with_approval_tasks(tmp_path, count=1):
+    executor = Executor.__new__(Executor)
+    executor.dialogue_state = DialogueStateStore(str(tmp_path / "dialogue.db"))
+    executor.intent_router = _router()
+    executor.current_agent_task_id = ""
+    calls = []
+
+    for index in range(count):
+        recipient = f"형택이{index + 1}" if count > 1 else "형택이"
+        goal = f"카카오톡으로 {recipient}에게 테스트라고 보내줘"
+        task = executor.dialogue_state.create_task("session", goal)
+        slots = {"provider": "kakaotalk", "recipient": recipient, "message": "테스트"}
+        plan = PlanDAG(goal=goal, steps=[PlanStep(
+            id=f"intent-{task.task_id}", description="messaging.send",
+            tool_name="desktop_send_message", tool_input=slots,
+            requires_approval=True,
+            approval_reason="외부 대상에게 데이터를 전송하는 작업입니다.",
+            retry_budget=0, status=StepStatus.AWAITING_APPROVAL,
+        )])
+        assert executor.dialogue_state.transition_task(
+            task.task_id, "running", intent_name="messaging.send", slots=slots,
+            plan=plan.to_dict()["steps"], plan_id=plan.plan_id,
+        )
+        assert executor.dialogue_state.transition_task(
+            task.task_id, "awaiting_approval",
+            pending_question=executor._approval_request_message(plan.steps),
+        )
+
+    def execute_plan(self, plan, approval_callback=None, approved_step_ids=None,
+                     replan_callback=None):
+        assert approved_step_ids == [plan.steps[0].id]
+        calls.append(dict(plan.steps[0].tool_input))
+        plan.steps[0].status = StepStatus.COMPLETED
+        raw = json.dumps({
+            "provider": "kakaotalk",
+            "recipient": plan.steps[0].tool_input["recipient"],
+            "window_title": plan.steps[0].tool_input["recipient"],
+            "window_handle": 11, "process_id": 99,
+            "input_dispatched_at": "2026-08-21T12:00:00+09:00",
+            "delivery_receipt_verified": False,
+        }, ensure_ascii=False)
+        result = ToolRunResult.successful(
+            tool_name="desktop_send_message", raw_output=raw,
+            evidence=[Evidence(
+                "desktop_message_dispatch", "정확한 수신자 창에 키 입력을 전달했습니다.",
+                {"recipient": plan.steps[0].tool_input["recipient"]},
+            )],
+        )
+        return PlanRunResult(plan, "completed", {plan.steps[0].id: result})
+
+    executor.execute_plan_dag = types.MethodType(execute_plan, executor)
+    return executor, calls
+
+
+def test_bare_approval_resumes_unique_message_with_evidence_based_result(tmp_path):
+    executor, calls = _executor_with_approval_tasks(tmp_path)
+
+    outcome = executor._execute_turn_impl("승인", "session")
+
+    assert calls == [{
+        "provider": "kakaotalk", "recipient": "형택이", "message": "테스트",
+    }]
+    assert outcome.status == "completed"
+    assert "메시지 전송 입력을 완료했습니다" in outcome.response
+    assert "수신 확인 정보까지는 확인하지 못했습니다" in outcome.response
+    assert "메시지가 보내졌어요" not in outcome.response
+    stored = executor.dialogue_state.get_task("session", outcome.task_id, "")
+    assert stored is not None
+    assert stored.status == "completed"
+    assert stored.evidence[0]["kind"] == "desktop_message_dispatch"
+
+
+def test_bare_approval_never_falls_through_to_conversation_without_pending_task(tmp_path):
+    executor, calls = _executor_with_approval_tasks(tmp_path, count=0)
+
+    outcome = executor._execute_turn_impl("승인해줘", "session")
+
+    assert calls == []
+    assert outcome.status == "completed"
+    assert "승인 대기 중인 작업이 없습니다" in outcome.response
+
+
+def test_bare_approval_requires_task_id_when_multiple_are_waiting(tmp_path):
+    executor, calls = _executor_with_approval_tasks(tmp_path, count=2)
+
+    outcome = executor._execute_turn_impl("허용", "session")
+
+    assert calls == []
+    assert outcome.status == "awaiting_approval"
+    assert "여러 개라 임의로 실행하지 않았습니다" in outcome.response
+    assert outcome.response.count("- 작업 ") == 2
+
+
+def test_approval_prompt_hides_internal_intent_and_task_identifier():
+    message = Executor._approval_request_message([PlanStep(
+        id="intent-a2b9f555", description="messaging.send",
+        tool_name="desktop_send_message",
+        tool_input={"provider": "kakaotalk", "recipient": "형택이", "message": "테스트"},
+        requires_approval=True,
+        approval_reason="외부 대상에게 데이터를 전송하는 작업입니다.",
+    )])
+
+    assert "messaging.send" not in message
+    assert "a2b9f555" not in message
+    assert "대상: 형택이" in message
+    assert "내용: 테스트" in message
+    assert "‘승인’" in message
+
+
+def test_external_send_executes_only_after_bare_approval_through_real_plan_runtime(tmp_path):
+    executor = Executor.__new__(Executor)
+    executor.dialogue_state = DialogueStateStore(str(tmp_path / "dialogue.db"))
+    executor.intent_router = _router()
+    executor.current_agent_task_id = ""
+    executor.model_role_router = None
+    executor.plan_coordinator = PlanCoordinator(
+        PlanExecutionStore(str(tmp_path / "plans.db")), max_parallel=1,
+    )
+    executor.supervisor = SupervisorRuntime(
+        TaskContractStore(str(tmp_path / "contracts.db"))
+    )
+    calls = []
+
+    class ToolExecutor:
+        plugin_registry = executor.intent_router.registry
+
+        def execute_tool(self, tool_name, tool_input):
+            calls.append((tool_name, dict(tool_input)))
+            return ToolRunResult.successful(
+                tool_name=tool_name,
+                raw_output=json.dumps({
+                    "provider": "kakaotalk", "recipient": tool_input["recipient"],
+                    "window_title": tool_input["recipient"], "window_handle": 11,
+                    "process_id": 99,
+                    "input_dispatched_at": "2026-08-21T12:00:00+09:00",
+                    "delivery_receipt_verified": False,
+                }, ensure_ascii=False),
+                evidence=[Evidence(
+                    "desktop_message_dispatch", "정확한 수신자 창에 키 입력을 전달했습니다.",
+                    {"recipient": tool_input["recipient"]},
+                )],
+            )
+
+    executor.tool_executor = ToolExecutor()
+    resolution = executor.intent_router.resolve(
+        "카카오톡으로 형택이에게 테스트라고 보내줘"
+    )
+
+    waiting = executor._execute_resolved_intent(
+        resolution, "카카오톡으로 형택이에게 테스트라고 보내줘", "session"
+    )
+    assert waiting.status == "awaiting_approval"
+    assert calls == []
+    assert "messaging.send" not in waiting.response
+    assert "작업 " not in waiting.response
+
+    completed = executor._execute_turn_impl("승인", "session")
+    assert completed.status == "completed"
+    assert calls == [(
+        "desktop_send_message",
+        {"provider": "kakaotalk", "recipient": "형택이", "message": "테스트"},
+    )]
+    assert "전송 입력을 완료했습니다" in completed.response
+    assert "수신 확인 정보까지는 확인하지 못했습니다" in completed.response
 
 
 def test_desktop_message_runtime_verifies_exact_recipient_before_dispatch(monkeypatch):

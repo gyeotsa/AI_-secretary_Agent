@@ -791,14 +791,10 @@ class Executor:
                           if step.status.value == "completed"), "")
 
         if outcome.status == "awaiting_approval":
-            descriptions = [
-                next((step.description for step in steps if step.id == step_id), step_id)
-                for step_id in outcome.awaiting_approval
+            pending_steps = [
+                step for step in steps if step.id in set(outcome.awaiting_approval)
             ]
-            response = (
-                "다음 실행에는 사용자 승인이 필요합니다: " + ", ".join(descriptions)
-                + f"\n계속하려면 ‘작업 {task_id} 승인’이라고 말씀해 주세요."
-            )
+            response = self._approval_request_message(pending_steps)
             self.dialogue_state.update_task(
                 task_id, result=response, pending_question=response,
                 artifacts=artifacts, evidence=evidence, last_tool=last_tool,
@@ -901,9 +897,58 @@ class Executor:
                 print(f"[Executor] 진행 상황 callback 오류: {exc}")
 
     @staticmethod
+    def _is_contextual_approval_command(text: str) -> bool:
+        """Return whether text is an unambiguous approval utterance.
+
+        This deliberately excludes vague words such as ``계속``.  A short
+        approval may select a task only when the current session has exactly
+        one approval-pending task; ambiguity is resolved by the caller rather
+        than by an LLM guess.
+        """
+        normalized = re.sub(r"[.!?。！？]+$", "", str(text).strip().lower())
+        normalized = re.sub(r"\s+", "", normalized)
+        return bool(re.fullmatch(
+            r"(?:승인|허용)(?:해|해줘|해주세요|해요|합니다|할게|할게요|"
+            r"할께|할께요|하겠습니다)?",
+            normalized,
+        ))
+
+    @staticmethod
+    def _approval_request_message(steps: List[PlanStep]) -> str:
+        """Describe approval scope without exposing internal intent IDs."""
+        reasons = list(dict.fromkeys(
+            step.approval_reason.strip() for step in steps
+            if step.approval_reason.strip()
+        ))
+        lines = [reasons[0] if len(reasons) == 1 else
+                 "다음 외부 작업을 실행하기 전에 승인이 필요합니다."]
+        label_map = {
+            "provider": "서비스", "recipient": "대상", "target": "대상",
+            "to": "대상", "message": "내용", "content": "내용", "text": "내용",
+        }
+        visible: list[str] = []
+        for step in steps:
+            for key, value in step.tool_input.items():
+                key_text = str(key).casefold()
+                if any(token in key_text for token in
+                       ("password", "passwd", "secret", "token", "auth", "credential")):
+                    continue
+                if key_text not in label_map or isinstance(value, (dict, list, tuple, set)):
+                    continue
+                text = str(value).strip()
+                if text:
+                    visible.append(f"{label_map[key_text]}: {text[:200]}")
+        for item in dict.fromkeys(visible):
+            lines.append(item)
+        lines.append("계속하려면 ‘승인’이라고 말씀해 주세요.")
+        return "\n".join(lines)
+
+    @staticmethod
     def is_control_command(text: str) -> bool:
         normalized = text.strip().lower()
         if normalized in {"작업 목록", "전체 작업 목록"}:
+            return True
+        if Executor._is_contextual_approval_command(normalized):
             return True
         return bool(re.fullmatch(
             r"(?:작업\s*)?[0-9a-f]{8}\s*(?:상태|승인|취소|중단|일시정지|재개|우선순위\s*-?\d+|수정\s*[:：].+)",
@@ -922,13 +967,38 @@ class Executor:
             lines = [f"- {t.task_id} [{t.status}] 우선순위 {t.priority}: {t.goal[:60]}" for t in tasks[:20]]
             return ExecutionOutcome("작업 목록입니다, 보스.\n" + "\n".join(lines))
 
-        match = re.fullmatch(r"(?:작업\s*)?([0-9a-f]{8})\s*(.+)", normalized, re.S)
-        if not match:
-            return ExecutionOutcome("작업 제어 명령을 이해하지 못했습니다, 보스.", "failed")
-        task_id, command = match.group(1), match.group(2).strip()
-        task = self.dialogue_state.get_task(
-            session_key, task_id, self._workspace_scope()
-        )
+        if self._is_contextual_approval_command(normalized):
+            pending = [
+                item for item in self.dialogue_state.list_tasks(
+                    session_key, include_finished=False,
+                    workspace_path=self._workspace_scope(),
+                )
+                if item.status == "awaiting_approval"
+            ]
+            if not pending:
+                return ExecutionOutcome(
+                    "현재 승인 대기 중인 작업이 없습니다, 보스.", "completed"
+                )
+            if len(pending) > 1:
+                choices = "\n".join(
+                    f"- 작업 {item.task_id}: {item.goal[:80]}" for item in pending[:10]
+                )
+                return ExecutionOutcome(
+                    "승인 대기 중인 작업이 여러 개라 임의로 실행하지 않았습니다. "
+                    "승인할 작업 번호를 지정해 주세요.\n" + choices,
+                    "awaiting_approval",
+                    question="‘작업 번호 승인’ 형식으로 승인할 작업을 지정해 주세요.",
+                )
+            task = pending[0]
+            task_id, command = task.task_id, "승인"
+        else:
+            match = re.fullmatch(r"(?:작업\s*)?([0-9a-f]{8})\s*(.+)", normalized, re.S)
+            if not match:
+                return ExecutionOutcome("작업 제어 명령을 이해하지 못했습니다, 보스.", "failed")
+            task_id, command = match.group(1), match.group(2).strip()
+            task = self.dialogue_state.get_task(
+                session_key, task_id, self._workspace_scope()
+            )
         if not task:
             return ExecutionOutcome(f"작업 {task_id}을 찾지 못했습니다, 보스.", "failed", task_id=task_id)
         if command == "상태":
@@ -955,7 +1025,22 @@ class Executor:
                 if not self.dialogue_state.transition_task(task_id, "running"):
                     raise RuntimeError("작업을 실행 상태로 전환하지 못했습니다.")
                 run = self.execute_plan_dag(plan, approved_step_ids=approved)
-                return self._finish_plan_run(run, goal=task.goal, task_id=task_id)
+                outcome = self._finish_plan_run(run, goal=task.goal, task_id=task_id)
+                tool_run = next(iter(run.results.values()), None)
+                if outcome.status == "completed" and tool_run is not None:
+                    response = self.intent_router.registry.present_result(
+                        tool_run.tool_name, tool_run.raw_output
+                    )
+                    outcome.response = response
+                    self.dialogue_state.update_task(task_id, result=response)
+                    if task.intent_name:
+                        self.dialogue_state.save_recent_intent(
+                            session_key, task.intent_name, task.slots, task.goal,
+                            task_id=task_id, workspace_path=self._workspace_scope(),
+                        )
+                if outcome.status != "awaiting_approval":
+                    self.dialogue_state.delete_intent_state(task_id)
+                return outcome
             except Exception as exc:
                 self.dialogue_state.update_task(
                     task_id, status="failed", result=f"승인 후 재개 실패: {exc}",
@@ -1471,7 +1556,8 @@ class Executor:
                     session_id, resolution.intent_name, resolution.slots, goal,
                     task_id=task_id, workspace_path=workspace_scope,
                 )
-            self.dialogue_state.delete_intent_state(task_id)
+            if outcome.status != "awaiting_approval":
+                self.dialogue_state.delete_intent_state(task_id)
             return outcome
         finally:
             self.current_agent_task_id = ""
