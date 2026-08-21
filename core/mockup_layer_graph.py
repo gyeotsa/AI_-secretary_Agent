@@ -12,7 +12,7 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw
 
 
-LAYER_GRAPH_VERSION = 1
+LAYER_GRAPH_VERSION = 2
 
 _SVG_FONT_ALIASES = {
     "맑은고딕": "Malgun Gothic", "맑은 고딕": "Malgun Gothic",
@@ -195,6 +195,32 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
             text_clip = f"text-clip-{layer_id}"
             defs.append(f'<clipPath id="{text_clip}"><rect x="{x}" y="{y}" width="{w}" height="{h}"/></clipPath>')
             spans = layer.get("spans") if isinstance(layer.get("spans"), list) else []
+            text_path = typo.get("path") if isinstance(typo.get("path"), dict) else None
+            if text_path and text_path.get("type") == "arc" and content_value:
+                radius = max(font_size, float(text_path.get("radius", .25)) * min(width, height))
+                cx, cy = x + w / 2, y + h / 2
+                start_angle = float(text_path.get("start_angle", 200))
+                end_angle = float(text_path.get("end_angle", 340))
+                import math
+                start = math.radians(start_angle)
+                end = math.radians(end_angle)
+                x1, y1 = cx + math.cos(start) * radius, cy + math.sin(start) * radius
+                x2, y2 = cx + math.cos(end) * radius, cy + math.sin(end) * radius
+                delta = (end_angle - start_angle) % 360
+                large_arc = 1 if delta > 180 else 0
+                sweep = 1 if end_angle >= start_angle else 0
+                path_id = f"text-path-{layer_id}"
+                defs.append(
+                    f'<path id="{path_id}" d="M {x1} {y1} A {radius} {radius} 0 {large_arc} {sweep} {x2} {y2}"/>'
+                )
+                body.append(
+                    f'<text id="{layer_id}" font-family="{html.escape(_svg_font_family(typo.get("font_family", "Malgun Gothic")))}" '
+                    f'font-size="{font_size}" font-weight="{typo.get("font_weight","bold")}" '
+                    f'fill="{typo.get("color","#111111")}" stroke="{typo.get("stroke","none")}" '
+                    f'stroke-width="{typo.get("stroke_width",0)*min(width,height)}" opacity="{opacity}">'
+                    f'<textPath href="#{path_id}" startOffset="50%" text-anchor="middle">{content}</textPath></text>'
+                )
+                continue
             if spans and " ".join(str(item.get("content", "")).strip() for item in spans) == content_value:
                 # QtSvg does not reliably shape Hangul when a font-family is
                 # changed on nested tspan nodes.  Render phrase spans as

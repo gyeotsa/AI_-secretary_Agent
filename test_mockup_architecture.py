@@ -10,6 +10,8 @@ from core.mockup_layer_graph import (layer_graph_to_svg, render_svg_with_qt,
                                       scene_plan_to_layer_graph, validate_layer_graph)
 from core.mockup_style_index import VisualStyleIndex
 from core.mockup_subject_runtime import SubjectAnalysisRuntime
+from core.mockup_document import assert_scene_document, scene_digest, stamp_scene_document
+from core.mockup_pipeline_policy import route_mockup_request
 from core.mockup_scene import (enforce_exact_user_copy, enforce_explicit_user_constraints,
                                filter_scene_edit_patch, infer_edit_scopes,
                                parse_explicit_colored_copy, requests_circular_shape,
@@ -45,6 +47,52 @@ def test_layer_graph_svg_is_editable_and_qt_renderable(tmp_path):
     assert "letter-spacing" in svg
     rendered = render_svg_with_qt(svg, 600, 600)
     assert rendered.size == (600, 600)
+
+
+def test_svg_arc_text_uses_real_text_path(tmp_path):
+    source = tmp_path / "source.png"
+    Image.new("RGB", (200, 240), "#7d96b3").save(source)
+    plan = _plan()
+    plan["texts"][0]["path"] = {
+        "type": "arc", "radius": .3, "start_angle": 200, "end_angle": 340,
+    }
+    svg = layer_graph_to_svg(scene_plan_to_layer_graph(plan), [source], 600, 600)
+    assert "<textPath" in svg
+    assert 'id="text-path-text-0"' in svg
+    assert render_svg_with_qt(svg, 600, 600).size == (600, 600)
+
+
+def test_design_document_detects_stale_or_mutated_preview():
+    stamped = stamp_scene_document(_plan(), revision=4)
+    assert stamped["document"]["revision"] == 4
+    digest = scene_digest(stamped)
+    assert assert_scene_document(stamped, expected_digest=digest)["scene_digest"] == digest
+    stale_digest = "0" * 64
+    try:
+        assert_scene_document(stamped, expected_digest=stale_digest)
+    except ValueError as exc:
+        assert "현재 미리보기" in str(exc)
+    else:
+        raise AssertionError("mutated design document was accepted")
+
+
+def test_capability_router_activates_only_required_heavy_stage():
+    vector = route_mockup_request("문구를 아래로 내리고 점선을 흰색으로 바꿔줘")
+    assert vector.image_generation == "disabled"
+    assert vector.subject_processing == "none"
+    segmented = route_mockup_request("인물 누끼를 따고 배경을 투명하게 해줘", segmentation_ready=True)
+    assert segmented.subject_processing == "birefnet-or-grabcut"
+    generated = route_mockup_request("새로운 야경 배경을 생성해줘")
+    assert generated.image_generation == "diffusion"
+
+
+def test_render_contract_checks_actual_circle_alpha():
+    plan = _plan()
+    opaque = Image.new("RGBA", (100, 100), (255, 255, 255, 255))
+    violations = MockupDesignRuntime._render_contract_violations(
+        opaque, plan, "스티커를 원형으로 만들어줘",
+    )
+    assert any("모서리" in item for item in violations)
 
 
 def test_visual_style_index_does_not_use_text_embedding(tmp_path):

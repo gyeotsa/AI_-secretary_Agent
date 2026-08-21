@@ -33,6 +33,8 @@ from core.mockup_layer_graph import (scene_plan_to_layer_graph, validate_layer_g
                                      layer_graph_to_svg, render_svg_with_qt)
 from core.mockup_style_index import VisualStyleIndex
 from core.mockup_subject_runtime import SubjectAnalysisRuntime
+from core.mockup_document import assert_scene_document, scene_digest, stamp_scene_document
+from core.mockup_pipeline_policy import route_mockup_request
 from core.mockup_post_training import StyleTrainingDataset
 from config import Config
 from core.specialist_team import TeamRun
@@ -242,6 +244,26 @@ class MockupDesignRuntime:
                       float(text.get("y", 0)) + float(text.get("height", 0)) <= float(asset.get("y", 0)) + float(asset.get("height", 0)))
             if not inside:
                 violations.append("문구가 스티커 안쪽 하단에 배치되지 않았습니다.")
+        return violations
+
+    @staticmethod
+    def _render_contract_violations(canvas: Image.Image, plan: dict,
+                                    instruction: str) -> list[str]:
+        """Verify measurable requirements against the rendered pixels."""
+        violations = []
+        rgba = canvas.convert("RGBA")
+        alpha = rgba.getchannel("A")
+        if alpha.getbbox() is None:
+            return ["렌더링 결과가 완전히 투명합니다."]
+        if requests_circular_shape(instruction):
+            width, height = rgba.size
+            sample = max(1, min(width, height) // 100)
+            corners = ((sample, sample), (width-sample-1, sample),
+                       (sample, height-sample-1), (width-sample-1, height-sample-1))
+            if any(alpha.getpixel(point) > 8 for point in corners):
+                violations.append("원형 결과의 바깥 모서리가 실제 픽셀에서 투명하지 않습니다.")
+            if alpha.getpixel((width // 2, height // 2)) <= 8:
+                violations.append("원형 결과의 중심 피사체가 실제 픽셀에서 보이지 않습니다.")
         return violations
 
     def _review_rendered_image(self, output_path: Path, profile: MockupStyleProfile,
@@ -1190,6 +1212,10 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                edit_instruction: str = "") -> dict:
         """Render exclusively from a model-authored scene plan, never a named template."""
         profile = self.load_profile(profile_id); paths = self._validate_images(production_paths)
+        route = route_mockup_request(
+            instruction, backend=backend,
+            segmentation_ready=bool(self.subject_runtime.status().get("birefnet_ready", False)),
+        )
         team_run = TeamRun("mockup", instruction, {
             "memory_context": memory_context, "references": list(profile.reference_paths),
             "production_assets": [str(path) for path in paths],
@@ -1257,6 +1283,9 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         rendered = (self.team_runtime.execute_role(team_run, "renderer", lambda _run: render_current(plan))
                     if self.team_runtime else render_current(plan))
         canvas, layer_graph, renderer_name, editable_svg = rendered
+        pixel_violations = self._render_contract_violations(canvas, plan, instruction)
+        if pixel_violations:
+            raise ScenePlanError("렌더링 결과가 디자인 계약을 충족하지 못했습니다: " + "; ".join(pixel_violations))
         quality_verdict = {"passed": True, "score": 1.0, "violations": [], "skipped": True}
         correction_history = []
         if self.enable_visual_review:
@@ -1316,6 +1345,10 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         svg_path = output_path.with_suffix(".svg")
         if editable_svg:
             svg_path.write_text(editable_svg, encoding="utf-8")
+        parent_digest = scene_digest(edit_baseline) if isinstance(edit_baseline, dict) else ""
+        previous_revision = int((edit_baseline or {}).get("document", {}).get("revision", -1))
+        plan = stamp_scene_document(plan, revision=previous_revision + 1, parent_digest=parent_digest)
+        layer_graph["compatibility_scene_plan"] = deepcopy(plan)
         metadata = {
             "output": str(output_path), "profile_id": profile.profile_id, "references": profile.reference_hashes,
             "production_inputs": [self._sha256(path) for path in paths], "production_sources": [str(path) for path in paths],
@@ -1332,6 +1365,9 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             "automatic_corrections": correction_history,
             "subject_evidence": subject_evidence,
             "team_events": team_run.events,
+            "pipeline_route": route.as_dict(),
+            "scene_digest": scene_digest(plan),
+            "revision": int(plan["document"]["revision"]),
         }
         if not preview_only: output_path.with_suffix(".json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
         return metadata
@@ -1406,6 +1442,7 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         previous_plan = metadata.get("scene_plan")
         if not isinstance(previous_plan, dict):
             raise ValueError("이전 결과에 AI 디자인 설계도가 없습니다. 새 파이프라인으로 시안을 다시 생성해 주세요.")
+        assert_scene_document(previous_plan, expected_digest=str(metadata.get("scene_digest", "")))
         profile = self.load_profile(profile_id)
         paths = self._validate_images(sources)
         # A repeated, measurable request is a successful idempotent operation,
@@ -1454,6 +1491,7 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 "applied_edit_fields": [],
                 "already_satisfied": True,
                 "revision": int(metadata.get("revision", 0)),
+                "scene_digest": scene_digest(previous_plan),
                 "quality_verdict": verification.get("quality_verdict", {}),
             })
             return result

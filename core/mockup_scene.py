@@ -389,7 +389,7 @@ def scene_diff_fields(before: dict, after: dict) -> list[str]:
     def walk(left, right, path=""):
         if isinstance(left, dict) and isinstance(right, dict):
             for key in sorted(set(left) | set(right)):
-                if key in {"rationale", "edit_scopes", "edit_patch_summary", "edit_patch_fields",
+                if key in {"document", "rationale", "edit_scopes", "edit_patch_summary", "edit_patch_fields",
                            "edit_success_criteria", "enforced_user_constraints",
                            "enforced_measured_evidence"}:
                     continue
@@ -437,7 +437,7 @@ def restore_required_elements(raw: dict, baseline: dict, *, asset_count: int,
 
 def scene_changed(before: dict, after: dict) -> bool:
     left, right = deepcopy(before), deepcopy(after)
-    ignored = {"rationale", "restored_required_elements", "enforced_measured_evidence",
+    ignored = {"document", "rationale", "restored_required_elements", "enforced_measured_evidence",
                "enforced_user_constraints", "quality_review_fallback", "quality_review_rejected",
                "initial_plan_fallback", "edit_plan_fallback"}
     for mapping in (left, right):
