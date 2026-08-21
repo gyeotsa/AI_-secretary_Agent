@@ -625,3 +625,22 @@ GrabCut 폴백, 고급 타이포 속성, 렌더링 후 Vision 검수, 제한 자
 
 남은 항목은 외부 수락 조건이다. OAuth/SMTP 자격증명과 실제 계정, 사용자의 카메라·스피커 라이브
 검사 동의, 장시간 wall-clock 운영 관찰이 준비되면 Command Center의 진단 탭에서 실행한다.
+
+## 2026-08-21 범용 역량 실행과 자체 개발 경계
+
+- 선언형 Intent가 없는 요청도 실행형 문장이고 Plugin Registry의 Tool 설명과 충분히 일치하면
+  관련 Tool만 동적으로 노출한다. 일반 잡담은 기존 Conversation 경로에 남고, Registry 근거가
+  없는 요청에는 로컬 모델이 임의 Tool 이름을 만들 수 없다.
+- 한국어 조사·어미 때문에 Registry 설명 매칭이 끊기지 않도록 언어 독립 문자 n-gram을 사용한다.
+  새 플러그인을 추가하면 Executor의 도메인 분기 코드를 고치지 않아도 capability 설명을 통해
+  후보가 될 수 있다.
+- 웹 공급자를 코드 분기 대신 `config/web_providers.json`에서 관리한다. 사이트 검색과 미디어
+  재생은 Tool 계약·권한·Evidence를 통과하며, OS 브라우저 전달과 실제 페이지/오디오 성공을
+  구분한다.
+- Anis 자신은 전용 `agent_self` 플러그인으로 저장소·Registry·권한·RAM·GPU·Ollama 상태와
+  가능한 Tool을 실제 조회한다. 계정 미설정은 플러그인 코드 결함과 별도로 보고한다.
+- 자체 변경은 사용자 Workspace와 분리된 고정 프로젝트 루트, 별도 `self_modify` 승인,
+  관련도 기반 파일 선택, 최소 patch, diff 검토, 관련 검증, 실패 롤백으로 실행한다. 사용자
+  데이터·기억·모델·Git 내부·비밀·권한 우회는 수정 범위가 아니다.
+- 자동 회귀 `450 passed, 4 deselected`. 실환경 Registry 31개 중 29개 검증, 2개는 선택형
+  Mail/Cloud 계정 미설정, 기술 결함 0개. CUDA RTX 4060과 Ollama 9개 모델 연결을 확인했다.

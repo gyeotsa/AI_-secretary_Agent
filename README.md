@@ -14,6 +14,7 @@ JARVIS는 Windows PC에서 대화, 파일·문서 작업, 웹 조사, 앱 제어
 - Ollama 역할별 로컬 모델 라우팅
 - 대화·작업 Slot 상태와 후속 질문
 - Plugin Registry 기반 Tool·Intent 로딩
+- 명시 Intent가 없어도 Registry 설명과 요청 문맥이 일치하면 해당 Tool만 노출하는 범용 실행 경로
 - Plugin 입출력 JSON Schema 검증, timeout·재시도·취소 정책, 상태·인증 진단 UI
 - 유형·출처·정정·민감정보 정책을 갖춘 장기 Memory와 근거 인용형 RAG
 - 대화에서 명시적 선호·프로젝트 결정·정정을 추출해 Knowledge Memory와 Vector RAG에 자동 축적
@@ -23,7 +24,8 @@ JARVIS는 Windows PC에서 대화, 파일·문서 작업, 웹 조사, 앱 제어
 - 문서 전문가 작업공간과 Photoshop 전문가 작업공간·Windows COM 연결 진단
 - 학습용 참고 시안과 제작용 사진을 분리한 시안 제작 전문가 작업공간
 - Git, Windows 앱 탐색·실행·창 제어
-- Playwright 페이지 조회와 DDGS 웹 검색
+- Playwright 페이지 조회와 DDGS 웹 검색, 공급자 카탈로그 기반 사이트 검색
+- YouTube 검색 결과 해석과 기본 브라우저 재생 페이지 열기(실제 소리 재생 여부는 브라우저 정책에 따름)
 - 출처 URL이 있는 최신 정보 검색과 간결한 답변
 - Open-Meteo 실시간 날씨, 로컬 날짜·시간
 - ChromaDB와 BGE-M3 기반 RAG
@@ -34,22 +36,15 @@ JARVIS는 Windows PC에서 대화, 파일·문서 작업, 웹 조사, 앱 제어
 - STT·Vision 중앙 GPU 큐, TTS 에코 제거·음성 끼어들기·장치 자동 복구
 - 집중·회의·전체화면·방해 금지 기반 선제 알림 보류·digest와 Scheduler 복원
 - 영구 권한 정책과 실행 감사 기반
+- Plugin Registry 기반 자신의 역량 조회와 실제 Python·GPU·Ollama·Plugin·권한·Git 상태 진단
+- 별도 `self_modify` 승인, 보호 영역 차단, 최소 patch·테스트·diff·rollback을 갖춘 자체 코드·UI 수정
 
-다음 항목은 파일이나 클래스가 존재해도 Codex 수준의 완성 기능으로 보지 않습니다.
+다음 항목은 코드 경로가 있어도 현재 PC의 외부 조건까지 충족해야 제품 수준 완료로 봅니다.
 
-- 장기 작업을 끝까지 수행하는 공통 Task Orchestrator
-- 저장소 전체를 이해하는 Coding Agent
-- 모든 Tool에 적용되는 타입 기반 결과·증거 계약
-- Planner → 실행 → 검증 → 복구 → 재계획의 안정적인 폐쇄 루프
-- Workspace 자동 복원·목록·별칭·프로젝트별 설정
-- `.gitignore` 기반 초기/증분 인덱싱, 언어·프레임워크·테스트 명령 감지
-- 프로젝트별 Memory/RAG 격리와 Git 브랜치·dirty UI
-- 새 프로젝트 템플릿·가상환경·Git 초기화
-- 실행 가능한 Plan DAG와 독립 단계 병렬 실행
-- 오류 서명·재시도 예산·관찰 기반 재계획·사람 승인 체크포인트
-- Conversation·Planning·Execution·Response 서비스 책임 분리
 - Gmail, Outlook, Calendar, Drive 등의 실제 OAuth 연결
 - 장시간 자동화와 실제 장치의 제품 수준 E2E 검증
+- 브라우저 자동재생 정책을 포함한 사이트별 로그인·재생·구매·게시 E2E
+- 위험 Tool을 별도 worker process에 격리한 OS 수준 hard timeout·메모리 제한
 
 상세 개선 계획은 [AGENT_RUNTIME_ROADMAP.md](AGENT_RUNTIME_ROADMAP.md), 플러그인
 현황은 [PLUGIN_ROADMAP.md](PLUGIN_ROADMAP.md), 모델 구성은
@@ -98,6 +93,18 @@ Photoshop 공간은 이미지 미리보기와 설치된 Photoshop의 COM 연결 
 `표시할 문구` 입력란에 쓴 내용만 이미지에 들어갑니다.
 AI 수정도 완성 이미지를 재생성하지 않고 원본 제작 사진에서 다시 렌더링합니다. 네 가지 보정
 슬라이더는 50%를 원본으로 하며 이동하는 즉시 비파괴 미리보기에 반영됩니다.
+
+웹 실행은 공급자 설정 파일에서 확장됩니다. 예를 들어 `유튜브에서 고양이 영상을 검색해줘`는
+YouTube 검색 결과 페이지를 열고, `아이유 좋은날 틀어줘`는 `yt-dlp`로 첫 결과 URL을 확인한 뒤
+기본 브라우저에 자동재생 URL을 전달합니다. URL 전달 성공과 실제 페이지 로드·소리 재생 성공은
+구분해 기록하므로 브라우저가 자동재생을 막았을 때 재생 완료라고 거짓 보고하지 않습니다.
+
+`너의 현재 상태를 분석해줘`, `어떤 작업을 할 수 있어?`로 Anis 자신의 실제 런타임과 Registry
+역량을 확인할 수 있습니다. `너의 UI를 ... 수정해줘` 같은 자체 변경은 일반 Workspace 코딩과
+분리된 프로젝트 경계에서 실행되며 `self_modify`, 파일 읽기·쓰기, 명령 실행 권한을 모두 요구합니다.
+`.git`, 사용자 데이터·기억·모델·배포물·임시 폴더와 비밀정보·권한 우회 요청은 수정 대상에서
+제외됩니다. 변경은 최소 patch 후 관련 테스트를 통과해야 유지되고 실패하면 원복됩니다. 실행 중인
+UI의 코드가 바뀐 경우 앱 재시작 뒤 새 코드가 적용됩니다.
 
 대화 전체를 무조건 학습하지는 않습니다. `앞으로`, `항상`, `선호`, `기억해`,
 `우리 프로젝트는`처럼 장기성이 명시된 사용자 발화만 기억 후보로 분류하며, 신뢰도·중복·

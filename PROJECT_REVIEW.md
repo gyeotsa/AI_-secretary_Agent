@@ -299,3 +299,26 @@ Command Center는 작업 계약, 팀, DAG, 모델/자원, Observer, 승인, 권�
 종료하는 격리는 아직 범용 샌드박스가 아니다. 현재 Supervisor는 실행 전 admission과 단계 사이
 취소, 반환 후 시간 초과 판정을 보장한다. 장기적으로는 위험 Tool을 별도 worker process로 옮겨
 hard timeout과 메모리 제한을 적용하는 것이 다음 강화 지점이다.
+
+## 2026-08-21 수행 범위·자체 권한 확장 검토
+
+수행 범위가 좁았던 핵심 원인은 Plugin 수가 아니라 선언형 Intent를 찾지 못한 모든 요청을 Planner
+전에 일반 대화로 종료한 실행 경계였다. Registry Tool 설명 기반의 제한된 loadout을 추가해 새
+Capability가 중앙 하드코딩 없이 자연어 요청 후보가 되도록 변경했다. 사회적 대화와 Registry
+근거가 약한 요청은 여전히 Tool 경로에 들어가지 않는다.
+
+브라우저 플러그인에는 공급자 카탈로그 기반 사이트 검색, URL 열기, `yt-dlp` 기반 YouTube 첫
+검색 결과 재생 페이지 열기를 추가했다. 실제 공개 YouTube 검색으로 동영상 URL과 autoplay
+파라미터를 확인했다. 다만 기본 브라우저에 URL을 전달한 사실만 검증하며 브라우저 정책이 막을 수
+있는 오디오 재생까지 성공했다고 표시하지 않는다.
+
+자체 분석과 변경은 별도 `agent_self` 플러그인으로 구현했다. 상태 보고는 실제 저장소 dirty 상태,
+Plugin 계약/의존성/인증, Permission, RAM, CUDA GPU와 Ollama 모델을 조회한다. 자체 변경은
+`self_modify` 영구 정책 UI에 자동 노출되며 매번 중앙 Permission Manager를 통과한다. Coding Agent는
+경로 관련도를 점수화해 문서 내용보다 실제 UI/소스 경로를 우선하고 최소 patch·테스트·diff·rollback을
+적용한다. 실행 중인 프로세스를 즉시 hot reload하거나 권한·보안·비밀 영역을 스스로 바꾸는 권한은
+부여하지 않았다.
+
+검증은 집중 43개, 전체 `450 passed, 4 deselected`, Python compile 성공이다. 실환경에서 등록
+31개/검증 29개/기술 결함 0개, 선택형 계정 미설정 2개, CUDA RTX 4060, Ollama 9개 모델과 새
+Registry Tool 7개 노출을 확인했다.

@@ -20,19 +20,24 @@
 
 - DDGS 무료 웹 검색·출처 URL 검증·후속 검색 문맥 — 1차 연결됨
 - Playwright 공개 페이지 본문·스크린샷·SSRF 방어 — 1차 연결됨
+- JSON 공급자 카탈로그 기반 YouTube·Google·Naver·DuckDuckGo 사이트 검색 — 연결·검증됨
+- `yt-dlp` 검색 결과 해석 후 YouTube 재생 페이지 열기 — 연결·실URL 검증됨
+- OS 브라우저 전달, 페이지 로드, 오디오 재생을 별도 Evidence로 구분 — 적용됨
 - 검색 결과 페이지 실제 방문·게시/수정일 확인·공식 출처 우선·주장별 교차 인용 — 연결됨
 - Playwright persistent profile·Cookie·다운로드·취소 — 연결됨
 - PDF 본문·HTML 표·동적 페이지와 Prompt Injection 격리 — 연결됨
 - TTL Research Cache와 강제 재검색 — 연결됨
 - 업로드·결제·게시 같은 외부 반영 Browser Action — 대기
 - 선택적 Tavily 공급자
-- YouTube 자막 수집 및 요약
+- YouTube 자막 수집 및 요약 — 기존 학습 경로 연결됨, 영상별 자막 제공 여부에 따름
 - 브라우저 작업의 로그인 세션과 전송/구매 승인 분리
 
 ## Sprint 3 — 개발 자동화
 
 - Workspace 내 프로젝트·파일 생성, 단일 파일 코드 작성·문법·해시 검증 — 초기 연결
-- 저장소 분석·최소 patch·lint/test·diff·rollback Coding Agent — 최우선 개발
+- 사용자 Workspace 저장소 분석·최소 patch·lint/test·diff·rollback Coding Agent — 연결됨
+- Anis 자체 저장소 상태·역량 진단과 별도 승인 기반 자기수정 — 연결·자동 검증됨
+- 자체 수정의 `.git`·사용자 데이터·기억·모델·비밀·빌드 산출물 보호 — 적용됨
 - VS Code/PyCharm/Visual Studio CLI·진단 어댑터
 - GitHub CLI 기반 Issue·PR·CI 연결
 - 제한된 작업 디렉터리와 명령 allowlist 기반 코드 실행
