@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from copy import deepcopy
 import uuid
 import threading
 
@@ -752,10 +753,22 @@ class MockupWorkspaceWindow(QMainWindow):
         edit_serial = result.pop("_ai_edit_serial", None)
         if edit_serial is not None and int(edit_serial) != self._ai_edit_serial:
             return
+        edit_base_output = result.pop("_ai_edit_base_output", None)
+        if edit_base_output is not None:
+            active = (self.preview_history[self.preview_index]
+                      if 0 <= self.preview_index < len(self.preview_history) else {})
+            if str(active.get("output", "")) != str(edit_base_output):
+                self._ai_edit_in_progress = False
+                self.ai_edit_button.setEnabled(True)
+                self.save_preview_button.setEnabled(self.preview_index >= 0)
+                self.details.append("\n현재 미리보기가 바뀌어 이전 화면을 기준으로 끝난 AI 수정 결과를 폐기했습니다.")
+                return
         self._ai_edit_in_progress = False
         if hasattr(self, "ai_edit_button"): self.ai_edit_button.setEnabled(True)
         if result.get("already_satisfied"):
             self.preview_metadata = dict(result)
+            if 0 <= self.preview_index < len(self.preview_history):
+                self.preview_history[self.preview_index] = dict(result)
             self.details.append(
                 "\n요청한 수정 사항은 현재 미리보기에 이미 적용되어 있습니다. "
                 "이미지를 중복 생성하지 않고 현재 결과를 유지했습니다."
@@ -794,6 +807,8 @@ class MockupWorkspaceWindow(QMainWindow):
         self._ai_edit_in_progress = True
         self._ai_edit_serial += 1
         serial = self._ai_edit_serial
+        base = deepcopy(self.preview_history[self.preview_index])
+        base_output = str(base.get("output", ""))
         self.ai_edit_button.setEnabled(False)
         self.save_preview_button.setEnabled(False)
         self.details.append("\nAI가 현재 미리보기를 수정하고 있습니다…")
@@ -801,15 +816,15 @@ class MockupWorkspaceWindow(QMainWindow):
         guidance = [*self.edit_attachment_paths, *([sketch] if sketch else [])]
         memory_context = self.team_runtime.recall("mockup", instruction).as_prompt() if self.team_runtime else ""
         threading.Thread(target=self._ai_edit_worker,
-                         args=(dict(self.preview_history[self.preview_index]), instruction, serial,
-                               guidance, memory_context),
+                         args=(base, instruction, serial, base_output, guidance, memory_context),
                          daemon=True).start()
 
-    def _ai_edit_worker(self, metadata, instruction, serial, guidance_paths, memory_context):
+    def _ai_edit_worker(self, metadata, instruction, serial, base_output, guidance_paths, memory_context):
         try:
             result = self.runtime.edit_preview(metadata, instruction, guidance_paths=guidance_paths,
                                                memory_context=memory_context)
             result["_ai_edit_serial"] = serial
+            result["_ai_edit_base_output"] = base_output
             self.render_done.emit(result)
         except Exception as exc: self.operation_failed.emit(str(exc))
 

@@ -340,6 +340,73 @@ def enforce_exact_user_copy(plan: dict, instruction: str, visible_copy: str) -> 
     return result, copy, changed
 
 
+def requests_visible_copy_change(instruction: str) -> bool:
+    """Return whether an edit explicitly asks to alter the displayed wording.
+
+    Colour, font, border and layout clauses may contain noun-like tokens that
+    the exact-copy parser can otherwise mistake for new copy.  Copy is mutable
+    only when the user names a text target and a content-writing action (or
+    supplies a quoted literal as that target).
+    """
+    text = " ".join(str(instruction or "").replace("\n", " ").split())
+    target = r"(?:문구|텍스트|글자|글씨|카피|내용)"
+    write_action = r"(?:바꿔|변경|수정|교체|써\s*줘|적어\s*줘|넣어\s*줘|추가|작성|삭제|지워|없애)"
+    style_terms = ("글꼴", "폰트", "서체", "색상", "색깔", "크기", "굵기", "위치", "정렬",
+                   "자간", "행간", "윤곽선", "그림자", "배경")
+    has_quoted_copy = bool(re.search(rf"{target}(?:는|를|은|을)?\s*['\"“”]", text, re.I))
+    # “문구 글꼴을 바꿔” changes typography, not the wording itself.
+    if any(term in text for term in style_terms) and "내용" not in text and not has_quoted_copy:
+        return False
+    if re.search(rf"{target}.{{0,60}}{write_action}", text, re.I):
+        return True
+    if re.search(rf"{write_action}.{{0,30}}{target}", text, re.I):
+        return True
+    return has_quoted_copy
+
+
+def preserve_unrequested_scene_fields(before: dict, candidate: dict,
+                                      instruction: str) -> tuple[dict, set[str]]:
+    """Apply a final, field-aware write barrier to an edit transaction."""
+    result, scopes = merge_scoped_scene_edit(before, candidate, instruction)
+    if "texts" in scopes and not requests_visible_copy_change(instruction):
+        old_texts = before.get("texts", [])
+        new_texts = result.get("texts", [])
+        for index, old in enumerate(old_texts):
+            if index >= len(new_texts) or not isinstance(old, dict) or not isinstance(new_texts[index], dict):
+                continue
+            for key in ("content", "spans"):
+                if key in old:
+                    new_texts[index][key] = deepcopy(old[key])
+                else:
+                    new_texts[index].pop(key, None)
+    return result, scopes
+
+
+def scene_diff_fields(before: dict, after: dict) -> list[str]:
+    """Describe actual leaf changes, rather than trusting model patch claims."""
+    changed = []
+
+    def walk(left, right, path=""):
+        if isinstance(left, dict) and isinstance(right, dict):
+            for key in sorted(set(left) | set(right)):
+                if key in {"rationale", "edit_scopes", "edit_patch_summary", "edit_patch_fields",
+                           "edit_success_criteria", "enforced_user_constraints",
+                           "enforced_measured_evidence"}:
+                    continue
+                walk(left.get(key), right.get(key), f"{path}.{key}" if path else key)
+            return
+        if isinstance(left, list) and isinstance(right, list):
+            for index in range(max(len(left), len(right))):
+                walk(left[index] if index < len(left) else None,
+                     right[index] if index < len(right) else None, f"{path}[{index}]")
+            return
+        if left != right:
+            changed.append(path)
+
+    walk(before, after)
+    return changed
+
+
 def restore_required_elements(raw: dict, baseline: dict, *, asset_count: int,
                               visible_copy: str = "") -> tuple[dict, list[str]]:
     """Restore mandatory source/text elements dropped by a model review.

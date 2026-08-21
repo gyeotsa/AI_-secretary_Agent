@@ -24,6 +24,8 @@ from core.mockup_scene import (SCENE_PLAN_JSON_SCHEMA, SCENE_EDIT_PATCH_JSON_SCH
                                enforce_exact_user_copy,
                                enforce_measured_style_evidence, infer_edit_scopes, merge_scoped_scene_edit,
                                parse_explicit_colored_copy,
+                               preserve_unrequested_scene_fields, requests_visible_copy_change,
+                               scene_diff_fields,
                                filter_scene_edit_patch,
                                requests_circular_shape, restore_required_elements, scene_changed,
                                validate_patch_against_instruction)
@@ -1184,7 +1186,8 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                output_dir: str | Path = "data/mockup_outputs", basename: str = "mockup",
                backend: str = "auto", seed: int = 42, preview_only: bool = False,
                scene_plan: dict | None = None, guidance_paths=None,
-               memory_context: str = "") -> dict:
+               memory_context: str = "", edit_baseline: dict | None = None,
+               edit_instruction: str = "") -> dict:
         """Render exclusively from a model-authored scene plan, never a named template."""
         profile = self.load_profile(profile_id); paths = self._validate_images(production_paths)
         team_run = TeamRun("mockup", instruction, {
@@ -1233,6 +1236,8 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         plan, grounded_fields = self._enforce_detected_subject_visibility(plan, paths, instruction)
         if grounded_fields:
             plan["source_grounded_fields"] = grounded_fields
+        if edit_baseline is not None and edit_instruction:
+            plan, _ = preserve_unrequested_scene_fields(edit_baseline, plan, edit_instruction)
         def render_current(current_plan):
             graph = scene_plan_to_layer_graph(current_plan)
             validate_layer_graph(graph, asset_count=len(paths))
@@ -1281,6 +1286,10 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                     if not scene_changed(plan, revised):
                         break
                     plan = revised
+                    if edit_baseline is not None and edit_instruction:
+                        plan, _ = preserve_unrequested_scene_fields(
+                            edit_baseline, plan, edit_instruction
+                        )
                     correction_history.append({"instruction": correction, "fields": fields})
                     if self.team_runtime:
                         team_run.artifacts["layer_graph"] = scene_plan_to_layer_graph(plan)
@@ -1422,6 +1431,7 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 visible_copy=str(metadata.get("visible_copy", "")), scene_plan=explicit_plan,
                 backend="auto", seed=seed, preview_only=True,
                 guidance_paths=guidance_paths, memory_context=memory_context,
+                edit_baseline=previous_plan, edit_instruction=instruction,
             )
             # The extra render exists only to prove the current visual output
             # still satisfies the request. Keep the user's active preview and
@@ -1473,15 +1483,36 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             revised_plan, paths, instruction
         )
         patch_fields = list(dict.fromkeys([*patch_fields, *grounded_fields]))
-        revised_plan, revised_copy, exact_fields = enforce_exact_user_copy(
-            revised_plan, instruction, revised_copy
+        if requests_visible_copy_change(instruction):
+            revised_plan, revised_copy, exact_fields = enforce_exact_user_copy(
+                revised_plan, instruction, revised_copy
+            )
+            patch_fields = list(dict.fromkeys([*patch_fields, *exact_fields]))
+        else:
+            revised_copy = str(metadata.get("visible_copy", ""))
+        # All model and deterministic post-processing has completed.  Enforce
+        # the user's requested groups once more at the transaction boundary so
+        # no later helper can silently rewrite an unrelated layer.
+        revised_plan, _ = preserve_unrequested_scene_fields(
+            previous_plan, revised_plan, instruction
         )
-        patch_fields = list(dict.fromkeys([*patch_fields, *exact_fields]))
+        patch_fields = scene_diff_fields(previous_plan, revised_plan)
+        if not patch_fields:
+            raise ScenePlanError("수정 명령이 현재 미리보기에 실제 시각 변화를 만들지 못했습니다.")
+        validate_patch_against_instruction(
+            instruction, patch_fields, before=previous_plan, after=revised_plan,
+        )
         result = self.render(
             profile_id, sources, instruction=str(metadata.get("instruction", "")),
             visible_copy=revised_copy, scene_plan=revised_plan,
             backend="auto", seed=seed, preview_only=True,
             guidance_paths=guidance_paths, memory_context=memory_context,
+            edit_baseline=previous_plan, edit_instruction=instruction,
+        )
+        final_plan = result.get("scene_plan") if isinstance(result.get("scene_plan"), dict) else revised_plan
+        patch_fields = scene_diff_fields(previous_plan, final_plan)
+        validate_patch_against_instruction(
+            instruction, patch_fields, before=previous_plan, after=final_plan,
         )
         result.update({"renderer": renderer,
                        "edit_instruction": instruction.strip(), "applied_edit_fields": patch_fields,

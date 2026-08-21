@@ -14,7 +14,8 @@ from core.mockup_design import MockupDesignRuntime
 from core.mockup_scene import (build_evidence_fallback_plan, enforce_explicit_user_constraints,
                                enforce_measured_style_evidence, merge_scoped_scene_edit,
                                normalize_scene_plan, ScenePlanError, filter_scene_edit_patch,
-                               validate_patch_against_instruction)
+                               preserve_unrequested_scene_fields, requests_visible_copy_change,
+                               scene_diff_fields, validate_patch_against_instruction)
 from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
 from plugins.mockup_design import MockupDesignPlugin
@@ -808,6 +809,72 @@ def test_save_uses_current_history_metadata_instead_of_stale_global_metadata(tmp
     window._save_preview()
     saved = __import__("json").loads(target.with_suffix(".json").read_text(encoding="utf-8"))
     assert saved["edit_instruction"] == "마지막 명령"
+
+
+def test_completed_ai_edit_is_discarded_if_user_changed_active_preview(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    spec = get_specialist_workspace_registry().get("mockup")
+    window = MockupWorkspaceWindow(spec, runtime=MockupDesignRuntime(
+        tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend()))
+    first = _image(tmp_path / "first.png", (10, 20, 30), size=(100, 100))
+    second = _image(tmp_path / "second.png", (30, 20, 10), size=(100, 100))
+    stale = _image(tmp_path / "stale.png", (200, 10, 10), size=(100, 100))
+    window.preview_history = [{"output": first}, {"output": second}]
+    window.preview_index = 0
+    window._ai_edit_serial = 7
+    window._ai_edit_in_progress = True
+    window._on_render_done({"output": stale, "_ai_edit_serial": 7,
+                            "_ai_edit_base_output": second})
+    assert window.preview_index == 0
+    assert len(window.preview_history) == 2
+    assert window.preview_history[0]["output"] == first
+    window.close(); assert app is not None
+
+
+def test_edit_write_barrier_preserves_unrequested_groups_and_copy():
+    before = {
+        "canvas": {"background": "#fff"},
+        "assets": [{"shape": "ellipse", "x": .1}],
+        "decorations": [],
+        "texts": [{"content": "기존 문구", "spans": [{"content": "기존 문구", "color": "#111"}],
+                   "font_family": "맑은 고딕", "font_size": .04}],
+    }
+    broad_candidate = deepcopy(before)
+    broad_candidate["decorations"] = [{"type": "ellipse", "stroke": "#38a169", "dash": True}]
+    broad_candidate["texts"][0].update({"content": "원", "spans": [], "color": "#38a169"})
+    broad_candidate["assets"][0]["x"] = .2
+    protected, scopes = preserve_unrequested_scene_fields(
+        before, broad_candidate, "스티커 테두리를 안쪽에 초록색 점선으로 그려줘"
+    )
+    assert scopes == {"decorations"}
+    assert protected["texts"] == before["texts"]
+    assert protected["assets"] == before["assets"]
+    assert protected["decorations"] == broad_candidate["decorations"]
+    assert requests_visible_copy_change("문구 글꼴을 궁서로 바꿔줘") is False
+    assert requests_visible_copy_change("문구 내용을 '새 문구'로 바꿔줘") is True
+
+
+def test_text_style_edit_preserves_content_spans_and_decorations():
+    before = {
+        "canvas": {}, "assets": [],
+        "decorations": [{"type": "ellipse", "stroke": "#38a169", "dash": True}],
+        "texts": [{"content": "ㅈㅈㅇ", "spans": [{"content": "ㅈㅈㅇ", "color": "#111111"}],
+                   "font_family": "맑은 고딕", "font_size": .04}],
+    }
+    candidate = deepcopy(before)
+    candidate["texts"][0].update({"content": "잘못 바뀐 문구", "spans": [],
+                                   "font_family": "궁서", "font_size": .075})
+    candidate["decorations"][0]["stroke"] = "#ffffff"
+    protected, scopes = preserve_unrequested_scene_fields(
+        before, candidate, "문구 글꼴을 궁서로 바꾸고 크기를 120픽셀로 설정해줘"
+    )
+    assert scopes == {"texts"}
+    assert protected["texts"][0]["content"] == "ㅈㅈㅇ"
+    assert protected["texts"][0]["spans"] == before["texts"][0]["spans"]
+    assert protected["texts"][0]["font_family"] == "궁서"
+    assert protected["decorations"] == before["decorations"]
+    assert set(field.split("[", 1)[0].split(".", 1)[0]
+               for field in scene_diff_fields(before, protected)) == {"texts"}
 
 
 def test_live_adjustment_is_repeatable_from_stable_base(tmp_path):
