@@ -31,7 +31,9 @@ class ConversationService:
         persona = f"선택 음성: {voice_name}. 대화 스타일: {style}" if style else ""
         memory_prompt = (
             "\n다음은 현재 질문과 관련해 저장된 사용자 장기 기억입니다. 관련 있을 때만 반영하고, "
-            "사용자가 지금 정정하면 현재 발화를 우선하세요.\n" + memory_context
+            "사용자가 지금 정정하면 현재 발화를 우선하세요. 문서 근거를 사용한 문장에는 "
+            "제공된 [근거 ID]를 그대로 표시하세요. 근거를 사용하지 않았다면 인용하지 마세요.\n"
+            + memory_context
             if memory_context else ""
         )
         prompt = (
@@ -64,6 +66,7 @@ class ConversationService:
                     f"아래 초안을 사용자의 질문에 대한 자연스러운 한국어 답변으로 한 번만 고쳐 써. "
                     f"역할표시·예시·외국어를 넣지 말고, 사용자 호칭은 '{address}'로 최대 한 번만 써. "
                     "실제로 실행하지 않은 외부 작업을 완료했다고 절대 주장하지 마세요. "
+                    "초안에 [근거 ID]가 있으면 삭제하거나 바꾸지 마세요. "
                     f"적용할 스타일: {style or '간결하고 자연스러운 말투'}"
                 )},
                 {"role": "user", "content": f"질문: {message}\n초안: {response}"},

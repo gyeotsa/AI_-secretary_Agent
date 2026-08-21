@@ -62,6 +62,17 @@ class HardwareManager:
     MIN_SPEECH_RMS = 0.0005
     MAX_SPEECH_RMS_THRESHOLD = 0.003
 
+    @staticmethod
+    def _record_voice_metric(key: str, value: float, **context) -> None:
+        """Record only observed voice events without making audio capture depend on telemetry."""
+        try:
+            from core.quality_metrics import get_quality_metric_store
+            get_quality_metric_store().record(
+                key, value, success=value <= 0.0, context=context,
+            )
+        except Exception:
+            pass
+
     def __init__(self):
         from core.voice_runtime import get_voice_duplex_controller
         self.running = False
@@ -542,6 +553,14 @@ class HardwareManager:
                                         wake_command = self._correct_registry_command(wake_command)
                                         print(f"[전송] 호출어 포함 음성 명령: {wake_command}")
                                         if self.on_text_detected:
+                                            self._record_voice_metric(
+                                                "stt_false_wake", 0.0,
+                                                event="wake_command_dispatched", text=wake_command[:120],
+                                            )
+                                            self._record_voice_metric(
+                                                "stt_echo", 0.0,
+                                                event="command_dispatched_outside_tts",
+                                            )
                                             self.on_text_detected(wake_command)
                                         wake_buffer = np.array([], dtype=np.float32)
                                         wake_voice_chunks = []
@@ -596,7 +615,21 @@ class HardwareManager:
                                         text = self._correct_registry_command(text)
                                 if text and self.on_text_detected:
                                     print(f"[전송] 음성 인식 결과: {text}")
+                                    self._record_voice_metric(
+                                        "stt_false_wake", 0.0,
+                                        event="wake_command_dispatched", text=text[:120],
+                                    )
+                                    self._record_voice_metric(
+                                        "stt_echo", 0.0,
+                                        event="command_dispatched_outside_tts",
+                                    )
                                     self.on_text_detected(text)
+                                elif not text:
+                                    self._record_voice_metric(
+                                        "stt_false_wake", 1.0,
+                                        event="wake_accepted_without_command",
+                                        voiced_seconds=round(voiced_seconds, 3),
+                                    )
                                 listening = False
                                 command_prefix = ""
                                 command_buffer = np.array([], dtype=np.float32)

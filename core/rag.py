@@ -38,6 +38,10 @@ class VectorRAGManager:
     def set_usage_tracker(self, tracker) -> None:
         self.usage_tracker = tracker
 
+    def get_last_retrieval_trace(self) -> str:
+        """Return the trace for this execution thread, not another GUI worker."""
+        return str(getattr(self._retrieval_local, "trace_id", "") or "")
+
     def _document_key(self, doc_id: str) -> str:
         return f"{self.namespace}::{doc_id}"
     
@@ -410,10 +414,11 @@ class VectorRAGManager:
                                                  [item for item in chunk_ids if item])
             except Exception:
                 pass
+        answerable = bool(results and confidence >= threshold)
         return {
             "results": results,
             "confidence": confidence,
-            "answerable": bool(results and confidence >= threshold),
+            "answerable": answerable,
             "reason": "근거가 충분합니다." if results and confidence >= threshold
                       else "검색 근거가 부족하여 추측하지 않습니다.",
         }

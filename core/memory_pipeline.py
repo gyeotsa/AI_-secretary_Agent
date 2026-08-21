@@ -173,8 +173,18 @@ class MemoryEventPipeline:
         if not trace_id or not chunk_ids:
             return
         with self._lock, self._connect() as db:
-            db.executemany("UPDATE retrieval_usage SET included=1,used=1 WHERE trace_id=? AND chunk_id=?",
+            db.executemany("UPDATE retrieval_usage SET included=1 WHERE trace_id=? AND chunk_id=?",
                            [(trace_id, str(item)) for item in chunk_ids])
+
+    def mark_used(self, trace_id: str, chunk_ids: list[str]):
+        """Mark only evidence explicitly cited by the generated answer as used."""
+        if not trace_id or not chunk_ids:
+            return
+        with self._lock, self._connect() as db:
+            db.executemany(
+                "UPDATE retrieval_usage SET used=1 WHERE trace_id=? AND chunk_id=? AND included=1",
+                [(trace_id, str(item)) for item in chunk_ids],
+            )
 
     def habits(self, *, minimum_count: int = 3, minimum_sessions: int = 2) -> list[dict]:
         with self._connect() as db:

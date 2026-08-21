@@ -30,6 +30,25 @@ from core.learning_runtime import get_learning_runtime, record_runtime_event
 from core.tool_loadout import ToolLoadoutSelector
 from core.reasoning_policy import ReasoningPolicy
 from core.evaluation_runtime import seed_core_evaluation_cases
+from core.task_contracts import (
+    AcceptanceCriterion,
+    ContractStatus,
+    ResourceBudget,
+    RetryPolicy,
+    get_supervisor_runtime,
+)
+from core.quality_metrics import get_quality_metric_store
+
+
+def _safe_contract_value(value: Any) -> Any:
+    """Make runtime contracts JSON-safe without leaking arbitrary object reprs."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _safe_contract_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_safe_contract_value(item) for item in value]
+    return {"type": type(value).__name__}
 
 
 @dataclass
@@ -111,6 +130,11 @@ class Executor:
         seed_core_evaluation_cases(self.learning_runtime)
         self.tool_loadout = ToolLoadoutSelector(self.tool_executor.plugin_registry)
         self.reasoning_policy = ReasoningPolicy()
+        # The supervisor is part of the real execution path, not a display-only
+        # Command Center data source. Every executable DAG node receives a
+        # persisted input/output/permission/resource/verification contract.
+        self.supervisor = get_supervisor_runtime()
+        self.quality_metrics = get_quality_metric_store()
 
     def initialize(self, goal: str, session_id: Optional[str] = None):
         """초기화: Goal 설정, Scratchpad 초기화, Context 빌드"""
@@ -139,6 +163,7 @@ class Executor:
                      existing_task_id: Optional[str] = None) -> ExecutionOutcome:
         """Record one complete, privacy-redacted trajectory around the runtime turn."""
         session_key = session_id or "default"
+        turn_started = time.perf_counter()
         learning_runtime = getattr(self, "learning_runtime", None)
         if learning_runtime is None:
             learning_runtime = get_learning_runtime()
@@ -157,6 +182,7 @@ class Executor:
                           "completed_steps": outcome.completed_steps,
                           "failed_steps": outcome.failed_steps},
             )
+            self._record_turn_quality(goal, outcome, turn_started)
             return outcome
         except Exception as exc:
             learning_runtime.event("runtime_exception", {"error": str(exc)}, trajectory_id)
@@ -164,7 +190,53 @@ class Executor:
                 trajectory_id, status="failed", response="",
                 metadata={"exception": type(exc).__name__},
             )
+            quality_metrics = getattr(self, "quality_metrics", None) or get_quality_metric_store()
+            self.quality_metrics = quality_metrics
+            quality_metrics.record(
+                "task_success", 0.0, success=False,
+                context={"goal": goal[:300], "exception": type(exc).__name__},
+            )
+            quality_metrics.record(
+                "latency_ms", (time.perf_counter() - turn_started) * 1000,
+                success=False, context={"goal": goal[:300]},
+            )
             raise
+
+    def _record_turn_quality(self, goal: str, outcome: ExecutionOutcome,
+                             started_at: float) -> None:
+        """Record only observable runtime outcomes; never invent success data."""
+        latency = (time.perf_counter() - started_at) * 1000
+        succeeded = outcome.status in {"completed", "partial"}
+        quality_metrics = getattr(self, "quality_metrics", None) or get_quality_metric_store()
+        self.quality_metrics = quality_metrics
+        quality_metrics.record(
+            "task_success", 1.0 if succeeded else 0.0, success=succeeded,
+            context={"goal": goal[:300], "status": outcome.status,
+                     "task_id": outcome.task_id},
+        )
+        quality_metrics.record(
+            "latency_ms", latency, success=succeeded,
+            context={"goal": goal[:300], "status": outcome.status},
+        )
+        if outcome.status in {"awaiting_input", "awaiting_user"}:
+            question = str(outcome.question or outcome.response).strip()
+            specific = bool(question and "?" in question and len(question) >= 8)
+            quality_metrics.record(
+                "clarification_quality", 1.0 if specific else 0.0,
+                success=specific, context={"question": question[:500]},
+            )
+        execution_request = bool(self._EXECUTION_REQUEST_PATTERN.search(goal))
+        if execution_request and outcome.status == "completed":
+            verified = bool(outcome.tool_result and outcome.tool_result.succeeded
+                            and outcome.tool_result.evidence)
+            # A completed multi-step run may expose no single ToolRunResult, but
+            # it must have completed steps recorded by the verified DAG runtime.
+            verified = verified or outcome.completed_steps > 0
+            quality_metrics.record(
+                "false_completion", 0.0 if verified else 1.0,
+                success=verified, context={"goal": goal[:300],
+                                           "task_id": outcome.task_id},
+            )
 
     def _execute_turn_impl(self, goal: str, session_id: Optional[str] = None,
                      conversation_history: Optional[List[Dict[str, str]]] = None,
@@ -467,51 +539,39 @@ class Executor:
             )
         self._emit_progress("작업 계획을 세웠습니다. 실행을 시작하겠습니다.")
 
-        # 2. 메인 반복 루프
-        while self.current_iteration < self.max_iterations:
-            self.current_iteration += 1
-            print(f"\n[Executor] 반복 {self.current_iteration}/{self.max_iterations}")
+        # 오래된 단위 테스트나 외부 어댑터가 최소 Executor 객체에 빈 계획을
+        # 주입하던 경우에만 기존 finalize 계약을 유지한다. 실제 런타임에서
+        # 빈 계획을 성공으로 처리하면 실행하지 않은 작업을 완료했다고 말할 수
+        # 있으므로, 완전한 Executor에서는 명시적으로 실패시킨다.
+        if not planned_tasks:
+            if not hasattr(self, "tool_executor"):
+                response = self.finalize()
+                self.dialogue_state.transition_task(
+                    agent_task_id, "completed", result=response
+                )
+                return ExecutionOutcome(
+                    response, "completed", goal, task_id=agent_task_id
+                )
+            response = (
+                "실행 가능한 작업 계획을 만들지 못했습니다. 실제 작업은 수행되지 "
+                "않았으며 완료로 기록하지 않았습니다."
+            )
+            self.dialogue_state.transition_task(
+                agent_task_id, "failed", result=response
+            )
+            return ExecutionOutcome(response, "failed", goal, task_id=agent_task_id)
 
-            should_continue = self.run_iteration()
-            if not should_continue:
-                break
-
-        # 3. 최종 종료 처리
-        response = self.finalize()
-        control = self._task_controls.get(agent_task_id, {})
-        scratchpad = getattr(self, "scratchpad", None)
-        completed_steps = (
-            len(scratchpad.get_completed_tasks()) if scratchpad is not None else 0
-        )
-        failed_steps = (
-            len([task for task in scratchpad.tasks if task.status == "failed"])
-            if scratchpad is not None else 0
-        )
-        retry_count = getattr(self, "_retry_count", 0)
-        response_composer = getattr(self, "response_composer", ResponseComposer())
-        status, response = response_composer.terminal(
-            response=response,
-            cancelled=bool(control.get("cancel")),
-            terminal_error=self.terminal_error,
-            completed_steps=completed_steps,
-            failed_steps=failed_steps,
-            retry_count=retry_count,
-        )
-        self.dialogue_state.transition_task(
-            agent_task_id, status, result=response,
-            retry_count=retry_count,
-            plan=self._serialized_current_plan(scratchpad.tasks if scratchpad is not None else []),
-        )
-        with self._control_condition:
-            self._task_controls.pop(agent_task_id, None)
-        self.current_agent_task_id = ""
-        self._progress_callback = None
-        return ExecutionOutcome(
-            response, status, goal, task_id=agent_task_id,
-            retry_count=retry_count,
-            completed_steps=completed_steps,
-            failed_steps=failed_steps,
-        )
+        # 2. 모든 계획 작업은 동일한 계약 기반 DAG 경로를 사용한다.  이전
+        # run_iteration 루프는 하위 호환 메서드로만 남겨 두며 사용자 실행
+        # 경로에서는 더 이상 별도의 JSON/Tool 선택 루프를 만들지 않는다.
+        try:
+            run = self.execute_plan_dag(self.current_plan)
+            return self._finish_plan_run(run, goal=goal, task_id=agent_task_id)
+        finally:
+            with self._control_condition:
+                self._task_controls.pop(agent_task_id, None)
+            self.current_agent_task_id = ""
+            self._progress_callback = None
 
     def _serialized_current_plan(self, scratchpad_tasks) -> List[Dict[str, Any]]:
         if self.current_plan is None:
@@ -530,33 +590,162 @@ class Executor:
     def execute_plan_dag(
         self, plan: PlanDAG,
         approval_callback: Optional[Callable[[PlanStep], bool]] = None,
+        approved_step_ids: Optional[List[str]] = None,
         replan_callback: Optional[Callable[[PlanDAG, PlanStep, ToolRunResult], Optional[PlanDAG]]] = None,
     ) -> PlanRunResult:
-        """Execute a prevalidated DAG through the central Tool and verification contracts."""
+        """Execute a prevalidated DAG through Tool, contract and verification boundaries."""
+        contracts: Dict[str, Any] = {}
+
+        def ensure_contract(step: PlanStep):
+            existing = contracts.get(step.id)
+            if existing is not None:
+                return existing
+            supervisor = getattr(self, "supervisor", None) or get_supervisor_runtime()
+            self.supervisor = supervisor
+            persisted = supervisor.store.find_for_step(
+                self.current_agent_task_id, plan.plan_id, step.id
+            )
+            if persisted is not None:
+                contracts[step.id] = persisted
+                return persisted
+            plugin_registry = getattr(self.tool_executor, "plugin_registry", None)
+            if plugin_registry is None:
+                plugin_registry = getattr(self.intent_router, "registry", None)
+            capability = (
+                plugin_registry.get_capability(step.tool_name)
+                if plugin_registry is not None else None
+            )
+            permissions = list(getattr(capability, "required_permissions", ()) or ())
+            permission = TOOL_PERMISSION_MAP.get(step.tool_name)
+            if permission and permission not in permissions:
+                permissions.append(permission)
+            expected = list(step.expected_artifacts)
+            criteria = [
+                AcceptanceCriterion(
+                    str(item.get("kind") or "artifact"),
+                    str(item.get("description") or item.get("kind") or "필수 산출물"),
+                    "artifact",
+                ) for item in expected
+            ]
+            if not criteria:
+                criteria.append(AcceptanceCriterion(
+                    "*", "도구 실행 검증 근거", "evidence"
+                ))
+            timeout = float(getattr(capability, "timeout_seconds", 120.0) or 120.0)
+            max_retries = int(getattr(capability, "max_retries", 0) or 0)
+            role_router = getattr(self, "model_role_router", None)
+            specialist = (
+                role_router.route(allowed_tools=[step.tool_name])
+                if role_router is not None else "general"
+            )
+            contract = supervisor.create_contract(
+                goal=step.description or f"{step.tool_name} 실행",
+                specialist=specialist,
+                input_contract={"step_id": step.id, "tool": step.tool_name, "schema": _safe_contract_value(
+                    getattr(capability, "input_schema", {})
+                ), "value": _safe_contract_value(step.tool_input)},
+                output_contract={"schema": _safe_contract_value(
+                    getattr(capability, "output_schema", {})
+                ), "expected_artifacts": expected,
+                    "verification": _safe_contract_value(step.verification)},
+                acceptance_criteria=criteria, allowed_tools=[step.tool_name],
+                required_permissions=permissions,
+                resource_budget=ResourceBudget(timeout_seconds=timeout),
+                retry_policy=RetryPolicy(
+                    max_attempts=max(1, step.retry_budget + 1, max_retries + 1),
+                    strategies=tuple(step.retry_strategies or ["retry"]),
+                    escalate_after=max(1, step.retry_budget + 1),
+                ),
+                escalation_target="user" if step.requires_approval else "planner",
+                parent_id=self.current_agent_task_id, plan_id=plan.plan_id,
+            )
+            if step.requires_approval:
+                self.supervisor.transition(contract, ContractStatus.AWAITING_APPROVAL)
+            contracts[step.id] = contract
+            return contract
+
         def execute(step: PlanStep, strategy: str) -> ToolRunResult:
+            contract = ensure_contract(step)
+            if self.supervisor.cancellation_requested(contract):
+                if contract.status not in self.supervisor._TERMINAL:
+                    self.supervisor.transition(contract, ContractStatus.CANCELLED,
+                                               failure_reason="사용자가 작업을 취소했습니다.")
+                return ToolRunResult.failed(tool_name=step.tool_name or step.id,
+                                            error="사용자가 작업을 취소했습니다.")
+            if contract.status == ContractStatus.AWAITING_APPROVAL:
+                # PlanCoordinator invokes execute only after its approval callback
+                # accepted the step, so the contract can now enter the run state.
+                contract.status = ContractStatus.QUEUED
+                self.supervisor.store.save(contract)
+            self.supervisor.begin_attempt(contract)
             if not step.tool_name:
                 return ToolRunResult.failed(
                     tool_name=step.id, error="실행 단계에 Tool이 지정되지 않았습니다."
                 )
-            return self.tool_executor.execute_tool(step.tool_name, dict(step.tool_input))
+            started = time.perf_counter()
+            try:
+                with self.supervisor.resource_guard(contract):
+                    raw_result = self.tool_executor.execute_tool(
+                        step.tool_name, dict(step.tool_input)
+                    )
+                if self.supervisor.cancellation_requested(contract):
+                    self.supervisor.transition(contract, ContractStatus.CANCELLED,
+                                               failure_reason="실행 중 취소 요청을 반영했습니다.")
+                    return ToolRunResult.failed(tool_name=step.tool_name,
+                                                error="실행 중 취소되었습니다.")
+            except (MemoryError, TimeoutError) as exc:
+                raw_result = ToolRunResult.failed(
+                    tool_name=step.tool_name,
+                    error=f"작업 계약 자원 제한: {exc}",
+                )
+            duration_ms = (time.perf_counter() - started) * 1000.0
+            return self.build_tool_run_result(
+                None, step.tool_name, dict(step.tool_input), raw_result, duration_ms
+            )
 
         def verify(step: PlanStep, candidate: ToolRunResult) -> ToolRunResult:
             if candidate.succeeded and candidate.evidence:
+                verified = candidate
+            else:
+                verification = self.verifier.verify(step.tool_name, step.tool_input, candidate.raw_output)
+                verified = ToolRunResult.from_verification(
+                    tool_name=step.tool_name, raw_output=candidate.raw_output,
+                    verification=verification, duration_ms=candidate.duration_ms,
+                )
+            contract = ensure_contract(step)
+            if contract.status == ContractStatus.CANCELLED:
                 return candidate
-            verification = self.verifier.verify(step.tool_name, step.tool_input, candidate.raw_output)
-            return ToolRunResult.from_verification(
-                tool_name=step.tool_name, raw_output=candidate.raw_output,
-                verification=verification, duration_ms=candidate.duration_ms,
+            self.supervisor.verify(
+                contract,
+                artifacts=[asdict(item) for item in verified.artifacts],
+                evidence=[asdict(item) for item in verified.evidence],
+                failure_reason="" if verified.succeeded else str(
+                    verified.error or verified.raw_output
+                ),
             )
+            return verified
 
         if replan_callback is None:
             replan_callback = lambda current, failed, result: self.planner.replan_from_observation(
                 current, failed, result.raw_output, self.build_context(),
                 self._allowed_tools_for_goal(current.goal),
             )
-        outcome = self.plan_coordinator.run(
-            plan, execute, verify, approve=approval_callback, replan=replan_callback,
-        )
+        coordinator = getattr(self, "plan_coordinator", None) or PlanCoordinator()
+        self.plan_coordinator = coordinator
+        if approved_step_ids is not None:
+            outcome = coordinator.resume_approved(
+                plan, approved_step_ids, execute, verify, replan=replan_callback,
+            )
+        else:
+            outcome = coordinator.run(
+                plan, execute, verify, approve=approval_callback, replan=replan_callback,
+            )
+        # Approval can stop the coordinator before execute() has been called.
+        # Materialize those contracts so the Command Center exposes the actual
+        # pending decision, its permission scope and its escalation target.
+        for step in outcome.plan.steps:
+            if step.status.value == "awaiting_approval":
+                ensure_contract(step)
         if self.current_agent_task_id:
             self.dialogue_state.update_task(
                 self.current_agent_task_id, plan=outcome.plan.to_dict()["steps"],
@@ -570,6 +759,73 @@ class Executor:
                     pending_question="사람 승인이 필요한 실행 단계가 대기 중입니다.",
                 )
         return outcome
+
+    def _finish_plan_run(self, outcome: PlanRunResult, *, goal: str,
+                         task_id: str) -> ExecutionOutcome:
+        """Persist and present one evidence-bearing DAG result without LLM claims."""
+        steps = outcome.plan.steps
+        completed = sum(step.status.value == "completed" for step in steps)
+        failed = sum(step.status.value in {"failed", "blocked"} for step in steps)
+        retries = sum(max(0, step.attempts - 1) for step in steps)
+        artifacts = [asdict(item) for result in outcome.results.values()
+                     for item in result.artifacts]
+        evidence = [asdict(item) for result in outcome.results.values()
+                    for item in result.evidence]
+        last_tool = next((step.tool_name for step in reversed(steps)
+                          if step.status.value == "completed"), "")
+
+        if outcome.status == "awaiting_approval":
+            descriptions = [
+                next((step.description for step in steps if step.id == step_id), step_id)
+                for step_id in outcome.awaiting_approval
+            ]
+            response = (
+                "다음 실행에는 사용자 승인이 필요합니다: " + ", ".join(descriptions)
+                + f"\n계속하려면 ‘작업 {task_id} 승인’이라고 말씀해 주세요."
+            )
+            self.dialogue_state.update_task(
+                task_id, result=response, pending_question=response,
+                artifacts=artifacts, evidence=evidence, last_tool=last_tool,
+                retry_count=retries, plan=outcome.plan.to_dict()["steps"],
+                plan_id=outcome.plan.plan_id, verification_status=outcome.status,
+            )
+            return ExecutionOutcome(
+                response, "awaiting_approval", goal, question=response,
+                task_id=task_id, retry_count=retries,
+                completed_steps=completed, failed_steps=failed,
+            )
+
+        successful_outputs: list[str] = []
+        for step in steps:
+            result = outcome.results.get(step.id)
+            if result is not None and result.succeeded and str(result.raw_output).strip():
+                successful_outputs.append(str(result.raw_output).strip())
+        successful_outputs = list(dict.fromkeys(successful_outputs))
+        if outcome.status == "completed":
+            response = "\n".join(successful_outputs[-5:]) or "검증된 모든 작업을 완료했습니다."
+            status = "completed"
+        else:
+            errors = []
+            for step in steps:
+                result = outcome.results.get(step.id)
+                if step.status.value in {"failed", "blocked"}:
+                    detail = str((result.error if result else "") or
+                                 (result.raw_output if result else "") or step.description)
+                    errors.append(f"{step.description}: {detail}")
+            response = "작업을 완료하지 못했습니다. " + "; ".join(errors[:5])
+            status = "partial" if completed else "failed"
+        self.dialogue_state.transition_task(
+            task_id, status, result=response, artifacts=artifacts,
+            evidence=evidence, last_tool=last_tool, retry_count=retries,
+            plan=outcome.plan.to_dict()["steps"], plan_id=outcome.plan.plan_id,
+            verification_status=outcome.status,
+        )
+        return ExecutionOutcome(
+            response, status, goal, task_id=task_id, retry_count=retries,
+            completed_steps=completed, failed_steps=failed,
+            tool_result=(next(iter(outcome.results.values()))
+                         if len(outcome.results) == 1 else None),
+        )
 
     @staticmethod
     def _present_terminal_state(
@@ -634,7 +890,7 @@ class Executor:
         if normalized in {"작업 목록", "전체 작업 목록"}:
             return True
         return bool(re.fullmatch(
-            r"(?:작업\s*)?[0-9a-f]{8}\s*(?:상태|취소|중단|일시정지|재개|우선순위\s*-?\d+|수정\s*[:：].+)",
+            r"(?:작업\s*)?[0-9a-f]{8}\s*(?:상태|승인|취소|중단|일시정지|재개|우선순위\s*-?\d+|수정\s*[:：].+)",
             normalized, re.S,
         ))
 
@@ -664,6 +920,37 @@ class Executor:
                 f"작업 {task_id}은 현재 {task.status} 상태이고 우선순위는 {task.priority}입니다, 보스.",
                 task.status, task.goal, task_id=task_id,
             )
+        if command == "승인":
+            if task.status != "awaiting_approval" or not task.plan_id or not task.plan:
+                return ExecutionOutcome(
+                    f"작업 {task_id}은 현재 승인 대기 상태가 아닙니다, 보스.",
+                    "failed", task.goal, task_id=task_id,
+                )
+            try:
+                plan = PlanDAG(
+                    goal=task.goal, steps=[PlanStep(**item) for item in task.plan],
+                    plan_id=task.plan_id,
+                )
+                approved = [step.id for step in plan.steps
+                            if step.status.value == "awaiting_approval"]
+                if not approved:
+                    raise ValueError("승인 대기 단계가 없습니다.")
+                self.current_agent_task_id = task_id
+                if not self.dialogue_state.transition_task(task_id, "running"):
+                    raise RuntimeError("작업을 실행 상태로 전환하지 못했습니다.")
+                run = self.execute_plan_dag(plan, approved_step_ids=approved)
+                return self._finish_plan_run(run, goal=task.goal, task_id=task_id)
+            except Exception as exc:
+                self.dialogue_state.update_task(
+                    task_id, status="failed", result=f"승인 후 재개 실패: {exc}",
+                    verification_status="failed",
+                )
+                return ExecutionOutcome(
+                    f"작업 {task_id} 승인 후 재개에 실패했습니다: {exc}",
+                    "failed", task.goal, task_id=task_id,
+                )
+            finally:
+                self.current_agent_task_id = ""
         priority_match = re.fullmatch(r"우선순위\s*(-?\d+)", command)
         if priority_match:
             priority = int(priority_match.group(1))
@@ -1105,86 +1392,50 @@ class Executor:
             )
         if progress_callback:
             progress_callback(f"작업 {task_id}: {resolution.tool_name} 실행을 시작합니다.")
-        task = Task(task_id, resolution.intent_name, status="in_progress")
-        started_at = time.perf_counter()
-        result = self.execute_tool(resolution.tool_name, resolution.slots)
-        tool_run = self.build_tool_run_result(
-            task,
-            resolution.tool_name,
-            resolution.slots,
-            result,
-            (time.perf_counter() - started_at) * 1000,
+        capability = self.intent_router.registry.get_capability(resolution.tool_name)
+        requires_approval = bool(
+            capability and capability.side_effect == "external_send"
         )
-        if tool_run.succeeded:
-            status = "completed"
-            response = self.intent_router.registry.present_result(
-                resolution.tool_name, result
-            )
-            # Some focused tests and lightweight embedding clients construct an
-            # Executor without running its full initializer. In that mode the
-            # canonical presenter remains the safe response path.
-            realizer = getattr(self, "response_realizer", None)
-            if realizer is not None:
-                settings = get_assistant_settings()
-                response = realizer.realize(
-                    response,
-                    tool_name=resolution.tool_name,
-                    user_request=goal,
-                    assistant_name=settings.assistant_name,
-                    address=settings.get("user_address"),
-                    style=settings.get("response_style"),
+        plan = PlanDAG(goal=goal, steps=[PlanStep(
+            id=f"intent-{task_id}", description=resolution.intent_name,
+            tool_name=resolution.tool_name, tool_input=dict(resolution.slots),
+            requires_approval=requires_approval,
+            approval_reason="외부 대상에게 데이터를 전송하는 작업입니다."
+            if requires_approval else "",
+            retry_budget=int(getattr(capability, "max_retries", 0) or 0),
+            verification={"required": bool(getattr(capability, "verification_required", True))},
+        )])
+        self.current_agent_task_id = task_id
+        self.dialogue_state.update_task(
+            task_id, plan=plan.to_dict()["steps"], plan_id=plan.plan_id,
+        )
+        try:
+            run = self.execute_plan_dag(plan)
+            outcome = self._finish_plan_run(run, goal=goal, task_id=task_id)
+            tool_run = next(iter(run.results.values()), None)
+            if outcome.status == "completed" and tool_run is not None:
+                response = self.intent_router.registry.present_result(
+                    resolution.tool_name, tool_run.raw_output
                 )
-        elif tool_run.status == ToolRunStatus.UNVERIFIED:
-            status = "unverified"
-            response = (
-                f"{resolution.tool_name} 도구는 실행됐지만 결과를 검증할 방법이 없어 "
-                "완료로 확정하지 않았습니다."
-            )
-        else:
-            if resolution.freshness == "live" and resolution.requires_sources:
-                if resolution.tool_name == "browser_research_and_apply_preference":
-                    status = "failed"
-                    reason = str(tool_run.error or result).removeprefix("오류: ").strip()
-                    reason = reason.removeprefix(
-                        "웹 조사 결과를 설정과 RAG에 반영하지 못했습니다: "
-                    ).strip()
-                    response = (
-                        "웹 자료 검색은 끝났지만 말투 학습 품질 검증에 실패했습니다. "
-                        f"이유: {reason}"
+                realizer = getattr(self, "response_realizer", None)
+                if realizer is not None:
+                    settings = get_assistant_settings()
+                    response = realizer.realize(
+                        response, tool_name=resolution.tool_name,
+                        user_request=goal, assistant_name=settings.assistant_name,
+                        address=settings.get("user_address"),
+                        style=settings.get("response_style"),
                     )
-                else:
-                    status = "awaiting_user"
-                    response = (
-                        "실시간 자료 검색에 실패했습니다. 다른 검색어로 다시 시도할 수 있습니다, 보스."
-                    )
-            else:
-                status = "failed"
-                response = f"요청을 완료하지 못했습니다. 실제 도구 실행 결과: {result}"
-        self.dialogue_state.transition_task(
-            task_id, status, result=response,
-            artifacts=[asdict(item) for item in tool_run.artifacts],
-            evidence=[asdict(item) for item in tool_run.evidence],
-            last_tool=resolution.tool_name,
-            retry_count=0,
-            verification_status=tool_run.status.value,
-        )
-        if status == "awaiting_user":
-            self.dialogue_state.save_intent_state(
-                task_id, session_id, resolution.intent_name, resolution.slots, goal,
-            )
-            self.dialogue_state.create(
-                session_id, goal, response, [], task_id, workspace_scope,
-            )
-        else:
+                outcome.response = response
+                self.dialogue_state.update_task(task_id, result=response)
+                self.dialogue_state.save_recent_intent(
+                    session_id, resolution.intent_name, resolution.slots, goal,
+                    task_id=task_id, workspace_path=workspace_scope,
+                )
             self.dialogue_state.delete_intent_state(task_id)
-        if tool_run.succeeded:
-            self.dialogue_state.save_recent_intent(
-                session_id, resolution.intent_name, resolution.slots, goal,
-                task_id=task_id, workspace_path=workspace_scope,
-            )
-        return ExecutionOutcome(
-            response, status, goal, task_id=task_id, tool_result=tool_run
-        )
+            return outcome
+        finally:
+            self.current_agent_task_id = ""
 
     def request_permission(self, tool_name: str) -> bool:
         """
@@ -1420,61 +1671,19 @@ class Executor:
         memory_context = build_relevant_knowledge_context(
             message, self._workspace_scope(), limit=6
         )
-        return conversation_service.respond(
+        rag_context = ""
+        context_manager = getattr(self, "context_manager", None)
+        if context_manager is not None:
+            rag_context = context_manager.get_rag_context(message)
+        grounded_context = "\n".join(
+            part for part in (memory_context, rag_context) if part
+        )
+        response = conversation_service.respond(
             message, history, assistant_name=assistant_name, voice_name=custom_voice,
-            address=address, style=conversation_style, memory_context=memory_context,
+            address=address, style=conversation_style, memory_context=grounded_context,
         )
-        if assistant_name and message.strip().casefold() == assistant_name.casefold():
-            return f"응, 듣고 있어. {address}."
-        style_prompt = ""
-        if conversation_style:
-            style_prompt = (
-                f"\n현재 선택된 음성은 '{custom_voice}'입니다. 다음 음성별 대화 스타일을 "
-                f"상황에 맞게 적용하세요: {conversation_style}"
-            )
-        address_prompt = (
-            f"\n사용자 호칭은 반드시 '{address}'로 사용하세요. "
-            "'보스' 등 다른 호칭으로 바꾸지 말고, 한 답변에서 호칭은 최대 한 번만 쓰세요."
-        )
-        system_prompt = (
-            "당신은 로컬 개인 비서 Jarvis입니다. 지금은 도구 실행이 아니라 일반 대화입니다. "
-            "도구를 찾거나 호출하거나, 등록되지 않은 도구를 언급하지 마세요. "
-            "실제로 도구를 실행하지 않았으므로 파일 생성·수정·삭제, 프로그램 실행, "
-            "전송·예약·등록 같은 외부 작업을 완료했다고 절대 주장하지 마세요. "
-            "그런 요청이라면 실행하지 못했다는 사실을 분명히 말하세요. "
-            "사용자의 가장 최근 발화에 먼저 직접 답하세요. 이전 대화는 대명사나 생략된 "
-            "문맥을 이해할 때만 참고하고, 과거 주제를 임의로 이어가지 마세요. "
-            "감정이나 경험을 말한 경우 먼저 그 내용과 감정에 구체적으로 반응하고, "
-            "'무엇을 도와드릴까요' 같은 상투적인 접수 문장만 답하지 마세요. "
-            "모르는 현재 정보가 필요할 때만 확인이 필요하다고 설명하세요. "
-            "자연스럽고 간결한 한국어로 답하세요."
-            + (
-                f"\n현재 이름은 '{assistant_name}'입니다. 사용자가 이름만 부르면 "
-                "새로운 이름 변경 요청으로 해석하지 말고 짧게 응답하세요."
-                if assistant_name else ""
-            )
-            + address_prompt
-            + style_prompt
-        )
-        recent_history = [
-            {"role": item.get("role", "user"), "content": str(item.get("content", ""))}
-            for item in history[-6:]
-            if item.get("role") in {"user", "assistant"} and item.get("content")
-        ]
-        messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(recent_history)
-        messages.append({"role": "user", "content": message})
-        response = self.llm.chat(messages).strip()
-        if not response:
-            return "응, 듣고 있어. 무슨 이야기부터 해볼까?"
-        if (
-            self._EXECUTION_REQUEST_PATTERN.search(message)
-            and self._UNVERIFIED_COMPLETION_CLAIM_PATTERN.search(response)
-        ):
-            return (
-                "아직 실제 작업을 실행하지 않았습니다. 이 요청은 현재 실행 가능한 "
-                "도구 계약으로 연결되지 않았으므로 완료로 보고하지 않겠습니다."
-            )
+        if context_manager is not None:
+            context_manager.mark_response_usage(response)
         return response
 
     def _selected_voice_preferences(self) -> tuple[str, str, str]:
@@ -1555,10 +1764,14 @@ location_precision이 city이면 동 단위 관측이 아니라 도시 기준 �
         )
 
         try:
-            return self.llm.chat([
+            response = self.llm.chat([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ])
+            context_manager = getattr(self, "context_manager", None)
+            if context_manager is not None:
+                context_manager.mark_response_usage(response)
+            return response
         except Exception as e:
             return f"죄송해요, {address}! 최종 답변 생성 중 오류가 발생했어요: {e}"
 

@@ -36,7 +36,7 @@ class GPUResourceQueue:
         self.budget_mb = max(512, int(budget_mb or self._detect_budget_mb()))
         self._condition = threading.Condition()
         self._waiting: list[_Request] = []
-        self._active: dict[str, int] = {}
+        self._active: dict[str, tuple[int, str, float]] = {}
         self._sequence = 0
 
     @staticmethod
@@ -56,7 +56,7 @@ class GPUResourceQueue:
     @property
     def reserved_mb(self) -> int:
         with self._condition:
-            return sum(self._active.values())
+            return sum(item[0] for item in self._active.values())
 
     def acquire(self, role: str, vram_mb: int, *, priority: int = 10,
                 timeout: float = 120.0) -> GPUAdmission:
@@ -70,17 +70,17 @@ class GPUResourceQueue:
             heapq.heappush(self._waiting, request)
             while True:
                 is_head = self._waiting and self._waiting[0].request_id == request.request_id
-                fits = sum(self._active.values()) + requested <= self.budget_mb
+                fits = sum(item[0] for item in self._active.values()) + requested <= self.budget_mb
                 if is_head and fits:
                     heapq.heappop(self._waiting)
-                    self._active[request.request_id] = requested
+                    self._active[request.request_id] = (requested, request.role, time.time())
                     device = "cuda" if self.budget_mb > 1024 else "cpu"
                     admission = GPUAdmission(request.request_id, request.role, device, requested,
                                              (time.monotonic() - started) * 1000)
                     try:
                         from core.productization import METRICS
                         METRICS.gauge("gpu.budget_mb", self.budget_mb)
-                        METRICS.gauge("gpu.reserved_mb", sum(self._active.values()))
+                        METRICS.gauge("gpu.reserved_mb", sum(item[0] for item in self._active.values()))
                         METRICS.observe("gpu.wait_latency", admission.waited_ms)
                     except Exception:
                         pass
@@ -97,7 +97,7 @@ class GPUResourceQueue:
             self._active.pop(admission.request_id, None)
             try:
                 from core.productization import METRICS
-                METRICS.gauge("gpu.reserved_mb", sum(self._active.values()))
+                METRICS.gauge("gpu.reserved_mb", sum(item[0] for item in self._active.values()))
             except Exception:
                 pass
             self._condition.notify_all()
@@ -113,8 +113,18 @@ class GPUResourceQueue:
 
     def snapshot(self) -> dict:
         with self._condition:
-            return {"budget_mb": self.budget_mb, "reserved_mb": sum(self._active.values()),
-                    "active": len(self._active), "waiting": len(self._waiting)}
+            return {"budget_mb": self.budget_mb,
+                    "reserved_mb": sum(item[0] for item in self._active.values()),
+                    "active": len(self._active), "waiting": len(self._waiting),
+                    "active_requests": [
+                        {"request_id": key, "vram_mb": value[0], "role": value[1],
+                         "started_at": value[2]} for key, value in self._active.items()
+                    ],
+                    "waiting_requests": [
+                        {"request_id": item.request_id, "role": item.role,
+                         "vram_mb": item.vram_mb, "priority": item.priority}
+                        for item in sorted(self._waiting)
+                    ]}
 
 
 _queue = None

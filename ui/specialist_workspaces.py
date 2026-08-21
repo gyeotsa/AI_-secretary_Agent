@@ -240,7 +240,7 @@ class SpecialistHubDialog(QDialog):
 
 
 class SpecialistWorkspaceWindow(QMainWindow):
-    prompt_submitted = pyqtSignal(str)
+    prompt_submitted = pyqtSignal(object)
 
     def __init__(self, spec: SpecialistWorkspaceSpec, parent=None):
         super().__init__(parent)
@@ -298,10 +298,30 @@ class SpecialistWorkspaceWindow(QMainWindow):
                 button = QPushButton(app)
                 button.clicked.connect(lambda _checked=False, name=app: self._quick_prompt(name))
                 layout.addWidget(button)
-        else:
+        elif self.spec.key == "photoshop":
             status = QPushButton("Photoshop 연결 상태 확인")
-            status.clicked.connect(lambda: self.prompt_submitted.emit("Photoshop 연결 상태를 확인해줘"))
+            status.clicked.connect(
+                lambda: self.prompt_submitted.emit(self._request_payload("Photoshop 연결 상태를 확인해줘"))
+            )
             layout.addWidget(status)
+        elif self.spec.key == "coding":
+            for label, prompt in (
+                ("프로젝트 구조 분석", "첨부한 프로젝트의 구조와 현재 구현 상태를 분석하고 근거를 정리해줘"),
+                ("테스트 실행·진단", "첨부한 프로젝트에서 관련 테스트를 실행하고 실패 원인을 진단해줘"),
+                ("변경 검토", "현재 변경 사항을 검토하고 버그·회귀 위험·누락된 검증을 찾아줘"),
+            ):
+                button = QPushButton(label)
+                button.clicked.connect(lambda _checked=False, value=prompt: self._set_prompt(value))
+                layout.addWidget(button)
+        elif self.spec.key == "research":
+            for label, prompt in (
+                ("최신 정보 조사", "이 주제를 웹에서 최신 정보까지 조사하고 출처와 확인 시각을 함께 정리해줘"),
+                ("출처 교차 검증", "첨부 자료의 핵심 주장을 신뢰할 수 있는 출처로 교차 검증해줘"),
+                ("근거 보고서", "조사 결과를 주장·근거·불확실성·출처로 나눈 보고서로 작성해줘"),
+            ):
+                button = QPushButton(label)
+                button.clicked.connect(lambda _checked=False, value=prompt: self._set_prompt(value))
+                layout.addWidget(button)
         return panel
 
     def _build_canvas_panel(self):
@@ -337,10 +357,25 @@ class SpecialistWorkspaceWindow(QMainWindow):
         if text:
             self.command.clear()
             self.results.append(f"나 > {text}")
-            self.prompt_submitted.emit(text)
+            self.prompt_submitted.emit(self._request_payload(text))
+
+    def _request_payload(self, text: str) -> dict:
+        return {
+            "workspace": self.spec.key,
+            "instruction": str(text).strip(),
+            "attachments": [
+                self.assets.item(index).toolTip()
+                for index in range(self.assets.count())
+                if self.assets.item(index).toolTip()
+            ],
+        }
 
     def _quick_prompt(self, app: str):
         self.command.setPlainText(f"{app} 문서 작업을 시작할게. 필요한 내용을 먼저 물어봐줘")
+        self.command.setFocus()
+
+    def _set_prompt(self, text: str):
+        self.command.setPlainText(text)
         self.command.setFocus()
 
     def _choose_file(self):
@@ -349,6 +384,10 @@ class SpecialistWorkspaceWindow(QMainWindow):
             filters = "문서 (*.docx *.xlsx *.pptx *.hwp *.hwpx *.pdf *.txt *.md *.csv);;모든 파일 (*.*)"
         elif self.spec.key == "photoshop":
             filters = "이미지 (*.psd *.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff);;모든 파일 (*.*)"
+        elif self.spec.key == "coding":
+            filters = "소스 코드 (*.py *.js *.ts *.tsx *.jsx *.java *.kt *.cpp *.c *.h *.cs *.go *.rs *.toml *.yaml *.yml *.json *.md);;모든 파일 (*.*)"
+        elif self.spec.key == "research":
+            filters = "조사 자료 (*.pdf *.txt *.md *.csv *.json *.html *.htm);;모든 파일 (*.*)"
         filename, _ = QFileDialog.getOpenFileName(self, "작업 파일 열기", "", filters)
         if filename:
             self.open_asset(filename)
@@ -362,7 +401,11 @@ class SpecialistWorkspaceWindow(QMainWindow):
             pixmap = QPixmap(str(path))
             if not pixmap.isNull():
                 self.preview.setPixmap(pixmap.scaled(560, 560, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-        elif self.spec.key == "document" and path.suffix.casefold() in {".txt", ".md", ".csv", ".py", ".json"}:
+        elif self.spec.key in {"document", "coding", "research"} and path.suffix.casefold() in {
+            ".txt", ".md", ".csv", ".py", ".json", ".js", ".ts", ".tsx", ".jsx",
+            ".java", ".kt", ".cpp", ".c", ".h", ".cs", ".go", ".rs", ".toml",
+            ".yaml", ".yml", ".html", ".htm",
+        }:
             try:
                 self.editor.setPlainText(path.read_text(encoding="utf-8"))
                 self.editor.setProperty("source_path", str(path))

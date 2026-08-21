@@ -1,6 +1,7 @@
 """Single source of truth for local model roles and runtime policies."""
 from dataclasses import dataclass
 from typing import Dict
+import re
 
 from config import Config
 
@@ -13,6 +14,21 @@ class ModelProfile:
     max_tokens: int
     keep_alive: str
     modalities: tuple[str, ...] = ("text",)
+    vram_mb: int = 0
+    ram_mb: int = 1024
+
+
+def _estimate_model_resources(model: str) -> tuple[int, int]:
+    """Return conservative local inference budgets from the model size label.
+
+    Ollama model names conventionally contain ``4b``/``7b``.  The estimate is
+    deliberately generic and can be replaced by live Ollama size telemetry in
+    the Command Center; it is not tied to a particular product or workspace.
+    """
+    match = re.search(r"(?<![\d.])(\d+(?:\.\d+)?)b(?!\w)", str(model), re.I)
+    billions = float(match.group(1)) if match else 2.0
+    vram_mb = max(1024, int(billions * 650 + 768))
+    return vram_mb, max(1536, int(vram_mb * 1.2))
 
 
 class ModelRegistry:
@@ -29,6 +45,8 @@ class ModelRegistry:
         "multimodal": "vision",
         "photoshop": "image_editing",
         "mockup": "mockup_design",
+        "research": "reasoning",
+        "knowledge": "reasoning",
         "style": "style_vision",
         "critic": "visual_critic",
     }
@@ -39,21 +57,26 @@ class ModelRegistry:
         code = Config.OLLAMA_CODE_MODEL
         vision = Config.OLLAMA_VISION_MODEL
         design_vision = Config.OLLAMA_DESIGN_VISION_MODEL
+        def profile(role: str, model: str, temperature: float, max_tokens: int,
+                    keep_alive: str, modalities: tuple[str, ...] = ("text",)) -> ModelProfile:
+            vram_mb, ram_mb = _estimate_model_resources(model)
+            return ModelProfile(role, model, temperature, max_tokens, keep_alive,
+                                modalities, vram_mb, ram_mb)
         self._profiles: Dict[str, ModelProfile] = {
-            "conversation": ModelProfile("conversation", conversation, 0.65, 1024, "10m"),
-            "planning": ModelProfile("planning", reasoning, 0.15, 2048, "5m"),
-            "reasoning": ModelProfile("reasoning", reasoning, 0.2, 2048, "5m"),
-            "tool_selection": ModelProfile("tool_selection", reasoning, 0.0, 1024, "5m"),
-            "code": ModelProfile("code", code, 0.15, 4096, "5m"),
-            "document": ModelProfile("document", code, 0.3, 4096, "5m"),
-            "vision": ModelProfile("vision", vision, 0.2, 1024, "2m", ("text", "image")),
-            "image_editing": ModelProfile("image_editing", vision, 0.25, 2048, "3m", ("text", "image")),
-            "mockup_design": ModelProfile("mockup_design", vision, 0.2, 3072, "5m", ("text", "image")),
-            "style_vision": ModelProfile("style_vision", design_vision, 0.1, 3072, "0", ("text", "image")),
-            "visual_critic": ModelProfile("visual_critic", design_vision, 0.0, 2048, "0", ("text", "image")),
-            "design_planning": ModelProfile("design_planning", reasoning, 0.12, 4096, "0"),
-            "subject_analysis": ModelProfile("subject_analysis", design_vision, 0.0, 1024, "0", ("text", "image")),
-            "rendering": ModelProfile("rendering", reasoning, 0.0, 512, "0"),
+            "conversation": profile("conversation", conversation, 0.65, 1024, "10m"),
+            "planning": profile("planning", reasoning, 0.15, 2048, "5m"),
+            "reasoning": profile("reasoning", reasoning, 0.2, 2048, "5m"),
+            "tool_selection": profile("tool_selection", reasoning, 0.0, 1024, "5m"),
+            "code": profile("code", code, 0.15, 4096, "5m"),
+            "document": profile("document", code, 0.3, 4096, "5m"),
+            "vision": profile("vision", vision, 0.2, 1024, "2m", ("text", "image")),
+            "image_editing": profile("image_editing", vision, 0.25, 2048, "3m", ("text", "image")),
+            "mockup_design": profile("mockup_design", vision, 0.2, 3072, "5m", ("text", "image")),
+            "style_vision": profile("style_vision", design_vision, 0.1, 3072, "0", ("text", "image")),
+            "visual_critic": profile("visual_critic", design_vision, 0.0, 2048, "0", ("text", "image")),
+            "design_planning": profile("design_planning", reasoning, 0.12, 4096, "0"),
+            "subject_analysis": profile("subject_analysis", design_vision, 0.0, 1024, "0", ("text", "image")),
+            "rendering": ModelProfile("rendering", reasoning, 0.0, 512, "0", ("text",), 0, 512),
         }
 
     def resolve(self, role: str = "default") -> ModelProfile:

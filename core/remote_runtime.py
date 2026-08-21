@@ -362,3 +362,27 @@ class ProviderApi:
             return self._request("microsoft", account, "GET", url,
                                  params={"$top": options.get("limit", 50)}).json().get("value", [])
         raise RemoteRuntimeError(f"지원하지 않는 메시지 Provider: {provider}")
+
+    def read_calendar(self, provider: str, account: str, start: str, end: str,
+                      *, limit: int = 50) -> List[Dict[str, Any]]:
+        """Read a real calendar range through the provider's official API."""
+        bounded_limit = max(1, min(int(limit), 100))
+        if provider == "google":
+            payload = self._request(
+                "google", account, "GET",
+                "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+                params={"timeMin": start, "timeMax": end, "singleEvents": "true",
+                        "orderBy": "startTime", "maxResults": bounded_limit},
+            ).json()
+            return list(payload.get("items", []))
+        if provider == "microsoft":
+            payload = self._request(
+                "microsoft", account, "GET",
+                "https://graph.microsoft.com/v1.0/me/calendarView",
+                params={"startDateTime": start, "endDateTime": end,
+                        "$top": bounded_limit,
+                        "$select": "id,subject,start,end,location,webLink"},
+                headers={"Prefer": 'outlook.timezone="Asia/Seoul"'},
+            ).json()
+            return list(payload.get("value", []))
+        raise RemoteRuntimeError(f"지원하지 않는 캘린더 Provider: {provider}")

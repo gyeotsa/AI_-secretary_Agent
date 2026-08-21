@@ -4,6 +4,8 @@ from core.rag import get_rag
 from core.scratchpad import get_scratchpad
 import os
 import platform
+import re
+import threading
 from core.assistant_settings import get_assistant_settings
 from core.context_lifecycle import ContextLifecycleManager
 
@@ -24,6 +26,60 @@ class ContextManager:
         self.rag = get_rag()
         self.scratchpad = get_scratchpad()
         self.lifecycle = ContextLifecycleManager()
+        self._retrieval_local = threading.local()
+
+    def get_rag_context(self, user_query: str, top_k: int = 3) -> str:
+        """Retrieve grounded context and remember exactly what entered this prompt."""
+        self._retrieval_local.trace_id = ""
+        self._retrieval_local.chunk_ids = []
+        if not user_query:
+            return ""
+        retrieval = self.rag.search_with_confidence(user_query, top_k=top_k)
+        rag_docs = retrieval["results"]
+        if not retrieval["answerable"]:
+            return (
+                "[RAG 검색 상태]\n관련 후보는 있으나 신뢰도가 낮습니다. "
+                "이 자료만으로 사실을 단정하지 말고 사용자에게 확인하거나 실시간 검색을 사용하세요."
+                if rag_docs else ""
+            )
+        selected = rag_docs[:top_k]
+        chunk_ids = [
+            str(doc.get("chunk_id") or doc.get("citation", {}).get("chunk_id") or index + 1)
+            for index, doc in enumerate(selected)
+        ]
+        self._retrieval_local.trace_id = self.rag.get_last_retrieval_trace()
+        self._retrieval_local.chunk_ids = chunk_ids
+        rag_str = "\n".join(
+            f"근거 [{chunk_ids[index]}] 출처={doc.get('source', '')} "
+            f"섹션={doc.get('section', '')} 줄={doc.get('start_line', 0)}-{doc.get('end_line', 0)}\n"
+            f"{doc['content']}"
+            for index, doc in enumerate(selected)
+        )
+        return (
+            "[관련 문서와 인용 근거]\n"
+            "문서 기반 주장을 답변에 사용할 때 해당 [근거 ID]를 함께 표시하세요.\n"
+            + rag_str
+        )
+
+    def mark_response_usage(self, response: str) -> None:
+        """Separate retrieved/included evidence from evidence actually cited."""
+        trace_id = str(getattr(self._retrieval_local, "trace_id", "") or "")
+        included = [str(item) for item in getattr(self._retrieval_local, "chunk_ids", [])]
+        if not trace_id or not included:
+            return
+        cited = set(re.findall(r"\[근거\s+([^\]]+)\]", str(response or "")))
+        used = [item for item in included if item in cited]
+        tracker = getattr(self.rag, "usage_tracker", None)
+        if tracker is not None:
+            tracker.mark_used(trace_id, used)
+        try:
+            from core.quality_metrics import get_quality_metric_store
+            get_quality_metric_store().record(
+                "rag_used", 1.0 if used else 0.0, success=bool(used),
+                context={"trace_id": trace_id, "included": included, "used": used},
+            )
+        except Exception:
+            pass
 
     def get_full_context(self, user_query: str = "", session_id: Optional[str] = None) -> str:
         """
@@ -57,27 +113,9 @@ class ContextManager:
 
         # 3. RAG 문서 (사용자 쿼리와 관련된 것)
         if user_query:
-            retrieval = self.rag.search_with_confidence(user_query)
-            rag_docs = retrieval["results"]
-            if retrieval["answerable"]:
-                rag_str = "\n".join([
-                    (
-                        f"근거 [{doc.get('chunk_id') or doc.get('citation', {}).get('chunk_id', i + 1)}] "
-                        f"출처={doc.get('source', '')} 섹션={doc.get('section', '')} "
-                        f"줄={doc.get('start_line', 0)}-{doc.get('end_line', 0)}\n{doc['content']}"
-                    )
-                    for i, doc in enumerate(rag_docs[:3])  # 최대 3개
-                ])
-                context_parts.append(
-                    "\n[관련 문서와 인용 근거]\n"
-                    "문서 기반 주장을 답변에 사용할 때 해당 [근거 ID]를 함께 표시하세요.\n"
-                    + rag_str
-                )
-            elif rag_docs:
-                context_parts.append(
-                    "\n[RAG 검색 상태]\n관련 후보는 있으나 신뢰도가 낮습니다. "
-                    "이 자료만으로 사실을 단정하지 말고 사용자에게 확인하거나 실시간 검색을 사용하세요."
-                )
+            rag_context = self.get_rag_context(user_query)
+            if rag_context:
+                context_parts.append("\n" + rag_context)
 
         # 4. Scratchpad (현재 작업 상태)
         scratchpad_context = self.scratchpad.get_context()

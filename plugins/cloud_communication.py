@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from core.plugin import BasePlugin, ToolSchema
@@ -74,6 +75,14 @@ class CloudCommunicationPlugin(BasePlugin):
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
                 "required": ["provider", "account"], "additionalProperties": False,
             }, ["cloud_read"], side_effect="read"),
+            ToolSchema("calendar_read_range", "Google 또는 Microsoft 캘린더의 지정 기간 일정을 실시간 조회합니다.", {
+                "type": "object", "properties": {**provider_account,
+                    "provider": {"enum": ["google", "microsoft"]},
+                    "start": {"type": "string", "description": "ISO 8601 시작 시각"},
+                    "end": {"type": "string", "description": "ISO 8601 종료 시각"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+                "required": ["provider", "account"], "additionalProperties": False,
+            }, ["cloud_read"], side_effect="read"),
         ]
 
     @staticmethod
@@ -122,6 +131,45 @@ class CloudCommunicationPlugin(BasePlugin):
                 detail = {"provider": data["provider"], "count": len(normalized), "messages": normalized}
                 return self._success(tool_name, f"메시지 {len(normalized)}개를 조회해 요약했습니다.",
                                      "communication_summary", detail)
+            if tool_name == "calendar_read_range":
+                now = datetime.now().astimezone()
+                start = str(data.get("start") or now.replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ).isoformat())
+                end = str(data.get("end") or (
+                    now.replace(hour=0, minute=0, second=0, microsecond=0)
+                    + timedelta(days=1)
+                ).isoformat())
+                events = self.api.read_calendar(
+                    data["provider"], data["account"], start, end,
+                    limit=int(data.get("limit", 50)),
+                )
+                normalized = []
+                for event in events:
+                    start_value = event.get("start", {})
+                    end_value = event.get("end", {})
+                    normalized.append({
+                        "remote_id": str(event.get("id", "")),
+                        "title": str(event.get("summary") or event.get("subject") or "(제목 없음)"),
+                        "start": str(start_value.get("dateTime") or start_value.get("date") or ""),
+                        "end": str(end_value.get("dateTime") or end_value.get("date") or ""),
+                        "location": str(
+                            event.get("location", {}).get("displayName", "")
+                            if isinstance(event.get("location"), dict)
+                            else event.get("location", "")
+                        ),
+                        "web_link": str(event.get("htmlLink") or event.get("webLink") or ""),
+                    })
+                detail = {
+                    "provider": data["provider"], "account": data["account"],
+                    "start": start, "end": end, "count": len(normalized),
+                    "events": normalized,
+                    "retrieved_at": datetime.now(timezone.utc).astimezone().isoformat(),
+                }
+                return self._success(
+                    tool_name, f"캘린더 일정 {len(normalized)}개를 실시간 조회했습니다.",
+                    "calendar_events", detail,
+                )
             raise ValueError(f"지원하지 않는 도구: {tool_name}")
         except Exception as exc:
             return ToolRunResult.failed(tool_name=tool_name, error=str(exc))

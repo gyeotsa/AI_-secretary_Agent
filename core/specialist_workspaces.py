@@ -25,6 +25,16 @@ class SpecialistWorkspaceRegistry:
                 "document", ("word", "excel", "hwpx", "powerpoint", "pdf"),
                 ("문서 작업", "문서 모드", "오피스 작업", "오피스 모드", "문서 전문가"),
             ),
+            "coding": SpecialistWorkspaceSpec(
+                "coding", "개발 전문가", "프로젝트 분석·설계·구현·테스트·코드 리뷰",
+                "code", ("git", "filesystem", "coding", "system_tools"),
+                ("개발 작업", "코딩 모드", "개발 전문가", "코딩 전문가", "코드 작업"),
+            ),
+            "research": SpecialistWorkspaceSpec(
+                "research", "리서치 전문가", "실시간 웹 조사·출처 비교·근거 기반 보고서 작성",
+                "reasoning", ("browser", "rag_knowledge", "knowledge_memory"),
+                ("리서치", "조사 모드", "검색 전문가", "자료 조사", "웹 조사"),
+            ),
             "photoshop": SpecialistWorkspaceSpec(
                 "photoshop", "Photoshop 전문가", "이미지 분석·편집 지시·Photoshop 연동",
                 "image_editing", ("photoshop", "vision"),

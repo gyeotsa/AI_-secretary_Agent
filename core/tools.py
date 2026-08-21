@@ -1841,10 +1841,16 @@ class ToolExecutor:
 
     def execute_tool(self, tool_name: str, tool_input: dict):
         from core.productization import METRICS, TRACE, SafeModeManager, new_correlation_ids, trace_context
+        from core.quality_metrics import get_quality_metric_store
         started_at = time.perf_counter()
         ids = new_correlation_ids()
         registry = getattr(self, "plugin_registry", None)
         contract = registry.get_capability(tool_name) if registry is not None else None
+        get_quality_metric_store().record(
+            "tool_selection_accuracy", 1.0 if contract is not None else 0.0,
+            success=contract is not None,
+            context={"tool": str(tool_name), "registered": contract is not None},
+        )
         if SafeModeManager().enabled() and contract and contract.side_effect != "read":
             blocked = ToolRunResult.failed(tool_name=tool_name, error="안전 모드에서는 읽기 전용 도구만 실행할 수 있습니다.")
             TRACE.emit("tool.blocked.safe_mode", tool_name=tool_name, **ids)
