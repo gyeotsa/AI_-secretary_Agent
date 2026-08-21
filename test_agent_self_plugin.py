@@ -2,6 +2,7 @@ import json
 
 from core.intent_router import IntentRouter
 from core.plugin import PluginRegistry
+from core.self_development import SelfDevelopmentRuntime
 from core.tool_result import ToolRunResult
 from plugins.agent_self import AgentSelfPlugin
 
@@ -58,3 +59,11 @@ def test_self_change_rejects_security_bypass_before_model_execution():
 
     assert not result.succeeded
     assert "권한·보안 우회" in result.error
+
+
+def test_self_runtime_protects_credentials_models_and_runtime_data(tmp_path):
+    runtime = SelfDevelopmentRuntime(tmp_path)
+
+    assert {".git", ".env", "secrets", "models", "data", "brain"} <= {
+        item.casefold() for item in runtime.agent.denied_parts
+    }

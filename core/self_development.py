@@ -18,7 +18,8 @@ class SelfDevelopmentRuntime:
     """Own-project boundary for Anis; user workspaces remain a separate contract."""
 
     PROTECTED_PARTS = {
-        ".git", ".venv", "venv", "data", "brain", "dist", "build", "release",
+        ".git", ".venv", "venv", ".env", ".secrets", "secrets", "models",
+        "data", "brain", "dist", "build", "release",
         "external", "tmp", "tmpdozr9d5t", "__pycache__", ".pytest_cache", ".pytest-tmp",
     }
     FORBIDDEN_REQUESTS = (
