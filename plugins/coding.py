@@ -51,7 +51,7 @@ class CodingPlugin(BasePlugin):
                     },
                     "required": ["edits"],
                 },
-                ["filesystem_write", "run_command"], side_effect="change",
+                ["filesystem_write", "shell_execute"], side_effect="change",
             ),
             ToolSchema(
                 "coding_plan_change", "관련 파일·심볼·영향 범위와 검증 전략을 계획합니다",
@@ -63,7 +63,7 @@ class CodingPlugin(BasePlugin):
                 "coding_execute_request", "자연어 코딩 요청을 계획·patch·검증·복구합니다",
                 {"type": "object", "properties": {"request": {"type": "string"}},
                  "required": ["request"]},
-                ["filesystem_read", "filesystem_write", "run_command"], side_effect="change",
+                ["filesystem_read", "filesystem_write", "shell_execute"], side_effect="change",
             ),
         ]
 

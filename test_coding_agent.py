@@ -87,6 +87,23 @@ def test_workspace_escape_is_rejected(tmp_path):
     assert "Workspace 외부" in result.error
 
 
+def test_self_development_protected_parts_are_not_indexed_or_writable(tmp_path):
+    (tmp_path / "ui").mkdir()
+    (tmp_path / "ui" / "main.py").write_text("title = 'Anis'\n", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "memory.json").write_text("{}", encoding="utf-8")
+    agent = CodingAgent(tmp_path, denied_parts={"data"})
+
+    snapshot = agent.analyze_repository()
+    result = agent.apply_transaction([
+        FileEdit("data/memory.json", "{}", '{"changed": true}'),
+    ])
+
+    assert any("main.py" in name for name in snapshot.files)
+    assert not any("memory.json" in name for name in snapshot.files)
+    assert not result.succeeded and "보호된 프로젝트 영역" in result.error
+
+
 def test_coding_plugin_returns_typed_repository_and_patch_evidence(tmp_path, monkeypatch):
     target = tmp_path / "app.py"
     target.write_text("value = 1\n", encoding="utf-8")
@@ -124,6 +141,22 @@ def test_build_plan_finds_python_symbol_related_file_and_test(tmp_path):
     assert any(symbol["name"] == "UserService" for symbol in plan.related_symbols)
     assert "test_service.py" in plan.impact_scope
     assert any(command[2:4] == ["pytest", "-q"] for command in plan.validation_commands)
+
+
+def test_build_plan_ranks_ui_implementation_above_document_mentions(tmp_path):
+    (tmp_path / "ui").mkdir()
+    (tmp_path / "ui" / "main_window.py").write_text(
+        "class MainWindow:\n    def update_status(self):\n        pass\n", encoding="utf-8",
+    )
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "ui_notes.md").write_text(
+        "UI 메인 화면 상태 표시를 읽기 쉽게 수정하는 설명 문서", encoding="utf-8",
+    )
+
+    plan = CodingAgent(tmp_path).build_plan("너의 메인 UI 상단 상태 표시를 읽기 쉽게 수정해줘")
+
+    normalized = [path.replace("\\", "/") for path in plan.related_files]
+    assert "ui/main_window.py" in normalized[:3]
 
 
 def test_default_validation_runs_related_test_and_rolls_back_on_failure(tmp_path):

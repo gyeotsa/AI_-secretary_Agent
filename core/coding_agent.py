@@ -75,22 +75,31 @@ class CodingAgent:
     }
     MAX_PATCH_LINES = 2000
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, denied_parts: Optional[set[str]] = None):
         self.root = Path(root).expanduser().resolve()
         if not self.root.is_dir():
             raise ValueError(f"유효한 저장소 폴더가 아닙니다: {self.root}")
+        self.denied_parts = {
+            str(part).casefold() for part in (denied_parts or set()) if str(part).strip()
+        }
 
     def _resolve(self, relative_path: str) -> Path:
         target = (self.root / relative_path).resolve()
         if not target.is_relative_to(self.root):
             raise ValueError(f"Workspace 외부 파일은 변경할 수 없습니다: {relative_path}")
+        relative = target.relative_to(self.root)
+        if any(part.casefold() in self.denied_parts for part in relative.parts):
+            raise ValueError(f"보호된 프로젝트 영역은 자기 수정으로 변경할 수 없습니다: {relative_path}")
         return target
 
     def analyze_repository(self, max_files: int = 5000) -> RepositorySnapshot:
         files = []
         for path in self.root.rglob("*"):
             relative = path.relative_to(self.root)
-            if any(part.casefold() in self.IGNORED_PARTS for part in relative.parts):
+            if any(
+                part.casefold() in self.IGNORED_PARTS or part.casefold() in self.denied_parts
+                for part in relative.parts
+            ):
                 continue
             if path.is_file():
                 files.append(str(relative))
@@ -111,32 +120,86 @@ class CodingAgent:
     def build_plan(self, request: str, max_results: int = 30) -> CodingPlan:
         """Build a deterministic impact plan from repository and symbol evidence."""
         snapshot = self.analyze_repository()
-        tokens = list(dict.fromkeys(re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", request)))
-        related_files: set[str] = set()
+        english_tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]{1,}", request)
+        korean_stopwords = {
+            "수정", "변경", "구현", "추가", "삭제", "해줘", "해주세요", "코드", "프로젝트",
+            "기능", "문제", "부분", "아니스", "자비스", "본인", "자기",
+        }
+        korean_tokens = [
+            token for token in re.findall(r"[가-힣]{2,}", request)
+            if token not in korean_stopwords
+        ]
+        tokens = list(dict.fromkeys([*english_tokens, *korean_tokens]))
+        file_scores: dict[str, float] = {}
         related_symbols: list[dict[str, Any]] = []
+
+        def score_file(path: str, points: float) -> None:
+            normalized = str(path).replace("\\", "/")
+            file_scores[normalized] = file_scores.get(normalized, 0.0) + points
+
+        # Full relative paths carry important architectural evidence that a
+        # basename-only index cannot see (for example ``ui/main_window.py``).
+        # Rank them before content matches so a common word in documentation
+        # cannot displace the implementation file from a bounded plan.
+        for relative_path in snapshot.files:
+            normalized_path = str(relative_path).replace("\\", "/")
+            folded_path = normalized_path.casefold()
+            path_parts = set(Path(normalized_path).parts)
+            folded_parts = {part.casefold() for part in path_parts}
+            for token in tokens[:12]:
+                folded_token = token.casefold()
+                if folded_token in folded_parts:
+                    score_file(normalized_path, 12.0)
+                elif folded_token in folded_path:
+                    score_file(normalized_path, 7.0)
         with tempfile.TemporaryDirectory(prefix="jarvis-index-") as temp_dir:
             indexer = ProjectIndexer(str(Path(temp_dir) / "project.db"))
             indexer.set_project_root(str(self.root))
-            indexer.index_project(list(self.IGNORED_PARTS))
+            indexer.index_project(list(self.IGNORED_PARTS | self.denied_parts))
             for token in tokens[:12]:
                 for item in indexer.search_files(token, "name")[:max_results]:
-                    related_files.add(str(Path(item["path"]).relative_to(self.root)))
+                    score_file(str(Path(item["path"]).relative_to(self.root)), 10.0)
                 for item in indexer.search_files(token, "content")[:max_results]:
-                    related_files.add(str(Path(item["path"]).relative_to(self.root)))
+                    score_file(str(Path(item["path"]).relative_to(self.root)), 2.0)
                 for item in indexer.search_symbols(token)[:max_results]:
                     normalized = dict(item)
                     normalized["file_path"] = str(
                         Path(normalized["file_path"]).relative_to(self.root)
                     )
                     related_symbols.append(normalized)
-                    related_files.add(normalized["file_path"])
-        ordered_files = sorted(related_files)[:max_results]
+                    score_file(normalized["file_path"], 14.0)
+
+        source_extensions = {".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".cpp", ".c", ".cs"}
+        explicit_test_request = bool(re.search(r"(?:test|pytest|테스트)", request, re.IGNORECASE))
+        for path in list(file_scores):
+            candidate = Path(path)
+            if candidate.suffix.casefold() in source_extensions:
+                file_scores[path] += 1.0
+            if not explicit_test_request and (
+                candidate.name.casefold().startswith("test_") or "tests" in candidate.parts
+            ):
+                file_scores[path] -= 1.0
+        ordered_files = [
+            path for path, _score in sorted(
+                file_scores.items(), key=lambda item: (-item[1], item[0].count("/"), item[0].casefold())
+            )[:max_results]
+        ]
+        unique_symbols: list[dict[str, Any]] = []
+        seen_symbols: set[tuple[str, str, int]] = set()
+        for symbol in related_symbols:
+            key = (
+                str(symbol.get("file_path", "")), str(symbol.get("name", "")),
+                int(symbol.get("line_number", 0) or 0),
+            )
+            if key not in seen_symbols:
+                seen_symbols.add(key)
+                unique_symbols.append(symbol)
         impact = sorted(set(ordered_files + self._related_tests(ordered_files)))
         validation = self._validation_commands_for_relative_paths(impact)
         return CodingPlan(
             request=request,
             related_files=ordered_files,
-            related_symbols=related_symbols[:max_results],
+            related_symbols=unique_symbols[:max_results],
             impact_scope=impact,
             validation_commands=validation,
             repository=snapshot,
