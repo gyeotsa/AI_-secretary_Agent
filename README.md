@@ -219,3 +219,40 @@ Cross-Encoder로 재정렬합니다. 신뢰도가 기준보다 낮으면 문서 
   명시적으로 필요한 경우에만 확산 모델 경로로 라우팅합니다.
 - 실제 가중치 학습은 네 장의 참고 이미지를 곧바로 과적합시키지 않습니다. 승인 시안 20개가
   모이면 SDXL LoRA 학습 manifest를 만들 수 있는 승인 기반 post-training 경로를 제공합니다.
+
+## 통합 에이전트 런타임과 Command Center (2026-08-21)
+
+Anis의 일반 채팅과 전문가 작업공간은 이제 동일한 실행 계약을 사용합니다. 실제 작업은
+`TaskContract`에 목표, 입력, 성공 조건, 허용 Tool, 산출물, 증거와 실패 사유를 기록하며,
+Supervisor가 RAM·VRAM·동시 실행 수·실행 시간을 검사합니다. Tool 실행과 산출물 검증이 없는
+작업은 완료로 승격되지 않습니다. 실행 중 취소 요청도 계약에 영속화되어 다음 단계 진입 전에
+중단됩니다.
+
+메인 창의 `Command Center`에서는 다음 11개 영역을 한 곳에서 확인할 수 있습니다.
+
+- 작업/계약, 전문가 팀, Plan DAG, 모델/자원
+- 워크플로/Observer, 승인/행동, 권한/플러그인
+- 산출물/증거, 진단, 품질, 이벤트
+
+`config/workflows.json`에는 Morning Brief를 포함한 재개 가능한 워크플로가 있으며 승인 경계의
+정확한 단계와 안전하게 마스킹된 상태를 저장합니다. Morning Brief는 시스템 시각, Open-Meteo,
+연결된 Google/Microsoft Calendar, 대화 작업, 승인 대기, 플러그인과 Scheduler 상태만 사용합니다.
+연결되지 않은 계정의 일정이나 날씨를 추측해 만들지 않습니다.
+
+첫 실행 진단은 프로젝트 Python, Ollama와 필수 모델, 실제 CUDA 텐서 연산, RAM/VRAM, 작업공간,
+Plugin Registry, Tool 왕복, Scheduler soak를 검사합니다. 마이크·스피커·카메라의 실제 입출력은
+사용자가 라이브 진단을 선택했을 때만 실행합니다. 제스처 제어도 기본적으로 꺼져 있으며 명시적
+동의 뒤에만 MediaPipe 모델을 내려받고 카메라를 엽니다.
+
+2026-08-21 수락 결과는 다음과 같습니다.
+
+- 프로젝트 `.venv` Python 3.12에서 `main_qt.py` 실제 기동 성공
+- Ollama 필수 모델 0개 누락, RTX 4060 Laptop에서 CUDA 텐서 연산 성공
+- Scheduler 1,000회 soak 실패 0건, Tool 흐름과 마이크/출력 장치 열거 성공
+- 전체 안전 회귀 테스트 `444 passed, 4 deselected`
+- `compileall`, `pip check`, `git diff --check` 통과
+
+현재 미수락 항목은 구현 누락이 아니라 외부 조건입니다. 선택된 작업공간이 없으면 진단 경고가
+남고, Google/Microsoft/Slack/Notion/SMTP 자격증명이 없으면 해당 연결은 준비되지 않은 상태로
+표시됩니다. 실제 카메라 프레임과 TTS 재생은 장치 개인정보·소음 영향을 주므로 사용자 수락
+세션에서 최종 확인해야 합니다.

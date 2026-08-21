@@ -264,3 +264,38 @@ P5·P6·P7·P8·P9·P10·P11 런타임 구현을 완료했으며 다음 구현 �
 - 자동화 회귀 결과는 `212 passed, 4 deselected`입니다.
 5. 실제 Ollama, GUI, 마이크·카메라·TTS·Scheduler 장시간 종단 검증.
 6. mail/calendar OAuth 토큰 저장·권한·계정 선택 정책.
+
+## 2026-08-21 통합 에이전트 운영 계층 검토
+
+이번 구현은 UI 카드만 추가한 작업이 아니다. Executor의 실제 Tool 경계에 Task Contract를 연결하고,
+성공 조건·산출물·검증 Evidence가 충족되지 않으면 완료 상태가 될 수 없도록 실행 의미를 바꿨다.
+Supervisor는 시스템의 현재 RAM/VRAM과 실행 중인 전문가 수를 기준으로 admission을 결정하며,
+사용자 취소 요청은 메모리 플래그가 아니라 계약 저장소에 남는다.
+
+전문가 작업공간은 이름만 다른 대화창이 아니라 공통 Planner, 실제 Executor, Reviewer와 namespace별
+RAG를 사용한다. RTX 4060 Laptop 8GB 조건에서는 복수 무거운 모델을 동시 상주시킨다는 비현실적인
+완료 표기를 하지 않고 역할별 순차 실행과 모델 해제를 기본으로 한다.
+
+지속 워크플로는 단계·산출물·승인 경계를 저장한다. Morning Brief는 실제 시각, Open-Meteo,
+연결된 Calendar, 대화 작업과 런타임 상태를 수집하며, 선택형 공급자가 미연결이면 그 사실을 결과에
+남긴다. 비밀값은 저장 전 마스킹한다.
+
+Command Center는 작업 계약, 팀, DAG, 모델/자원, Observer, 승인, 권한/Plugin, Artifact/Evidence,
+진단, 품질, 이벤트를 11개 탭으로 노출한다. 작업 취소·워크플로 실행·진단 실행은 해당 런타임에
+실제로 연결되어 있다. 첫 실행 마법사는 실패한 검사를 숨기지 않고 재실행 또는 Command Center
+열기를 제공한다.
+
+실제 수락 결과:
+
+- `.venv` Python 3.12로 `main_qt.py` 기동 성공
+- Ollama 9개 모델 확인, 필수 모델 누락 없음
+- RTX 4060 Laptop에서 실제 CUDA 텐서 연산 성공
+- Scheduler 1,000회 soak와 Tool 왕복 실패 없음
+- MediaPipe 0.10.35 HandLandmarker 모델 생성·종료 성공(카메라는 동의 없이 열지 않음)
+- `444 passed, 4 deselected`, `pip check` 충돌 0개
+
+정직하게 남은 위험은 세 가지다. 외부 OAuth/SMTP 계정은 자격증명이 없어 E2E 미수락이고, 실제
+카메라·스피커 출력은 사용자의 라이브 동의가 필요하며, 임의 Tool 프로세스를 OS 수준에서 강제
+종료하는 격리는 아직 범용 샌드박스가 아니다. 현재 Supervisor는 실행 전 admission과 단계 사이
+취소, 반환 후 시간 초과 판정을 보장한다. 장기적으로는 위험 Tool을 별도 worker process로 옮겨
+hard timeout과 메모리 제한을 적용하는 것이 다음 강화 지점이다.

@@ -101,3 +101,20 @@
 - `obsidian` Plugin이 로컬 Markdown Vault 설정·상태·열기·링크 탐색·RAG 동기화·린트를 제공한다.
 - 전체 대화 원문은 `raw/`에 보존하되 RAG에서 제외하고, 장기 기억과 반복 패턴만 `wiki/`로 승격한다.
 - `[[wikilinks]]`는 Tool이 제한 깊이 BFS로 명시적으로 탐색하며 주제·행동 Map of Content를 함께 유지한다.
+
+## 2026-08-21 Plugin 운영 상태와 Command Center
+
+Plugin Registry 상태는 Command Center의 `권한/플러그인` 탭과 첫 실행 진단에서 같은 데이터를
+사용합니다. 등록되었다는 로그만으로 연결 완료라고 표시하지 않으며, 선택형 자격증명과 네이티브
+응용프로그램 의존성까지 검사해 `ready/warning/failed`로 구분합니다.
+
+- Registry Tool schema와 실제 왕복 실행은 진단에서 통과했습니다.
+- Google/Microsoft Calendar는 OAuth가 연결된 공급자·계정만 Morning Brief가 조회합니다.
+- Gmail/Outlook/Slack/Teams/Notion과 SMTP는 자격증명 미설정 상태를 경고로 노출합니다.
+- 로컬 Office/HWP COM, 카메라, 마이크, 스피커는 설치·장치 상태와 사용자 라이브 수락을 별도
+  검사합니다.
+- 제스처 제어는 핵심 Plugin 의존성이 아닙니다. 사용자가 켤 때만 `requirements-gesture.txt`의
+  고정 조합과 MediaPipe HandLandmarker 모델을 사용하며 카메라를 기본 자동 실행하지 않습니다.
+
+새 외부 서비스는 먼저 Registry capability, 권한 범위, 진단 probe, 실제 Evidence와 실패 복구를
+함께 구현해야 합니다. 버튼과 schema만 있는 연결은 로드맵 완료로 처리하지 않습니다.

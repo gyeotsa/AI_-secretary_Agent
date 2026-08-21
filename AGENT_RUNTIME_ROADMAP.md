@@ -599,3 +599,29 @@ GrabCut 폴백, 고급 타이포 속성, 렌더링 후 Vision 검수, 제한 자
 후속 품질 축적: 승인 결과 20개 이전에는 모델 가중치 학습을 실행하지 않는다. 승인 결과의
 배치·타이포·색상과 이미지 임베딩을 먼저 누적하고, 충분한 데이터가 생긴 후에만 SDXL LoRA를
 사용한다. FLUX는 8GB VRAM에서 상시 경로가 아니라 선택적 외부/CPU-offload 백엔드로 둔다.
+
+## 통합 운영 Runtime 수락 (2026-08-21)
+
+- [x] 모든 실제 Executor 단계에 영속 `TaskContract`와 성공 조건·Evidence 연결
+- [x] Supervisor의 RAM·VRAM·동시 실행·시간 예산과 취소 요청 영속화
+- [x] 전문가 작업공간의 Planner → Executor → Reviewer 순차 팀 실행과 공유 RAG
+- [x] 승인 경계에서 정확히 중단·재개하는 지속 워크플로
+- [x] 실데이터만 사용하는 Morning Brief와 미연결 소스의 명시적 경고
+- [x] 첫 실행/수동 실환경 진단과 개인정보가 필요한 장치 검사의 선택적 실행
+- [x] 11영역 Command Center와 작업 취소·워크플로 실행·진단 제어
+- [x] RAG 검색 후보, 프롬프트 포함, 실제 응답 사용 trace 분리
+- [x] 기본 비활성·명시 동의·로컬 처리 방식의 MediaPipe 제스처 제어
+
+실행 환경에서는 무거운 모델을 동시에 상주시키지 않는다. Supervisor와 GPU Scheduler가 역할별
+예산을 확인하고 전문가 팀은 순차 실행한다. 제스처 모델은 별도 `requirements-gesture.txt`로
+고정했으며 MediaPipe Tasks API와 `opencv-contrib-python 4.8` 조합을 실제 설치·초기화했다.
+
+수락 증거:
+
+- 실제 `main_qt.py` 이벤트 루프 기동, RAG CUDA, STT CUDA, Automation, 마이크 연결 확인
+- 비파괴 core 진단 10개 중 실패 0개: 8 passed, 2 warning
+- 경고 2개는 선택 작업공간 없음과 선택형 외부 계정 미구성 상태
+- 전체 회귀 `444 passed, 4 deselected`, 의존성 충돌 0개
+
+남은 항목은 외부 수락 조건이다. OAuth/SMTP 자격증명과 실제 계정, 사용자의 카메라·스피커 라이브
+검사 동의, 장시간 wall-clock 운영 관찰이 준비되면 Command Center의 진단 탭에서 실행한다.

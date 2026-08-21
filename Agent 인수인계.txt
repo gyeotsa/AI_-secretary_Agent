@@ -2097,3 +2097,42 @@ AI_-secretary_Agent/
 - 테스트: 시안 집중 테스트 `70 passed`, 전체 회귀 테스트 `438 passed, 4 deselected`.
 - 구현 커밋: `5e77e0c` (`시안 디자인 문서와 계층형 렌더링 파이프라인 강화`).
 - 다음 작업: 실제 사용자 사진으로 초기 생성 → 곡선 문구 → 누끼 요청 → 실행 취소 후 재편집 흐름을 UI에서 장시간 수동 검증하고, BiRefNet/SDXL 로컬 가중치가 없는 배포 환경에서는 준비 상태 안내 문구를 점검한다.
+
+## 2026-08-21 통합 에이전트 Runtime·Command Center 구현 및 수락
+
+- 작업 브랜치: `codex/mockup-design-agent-v2`. 기존 작업의 `main` 병합점은 `441b420`이다.
+- `core/task_contracts.py`를 추가하고 Executor의 실제 단계마다 목표·성공 조건·허용 Tool·Artifact·
+  Evidence·실패 사유를 영속화했다. Tool 실행과 검증 증거가 없는 단계는 완료로 승격하지 않는다.
+- Supervisor가 실제 RAM/VRAM, 전문가 동시 실행 수와 실행 시간 예산을 검사한다. 실행 중 취소는
+  계약 저장소의 `cancel_requested`로 남고 다음 단계 진입 전에 중단한다. 임의 외부 프로세스의 OS
+  강제 종료까지 구현했다고 과장하지 않으며, 해당 hard timeout은 별도 worker 격리가 후속 과제다.
+- 전문가 작업공간을 Planner → 실제 Executor → Reviewer 팀으로 연결하고 작업공간 namespace RAG와
+  승인 결과 기억을 사용하도록 했다. 8GB VRAM에서는 무거운 모델을 병렬 상주시키지 않고 순차 실행한다.
+- `config/workflows.json`과 지속 Workflow Runtime을 추가했다. 승인 경계의 정확한 단계와 마스킹된
+  상태를 저장해 재개한다. Morning Brief는 실제 시각, Open-Meteo, 연결된 Calendar, 대화 작업,
+  승인 대기, Plugin/Scheduler 상태만 사용하고 미연결 데이터는 추측하지 않는다.
+- 프로젝트 Python/Ollama/필수 모델/CUDA/RAM·VRAM/Workspace/Registry Tool/Scheduler soak/장치 상태를
+  검사하는 진단 Runtime과 첫 실행 마법사를 추가했다. 실제 카메라·스피커 동작은 사용자 동의가 있는
+  live 진단에서만 실행한다.
+- 11개 탭의 Command Center를 추가했다. 작업 계약, 팀, Plan DAG, 모델/자원, Workflow/Observer,
+  승인/행동, 권한/Plugin, Artifact/Evidence, 진단, 품질, 이벤트를 조회하고 작업 취소·워크플로 실행·
+  진단 실행을 실제 Runtime에 전달한다. 모든 창은 일반 창 우선순위를 사용하고 always-on-top이 아니다.
+- 제스처 제어는 기본 꺼짐·명시 동의·로컬 처리·즉시 중지를 원칙으로 구현했다. MediaPipe 0.10.35
+  Tasks API, OpenCV contrib 4.8, protobuf 7 조합을 설치하고 공식 HandLandmarker 모델을 실제 생성·
+  종료했다. 카메라는 자동으로 열지 않았다.
+- RAG는 검색 후보, 프롬프트 포함, 실제 응답 사용 trace를 구분해 Command Center 품질 지표에 제공한다.
+- 실제 `main_qt.py`를 프로젝트 `.venv` Python 3.12로 기동해 RAG CUDA, STT CUDA, Automation,
+  세션 복원, 마이크 연결, Anis TTS 사전 로딩을 확인했다.
+- core 진단 결과: 10개 중 8 passed, 2 warning, 0 failed. 경고는 선택 Workspace 없음과 선택형
+  Google/Microsoft/Slack/Notion/SMTP 자격증명 미구성이다.
+- 검증: `444 passed, 4 deselected`, `compileall` 성공, `pip check` 충돌 0개, `git diff --check` 통과.
+- 구현 커밋:
+  - `cb170b5` `작업 계약과 전문가 감독 런타임 구현`
+  - `b7abaed` `통합 커맨드 센터와 실환경 진단 추가`
+- 사용자/런타임 소유 변경인 `data/chroma_db/chroma.sqlite3`, `brain/`, `greeting.pptx`, `tmp/`,
+  `tmpdozr9d5t/`는 이번 커밋에 포함하지 않았다.
+- 다음 작업:
+  1. Command Center의 라이브 장치 진단에서 사용자 동의 후 카메라 프레임과 실제 TTS 재생 수락.
+  2. 사용할 Google 또는 Microsoft 계정을 선택하고 OAuth를 연결한 뒤 Calendar/Mail 실제 E2E 수락.
+  3. 위험 Tool을 별도 worker process로 격리해 hard timeout·메모리 제한·강제 취소를 추가.
+  4. 실제 사용자 워크플로를 며칠간 실행해 Observer/Scheduler wall-clock 복원과 품질 지표를 관찰.
