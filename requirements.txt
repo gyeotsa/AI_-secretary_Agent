@@ -18,6 +18,7 @@ python-hwpx>=4.2.0,<5
 # Phase 2: Core Features (enable later)
 ddgs>=9.0.0,<10
 pygetwindow>=0.0.9
+pywinauto==0.6.9
 
 # Phase 3: Extensions (enable later)
 chromadb>=0.5.0

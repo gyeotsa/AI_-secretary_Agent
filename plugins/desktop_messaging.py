@@ -11,8 +11,23 @@ from core.tool_result import Evidence, ToolRunResult
 
 
 class DesktopMessagingPlugin(BasePlugin):
-    _PROVIDER_PATTERN = re.compile(r"(?:카카오\s*톡|카톡|kakaotalk)", re.I)
-    _SEND_PATTERN = re.compile(r"(?:보내\s*줘|보내\s*줄래|보내|전송(?:해\s*줘|해줘|해)?)", re.I)
+    # ``톡``은 단독으로 쓰였을 때만 카카오톡 별칭으로 취급한다. 틱톡처럼 다른
+    # 단어 안에 포함된 경우까지 매칭하면 전혀 무관한 요청을 외부 전송 Intent로
+    # 오인할 수 있으므로 한글/영문/숫자 경계를 명시한다.
+    _PROVIDER_PATTERN = re.compile(
+        r"(?:카카오\s*톡|카톡|kakaotalk|(?<![0-9A-Za-z가-힣])톡(?![0-9A-Za-z가-힣]))",
+        re.I,
+    )
+    # 실행 의도를 특정 종결형 하나에 묶지 않는다. 사용자는 ``보내줘``뿐
+    # 아니라 ``전달해줄 수 있어?``/``전송해 주세요``처럼 같은 의미를
+    # 다양한 높임말과 가능형으로 표현한다. 동사의 의미는 Registry가
+    # 담당하고, 아래 패턴은 그 동사가 끝나는 위치만 찾는다.
+    _SEND_PATTERN = re.compile(
+        r"(?:보내|전송|전달)\s*(?:해)?\s*"
+        r"(?:줘|주세요|줄래|줄\s*수\s*있(?:어|을까|나요|니)?|"
+        r"주실\s*수\s*있(?:나요|을까요)?|할\s*수\s*있(?:어|을까|나요|니)?|해)?",
+        re.I,
+    )
     _RECIPIENT_PATTERN = re.compile(
         r"(?P<recipient>[^,!?\n]+?)(?:에게|한테|께|이게)\s*(?P<message>.*)$",
         re.I | re.S,
@@ -45,14 +60,28 @@ class DesktopMessagingPlugin(BasePlugin):
     def get_intents(self) -> List[IntentSchema]:
         return [IntentSchema(
             "messaging.send", "카카오톡 메시지 전송", "desktop_send_message",
-            ["카카오톡으로", "카카오 톡으로", "카톡으로", "카톡 보내", "카카오톡 보내"],
+            [
+                "카카오톡으로", "카카오 톡으로", "카톡으로", "카톡 보내",
+                "카카오톡 보내", "톡 하나 보내", "톡 보내",
+            ],
             [
                 SlotSchema("provider", "사용할 메신저", "어떤 메신저로 보낼까요, 보스?", role="constraint"),
                 SlotSchema("recipient", "메시지를 받을 사람", "누구에게 보낼까요, 보스?", role="target"),
                 SlotSchema("message", "보낼 메시지", "어떤 내용을 보낼까요, 보스?", role="parameter"),
             ],
-            execution_hints=["보내", "전송", "보내줘", "보내줄래"],
-            utterance_patterns=[r"(?:카카오\s*톡|카톡|kakaotalk).*(?:에게|한테).*(?:보내|전송)"],
+            execution_hints=[
+                "보내", "전송", "전달", "보내줘", "보내줄래",
+                "전송해줘", "전달해줘", "전달해줄 수 있어",
+            ],
+            utterance_patterns=[
+                # 메신저를 먼저 말하는 형태: "카톡으로 형택이한테 ... 보내줘"
+                r"(?:카카오\s*톡|카톡|kakaotalk|(?<![0-9A-Za-z가-힣])톡(?![0-9A-Za-z가-힣]))"
+                r".*(?:에게|한테|께|이게).*(?:보내|전송|전달)",
+                # 자연스러운 한국어 어순: "형택이한테 ... 톡 하나 보내줘"
+                r"(?:에게|한테|께|이게).*"
+                r"(?:카카오\s*톡|카톡|kakaotalk|(?<![0-9A-Za-z가-힣])톡(?![0-9A-Za-z가-힣]))"
+                r".*(?:보내|전송|전달)",
+            ],
             constraint_slots=["provider"], request_type="external_send",
         )]
 
@@ -71,6 +100,14 @@ class DesktopMessagingPlugin(BasePlugin):
         actions = list(self._SEND_PATTERN.finditer(normalized))
         action = actions[-1] if actions else None
         before_action = normalized[:action.start()] if action else normalized
+        # "테스트라고 톡 하나 보내줘"의 ``하나``는 메시지 본문이 아니라
+        # 메신저 단위를 세는 말이다. provider와 붙어 있는 경우에만 제거해 실제
+        # 본문인 "테스트"를 보존한다.
+        before_action = re.sub(
+            r"(?:카카오\s*톡|카톡|kakaotalk|(?<![0-9A-Za-z가-힣])톡(?![0-9A-Za-z가-힣]))"
+            r"\s*(?:메시지\s*)?하나\s*$",
+            " ", before_action, flags=re.I,
+        )
         before_action = self._PROVIDER_PATTERN.sub(" ", before_action)
         before_action = re.sub(r"(?:으로|에서|을|를)\s*", " ", before_action, count=1)
         before_action = re.sub(r"\s+", " ", before_action).strip(" ,")
@@ -106,7 +143,7 @@ class DesktopMessagingPlugin(BasePlugin):
             return False
         if re.search(r"(?:앞으로|이제부터|기억|잊지|뜻|의미|설정|변경|말하면)", value):
             return False
-        if re.search(r"(?:보내|전송|카카오\s*톡|카톡|kakaotalk)", value, re.I):
+        if re.search(r"(?:보내|전송|전달|카카오\s*톡|카톡|kakaotalk)", value, re.I):
             return False
         return True
 
@@ -119,17 +156,40 @@ class DesktopMessagingPlugin(BasePlugin):
                 str(tool_input.get("recipient", "")),
                 str(tool_input.get("message", "")),
             )
+            if not (result.get("send_accepted_verified")
+                    and result.get("outgoing_message_verified")):
+                reason = str(result.get("unverified_reason") or
+                             "새 보낸 메시지 말풍선을 검증하지 못했습니다.")
+                return ToolRunResult.unverified(
+                    tool_name=tool_name,
+                    raw_output=json.dumps(result, ensure_ascii=False),
+                    evidence=[Evidence(
+                        "desktop_message_dispatch_unverified",
+                        "키 입력 이후 동일 본문의 새 보낸 메시지 말풍선을 확인하지 못해 완료로 처리하지 않았습니다.",
+                        {
+                            "provider": result.get("provider"),
+                            "recipient": result.get("recipient"),
+                            "window_title": result.get("window_title"),
+                            "send_verification": result.get("send_verification"),
+                            "reason": reason,
+                            "delivery_receipt_verified": False,
+                        },
+                    )],
+                )
             return ToolRunResult.successful(
                 tool_name=tool_name,
                 raw_output=json.dumps(result, ensure_ascii=False),
                 evidence=[Evidence(
                     "desktop_message_dispatch",
-                    "수신자와 정확히 일치하는 대화창을 전송 직전에 확인하고 키 입력을 전달했습니다.",
+                    "수신자와 정확히 일치하는 대화창에서 동일 입력창 포커스와 본문을 재검증하고, Enter 뒤 동일 본문의 새 보낸 메시지 말풍선을 확인했습니다.",
                     {
                         "provider": result["provider"], "recipient": result["recipient"],
                         "window_title": result["window_title"], "window_handle": result["window_handle"],
                         "process_id": result["process_id"],
                         "input_dispatched_at": result["input_dispatched_at"],
+                        "send_accepted_verified": result["send_accepted_verified"],
+                        "outgoing_message_verified": result["outgoing_message_verified"],
+                        "send_verification": result["send_verification"],
                         "delivery_receipt_verified": False,
                     },
                 )],
@@ -141,7 +201,12 @@ class DesktopMessagingPlugin(BasePlugin):
         if tool_name != "desktop_send_message" or str(result).startswith("오류:"):
             return str(result)
         data = json.loads(str(result))
+        if not (data.get("send_accepted_verified") and data.get("outgoing_message_verified")):
+            return (
+                f"카카오톡에서 {data.get('recipient', '수신자')}님의 대화창에 전송 입력은 했지만, "
+                "동일 본문의 새 보낸 메시지 말풍선을 확인하지 못해 완료로 처리하지 않았습니다, 보스."
+            )
         return (
-            f"카카오톡에서 {data['recipient']}님의 대화창을 확인하고 메시지 전송 입력을 완료했습니다. "
-            "카카오톡이 제공하는 별도의 수신 확인 정보까지는 확인하지 못했습니다, 보스."
+            f"카카오톡에서 {data['recipient']}님의 대화창에 동일한 본문의 새 보낸 메시지 "
+            "말풍선이 나타난 것까지 확인했습니다. 상대방의 읽음 여부는 확인하지 못했습니다, 보스."
         )

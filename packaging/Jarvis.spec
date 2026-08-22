@@ -18,7 +18,7 @@ datas = [
 ]
 binaries = []
 
-for package in ("faster_whisper", "ctranslate2", "whisper", "diffusers", "accelerate", "yt_dlp", "yfinance"):
+for package in ("faster_whisper", "ctranslate2", "whisper", "diffusers", "accelerate", "yt_dlp", "yfinance", "pywinauto"):
     package_datas, package_binaries, package_hidden = collect_all(package)
     datas += package_datas
     binaries += package_binaries

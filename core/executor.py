@@ -74,10 +74,10 @@ class Executor:
     목표 달성 여부를 계속 판단합니다!
     """
     _EXECUTION_REQUEST_PATTERN = re.compile(
-        r"(?:생성|작성|수정|변경|삭제|저장|전송|발송|실행|설치|등록|예약|열기|닫기|"
+        r"(?:생성|작성|수정|변경|삭제|저장|전송|전달|발송|실행|설치|등록|예약|열기|닫기|"
         r"켜기|끄기|다운로드|업로드|검색|조회|분석|진단|검사|점검|편집|변환|재생).{0,20}"
         r"(?:해\s*줘|해주세요|해줄래|부탁|실행|처리)"
-        r"|(?:만들어|고쳐|지워|보내|실행해|설치해|등록해|예약해|열어|닫아|켜|꺼|"
+        r"|(?:만들어|고쳐|지워|보내|전달해|실행해|설치해|등록해|예약해|열어|닫아|켜|꺼|"
         r"찾아|검색해|조회해|분석해|진단해|검사해|점검해|편집해|변환해|"
         r"재생해|틀어)\s*(?:줘|주세요|줄래)?",
         re.IGNORECASE | re.DOTALL,
@@ -91,11 +91,10 @@ class Executor:
         r"^(?:안녕|반가워|고마워|감사해|잘\s*지내|심심해|힘들어|오늘\s*기분.{0,12})[.!?\s]*$",
         re.IGNORECASE,
     )
-    _UNVERIFIED_COMPLETION_CLAIM_PATTERN = re.compile(
-        r"(?:생성|작성|수정|변경|삭제|저장|전송|발송|실행|설치|등록|예약|다운로드|업로드)"
-        r"(?:을|를|이|가|은|는)?\s*(?:완료(?:했|됐)|성공(?:했|했습)|했습|됐습|되었습니다|했습니다)",
-        re.IGNORECASE,
-    )
+    # Claiming an approval is an atomic state transition.  This process-local
+    # guard prevents two simultaneous UI/voice callbacks from executing the same
+    # external-send task before either callback observes the other's transition.
+    _APPROVAL_CLAIM_LOCK = threading.Lock()
 
     def __init__(self):
         self.llm = get_llm_client("conversation")
@@ -731,7 +730,13 @@ class Executor:
             )
 
         def verify(step: PlanStep, candidate: ToolRunResult) -> ToolRunResult:
-            if candidate.succeeded and candidate.evidence:
+            # Tool이 구조적으로 UNVERIFIED를 반환했다면 범용 문자열 verifier로
+            # 다시 해석해 성공으로 승격하지 않는다. 특히 외부 메시지는 Enter가
+            # 전달됐지만 새 발신 말풍선을 보지 못한 상태가 있을 수 있으며, 이를
+            # 성공으로 바꾸면 실제 미전송/중복 전송을 구별할 수 없게 된다.
+            if candidate.status == ToolRunStatus.UNVERIFIED:
+                verified = candidate
+            elif candidate.succeeded and candidate.evidence:
                 verified = candidate
             else:
                 verification = self.verifier.verify(step.tool_name, step.tool_input, candidate.raw_output)
@@ -753,10 +758,24 @@ class Executor:
             return verified
 
         if replan_callback is None:
-            replan_callback = lambda current, failed, result: self.planner.replan_from_observation(
-                current, failed, result.raw_output, self.build_context(),
-                self._allowed_tools_for_goal(current.goal),
-            )
+            def replan_callback(current, failed, result):
+                # 외부 전송은 결과가 불확실한 순간 재실행하면 같은 메시지가 두 번
+                # 전송될 수 있다. UNVERIFIED와 external_send는 자동 재계획하지 않고
+                # 관찰된 상태를 그대로 사용자에게 돌려준다.
+                registry = getattr(self.intent_router, "registry", None)
+                capability = (
+                    registry.get_capability(failed.tool_name)
+                    if registry is not None and failed.tool_name else None
+                )
+                if (
+                    result.status in {ToolRunStatus.UNVERIFIED, ToolRunStatus.CANCELLED}
+                    or getattr(capability, "side_effect", "") == "external_send"
+                ):
+                    return None
+                return self.planner.replan_from_observation(
+                    current, failed, result.raw_output, self.build_context(),
+                    self._allowed_tools_for_goal(current.goal),
+                )
         coordinator = getattr(self, "plan_coordinator", None) or PlanCoordinator()
         self.plan_coordinator = coordinator
         if approved_step_ids is not None:
@@ -973,9 +992,200 @@ class Executor:
         if Executor._is_contextual_approval_command(normalized):
             return True
         return bool(re.fullmatch(
-            r"(?:작업\s*)?[0-9a-f]{8}\s*(?:상태|승인|취소|중단|일시정지|재개|우선순위\s*-?\d+|수정\s*[:：].+)",
+            r"(?:작업\s*)?[0-9a-f]{8}(?:\s*(?:상태|승인|취소|중단|일시정지|재개|"
+            r"우선순위\s*-?\d+|수정\s*[:：].+))?",
             normalized, re.S,
         ))
+
+    @staticmethod
+    def _intent_signature(resolution: IntentResolution) -> tuple[str, str, str]:
+        """Return a stable signature for deduplicating equivalent direct intents."""
+        def normalize_recipient(value: str) -> str:
+            text = re.sub(r"\s+", " ", value).strip().casefold()
+            text = text.strip(" \t\r\n'\"`.,!?·ㆍ:;()[]{}<>《》〈〉「」『』")
+            text = re.sub(r"(?:에게|한테|께)$", "", text).strip()
+            # Never guess that a trailing Korean syllable is a case marker.
+            # Contact names such as ``김하이`` and ``김하`` may both exist, so
+            # recipient deduplication must preserve the exact confirmed name.
+            return text
+
+        def normalize(value: Any, key: str = "") -> Any:
+            if isinstance(value, dict):
+                return {
+                    str(item_key): normalize(item, str(item_key).casefold())
+                    for item_key, item in sorted(value.items())
+                }
+            if isinstance(value, (list, tuple)):
+                return [normalize(item, key) for item in value]
+            if isinstance(value, str):
+                if key in {"recipient", "to", "recipient_name"}:
+                    return normalize_recipient(value)
+                return re.sub(r"\s+", " ", value).strip().casefold()
+            return value
+
+        return (
+            resolution.intent_name,
+            resolution.tool_name,
+            json.dumps(normalize(resolution.slots), ensure_ascii=False, sort_keys=True),
+        )
+
+    def _approval_task_resolution(self, task) -> IntentResolution:
+        """Resolve an approval from its latest persisted Registry state.
+
+        A slot-fill task's original goal can be intentionally incomplete.  Its
+        persisted ``intent_name`` and ``slots`` are the canonical, most recent
+        user-confirmed state and must be preferred over reparsing the old goal.
+        """
+        intent_name = str(getattr(task, "intent_name", "") or "")
+        slots = dict(getattr(task, "slots", None) or {})
+        if intent_name and slots:
+            schema = next(
+                (
+                    intent
+                    for _plugin, intent in self.intent_router.registry.get_all_intents()
+                    if intent.name == intent_name
+                ),
+                None,
+            )
+            if schema is not None:
+                missing = [
+                    slot.name for slot in schema.slots
+                    if slot.required and (
+                        slot.name not in slots
+                        or slots[slot.name] is None
+                        or (isinstance(slots[slot.name], str)
+                            and not slots[slot.name].strip())
+                    )
+                ]
+                errors = self.intent_router.registry.validate_tool_call(
+                    schema.tool_name, slots, schema.request_type,
+                )
+                if not missing and not errors:
+                    return IntentResolution(
+                        matched=True,
+                        intent_name=schema.name,
+                        tool_name=schema.tool_name,
+                        slots=slots,
+                        explicit=True,
+                        execution_requested=True,
+                        confidence=float(getattr(task, "context_confidence", 0.0) or 0.9),
+                        domain=schema.domain,
+                        action=schema.action,
+                        request_type=schema.request_type,
+                        freshness=schema.freshness,
+                        requires_sources=schema.requires_sources,
+                        routing_reason="persisted_registry_approval",
+                    )
+        return self.intent_router.resolve(task.goal)
+
+    def _cancel_equivalent_approval_tasks(
+        self, session_id: str, workspace_scope: str,
+        resolution: IntentResolution, exclude_task_id: str = "",
+    ) -> int:
+        """Replace stale duplicate approvals with the newest canonical request.
+
+        An earlier Planner path may have persisted an invalid or differently shaped
+        plan for the same external send.  Keeping both forces the user to select
+        between duplicates and risks executing the stale plan.  Only exact Registry
+        intent/tool/slot matches are cancelled; unrelated pending sends remain.
+        """
+        wanted = self._intent_signature(resolution)
+        cancelled = 0
+        for task in self.dialogue_state.list_tasks(
+            session_id, include_finished=False, workspace_path=workspace_scope,
+        ):
+            if task.status != "awaiting_approval" or task.task_id == exclude_task_id:
+                continue
+            existing = self._approval_task_resolution(task)
+            capability = (
+                self.intent_router.registry.get_capability(existing.tool_name)
+                if existing.ready else None
+            )
+            if (not existing.ready
+                    or not capability
+                    or capability.side_effect != "external_send"
+                    or self._intent_signature(existing) != wanted):
+                continue
+            self.dialogue_state.transition_task(
+                task.task_id, "cancelled", result="동일한 새 요청으로 대체됨",
+                pending_question="",
+            )
+            self.dialogue_state.delete(session_id, task.task_id)
+            self.dialogue_state.delete_intent_state(task.task_id)
+            cancelled += 1
+        return cancelled
+
+    def _coalesce_equivalent_approval_tasks(
+        self, session_id: str, pending: List[Any],
+    ) -> List[Any]:
+        """Collapse only Registry-proven equivalent stale approvals.
+
+        ``list_tasks`` returns newest tasks first.  The newest canonical task is
+        retained, while older tasks are cancelled only when intent, tool and
+        normalized slots all match.  Different recipients or message bodies are
+        deliberately kept separate and continue to require an explicit ID.
+        """
+        signatures: set[tuple[str, str, str]] = set()
+        survivors: List[Any] = []
+        for task in pending:
+            resolution = self._approval_task_resolution(task)
+            capability = (
+                self.intent_router.registry.get_capability(resolution.tool_name)
+                if resolution.ready else None
+            )
+            if not resolution.ready or not capability or capability.side_effect != "external_send":
+                survivors.append(task)
+                continue
+            signature = self._intent_signature(resolution)
+            if signature not in signatures:
+                signatures.add(signature)
+                survivors.append(task)
+                continue
+            self.dialogue_state.transition_task(
+                task.task_id, "cancelled", result="중복 승인 대기 작업 정리됨",
+                pending_question="",
+            )
+            self.dialogue_state.delete(session_id, task.task_id)
+            self.dialogue_state.delete_intent_state(task.task_id)
+        return survivors
+
+    def _canonical_external_send_approval_plan(
+        self, task,
+    ) -> tuple[Optional[PlanDAG], Optional[IntentResolution]]:
+        """Rebuild a stale approval task from its Registry contract when possible."""
+        resolution = self._approval_task_resolution(task)
+        if not resolution.ready:
+            return None, None
+        capability = self.intent_router.registry.get_capability(resolution.tool_name)
+        if not capability or capability.side_effect != "external_send":
+            return None, None
+        errors = self.intent_router.registry.validate_tool_call(
+            resolution.tool_name, resolution.slots, resolution.request_type,
+        )
+        if errors:
+            raise ValueError("승인 작업의 도구 계약 오류: " + "; ".join(errors))
+        plan = PlanDAG(goal=task.goal, steps=[PlanStep(
+            id=f"intent-{task.task_id}",
+            description=resolution.intent_name,
+            tool_name=resolution.tool_name,
+            tool_input=dict(resolution.slots),
+            requires_approval=True,
+            approval_reason="외부 대상에게 데이터를 전송하는 작업입니다.",
+            retry_budget=int(getattr(capability, "max_retries", 0) or 0),
+            verification={
+                "required": bool(getattr(capability, "verification_required", True)),
+            },
+            status="awaiting_approval",
+        )])
+        self.dialogue_state.update_task(
+            task.task_id,
+            intent_name=resolution.intent_name,
+            slots=resolution.slots,
+            context_confidence=resolution.confidence,
+            plan=plan.to_dict()["steps"],
+            plan_id=plan.plan_id,
+        )
+        return plan, resolution
 
     def handle_control_command(self, text: str, session_id: Optional[str] = None) -> ExecutionOutcome:
         session_key = session_id or "default"
@@ -997,6 +1207,7 @@ class Executor:
                 )
                 if item.status == "awaiting_approval"
             ]
+            pending = self._coalesce_equivalent_approval_tasks(session_key, pending)
             if not pending:
                 return ExecutionOutcome(
                     "현재 승인 대기 중인 작업이 없습니다, 보스.", "completed"
@@ -1009,43 +1220,84 @@ class Executor:
                     "승인 대기 중인 작업이 여러 개라 임의로 실행하지 않았습니다. "
                     "승인할 작업 번호를 지정해 주세요.\n" + choices,
                     "awaiting_approval",
-                    question="‘작업 번호 승인’ 형식으로 승인할 작업을 지정해 주세요.",
+                    question="작업 ID만 입력하거나 ‘작업 ID 승인’ 형식으로 지정해 주세요.",
                 )
             task = pending[0]
             task_id, command = task.task_id, "승인"
         else:
-            match = re.fullmatch(r"(?:작업\s*)?([0-9a-f]{8})\s*(.+)", normalized, re.S)
+            match = re.fullmatch(
+                r"(?:작업\s*)?([0-9a-f]{8})(?:\s*(.*))?", normalized, re.S
+            )
             if not match:
                 return ExecutionOutcome("작업 제어 명령을 이해하지 못했습니다, 보스.", "failed")
-            task_id, command = match.group(1), match.group(2).strip()
+            task_id = match.group(1)
+            command = (match.group(2) or "").strip()
             task = self.dialogue_state.get_task(
                 session_key, task_id, self._workspace_scope()
             )
         if not task:
             return ExecutionOutcome(f"작업 {task_id}을 찾지 못했습니다, 보스.", "failed", task_id=task_id)
+        if not command:
+            if task.status == "awaiting_approval":
+                # The UI asks the user to choose one of several approval tasks.  In
+                # that context the exact ID itself is an unambiguous selection and
+                # must never be sent to the conversation LLM.
+                command = "승인"
+            else:
+                return ExecutionOutcome(
+                    f"작업 {task_id}은 현재 {task.status} 상태입니다. "
+                    "승인 대기 작업이면 ‘작업 ID 승인’이라고 입력해 주세요, 보스.",
+                    task.status, task.goal, task_id=task_id,
+                )
         if command == "상태":
             return ExecutionOutcome(
                 f"작업 {task_id}은 현재 {task.status} 상태이고 우선순위는 {task.priority}입니다, 보스.",
                 task.status, task.goal, task_id=task_id,
             )
         if command == "승인":
-            if task.status != "awaiting_approval" or not task.plan_id or not task.plan:
-                return ExecutionOutcome(
-                    f"작업 {task_id}은 현재 승인 대기 상태가 아닙니다, 보스.",
-                    "failed", task.goal, task_id=task_id,
+            with self._APPROVAL_CLAIM_LOCK:
+                task = self.dialogue_state.get_task(
+                    session_key, task_id, self._workspace_scope()
                 )
+                if not task or task.status != "awaiting_approval":
+                    return ExecutionOutcome(
+                        f"작업 {task_id}은 현재 승인 대기 상태가 아닙니다, 보스.",
+                        "failed", getattr(task, "goal", ""), task_id=task_id,
+                    )
+                if not self.dialogue_state.transition_task(task_id, "running"):
+                    return ExecutionOutcome(
+                        f"작업 {task_id}의 승인을 선점하지 못해 실행하지 않았습니다, 보스.",
+                        "failed", task.goal, task_id=task_id,
+                    )
             try:
-                plan = PlanDAG(
-                    goal=task.goal, steps=[PlanStep(**item) for item in task.plan],
-                    plan_id=task.plan_id,
-                )
+                plan, approved_resolution = self._canonical_external_send_approval_plan(task)
+                if plan is None:
+                    if not task.plan_id or not task.plan:
+                        raise ValueError("저장된 실행 계획이 없습니다.")
+                    plan = PlanDAG(
+                        goal=task.goal, steps=[PlanStep(**item) for item in task.plan],
+                        plan_id=task.plan_id,
+                    )
                 approved = [step.id for step in plan.steps
                             if step.status.value == "awaiting_approval"]
                 if not approved:
                     raise ValueError("승인 대기 단계가 없습니다.")
+                for step in plan.steps:
+                    if step.id not in approved:
+                        continue
+                    if not step.tool_name:
+                        raise ValueError(
+                            f"승인 단계 {step.id}에 실행 도구가 없어 안전하게 실행할 수 없습니다."
+                        )
+                    errors = self.intent_router.registry.validate_tool_call(
+                        step.tool_name, step.tool_input,
+                        approved_resolution.request_type if approved_resolution else "external_send",
+                    )
+                    if errors:
+                        raise ValueError(
+                            f"승인 단계 {step.id}의 도구 계약 오류: " + "; ".join(errors)
+                        )
                 self.current_agent_task_id = task_id
-                if not self.dialogue_state.transition_task(task_id, "running"):
-                    raise RuntimeError("작업을 실행 상태로 전환하지 못했습니다.")
                 run = self.execute_plan_dag(plan, approved_step_ids=approved)
                 outcome = self._finish_plan_run(run, goal=task.goal, task_id=task_id)
                 tool_run = next(iter(run.results.values()), None)
@@ -1055,9 +1307,16 @@ class Executor:
                     )
                     outcome.response = response
                     self.dialogue_state.update_task(task_id, result=response)
-                    if task.intent_name:
+                    resolved_intent_name = (
+                        approved_resolution.intent_name
+                        if approved_resolution else task.intent_name
+                    )
+                    resolved_slots = (
+                        approved_resolution.slots if approved_resolution else task.slots
+                    )
+                    if resolved_intent_name:
                         self.dialogue_state.save_recent_intent(
-                            session_key, task.intent_name, task.slots, task.goal,
+                            session_key, resolved_intent_name, resolved_slots, task.goal,
                             task_id=task_id, workspace_path=self._workspace_scope(),
                         )
                 if outcome.status != "awaiting_approval":
@@ -1518,6 +1777,15 @@ class Executor:
                 "도구 계약 검사를 통과하지 못했습니다: " + "; ".join(contract_errors),
                 "failed", goal, task_id=task_id,
             )
+        capability = self.intent_router.registry.get_capability(resolution.tool_name)
+        requires_approval = bool(
+            capability and capability.side_effect == "external_send"
+        )
+        if requires_approval:
+            self._cancel_equivalent_approval_tasks(
+                session_id, workspace_scope, resolution,
+                exclude_task_id=task_id,
+            )
         task_id = task_id or self.dialogue_state.create_task(
             session_id, goal, workspace_path=workspace_scope
         ).task_id
@@ -1538,10 +1806,6 @@ class Executor:
             )
         if progress_callback:
             progress_callback(f"작업 {task_id}: {resolution.tool_name} 실행을 시작합니다.")
-        capability = self.intent_router.registry.get_capability(resolution.tool_name)
-        requires_approval = bool(
-            capability and capability.side_effect == "external_send"
-        )
         plan = PlanDAG(goal=goal, steps=[PlanStep(
             id=f"intent-{task_id}", description=resolution.intent_name,
             tool_name=resolution.tool_name, tool_input=dict(resolution.slots),
@@ -1803,6 +2067,18 @@ class Executor:
         self, message: str, history: List[Dict[str, str]]
     ) -> str:
         """Answer ordinary conversation without exposing or invoking tools."""
+        execution_requested = bool(
+            self._EXECUTION_REQUEST_PATTERN.search(message)
+            or self._GENERIC_ACTION_REQUEST_PATTERN.search(message)
+        )
+        if execution_requested:
+            # This branch has no ToolRunResult by construction.  Do not ask a
+            # language model to narrate an external action and then try to detect
+            # success wording: the structural absence of evidence is decisive.
+            return (
+                "이 요청은 실제 실행 결과가 필요한 작업이지만 연결된 도구 실행 증거가 없습니다. "
+                "완료했다고 안내하지 않고 지원되는 실행 경로를 다시 확인하겠습니다."
+            )
         custom_voice, address, conversation_style = self._selected_voice_preferences()
         selected_profile = next(
             (

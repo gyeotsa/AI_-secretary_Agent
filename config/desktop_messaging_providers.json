@@ -8,6 +8,33 @@
       "%LOCALAPPDATA%\\Kakao\\KakaoTalk\\KakaoTalk.exe"
     ],
     "main_window_titles": ["카카오톡", "KakaoTalk"],
-    "contact_search_hotkey": ["CTRL", "F"]
+    "contact_tab_accessibility_names": ["친구"],
+    "contact_search_accessibility_names": [
+      "검색",
+      "친구 검색",
+      "친구검색",
+      "이름 검색",
+      "친구 이름 검색"
+    ],
+    "contact_search_automation_id_keywords": ["search"],
+    "message_input_accessibility_names": [
+      "메시지 입력",
+      "채팅 입력",
+      "대화 입력",
+      "메시지를 입력하세요"
+    ],
+    "message_input_automation_id_keywords": ["message", "chat", "input"],
+    "outgoing_message_control_types": ["Text", "ListItem", "Document"],
+    "outgoing_message_direction_keywords": [
+      "outgoing",
+      "sent",
+      "mine",
+      "my-message",
+      "보낸 메시지",
+      "내 메시지"
+    ],
+    "outgoing_message_min_x_ratio": 0.55,
+    "forbidden_control_names": ["친구 추가", "ID로 추가", "연락처로 추가"],
+    "forbidden_dialog_titles": ["친구 추가"]
   }
 }
