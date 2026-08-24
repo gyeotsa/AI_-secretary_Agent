@@ -27,7 +27,8 @@
 - 검증: 변경 Python 파일 `py_compile`, 집중 회귀 `63 passed`, 전체 회귀
   `510 passed, 4 deselected`, `pip check`, `git diff --check`를 통과했다. 독립 교차 검토에서 발견한 숨은 궤도
   클릭 영역·초기 그래프 로딩 실패·더블클릭 문서 연결 누락도 모두 수정했다.
-- 구현 커밋: 아래 기능 커밋을 생성한 뒤 이 항목에 기록한다. `data/chroma_db/chroma.sqlite3`, `brain/`,
+- 구현 커밋: `61cb279` (`[Feat] 연속 2.5D 뇌 지식 공간과 제스처 탐색 완성`).
+  `data/chroma_db/chroma.sqlite3`, `brain/`,
   `greeting.pptx`, `tmp/`, `tmpdozr9d5t/`와 시각 검수용 캐시 이미지는 커밋하지 않는다.
 - 다음 해야 할 일: 실제 사용자 카메라의 조명·거리·손 크기에서 한 손 회전/상하 이동과 두 손 확대
   임계값을 수락 테스트한다. 실제 Vault의 노드 밀도에서 라벨 가독성과 진입 속도를 확인하고 로그
