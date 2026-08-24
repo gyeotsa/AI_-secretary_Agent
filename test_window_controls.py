@@ -50,5 +50,64 @@ def test_main_window_has_rounded_translucent_surface_and_voice_bar(app):
     window.close()
 
 
+def test_chat_panel_collapses_and_restores_while_brain_expands(app):
+    window = JarvisMainWindow()
+    window.resize(800, 700)
+    window.show()
+    app.processEvents()
+    initial_height = window.brain_orbit.height()
+
+    assert window.chat_collapsed is False
+    assert not window.chat_panel.isHidden()
+    assert window.user_text_label.parentWidget() is window.chat_panel
+    assert window.assistant_text_label.parentWidget() is window.chat_panel
+    assert window.text_input.parentWidget() is window.chat_panel
+
+    window.toggle_chat_panel()
+    app.processEvents()
+    assert window.chat_collapsed is True
+    assert window.chat_panel.isHidden()
+    assert not window.brain_orbit.isHidden()
+    assert "열기" in window.chat_toggle_btn.text()
+    assert window.brain_orbit.height() > initial_height
+
+    window.toggle_chat_panel()
+    app.processEvents()
+    assert window.chat_collapsed is False
+    assert not window.chat_panel.isHidden()
+    assert "숨기기" in window.chat_toggle_btn.text()
+    window.close()
+
+
+def test_chat_collapse_state_survives_window_mode_round_trip(app):
+    window = JarvisMainWindow()
+    window.set_chat_collapsed(True)
+    window.toggle_window_mode()
+    assert window.window_mode == "mini"
+    window.toggle_window_mode()
+    app.processEvents()
+
+    assert window.window_mode == "maximized"
+    assert window.chat_collapsed is True
+    assert window.chat_panel.isHidden()
+    window.close()
+
+
+def test_brain_note_open_selects_the_same_vault_document(app):
+    window = JarvisMainWindow()
+    selected = []
+
+    class GraphWindowStub:
+        def show_note(self, relative_path):
+            selected.append(relative_path)
+
+    stub = GraphWindowStub()
+    window.open_specialist_workspace = lambda key: stub if key == "knowledge_graph" else None
+
+    assert window.open_knowledge_graph_note("wiki/project-brief.md") is stub
+    assert selected == ["wiki/project-brief.md"]
+    window.close()
+
+
 def test_packaged_app_icon_exists():
     assert resource_path("assets/jarvis.ico").is_file()

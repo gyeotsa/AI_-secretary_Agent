@@ -30,6 +30,16 @@ QPushButton#toolbarButton:hover { color: #ecf8ff; background: #16263a; border-co
 QPushButton#toolbarButton:pressed { background: #0e1a2a; }
 QPushButton#closeButton { color: #8da2b8; background: transparent; border: 0; border-radius: 8px; }
 QPushButton#closeButton:hover { color: #ffffff; background: #d64f63; }
+QPushButton#chatToggle {
+    color: #89dff2; background: rgba(10, 22, 37, 220); border: 1px solid #29445f;
+    border-radius: 9px; padding: 5px 15px; font-size: 11px; font-weight: 700;
+}
+QPushButton#chatToggle:hover { color: #f2fbff; background: #162a40; border-color: #4b7898; }
+QPushButton#chatToggle:pressed { background: #0b1828; }
+QFrame#chatPanel {
+    background: rgba(8, 16, 28, 112); border: 1px solid rgba(45, 70, 94, 120);
+    border-radius: 12px;
+}
 QLabel#status { color: #6de8ff; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
 QLabel#workspace { color: #718ba4; font-size: 11px; padding: 4px; }
 QLabel#userMessage { color: #9cb8ce; font-size: 14px; padding: 12px 20px; }
@@ -874,6 +884,7 @@ class JarvisMainWindow(QWidget):
         self.command_center_services = {}
         self.command_center_dialog = None
         self.gesture_camera_running = False
+        self.chat_collapsed = False
         self.current_session_id = ""
         self.specialist_registry = get_specialist_workspace_registry()
         self.specialist_windows = {}
@@ -1027,8 +1038,8 @@ class JarvisMainWindow(QWidget):
         self.main_layout.addWidget(self.mini_sound_bar)
         
         self.center_widget = QWidget()
-        center_layout = QVBoxLayout(self.center_widget)
-        center_layout.setContentsMargins(30, 20, 30, 20)
+        self.center_layout = QVBoxLayout(self.center_widget)
+        self.center_layout.setContentsMargins(30, 20, 30, 20)
         
         self.status_label = QLabel("SYSTEM READY")
         self.status_label.setObjectName("status")
@@ -1068,19 +1079,34 @@ class JarvisMainWindow(QWidget):
         self.brain_orbit = BrainOrbitWidget(self)
         self.brain_orbit.set_surfaces(self.specialist_registry.all())
         self.brain_orbit.surface_requested.connect(self.open_interface_surface)
+        self.brain_orbit.graph_note_open_requested.connect(self.open_knowledge_graph_note)
         self.brain_orbit.camera_toggle_requested.connect(self.gesture_camera_requested.emit)
 
-        center_layout.addWidget(self.brain_orbit, 1)
-        center_layout.addSpacing(6)
-        center_layout.addWidget(self.status_label)
-        center_layout.addWidget(self.workspace_label)
-        center_layout.addSpacing(10)
-        center_layout.addWidget(self.sound_bar, 0, Qt.AlignmentFlag.AlignHCenter)
-        center_layout.addSpacing(20)
-        center_layout.addWidget(self.user_text_label)
-        center_layout.addWidget(self.assistant_text_label)
-        center_layout.addSpacing(8)
-        center_layout.addWidget(self.text_input)
+        self.chat_toggle_btn = QPushButton("채팅 숨기기  ↓")
+        self.chat_toggle_btn.setObjectName("chatToggle")
+        self.chat_toggle_btn.setToolTip("대화 영역을 접고 Brain 공간을 화면 중심으로 확장합니다.")
+        self.chat_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.chat_toggle_btn.clicked.connect(self.toggle_chat_panel)
+
+        self.chat_panel = QFrame(self.center_widget)
+        self.chat_panel.setObjectName("chatPanel")
+        chat_layout = QVBoxLayout(self.chat_panel)
+        chat_layout.setContentsMargins(12, 10, 12, 12)
+        chat_layout.setSpacing(6)
+        chat_layout.addWidget(self.status_label)
+        chat_layout.addWidget(self.workspace_label)
+        chat_layout.addSpacing(4)
+        chat_layout.addWidget(self.sound_bar, 0, Qt.AlignmentFlag.AlignHCenter)
+        chat_layout.addSpacing(8)
+        chat_layout.addWidget(self.user_text_label)
+        chat_layout.addWidget(self.assistant_text_label)
+        chat_layout.addWidget(self.text_input)
+
+        self.center_layout.addWidget(self.brain_orbit, 1)
+        self.center_layout.addWidget(
+            self.chat_toggle_btn, 0, Qt.AlignmentFlag.AlignHCenter
+        )
+        self.center_layout.addWidget(self.chat_panel)
         
         self.main_layout.addWidget(self.center_widget, 1)
         
@@ -1496,6 +1522,27 @@ class JarvisMainWindow(QWidget):
     def minimize_window(self):
         """Windows 작업 표시줄로 창을 최소화한다."""
         self.setWindowState(self.windowState() | Qt.WindowState.WindowMinimized)
+
+    def set_chat_collapsed(self, collapsed: bool):
+        """Collapse the conversation panel while leaving the Brain control visible."""
+        self.chat_collapsed = bool(collapsed)
+        self.chat_panel.setVisible(not self.chat_collapsed)
+        if self.chat_collapsed:
+            self.chat_toggle_btn.setText("채팅 열기  ↑")
+            self.chat_toggle_btn.setToolTip("대화 영역을 다시 표시합니다.")
+            self.brain_orbit.setFocus(Qt.FocusReason.OtherFocusReason)
+        else:
+            self.chat_toggle_btn.setText("채팅 숨기기  ↓")
+            self.chat_toggle_btn.setToolTip(
+                "대화 영역을 접고 Brain 공간을 화면 중심으로 확장합니다."
+            )
+        self.center_layout.invalidate()
+        self.center_layout.activate()
+        self.brain_orbit.updateGeometry()
+        self.brain_orbit.update()
+
+    def toggle_chat_panel(self):
+        self.set_chat_collapsed(not self.chat_collapsed)
     
     def show_user_text(self, text: str):
         self.user_text_label.setText(f"> {text}")
@@ -1722,6 +1769,13 @@ class JarvisMainWindow(QWidget):
         window.show()
         window.raise_()
         window.activateWindow()
+        return window
+
+    def open_knowledge_graph_note(self, relative_path: str):
+        """Open the graph workspace with the double-clicked Vault note selected."""
+        window = self.open_specialist_workspace("knowledge_graph")
+        if window is not None and relative_path and hasattr(window, "show_note"):
+            window.show_note(relative_path)
         return window
 
     def show_specialist_result(self, text: str, workspace_key: str = ""):

@@ -197,7 +197,11 @@ def test_gesture_motion_preserves_continuous_zoom_and_swipe_speed():
     runtime._smooth_motion = None
     runtime._previous_center = None
     runtime._motion_sample(_motion_hand(center_x=0.28), timestamp=3.0)
-    fast_swipe = runtime._motion_sample(_motion_hand(center_x=0.68), timestamp=3.1)
+    candidate = runtime._motion_sample(_motion_hand(center_x=0.48), timestamp=3.05)
+    assert candidate.swipe_phase == "candidate"
+    assert candidate.swipe_velocity == 0.0
+    fast_swipe = runtime._motion_sample(_motion_hand(center_x=0.68), timestamp=3.10)
+    assert fast_swipe.swipe_phase == "started"
     assert fast_swipe.swipe_velocity > 0.0
 
 
@@ -238,8 +242,21 @@ def test_brain_orbit_uses_gesture_speed_and_real_surface_signals(monkeypatch):
     widget = BrainOrbitWidget()
     widget.resize(900, 360)
     initial_zoom = widget.target_zoom
-    widget.apply_gesture_motion({"zoom": 0.1, "swipe_velocity": 0.0, "timestamp": 1.0})
-    widget.apply_gesture_motion({"zoom": 1.0, "swipe_velocity": 1.5, "timestamp": 1.1})
+    widget.apply_gesture_motion({
+        "zoom": 1.0, "zoom_active": False, "velocity_x": 1.5,
+        "swipe_velocity": 1.5, "timestamp": 1.0, "hand_count": 1,
+        "gesture_hand_count": 1, "tracking_state": "tracking",
+    })
+    widget.apply_gesture_motion({
+        "zoom": 0.1, "zoom_active": True, "gesture_mode_active": True,
+        "swipe_velocity": 0.0, "timestamp": 1.1, "hand_count": 2,
+        "gesture_hand_count": 2, "tracking_state": "tracking",
+    })
+    widget.apply_gesture_motion({
+        "zoom": 1.0, "zoom_active": True, "gesture_mode_active": True,
+        "swipe_velocity": 0.0, "timestamp": 1.2, "hand_count": 2,
+        "gesture_hand_count": 2, "tracking_state": "tracking",
+    })
     assert widget.target_zoom > initial_zoom
     assert widget.zoom_response > 0.13
     assert widget.angular_velocity < 0.0
