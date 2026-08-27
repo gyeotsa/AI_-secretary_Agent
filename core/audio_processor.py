@@ -35,7 +35,7 @@ class AudioProcessor(QObject):
         except Exception:
             pass
         
-    def play_and_analyze_tts(self, wav_path: str):
+    def play_and_analyze_tts(self, wav_path: str, *, raise_on_error: bool = False):
         """WAV 파일을 재생하면서 오디오 데이터를 분석합니다 (자비스 TTS용)"""
         completed = False
         try:
@@ -77,6 +77,8 @@ class AudioProcessor(QObject):
                 
         except Exception as e:
             print(f"[AudioProcessor] TTS 분석 오류: {e}")
+            if raise_on_error:
+                raise
         finally:
             self._is_speaking = False
             self._is_running = False

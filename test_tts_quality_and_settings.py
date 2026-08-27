@@ -75,6 +75,10 @@ def test_online_korean_voices_are_merged_with_local_voices(monkeypatch, tmp_path
 
 
 def test_voice_address_is_saved_per_voice_and_personalizes_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "core.assistant_settings.get_assistant_settings",
+        lambda: SimpleNamespace(get=lambda _key: ""),
+    )
     manager = TTSSettingsManager(str(tmp_path / "tts.json"))
     voices = [
         settings_module.TTSVoice("gpt-sovits:Anis", "Anis", provider="gpt-sovits",
@@ -125,6 +129,49 @@ def test_tts_playback_uses_nonblocking_continuous_player(monkeypatch, tmp_path):
     assert rate == 24000
     assert blocking is False
     assert calls[-1] == "wait"
+
+
+def test_tts_playback_can_propagate_device_errors(monkeypatch, tmp_path):
+    path = tmp_path / "voice.wav"
+    wavfile.write(path, 24000, np.array([1000, -1000], dtype=np.int16))
+    monkeypatch.setattr(
+        audio_module.sd,
+        "play",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("device unavailable")),
+    )
+
+    with __import__("pytest").raises(RuntimeError, match="device unavailable"):
+        AudioProcessor().play_and_analyze_tts(str(path), raise_on_error=True)
+
+
+def test_tts_backend_status_is_runtime_only(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings_module, "load_custom_voice_profiles", lambda: [])
+    path = tmp_path / "tts.json"
+    manager = TTSSettingsManager(str(path))
+    manager.set_backend_status("gpt-sovits:Anis", "ready", "준비 완료", "anis.log")
+
+    assert manager.get_backend_status("gpt-sovits:Anis")["ready"] is True
+    assert TTSSettingsManager(str(path)).get_backend_status("gpt-sovits:Anis") == {}
+
+
+def test_tts_voice_dialog_preserves_legacy_parent_argument(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setattr(settings_module, "load_custom_voice_profiles", lambda: [])
+    from PyQt6.QtWidgets import QApplication, QWidget
+    from ui.main_window import TTSVoiceDialog
+
+    app = QApplication.instance() or QApplication([])
+    parent = QWidget()
+    manager = TTSSettingsManager(str(tmp_path / "tts.json"))
+    monkeypatch.setattr(manager, "list_voices", lambda refresh=False: [])
+
+    dialog = TTSVoiceDialog(manager, parent)
+
+    assert dialog.parent() is parent
+    assert dialog.prepare_callback is None
+    dialog.close()
+    parent.close()
+    app.processEvents()
 
 
 def test_streaming_tts_prebuffers_and_preserves_all_pcm(monkeypatch):

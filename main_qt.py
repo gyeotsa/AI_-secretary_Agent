@@ -174,8 +174,13 @@ class JarvisApp:
         self.window.set_memory_manager(self.memory)
         self.llm = get_llm_client()
         self.tool_executor = get_tool_executor()
+        self._runtime_shutdown_started = False
+        self.app.aboutToQuit.connect(self._shutdown_runtime)
         self.window.set_plugin_registry(self.tool_executor.plugin_registry)
-        self.window.set_tts_settings_manager(self.tool_executor.tts_settings)
+        self.window.set_tts_settings_manager(
+            self.tool_executor.tts_settings,
+            self.tool_executor.prepare_selected_tts,
+        )
         self.user_profile = get_user_profile()
         self.assistant_settings = get_assistant_settings()
         self.specialist_workspaces = get_specialist_workspace_registry()
@@ -1241,13 +1246,22 @@ class JarvisApp:
     
     def _on_close_requested(self):
         # 종료 버튼 클릭시 프로그램 자체 종료
+        self._shutdown_runtime()
+        self.app.quit()
+
+    def _shutdown_runtime(self):
+        """Release cameras, background services and model processes exactly once."""
+        if getattr(self, "_runtime_shutdown_started", False):
+            return
+        self._runtime_shutdown_started = True
         if hasattr(self, "gesture_runtime"):
             self.gesture_runtime.stop()
         if hasattr(self, "proactive_policy"):
             self.proactive_policy.stop()
         if hasattr(self, "runtime_services"):
             self.runtime_services.stop()
-        self.app.quit()
+        if hasattr(self, "tool_executor"):
+            self.tool_executor.shutdown_tts()
     
     def run(self):
         return self.app.exec()

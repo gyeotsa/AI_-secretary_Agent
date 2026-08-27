@@ -1241,7 +1241,7 @@ class ToolExecutor:
                     raise value
                 media_paths.append(value)
                 # The producer synthesizes the next sentence while this one plays.
-                completed = audio_processor.play_and_analyze_tts(value)
+                completed = audio_processor.play_and_analyze_tts(value, raise_on_error=True)
                 if completed is False:
                     return "TTS 취소됨: 사용자 끼어들기로 음성 재생을 중단했습니다."
             return f"음성으로 읽어드렸습니다: {text}"
@@ -1262,22 +1262,44 @@ class ToolExecutor:
             self._custom_tts_clients[voice_id] = client
         return client
 
-    def prepare_selected_tts(self):
+    def prepare_selected_tts(self, requested_voice_id: str = ""):
         """Load the selected custom voice before the first assistant response."""
-        voice_id = self.tts_settings.selected_custom_voice
+        voice_id = str(requested_voice_id or self.tts_settings.selected_custom_voice).strip()
+        if voice_id.startswith("gpt-sovits:"):
+            voice_id = voice_id.split(":", 1)[1]
         if not voice_id:
-            return
+            return {"state": "not_applicable", "ready": True, "detail": "커스텀 음성이 아닙니다."}
+        canonical_id = f"gpt-sovits:{voice_id}"
         profile = next(
             (item for item in load_custom_voice_profiles() if str(item.get("id")) == voice_id),
             None,
         )
         if profile is None:
-            return
+            detail = f"커스텀 음성 프로필을 찾을 수 없습니다: {voice_id}"
+            return self.tts_settings.set_backend_status(canonical_id, "error", detail)
+        client = self._get_custom_tts_client(voice_id, profile)
+        self.tts_settings.set_backend_status(
+            canonical_id, "loading", "GPT-SoVITS 모델을 불러오는 중입니다.", str(client.log_path)
+        )
         try:
-            self._get_custom_tts_client(voice_id, profile).ensure_running()
+            client.ensure_running()
             print(f"[TTS] 커스텀 음성 사전 로딩 완료: {voice_id}")
+            return self.tts_settings.set_backend_status(
+                canonical_id, "ready", "음성 합성 서버가 준비되었습니다.", str(client.log_path)
+            )
         except Exception as exc:
             print(f"[TTS] 커스텀 음성 사전 로딩 실패: {voice_id}: {exc}")
+            return self.tts_settings.set_backend_status(
+                canonical_id, "error", str(exc), str(client.log_path)
+            )
+
+    def shutdown_tts(self):
+        """Release GPU/RAM held by custom TTS processes owned by this app."""
+        for client in tuple(self._custom_tts_clients.values()):
+            try:
+                client.shutdown()
+            except Exception as exc:
+                print(f"[TTS] 커스텀 음성 종료 실패: {exc}")
 
     def _speak_with_edge_tts(self, text: str, audio_processor=None) -> str:
         if edge_tts is None:

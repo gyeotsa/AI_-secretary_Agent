@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from urllib.error import HTTPError
 import io
+from types import SimpleNamespace
 
 import pytest
 import wave
@@ -153,8 +154,129 @@ def test_selected_custom_voice_does_not_fall_back_to_windows_voice(monkeypatch):
     )
     monkeypatch.setattr(
         executor,
-        "_speak_with_windows_tts",
+        "_speak_with_windows_speech",
         lambda *_args: pytest.fail("Heami fallback must not run"),
     )
 
     assert executor._speak_text_locked("안녕") == "TTS 오류: Anis 합성 실패"
+
+
+def _runtime_profile(tmp_path):
+    project = tmp_path / "project"
+    (project / "config.py").parent.mkdir(parents=True)
+    (project / "config.py").write_text("", encoding="utf-8")
+    profile_path = project / "data" / "voices" / "Anis" / "profile.json"
+    profile_path.parent.mkdir(parents=True)
+    runtime = project / "runtime"
+    runtime.mkdir()
+    (runtime / "api_v2.py").write_text("", encoding="utf-8")
+    (runtime / "voice.yaml").write_text("", encoding="utf-8")
+    python = project / "python.exe"
+    python.write_bytes(b"python")
+    reference = project / "reference.wav"
+    reference.write_bytes(b"wav")
+    return {
+        "_profile_path": str(profile_path),
+        "id": "Anis",
+        "runtime_root": "../../../runtime",
+        "python": "../../../python.exe",
+        "config": "voice.yaml",
+        "reference_audio": "../../../reference.wav",
+        "reference_text": "참조 문장",
+        "port": 9988,
+    }
+
+
+def test_gpt_sovits_early_exit_reports_bounded_log_tail(tmp_path, monkeypatch):
+    client = GPTSoVITSClient(_runtime_profile(tmp_path))
+    monkeypatch.setattr(client, "_ready", lambda: False)
+
+    class FailedProcess:
+        returncode = 101
+
+        @staticmethod
+        def poll():
+            return 101
+
+    def fake_popen(*_args, **kwargs):
+        kwargs["stdout"].write("torch DLL 초기화 실패\n")
+        kwargs["stdout"].flush()
+        return FailedProcess()
+
+    monkeypatch.setattr("core.custom_tts.subprocess.Popen", fake_popen)
+    with pytest.raises(RuntimeError) as exc_info:
+        client.ensure_running(timeout=0.1)
+
+    message = str(exc_info.value)
+    assert "code=101" in message
+    assert "torch DLL 초기화 실패" in message
+    assert str(client.log_path) in message
+    assert client.last_error == message
+
+
+def test_gpt_sovits_runtime_validation_lists_missing_file(tmp_path):
+    profile = _runtime_profile(tmp_path)
+    Path(profile["_profile_path"]).parents[3].joinpath("reference.wav").unlink()
+    client = GPTSoVITSClient(profile)
+
+    with pytest.raises(RuntimeError, match="참조 음성"):
+        client._runtime_paths()
+
+
+def test_gpt_sovits_shutdown_prevents_late_background_start(tmp_path, monkeypatch):
+    client = GPTSoVITSClient(_runtime_profile(tmp_path))
+    monkeypatch.setattr(client, "_ready", lambda: False)
+    monkeypatch.setattr(
+        "core.custom_tts.subprocess.Popen",
+        lambda *_args, **_kwargs: pytest.fail("종료 뒤에는 TTS 프로세스를 시작하면 안 됩니다."),
+    )
+
+    client.shutdown()
+
+    with pytest.raises(RuntimeError, match="종료가 요청"):
+        client.ensure_running(timeout=0.1)
+
+
+def test_prepare_custom_tts_publishes_runtime_status(tmp_path, monkeypatch):
+    manager = TTSSettingsManager(str(tmp_path / "tts.json"))
+    executor = ToolExecutor.__new__(ToolExecutor)
+    executor.tts_settings = manager
+    executor._custom_tts_clients = {}
+    profile = {"id": "Anis", "name": "Anis", "provider": "gpt-sovits"}
+    fake_client = SimpleNamespace(
+        log_path=tmp_path / "anis.log",
+        ensure_running=lambda: None,
+    )
+    monkeypatch.setattr("core.tools.load_custom_voice_profiles", lambda: [profile])
+    monkeypatch.setattr(executor, "_get_custom_tts_client", lambda *_args: fake_client)
+
+    result = executor.prepare_selected_tts("gpt-sovits:Anis")
+
+    assert result["ready"] is True
+    assert manager.get_backend_status("gpt-sovits:Anis")["state"] == "ready"
+
+
+def test_custom_tts_playback_failure_is_not_reported_as_user_cancellation(tmp_path, monkeypatch):
+    audio_path = tmp_path / "voice.wav"
+    audio_path.write_bytes(b"wav")
+    executor = ToolExecutor.__new__(ToolExecutor)
+    executor.tts_settings = SimpleNamespace(
+        selected_custom_voice="Anis",
+        selected_address="지휘관님",
+    )
+    profile = {"id": "Anis", "streaming_mode": 0, "chunk_chars": 90}
+    client = SimpleNamespace(synthesize=lambda _text: str(audio_path))
+    monkeypatch.setattr("core.tools.load_custom_voice_profiles", lambda: [profile])
+    monkeypatch.setattr(executor, "_get_custom_tts_client", lambda *_args: client)
+
+    class FailingAudioProcessor:
+        @staticmethod
+        def play_and_analyze_tts(_path, *, raise_on_error=False):
+            assert raise_on_error is True
+            raise RuntimeError("오디오 장치 연결 실패")
+
+    result = executor._speak_with_custom_tts("안녕", FailingAudioProcessor())
+
+    assert result.startswith("TTS 오류:")
+    assert "오디오 장치 연결 실패" in result
+    assert "취소됨" not in result

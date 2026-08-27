@@ -1,6 +1,7 @@
 import sys
 import math
 import random
+import threading
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, 
                              QFrame, QHBoxLayout, QLineEdit, QPushButton, 
                              QFileDialog, QDialog, QMessageBox, QScrollArea,
@@ -481,9 +482,18 @@ class PermissionSettingsDialog(QDialog):
 class TTSVoiceDialog(QDialog):
     """Select a voice and configure its user address."""
 
-    def __init__(self, settings_manager, parent=None):
+    readiness_changed = pyqtSignal(str)
+
+    def __init__(self, settings_manager, prepare_callback=None, parent=None):
+        # Preserve the original ``TTSVoiceDialog(settings_manager, parent)``
+        # calling convention while allowing the optional asynchronous prepare
+        # callback to sit between the manager and parent arguments.
+        if parent is None and prepare_callback is not None and not callable(prepare_callback):
+            parent = prepare_callback
+            prepare_callback = None
         super().__init__(parent)
         self.settings_manager = settings_manager
+        self.prepare_callback = prepare_callback
         self.setWindowTitle("JARVIS TTS 목소리")
         self.resize(520, 400)
         self.setStyleSheet("""
@@ -517,6 +527,10 @@ class TTSVoiceDialog(QDialog):
             f"현재 목소리: {self.settings_manager.selected_voice_name or '한국어 기본 음성'}"
         )
         layout.addWidget(self.status_label)
+        self.backend_status_label = QLabel("")
+        self.backend_status_label.setWordWrap(True)
+        self.backend_status_label.setStyleSheet("color: #8db8c0;")
+        layout.addWidget(self.backend_status_label)
         address_row = QHBoxLayout()
         address_row.addWidget(QLabel("선택 음성의 호칭"))
         self.address_input = QLineEdit()
@@ -530,6 +544,8 @@ class TTSVoiceDialog(QDialog):
         self.address_status = QLabel("")
         layout.addWidget(self.address_status)
         self._load_selected_address()
+        self._refresh_backend_status()
+        self.readiness_changed.connect(self._on_readiness_changed)
         if not voices:
             self.status_label.setText("사용 가능한 Windows TTS 음성을 찾지 못했습니다.")
         close_button = QPushButton("닫기")
@@ -541,8 +557,54 @@ class TTSVoiceDialog(QDialog):
         if self.settings_manager.select_voice(voice_id, voice_name):
             self.status_label.setText(f"현재 목소리: {voice_name}")
             self._load_selected_address()
+            self._refresh_backend_status()
+            if str(voice_id).startswith("gpt-sovits:") and callable(self.prepare_callback):
+                self.settings_manager.set_backend_status(
+                    voice_id, "loading", "GPT-SoVITS 모델을 불러오는 중입니다."
+                )
+                self._refresh_backend_status()
+                threading.Thread(
+                    target=self._prepare_voice,
+                    args=(voice_id,),
+                    daemon=True,
+                    name="jarvis-tts-prepare",
+                ).start()
         else:
             self.status_label.setText("목소리 설정에 실패했습니다.")
+
+    def _prepare_voice(self, voice_id: str):
+        try:
+            self.prepare_callback(voice_id)
+        except Exception as exc:
+            self.settings_manager.set_backend_status(voice_id, "error", str(exc))
+        self.readiness_changed.emit(voice_id)
+
+    def _on_readiness_changed(self, voice_id: str):
+        if voice_id == self._selected_voice_id():
+            self._refresh_backend_status()
+
+    def _refresh_backend_status(self):
+        voice_id = self._selected_voice_id()
+        if not voice_id or not str(voice_id).startswith("gpt-sovits:"):
+            self.backend_status_label.setText("음성 엔진: 선택 즉시 사용 가능")
+            self.backend_status_label.setStyleSheet("color: #65d6a4;")
+            return
+        status = self.settings_manager.get_backend_status(voice_id)
+        state = str(status.get("state") or "unknown")
+        detail = str(status.get("detail") or "")
+        if state == "ready":
+            label, color = "준비 완료", "#65d6a4"
+        elif state == "loading":
+            label, color = "모델 로딩 중", "#f4ce69"
+        elif state == "error":
+            label, color = "준비 실패", "#ff8796"
+        else:
+            label, color = "아직 준비하지 않음", "#8db8c0"
+        summary = detail.splitlines()[0][:240] if detail else ""
+        self.backend_status_label.setText(
+            f"음성 엔진: {label}" + (f" · {summary}" if summary else "")
+        )
+        self.backend_status_label.setStyleSheet(f"color: {color};")
 
     def _selected_voice_id(self):
         item = self.voice_list.currentItem()
@@ -1684,14 +1746,19 @@ class JarvisMainWindow(QWidget):
             return
         PermissionSettingsDialog(self.permission_manager, self).exec()
 
-    def set_tts_settings_manager(self, settings_manager):
+    def set_tts_settings_manager(self, settings_manager, prepare_callback=None):
         self.tts_settings_manager = settings_manager
+        self.tts_prepare_callback = prepare_callback
 
     def show_tts_voice_settings(self):
         if self.tts_settings_manager is None:
             QMessageBox.warning(self, "TTS 목소리", "TTS 설정 관리자가 아직 준비되지 않았습니다.")
             return
-        TTSVoiceDialog(self.tts_settings_manager, self).exec()
+        TTSVoiceDialog(
+            self.tts_settings_manager,
+            getattr(self, "tts_prepare_callback", None),
+            self,
+        ).exec()
 
     def set_memory_manager(self, memory_manager):
         self.memory_manager = memory_manager

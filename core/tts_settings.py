@@ -38,6 +38,7 @@ class TTSSettingsManager:
         self.selected_voice_name = ""
         self.selected_provider = "windows"
         self.voice_addresses: dict[str, str] = {}
+        self._backend_status: dict[str, dict[str, str | bool]] = {}
         self._voice_cache: Optional[list[TTSVoice]] = None
         self._load()
 
@@ -202,6 +203,27 @@ class TTSSettingsManager:
         self.voice_addresses[voice_id] = normalized
         self._save()
         return True
+
+    def set_backend_status(
+        self,
+        voice_id: str,
+        state: str,
+        detail: str = "",
+        log_path: str = "",
+    ) -> dict[str, str | bool]:
+        """Store ephemeral runtime health without polluting persistent preferences."""
+        normalized_state = str(state or "unknown").strip().casefold()
+        status: dict[str, str | bool] = {
+            "state": normalized_state,
+            "ready": normalized_state == "ready",
+            "detail": str(detail or "").strip(),
+            "log_path": str(log_path or "").strip(),
+        }
+        self._backend_status[str(voice_id)] = status
+        return dict(status)
+
+    def get_backend_status(self, voice_id: str) -> dict[str, str | bool]:
+        return dict(self._backend_status.get(str(voice_id), {}))
 
     @property
     def selected_address(self) -> str:
