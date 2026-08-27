@@ -97,8 +97,13 @@ def test_plugin_status_axes_are_independent():
     registry = PluginRegistry()
     registry.register_plugin(plugin)
     status = registry.get_plugin_statuses()[0]
-    assert status.installed and status.connected and status.enabled
-    assert not status.authenticated and not status.verified
+    assert status.installed is True and status.enabled
+    assert status.connected is None
+    assert status.connection_state == "not_applicable"
+    assert status.authenticated is None
+    assert status.authentication_state == "unchecked"
+    assert status.verified is None
+    assert status.verification_state == "unchecked"
     assert any("OAuth" in item for item in status.diagnostics)
 
 

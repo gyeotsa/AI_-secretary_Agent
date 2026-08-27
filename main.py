@@ -12,14 +12,7 @@ from config import Config
 
 def get_system_prompt():
     user_profile = get_user_profile()
-    profile_summary = user_profile.get_profile_summary()
-
-    if profile_summary != "저장된 사용자 프로필이 없습니다.":
-        user_profile_section = f"사용자에 대해 알고 있는 정보:\n{profile_summary}\n\n이 정보를 바탕으로 개인화된 답변을 제공하세요."
-    else:
-        user_profile_section = "아직 사용자에 대한 정보가 없습니다. 대화를 통해 사용자에 대해 알아가세요."
-
-    return Config.SYSTEM_PROMPT_TEMPLATE.format(user_profile_section=user_profile_section)
+    return Config.get_system_prompt(user_profile)
 
 
 def main():

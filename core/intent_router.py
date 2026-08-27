@@ -52,6 +52,13 @@ class IntentRouter:
         r"(?:검색|찾아\s*봐|찾아\s*줘|조사|뉴스|소식|출처|웹에서|인터넷에서|"
         r"확인해\s*줘|조회해\s*줘)", re.IGNORECASE,
     )
+    CONTENT_REQUEST_PATTERN = re.compile(
+        r"(?:제목|본문|문구|내용)(?:은|는|을|를|\s*[:：=])", re.IGNORECASE,
+    )
+    CONTENT_SLOT_NAMES = frozenset({
+        "title", "paragraphs", "content", "body", "text", "message",
+        "slides", "rows", "bullets", "sections",
+    })
 
     def __init__(self, registry: PluginRegistry):
         self.registry = registry
@@ -63,6 +70,62 @@ class IntentRouter:
         compact = normalized.replace(" ", "")
         words.update(compact[index:index + 2] for index in range(max(0, len(compact) - 1)))
         return words
+
+    @staticmethod
+    def _quoted_literals(text: str) -> list[str]:
+        values: list[str] = []
+        for pattern in (
+            r'"([^"\r\n]+)"', r"'([^'\r\n]+)'",
+            r"“([^”\r\n]+)”", r"‘([^’\r\n]+)’",
+        ):
+            values.extend(
+                match.strip() for match in re.findall(pattern, str(text or ""))
+                if match.strip()
+            )
+        return list(dict.fromkeys(values))
+
+    @staticmethod
+    def _scalar_slot_values(value: Any) -> list[str]:
+        if isinstance(value, dict):
+            return [
+                scalar
+                for nested in value.values()
+                for scalar in IntentRouter._scalar_slot_values(nested)
+            ]
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return [
+                scalar
+                for nested in value
+                for scalar in IntentRouter._scalar_slot_values(nested)
+            ]
+        if isinstance(value, (str, int, float, bool)):
+            text = str(value).strip()
+            return [text] if text else []
+        return []
+
+    def resolution_preserves_user_content(
+        self, text: str, resolution: IntentResolution,
+    ) -> bool:
+        """Return False when a fast-path tool call dropped explicit user data.
+
+        A deterministic intent may bypass the Planner, so it must enforce the
+        same grounding invariant: quoted literals and supported content fields
+        cannot disappear between the utterance and Registry tool input.
+        """
+        slot_values = self._scalar_slot_values(resolution.slots)
+        joined = "\n".join(slot_values)
+        if any(literal not in joined for literal in self._quoted_literals(text)):
+            return False
+        if not self.CONTENT_REQUEST_PATTERN.search(str(text or "")):
+            return True
+        capability = self.registry.get_capability(resolution.tool_name)
+        properties = set(
+            ((capability.input_schema if capability else {}).get("properties") or {}).keys()
+        )
+        supported = properties & self.CONTENT_SLOT_NAMES
+        if not supported:
+            return True
+        return any(resolution.slots.get(name) not in (None, "", []) for name in supported)
 
     def _rank(self, text: str) -> List[tuple[float, BasePlugin, IntentSchema, str]]:
         normalized = text.casefold()

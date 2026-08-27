@@ -42,6 +42,9 @@ class SelfDevelopmentRuntime:
             selection_reason = loadout.reason
             confidence = loadout.confidence
         permissions = get_permission_manager()
+        status_by_name = {
+            item.name: item for item in registry.get_plugin_statuses() if item.registered
+        }
         plugins = []
         for plugin in registry.plugins.values():
             tools = []
@@ -59,9 +62,15 @@ class SelfDevelopmentRuntime:
                     ),
                 })
             if tools:
+                status = status_by_name.get(plugin.name)
                 plugins.append({
                     "name": plugin.name, "description": plugin.description,
-                    "enabled": plugin.enabled, "connected": plugin.is_connected(),
+                    "enabled": plugin.enabled,
+                    "connected": status.connected if status else None,
+                    "connection_state": (
+                        status.connection_state if status else "unchecked"
+                    ),
+                    "runtime_state": status.runtime_state if status else "unchecked",
                     "tools": tools,
                 })
         return {
@@ -74,16 +83,27 @@ class SelfDevelopmentRuntime:
     def inspect_status(self, registry) -> dict[str, Any]:
         snapshot = self.agent.analyze_repository()
         plugin_statuses = [asdict(item) for item in registry.get_plugin_statuses()]
-        optional_markers = ("선택 연동", "인증 필요", "연결되지", "설정되지")
         unconfigured_plugins = [
             item for item in plugin_statuses
-            if not item["verified"] and item.get("diagnostics")
-            and all(any(marker in str(message) for marker in optional_markers)
-                    for message in item["diagnostics"])
+            if item.get("registered")
+            and item.get("installation_state") == "confirmed"
+            and item.get("contract_state") == "confirmed"
+            and item.get("runtime_state") == "unchecked"
+            and (
+                item.get("connection_state") == "unchecked"
+                or item.get("authentication_state") in {"unchecked", "failed"}
+            )
         ]
         broken_plugins = [
             item for item in plugin_statuses
-            if not item["verified"] and item not in unconfigured_plugins
+            if item.get("installation_state") == "failed"
+            or item.get("contract_state") == "failed"
+            or item.get("runtime_state") == "failed"
+        ]
+        unchecked_plugins = [
+            item for item in plugin_statuses
+            if item.get("verification_state") == "unchecked"
+            and item not in unconfigured_plugins
         ]
         permissions = get_permission_manager().get_all_permissions()
         report: dict[str, Any] = {
@@ -96,10 +116,14 @@ class SelfDevelopmentRuntime:
                 "dependency_files": snapshot.dependency_files,
             },
             "plugins": {
-                "registered": len(plugin_statuses),
-                "verified": sum(bool(item["verified"]) for item in plugin_statuses),
+                "registered": sum(bool(item.get("registered")) for item in plugin_statuses),
+                "verified": sum(
+                    item.get("verification_state") == "confirmed"
+                    for item in plugin_statuses
+                ),
                 "unconfigured": unconfigured_plugins,
                 "broken": broken_plugins,
+                "unchecked": unchecked_plugins,
             },
             "permissions": {
                 "total": len(permissions),

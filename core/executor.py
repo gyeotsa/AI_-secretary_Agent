@@ -6,17 +6,17 @@ import threading
 import time
 
 from core.llm import get_llm_client
-from core.scratchpad import get_scratchpad, Task
-from core.planner import get_planner
+from core.scratchpad import Scratchpad, Task
+from core.planner import Planner, PlanningError
 from core.tools import get_tool_executor, get_tools_description_text, get_tool_names
-from core.reflection import get_reflection
-from core.context import get_context_manager
+from core.reflection import Reflection
+from core.context import ContextManager
 from core.permission import get_permission_manager, TOOL_PERMISSION_MAP
 from core.memory import get_memory, build_memory_context, build_relevant_knowledge_context
 from core.workspace import get_workspace_manager
 from core.verifier import get_tool_verifier
 from core.recovery import get_recovery_manager
-from core.conversation_context import ConversationContextResolver
+from core.conversation_context import ConversationContextResolver, ResolvedRequest
 from core.dialogue_state import get_dialogue_state_store
 from core.intent_router import IntentRouter, IntentResolution
 from core.custom_tts import load_custom_voice_profiles
@@ -60,6 +60,11 @@ class ExecutionOutcome:
     task_id: str = ""
     next_goal: str = ""
     tool_result: Optional[ToolRunResult] = None
+    # A specialist workspace may legitimately require several tools (for
+    # example create -> render -> inspect).  Keeping only ``tool_result`` made
+    # every multi-step run lose its evidence at the workspace review boundary.
+    # The singular field remains for compatibility with existing callers.
+    tool_results: tuple[ToolRunResult, ...] = ()
     retry_count: int = 0
     completed_steps: int = 0
     failed_steps: int = 0
@@ -99,11 +104,14 @@ class Executor:
     def __init__(self):
         self.llm = get_llm_client("conversation")
         self.reasoning_llm = get_llm_client("reasoning")
-        self.scratchpad = get_scratchpad()
-        self.planner = get_planner()
+        # Execution state must belong to this runtime instance.  Sharing the
+        # legacy singleton scratchpad let a voice turn overwrite a GUI/workspace
+        # turn's goal, observations, and current task.
+        self.scratchpad = Scratchpad()
+        self.context_manager = ContextManager(scratchpad=self.scratchpad)
+        self.planner = Planner(scratchpad=self.scratchpad, context_manager=self.context_manager)
         self.tool_executor = get_tool_executor()
-        self.reflection = get_reflection()
-        self.context_manager = get_context_manager()
+        self.reflection = Reflection(scratchpad=self.scratchpad)
         self.permission_manager = get_permission_manager()
         self.memory = get_memory()
         self.workspace_manager = get_workspace_manager()
@@ -132,6 +140,9 @@ class Executor:
         self.current_agent_task_id = ""
         self._task_controls: Dict[str, Dict[str, bool]] = {}
         self._control_condition = threading.Condition()
+        # The executor still owns mutable plan/goal fields. Serialize complete
+        # turns until those fields are migrated into an immutable turn context.
+        self._turn_lock = threading.RLock()
         self.plan_coordinator = PlanCoordinator()
         self.planning_service = PlanningService(self.planner)
         self.response_composer = ResponseComposer()
@@ -171,7 +182,28 @@ class Executor:
     def execute_turn(self, goal: str, session_id: Optional[str] = None,
                      conversation_history: Optional[List[Dict[str, str]]] = None,
                      progress_callback: Optional[Callable[[str], None]] = None,
-                     existing_task_id: Optional[str] = None) -> ExecutionOutcome:
+                     existing_task_id: Optional[str] = None,
+                     allowed_tool_names: Optional[List[str]] = None,
+                     execution_context: str = "") -> ExecutionOutcome:
+        """Execute one turn atomically against this runtime's mutable state."""
+        turn_lock = getattr(self, "_turn_lock", None)
+        if turn_lock is None:
+            # A few compatibility tests and integrations construct a lightweight
+            # Executor via __new__. Give those callers the same safety contract.
+            turn_lock = threading.RLock()
+            self._turn_lock = turn_lock
+        with turn_lock:
+            return self._execute_turn_traced(
+                goal, session_id, conversation_history, progress_callback,
+                existing_task_id, allowed_tool_names, execution_context,
+            )
+
+    def _execute_turn_traced(self, goal: str, session_id: Optional[str] = None,
+                     conversation_history: Optional[List[Dict[str, str]]] = None,
+                     progress_callback: Optional[Callable[[str], None]] = None,
+                     existing_task_id: Optional[str] = None,
+                     allowed_tool_names: Optional[List[str]] = None,
+                     execution_context: str = "") -> ExecutionOutcome:
         """Record one complete, privacy-redacted trajectory around the runtime turn."""
         session_key = session_id or "default"
         turn_started = time.perf_counter()
@@ -185,7 +217,8 @@ class Executor:
         )
         try:
             outcome = self._execute_turn_impl(
-                goal, session_id, conversation_history, progress_callback, existing_task_id
+                goal, session_id, conversation_history, progress_callback,
+                existing_task_id, allowed_tool_names, execution_context,
             )
             learning_runtime.finish(
                 trajectory_id, status=outcome.status, response=outcome.response,
@@ -217,7 +250,7 @@ class Executor:
                              started_at: float) -> None:
         """Record only observable runtime outcomes; never invent success data."""
         latency = (time.perf_counter() - started_at) * 1000
-        succeeded = outcome.status in {"completed", "partial"}
+        succeeded = outcome.status == "completed"
         quality_metrics = getattr(self, "quality_metrics", None) or get_quality_metric_store()
         self.quality_metrics = quality_metrics
         quality_metrics.record(
@@ -241,26 +274,38 @@ class Executor:
             or self._GENERIC_ACTION_REQUEST_PATTERN.search(goal)
         )
         if execution_request and outcome.status == "completed":
-            verified = bool(outcome.tool_result and outcome.tool_result.succeeded
-                            and outcome.tool_result.evidence)
-            # A completed multi-step run may expose no single ToolRunResult, but
-            # it must have completed steps recorded by the verified DAG runtime.
-            verified = verified or outcome.completed_steps > 0
+            results = list(outcome.tool_results or ())
+            if outcome.tool_result is not None and all(
+                item is not outcome.tool_result for item in results
+            ):
+                results.append(outcome.tool_result)
+            # A step counter proves only that the scheduler advanced.  It does
+            # not prove that a side effect happened or that its result was
+            # verified.  Every executed result exposed by the DAG must be a
+            # successful typed result with concrete evidence.
+            verified = bool(results) and all(
+                result.succeeded and bool(result.evidence)
+                for result in results
+            )
             quality_metrics.record(
                 "false_completion", 0.0 if verified else 1.0,
                 success=verified, context={"goal": goal[:300],
-                                           "task_id": outcome.task_id},
+                                           "task_id": outcome.task_id,
+                                           "tool_count": len(results)},
             )
 
     def _execute_turn_impl(self, goal: str, session_id: Optional[str] = None,
                      conversation_history: Optional[List[Dict[str, str]]] = None,
                      progress_callback: Optional[Callable[[str], None]] = None,
-                     existing_task_id: Optional[str] = None) -> ExecutionOutcome:
+                     existing_task_id: Optional[str] = None,
+                     allowed_tool_names: Optional[List[str]] = None,
+                     execution_context: str = "") -> ExecutionOutcome:
         """질문 대기와 재개를 지원하는 한 번의 대화 턴을 실행한다."""
         session_key = session_id or "default"
         workspace_scope = self._workspace_scope()
         history = list(conversation_history or [])
         normalized = goal.strip().lower()
+        tool_scope = self._validated_tool_scope(allowed_tool_names)
 
         def terminal_outcome(response: str, status: str = "completed",
                              pending_question: str = "") -> ExecutionOutcome:
@@ -299,7 +344,94 @@ class Executor:
         is_new_request = normalized.startswith(("새 작업:", "새 작업："))
         if is_new_request:
             goal = re.sub(r"^새 작업\s*[:：]\s*", "", goal, flags=re.I)
+        pending = (
+            None if is_new_request
+            else self.dialogue_state.get(session_key, selected_task_id, workspace_scope)
+        )
+
+        # 먼저 가벼운 Registry 분류로 완결된 독립 명령과 이미 구조화할 수 있는
+        # 후속 명령을 판별한다. 이 결과는 아직 실행하지 않는다. 모든 요청을 곧바로
+        # LLM 문맥 해석기에 보내면 해석기 한 번의 오판이 메모장 실행·앱 별칭 추가
+        # 같은 명확한 명령까지 확인 질문으로 가로채는 단일 실패점이 된다.
         direct_resolution = self.intent_router.resolve(goal)
+        if (tool_scope is not None and direct_resolution.matched
+                and direct_resolution.tool_name not in tool_scope):
+            # The specialist supervisor has already fixed the capability domain.
+            # Ignore an unrelated lexical hit rather than escaping that contract.
+            direct_resolution = IntentResolution()
+        deterministic_follow_up = False
+        if not pending and not direct_resolution.matched:
+            recent_intent = self.dialogue_state.get_recent_intent(
+                session_key, workspace_scope
+            )
+            if (
+                recent_intent
+                and self.intent_router.is_contextual_follow_up(
+                    goal, recent_intent["intent_name"]
+                )
+            ):
+                deterministic_follow_up = True
+            elif self.intent_router.is_contextual_follow_up(goal):
+                historical = self.intent_router.resolve_from_history(goal, history)
+                deterministic_follow_up = bool(historical.matched)
+
+        # Registry가 확정하지 못한 생략/수정 발화만 LLM 문맥 해석기로 복원한 뒤
+        # 다시 라우팅한다. 따라서 "빨간색으로 바꿔줘" 같은 발화는 복원된 대상에
+        # 맞춰 라우팅되지만, 완결된 독립 도구 명령은 불필요한 LLM 판정에 막히지 않는다.
+        resolved = ResolvedRequest(goal, goal)
+        may_need_context = ConversationContextResolver._may_depend_on_context(goal)
+        ambiguous_target_action = bool(
+            not direct_resolution.matched
+            and (
+                self._EXECUTION_REQUEST_PATTERN.search(goal)
+                or self._GENERIC_ACTION_REQUEST_PATTERN.search(goal)
+            )
+            and re.search(
+                r"(?:파일|문서|보고서|사진|이미지|시안|작업|내용)"
+                r"(?:을|를|은|는|이|가)?",
+                goal,
+                re.IGNORECASE,
+            )
+        )
+        if (
+            not pending
+            and not is_new_request
+            and not deterministic_follow_up
+            and not direct_resolution.matched
+            and (may_need_context or ambiguous_target_action)
+        ):
+            context_resolver = getattr(self, "context_resolver", None)
+            if context_resolver is not None:
+                resolved = context_resolver.resolve(goal, history, session_key)
+            if resolved.needs_clarification:
+                question = (
+                    resolved.clarification_question
+                    or "어떤 대상을 말씀하시는지 조금 더 구체적으로 알려주세요."
+                )
+                task = (
+                    self.dialogue_state.get_task(
+                        session_key, existing_task_id, workspace_scope
+                    ) if existing_task_id else None
+                ) or self.dialogue_state.create_task(
+                    session_key, goal, workspace_path=workspace_scope
+                )
+                pending_question = self.dialogue_state.create(
+                    session_key, goal, question, history, task.task_id,
+                    workspace_scope,
+                )
+                self.dialogue_state.transition_task(task.task_id, "awaiting_user")
+                return ExecutionOutcome(
+                    f"{question}\n대기 작업 ID: {pending_question.task_id}",
+                    "awaiting_user", goal, question, pending_question.task_id,
+                )
+            goal = resolved.resolved_request
+            if goal != resolved.original_request:
+                print(
+                    f"[Context] 요청 해석: {resolved.original_request!r} → {goal!r} "
+                    f"(confidence={resolved.confidence:.2f})"
+                )
+                direct_resolution = self.intent_router.resolve(goal)
+
         tool_loadout = getattr(self, "tool_loadout", None)
         if tool_loadout is None:
             tool_loadout = ToolLoadoutSelector(self.intent_router.registry)
@@ -308,7 +440,9 @@ class Executor:
         if reasoning_policy is None:
             reasoning_policy = ReasoningPolicy()
             self.reasoning_policy = reasoning_policy
-        loadout = tool_loadout.select(goal, direct_resolution)
+        loadout = tool_loadout.select(
+            goal, direct_resolution, allowed_tools=tool_scope,
+        )
         effort = reasoning_policy.decide(
             direct_resolution, required_tool_count=len(loadout.tool_names),
             has_pending_task=False,
@@ -331,10 +465,6 @@ class Executor:
                 f"reason={direct_resolution.routing_reason} "
                 f"alternatives={direct_resolution.alternatives}"
             )
-        pending = (
-            None if is_new_request
-            else self.dialogue_state.get(session_key, selected_task_id, workspace_scope)
-        )
         # An independently recognisable execution request starts a new task instead
         # of being consumed as an answer to an unrelated/stale pending question.
         if (pending and not selected_task_id and direct_resolution.explicit
@@ -412,6 +542,27 @@ class Executor:
                     "위 정보를 반영해 원래 요청을 이어서 완료하세요."
                 )
                 self.dialogue_state.delete(session_key, pending.task_id)
+                context_resolver = getattr(self, "context_resolver", None)
+                if context_resolver is not None:
+                    resolved = context_resolver.resolve(goal, history, session_key)
+                    if resolved.needs_clarification:
+                        question = (
+                            resolved.clarification_question
+                            or "어떤 대상을 말씀하시는지 조금 더 구체적으로 알려주세요."
+                        )
+                        next_pending = self.dialogue_state.create(
+                            session_key, pending.original_goal, question, history,
+                            pending.task_id, workspace_scope,
+                        )
+                        self.dialogue_state.transition_task(
+                            pending.task_id, "awaiting_user"
+                        )
+                        return ExecutionOutcome(
+                            f"{question}\n대기 작업 ID: {next_pending.task_id}",
+                            "awaiting_user", pending.original_goal, question,
+                            next_pending.task_id,
+                        )
+                    goal = resolved.resolved_request
             if progress_callback:
                 progress_callback(f"확인했습니다, 보스. 작업 {pending.task_id}을 이어서 진행하겠습니다.")
 
@@ -481,9 +632,14 @@ class Executor:
                 )
 
         if intent_resolution.ready:
-            return self._execute_resolved_intent(
-                intent_resolution, goal, session_key, agent_task_id, progress_callback
-            )
+            if self.intent_router.resolution_preserves_user_content(goal, intent_resolution):
+                return self._execute_resolved_intent(
+                    intent_resolution, goal, session_key, agent_task_id, progress_callback
+                )
+            # A fast-path intent that dropped quoted or labelled content is not
+            # executable. Let the constrained Planner reconstruct the complete
+            # Registry call instead of creating a superficially valid empty file.
+            intent_resolution = IntentResolution()
 
         # 선언형 Intent가 없는 요청도 Registry 설명과 의미 있게 맞는 실행 요청이면
         # 동적 Tool Loadout을 거쳐 Planner가 처리한다. 예전에는 이 지점에서 모두
@@ -491,29 +647,9 @@ class Executor:
         if (not intent_resolution.matched
                 and hasattr(self, "llm")
                 and hasattr(self, "tool_executor")):
-            if not self._should_attempt_registry_execution(goal):
+            if not self._should_attempt_registry_execution(goal, tool_scope):
                 return terminal_outcome(self._respond_conversationally(goal, history))
 
-        resolved = self.context_resolver.resolve(goal, history, session_key)
-        if resolved.needs_clarification:
-            question = resolved.clarification_question or "어떤 대상을 말씀하시는지 조금 더 구체적으로 알려주세요, 보스."
-            task = (self.dialogue_state.get_task(session_key, agent_task_id, workspace_scope)
-                    if agent_task_id else None)
-            if task:
-                self.dialogue_state.transition_task(task.task_id, "awaiting_user")
-            else:
-                task = self.dialogue_state.create_task(
-                    session_key, goal, workspace_path=workspace_scope
-                )
-            pending = self.dialogue_state.create(
-                session_key, goal, question, history, task.task_id, workspace_scope
-            )
-            self.dialogue_state.transition_task(task.task_id, "awaiting_user")
-            response = f"{question}\n대기 작업 ID: {pending.task_id}"
-            return ExecutionOutcome(response, "awaiting_user", goal, question, pending.task_id)
-        goal = resolved.resolved_request
-        if goal != resolved.original_request:
-            print(f"[Context] 요청 해석: {resolved.original_request!r} → {goal!r} (confidence={resolved.confidence:.2f})")
         unsupported = self._unsupported_capability_message(goal)
         if unsupported:
             return terminal_outcome(unsupported)
@@ -535,12 +671,44 @@ class Executor:
 
         # 1. 초기 Planning
         initial_context = self.build_context()
-        allowed_tools = self._allowed_tools_for_goal(goal)
+        if str(execution_context or "").strip():
+            # Specialist contracts and memories belong to the planner context,
+            # not to the user's utterance. Mixing machine metadata into `goal`
+            # poisoned intent routing with unrelated tool names (for example a
+            # Word request becoming ambiguous with HWPX/PDF).
+            initial_context = (
+                f"{initial_context}\n\n[전문가 작업공간 실행 맥락]\n"
+                f"{str(execution_context).strip()}"
+            )
+        allowed_tools = self._allowed_tools_for_goal(goal, tool_scope)
         planning_service = getattr(self, "planning_service", None)
         if planning_service is None:
             planning_service = PlanningService(self.planner)
             self.planning_service = planning_service
-        self.current_plan = planning_service.create(goal, initial_context, allowed_tools)
+        try:
+            self.current_plan = planning_service.create(goal, initial_context, allowed_tools)
+        except Exception as exc:
+            # A planning/provider failure is a real failed turn.  Never convert
+            # it to a vague tool-free fallback or leave a task stuck in running.
+            user_message = getattr(exc, "user_message", None)
+            if callable(user_message):
+                response = user_message()
+            elif isinstance(exc, PlanningError):
+                response = (
+                    "실행 가능한 작업 계획을 만들지 못했습니다. 실제 작업은 수행하지 "
+                    "않았으며, 요청을 더 작은 단계로 나누거나 도구 상태를 확인해야 합니다."
+                )
+            else:
+                response = "작업 계획 생성 중 오류가 발생해 실제 작업을 수행하지 않았습니다."
+            print(f"[Executor] 계획 생성 실패: {type(exc).__name__}: {exc}")
+            self.dialogue_state.transition_task(
+                agent_task_id, "failed", result=response,
+            )
+            with self._control_condition:
+                self._task_controls.pop(agent_task_id, None)
+            self.current_agent_task_id = ""
+            self._progress_callback = None
+            return ExecutionOutcome(response, "failed", goal, task_id=agent_task_id)
         planned_tasks = self.current_plan.steps
         self.dialogue_state.update_task(
             agent_task_id,
@@ -549,11 +717,7 @@ class Executor:
         )
         model_role_router = getattr(self, "model_role_router", None)
         if model_role_router is not None:
-            planned_tools = [
-                tool_name
-                for task in planned_tasks
-                for tool_name in getattr(task, "required_tools", [])
-            ]
+            planned_tools = [task.tool_name for task in planned_tasks if task.tool_name]
             specialist_role = model_role_router.route(
                 allowed_tools=allowed_tools or planned_tools
             )
@@ -591,7 +755,9 @@ class Executor:
         # run_iteration 루프는 하위 호환 메서드로만 남겨 두며 사용자 실행
         # 경로에서는 더 이상 별도의 JSON/Tool 선택 루프를 만들지 않는다.
         try:
-            run = self.execute_plan_dag(self.current_plan)
+            run = self.execute_plan_dag(
+                self.current_plan, allowed_tool_names=allowed_tools,
+            )
             return self._finish_plan_run(run, goal=goal, task_id=agent_task_id)
         finally:
             with self._control_condition:
@@ -618,6 +784,7 @@ class Executor:
         approval_callback: Optional[Callable[[PlanStep], bool]] = None,
         approved_step_ids: Optional[List[str]] = None,
         replan_callback: Optional[Callable[[PlanDAG, PlanStep, ToolRunResult], Optional[PlanDAG]]] = None,
+        allowed_tool_names: Optional[List[str]] = None,
     ) -> PlanRunResult:
         """Execute a prevalidated DAG through Tool, contract and verification boundaries."""
         contracts: Dict[str, Any] = {}
@@ -774,7 +941,8 @@ class Executor:
                     return None
                 return self.planner.replan_from_observation(
                     current, failed, result.raw_output, self.build_context(),
-                    self._allowed_tools_for_goal(current.goal),
+                    (list(allowed_tool_names) if allowed_tool_names is not None
+                     else self._allowed_tools_for_goal(current.goal)),
                 )
         coordinator = getattr(self, "plan_coordinator", None) or PlanCoordinator()
         self.plan_coordinator = coordinator
@@ -867,6 +1035,11 @@ class Executor:
             completed_steps=completed, failed_steps=failed,
             tool_result=(next(iter(outcome.results.values()))
                          if len(outcome.results) == 1 else None),
+            tool_results=tuple(
+                outcome.results[step.id]
+                for step in steps
+                if step.id in outcome.results
+            ),
         )
 
     @staticmethod
@@ -1615,14 +1788,14 @@ class Executor:
             context_parts.append(f"# 현재 Task\nID: {task.id}\n설명: {task.description}\n우선순위: {task.priority}\n")
 
         # 6. Context Manager (시스템 상태 + RAG 검색 결과 + OS 상태)
-        # 주의: 실제 메서드명은 get_full_context(user_query, session_id)입니다.
-        # 이전 코드는 존재하지 않는 get_context()를 호출해서 매번 예외가 나고 조용히 무시되고
-        # 있었습니다 (즉 OS 상태/RAG 검색 결과가 한 번도 Context에 포함된 적이 없었습니다).
-        # Memory/Scratchpad는 위 2, 3번에서 이미 넣었으므로 여기서는 일부 중복될 수 있지만,
-        # 최소 침습적으로 버그만 우선 고칩니다 (중복 제거는 별도 리팩토링에서 다룰 부분).
+        # 대화 기억과 scratchpad는 위에서 이미 현재 turn 기준으로 조립했으므로
+        # ContextManager가 같은 내용을 다시 넣지 않도록 명시적으로 제외한다.
         try:
             system_context = self.context_manager.get_full_context(
-                user_query=self.goal, session_id=self.session_id
+                user_query=self.goal,
+                session_id=self.session_id,
+                include_conversation=False,
+                include_scratchpad=False,
             )
             if system_context:
                 context_parts.append(f"# 시스템 상태 (System Context)\n{system_context}\n")
@@ -1655,9 +1828,11 @@ class Executor:
         "도구 호출" 또는 "일반 텍스트 응답" 둘 중 하나를 구조화된 형태로 반환하도록
         API 레벨에서 강제되므로 이 파싱 실패 자체가 원천적으로 줄어듭니다.
         """
-        # Tool Selector 전용 system prompt로 잠깐 교체 (끝나면 finally에서 원복)
+        # 역할별 LLM 클라이언트는 여러 GUI 작업과 전문가가 공유할 수 있다. 전역
+        # system_prompt를 잠깐 바꾸는 방식은 동시 호출에서 서로의 역할 프롬프트를
+        # 덮어쓰므로, 이 호출에만 적용되는 system 메시지로 전달한다.
         from core.assistant_settings import get_assistant_settings
-        self.reasoning_llm.set_system_prompt(
+        action_system_prompt = (
             f"당신은 {get_assistant_settings().assistant_name}의 Action Reasoner 겸 Tool Selector입니다.\n"
             "주어진 Task를 수행하기 위해 도구가 필요하면 반드시 제공된 도구 중 하나를 호출하세요.\n"
             "도구 없이 바로 답할 수 있는 간단한 작업이나 이미 끝난 작업이면, 도구를 호출하지 말고 "
@@ -1668,6 +1843,7 @@ class Executor:
         )
         try:
             messages = [
+                {"role": "system", "content": action_system_prompt},
                 {"role": "user", "content": f"Context:\n{context}\n\nTask: {task.description}\n\n이 Task를 수행하세요."}
             ]
             allowed_tools = self._allowed_tools_for_goal(getattr(self, "goal", ""))
@@ -1706,10 +1882,10 @@ class Executor:
 
         except Exception as e:
             print(f"[Executor] Action/Tool 결정 오류: {e}")
-            return {"action_type": "simple_task", "simple_result": f"Task 완료: {task.description}"}
-        finally:
-            # 다른 메서드(generate_response 등)에 영향 주지 않도록 원래 시스템 프롬프트로 복원
-            self.reasoning_llm.set_system_prompt(self._default_reasoning_prompt)
+            return {
+                "action_type": "error",
+                "simple_result": f"작업 방법을 결정하지 못했습니다: {e}",
+            }
 
     @staticmethod
     def _read_tool_use_block(block) -> tuple[Optional[str], Dict[str, Any]]:
@@ -1721,16 +1897,39 @@ class Executor:
             return block.get("name"), block.get("input") or {}
         return getattr(block, "name", None), getattr(block, "input", None) or {}
 
-    def _allowed_tools_for_goal(self, goal: str) -> Optional[List[str]]:
+    def _validated_tool_scope(
+        self, allowed_tool_names: Optional[List[str]],
+    ) -> Optional[List[str]]:
+        if allowed_tool_names is None:
+            return None
+        registry = getattr(getattr(self, "intent_router", None), "registry", None)
+        if registry is None:
+            return []
+        return list(dict.fromkeys(
+            str(name) for name in allowed_tool_names
+            if registry.get_capability(str(name)) is not None
+        ))
+
+    def _allowed_tools_for_goal(
+        self, goal: str, allowed_tool_names: Optional[List[str]] = None,
+    ) -> Optional[List[str]]:
         if not hasattr(self, "intent_router"):
             return None
         if not hasattr(self, "tool_loadout"):
             self.tool_loadout = ToolLoadoutSelector(self.intent_router.registry)
         resolution = self.intent_router.resolve(goal)
-        loadout = self.tool_loadout.select(goal, resolution)
+        tool_scope = self._validated_tool_scope(allowed_tool_names)
+        if (tool_scope is not None and resolution.matched
+                and resolution.tool_name not in tool_scope):
+            resolution = IntentResolution()
+        loadout = self.tool_loadout.select(
+            goal, resolution, allowed_tools=tool_scope,
+        )
         return list(loadout.tool_names)
 
-    def _should_attempt_registry_execution(self, goal: str) -> bool:
+    def _should_attempt_registry_execution(
+        self, goal: str, allowed_tool_names: Optional[List[str]] = None,
+    ) -> bool:
         """Route broad action requests without forcing ordinary chat into tools."""
         normalized = " ".join(str(goal or "").split())
         if not normalized or self._SOCIAL_ONLY_PATTERN.fullmatch(normalized):
@@ -1744,7 +1943,10 @@ class Executor:
             return False
         if not hasattr(self, "tool_loadout"):
             self.tool_loadout = ToolLoadoutSelector(self.intent_router.registry)
-        loadout = self.tool_loadout.select(normalized, IntentResolution())
+        loadout = self.tool_loadout.select(
+            normalized, IntentResolution(),
+            allowed_tools=self._validated_tool_scope(allowed_tool_names),
+        )
         # A non-empty, descriptor-grounded loadout is required. This prevents a
         # generic verb such as "해줘" from making the local model invent a tool.
         return bool(
@@ -2072,12 +2274,12 @@ class Executor:
             or self._GENERIC_ACTION_REQUEST_PATTERN.search(message)
         )
         if execution_requested:
-            # This branch has no ToolRunResult by construction.  Do not ask a
-            # language model to narrate an external action and then try to detect
-            # success wording: the structural absence of evidence is decisive.
+            # Reaching this method means no Registry execution path accepted the
+            # request.  The structural absence of ToolRunResult evidence is
+            # decisive, so never ask a conversational model to narrate success.
             return (
-                "이 요청은 실제 실행 결과가 필요한 작업이지만 연결된 도구 실행 증거가 없습니다. "
-                "완료했다고 안내하지 않고 지원되는 실행 경로를 다시 확인하겠습니다."
+                "실제 작업을 실행하지 않았습니다. 연결된 도구 실행 증거가 없어 "
+                "완료로 보고하지 않겠습니다. 지원되는 실행 경로를 다시 확인하겠습니다."
             )
         custom_voice, address, conversation_style = self._selected_voice_preferences()
         selected_profile = next(
@@ -2090,7 +2292,10 @@ class Executor:
         from core.assistant_settings import get_assistant_settings
         runtime_settings = get_assistant_settings()
         assistant_name = runtime_settings.assistant_name or str(selected_profile.get("assistant_name", "")).strip()
-        conversation_service = getattr(self, "conversation_service", ConversationService(self.llm))
+        conversation_service = getattr(self, "conversation_service", None)
+        if conversation_service is None:
+            conversation_service = ConversationService(self.llm)
+            self.conversation_service = conversation_service
         memory_context = build_relevant_knowledge_context(
             message, self._workspace_scope(), limit=6
         )

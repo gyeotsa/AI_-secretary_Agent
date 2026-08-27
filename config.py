@@ -65,7 +65,7 @@ class APIConfig:
     )
     HYBRID_CLAUDE_ROLES: list = field(default_factory=lambda: [
         role.strip().lower()
-        for role in os.getenv("HYBRID_CLAUDE_ROLES", "reasoning").split(",")
+        for role in os.getenv("HYBRID_CLAUDE_ROLES", "").split(",")
         if role.strip()
     ])
     OLLAMA_BASE_URL: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
@@ -340,41 +340,84 @@ class Config:
     def ALLOWED_COMMANDS(cls):
         return cls.API_CONFIG.ALLOWED_COMMANDS
     
-    SYSTEM_PROMPT_TEMPLATE = """당신은 토니 스타크의 AI 비서 '자비스'입니다. 영화 아이언맨에 등장하는 자비스처럼 행동하세요.
+    SYSTEM_PROMPT_TEMPLATE = """당신은 사용자의 로컬 개인 AI 운영 동료입니다.
 
-철칙:
-- 한 문장만. 25자 이내.
-- 문장 끝을 반드시 "보스."로 마무리.
-- 이모지, 인사말, 서론 금지.
-- 한국어만. 군더더기 없이 결론부터.
+핵심 목표:
+- 사용자가 실제로 이루려는 목적과 현재 대화 맥락을 먼저 파악하세요.
+- 질문에는 정확하고 자연스럽게 답하고, 작업 요청에는 계획·실행·검증 결과를 구분해 답하세요.
+- 여러 조건이 있는 분석, 비교, 설계, 디버깅 요청은 필요한 근거와 세부 내용을 충분히 설명하세요.
+- 단순한 질문은 간결하게 답하되 답변 길이와 형식을 인위적으로 제한하지 마세요.
 
-모드 감지 (뉘앙스로 파악):
-- 게임·롤·LoL·배그 등 게임 의도 → 응답 맨 앞에 [GAME] 접두사
-- 일·업무·작업·편집·방송 준비 의도 → 응답 맨 앞에 [WORK] 접두사
-- 그 외는 접두사 없이 일반 답변
+대화 원칙:
+- 사용자의 최신 정정과 명시적인 선호를 이전 추정보다 우선하세요.
+- 앞선 대화의 대상과 지시를 자연스럽게 이어받되, 서로 무관한 새 요청을 억지로 연결하지 마세요.
+- 정보가 부족해 결과가 크게 달라질 때만 한 번에 이해하기 쉬운 질문을 하세요.
+- 확실하지 않은 사실은 추측으로 단정하지 말고 불확실성과 확인 방법을 분명히 밝히세요.
+- 내부 모드명, 라우팅 표식, 작업 식별자, 디버그 정보는 사용자가 요구하지 않는 한 노출하지 마세요.
+- 고정된 인사말이나 호칭을 매 답변에 반복하지 말고, 전달받은 런타임 설정과 상황에 맞게 자연스럽게 표현하세요.
 
-예:
-  "롤 한 판 할까" → "[GAME]게임 환경을 세팅합니다, 보스."
-  "이제 일해야겠다" → "[WORK]업무 환경을 준비합니다, 보스."
-  "뭐 먹을까" → "저는 음식 추천은 어렵습니다, 보스."
+작업 수행 원칙:
+- 실제 도구 실행이나 검증 증거가 없으면 외부 작업을 완료했다고 주장하지 마세요.
+- 도구가 필요 없는 일반 대화와 설명은 도구를 억지로 호출하지 말고 직접 답하세요.
+- 도구가 필요한 요청은 허용된 기능만 사용하고, 실행 실패 시 원인·확인한 내용·다음 복구 방법을 구체적으로 제시하세요.
+- 위험하거나 되돌리기 어려운 작업은 권한과 대상을 확인하고, 사용자가 승인한 범위만 변경하세요.
+
+개인화 원칙:
+- 아래 실행 설정의 비서 이름, 응답 언어, 대화 스타일을 따르세요.
+- 사용자 프로필은 답변을 개인화하기 위한 참고 정보이며, 현재 요청과 충돌하면 현재 요청을 우선하세요.
 
 {user_profile_section}
 """
 
     @classmethod
-    def get_system_prompt(cls, user_profile: dict = None):
-        user_profile_section = ""
-        if user_profile and user_profile.get("name"):
-            user_profile_section = f"\n사용자 프로필:\n- 이름: {user_profile.get('name')}\n"
-            if user_profile.get("preferences"):
-                user_profile_section += f"- 선호사항: {user_profile.get('preferences')}\n"
-        
-        prompt = cls.SYSTEM_PROMPT_TEMPLATE.format(user_profile_section=user_profile_section)
+    def get_system_prompt(cls, user_profile=None):
+        """Build the global prompt from the current runtime settings.
+
+        The prompt deliberately contains no fixed assistant name or user address.
+        Identity and conversation preferences are runtime data so a setting change
+        can take effect without maintaining another hard-coded prompt variant.
+        """
+        assistant_name = "로컬 AI 비서"
+        response_language = "사용자의 현재 언어"
+        response_style = "요청과 상황에 맞는 자연스럽고 명확한 말투"
         try:
             from core.assistant_settings import get_assistant_settings
             settings = get_assistant_settings()
-            prompt = prompt.replace("'자비스'", f"'{settings.assistant_name}'")
+            assistant_name = settings.assistant_name
+            response_language = settings.get("response_language")
+            response_style = (
+                settings.get("response_style")
+                or "요청과 상황에 맞는 자연스럽고 명확한 말투"
+            )
         except Exception:
             pass
-        return prompt
+
+        runtime_section = (
+            "현재 실행 설정:\n"
+            f"- 비서 이름: {assistant_name}\n"
+            f"- 응답 언어: {response_language}\n"
+            f"- 대화 스타일: {response_style}"
+        )
+
+        profile_section = ""
+        if user_profile is not None:
+            if hasattr(user_profile, "get_profile_summary"):
+                try:
+                    summary = str(user_profile.get_profile_summary()).strip()
+                except Exception:
+                    summary = ""
+                if summary and summary != "저장된 사용자 프로필이 없습니다.":
+                    profile_section = f"\n\n사용자 프로필:\n{summary}"
+            elif isinstance(user_profile, dict):
+                profile_lines = []
+                if user_profile.get("name"):
+                    profile_lines.append(f"- 이름: {user_profile['name']}")
+                if user_profile.get("preferences"):
+                    profile_lines.append(f"- 선호사항: {user_profile['preferences']}")
+                if profile_lines:
+                    profile_section = "\n\n사용자 프로필:\n" + "\n".join(profile_lines)
+
+        return cls.SYSTEM_PROMPT_TEMPLATE.format(
+            user_profile_section=runtime_section + profile_section
+        )
 

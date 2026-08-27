@@ -24,6 +24,18 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     "gesture_camera_enabled": SettingDefinition(
         "gesture_camera_enabled", "손 제스처 카메라 자동 실행", "true", 5
     ),
+    "gesture_sensitivity": SettingDefinition(
+        "gesture_sensitivity", "손 제스처 민감도", "60", 3
+    ),
+    "gesture_command_enabled": SettingDefinition(
+        "gesture_command_enabled", "명령 제스처 사용", "false", 5
+    ),
+    "gesture_mapping": SettingDefinition(
+        "gesture_mapping", "제스처 동작 매핑",
+        '{"open_palm":"stop_tts","thumbs_up":"approve",'
+        '"closed_fist":"cancel","point_up":"next_workspace"}',
+        500,
+    ),
 }
 
 

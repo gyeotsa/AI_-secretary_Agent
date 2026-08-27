@@ -162,13 +162,27 @@ class MorningBriefService:
 
     def _runtime_health(self) -> SourceSection:
         plugins = self.plugin_registry.get_plugin_statuses() if self.plugin_registry else []
-        issues = [{"plugin": item.name, "diagnostics": item.diagnostics}
-                  for item in plugins if not item.verified]
+        issues = [{
+            "plugin": item.name,
+            "installation_state": item.installation_state,
+            "contract_state": item.contract_state,
+            "runtime_state": item.runtime_state,
+            "diagnostics": item.diagnostics,
+        } for item in plugins if (
+            item.installation_state == "failed"
+            or item.contract_state == "failed"
+            or item.runtime_state == "failed"
+        )]
+        unchecked = [
+            item.name for item in plugins if item.verification_state == "unchecked"
+        ]
         scheduler = (self.automation_engine.runtime_diagnostics()
                      if self.automation_engine and hasattr(self.automation_engine, "runtime_diagnostics")
                      else {"status": "disconnected"})
         return SourceSection("runtime", "Plugin·자동화 상태", "available",
-                             {"plugin_issues": issues, "scheduler": scheduler},
+                             {"plugin_issues": issues,
+                              "plugin_unchecked": unchecked,
+                              "scheduler": scheduler},
                              "PluginRegistry + AutomationEngine", self._now())
 
 

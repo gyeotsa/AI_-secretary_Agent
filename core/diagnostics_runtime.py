@@ -173,10 +173,23 @@ class DiagnosticsRuntime:
         if self.plugin_registry is None:
             return "failed", "Plugin Registry가 연결되지 않았습니다.", {}, "ToolExecutor 초기화를 확인하세요."
         statuses = self.plugin_registry.get_plugin_statuses()
-        failed = [item.name for item in statuses if not item.verified]
-        return ("warning" if failed else "passed", f"등록 {len(statuses)}개 · 계약 문제 {len(failed)}개",
-                {"plugins": [asdict(item) for item in statuses], "failed": failed},
-                "Plugin 진단 화면에서 계약 오류를 확인하세요." if failed else "")
+        failed = [
+            item.name for item in statuses
+            if item.installation_state == "failed" or item.contract_state == "failed"
+            or item.runtime_state == "failed"
+        ]
+        confirmed = sum(item.verification_state == "confirmed" for item in statuses)
+        unchecked = sum(item.verification_state == "unchecked" for item in statuses)
+        summary = (
+            f"등록 {sum(item.registered for item in statuses)}개 · "
+            f"실행 검증 {confirmed}개 · 미확인 {unchecked}개 · 실패 {len(failed)}개"
+        )
+        return ("warning" if failed or unchecked else "passed", summary,
+                {"plugins": [asdict(item) for item in statuses], "failed": failed,
+                 "unchecked": [item.name for item in statuses
+                               if item.verification_state == "unchecked"]},
+                "Plugin 진단 화면에서 실패와 미확인 상태를 구분해 확인하세요."
+                if failed or unchecked else "")
 
     def _tool_flow(self):
         if self.tool_executor is None:

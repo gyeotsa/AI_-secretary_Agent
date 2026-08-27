@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import base64
+import inspect
 import json
+from pathlib import Path
 import threading
 import time
 import uuid
@@ -43,8 +45,9 @@ class SpecialistRole:
 class TeamRun:
     workspace_key: str
     instruction: str
-    run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     artifacts: dict[str, Any] = field(default_factory=dict)
+    run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    workspace_contract: dict[str, Any] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
     status: str = "queued"
     current_role: str = ""
@@ -52,7 +55,8 @@ class TeamRun:
     updated_at: float = field(default_factory=time.time)
 
     def record(self, role: SpecialistRole, status: str, started_at: float, detail: str = "") -> None:
-        self.status = status if status == "failed" else self.status
+        if status in {"failed", "degraded"}:
+            self.status = status
         self.current_role = role.key
         self.updated_at = time.time()
         self.events.append({
@@ -118,11 +122,13 @@ class SpecialistTeamRuntime:
         "research": "researcher", "knowledge_graph": "curator",
     }
 
-    def __init__(self, rag=None, *, namespace_provider=None, event_pipeline=None, supervisor=None):
+    def __init__(self, rag=None, *, namespace_provider=None, event_pipeline=None, supervisor=None,
+                 tool_name_provider=None):
         self.rag = rag
         self.namespace_provider = namespace_provider or (lambda: "global")
         self.event_pipeline = event_pipeline
         self.supervisor = supervisor
+        self.tool_name_provider = tool_name_provider or self._registered_tool_names
         self._rag_lock = threading.RLock()
         self._active_run = threading.local()
         self._runs: dict[str, TeamRun] = {}
@@ -145,9 +151,11 @@ class SpecialistTeamRuntime:
         return f"{str(self.namespace_provider() or 'global')}:specialist:{workspace_key}"
 
     @contextmanager
-    def run(self, workspace_key: str, instruction: str, *, artifacts: dict | None = None) -> Iterator[TeamRun]:
+    def run(self, workspace_key: str, instruction: str, *, artifacts: dict | None = None,
+            workspace_contract: dict | None = None) -> Iterator[TeamRun]:
         state = TeamRun(workspace_key=workspace_key, instruction=instruction,
-                        artifacts=dict(artifacts or {}))
+                        artifacts=dict(artifacts or {}),
+                        workspace_contract=dict(workspace_contract or {}))
         previous = getattr(self._active_run, "value", None)
         self._active_run.value = state
         state.status = "running"
@@ -156,7 +164,7 @@ class SpecialistTeamRuntime:
         self._publish("specialist_team.started", state)
         try:
             yield state
-            if state.status != "failed":
+            if state.status == "running":
                 state.status = "completed"
         finally:
             state.updated_at = time.time()
@@ -203,6 +211,11 @@ class SpecialistTeamRuntime:
                     raise RuntimeError("실행 중 취소되었습니다.")
             else:
                 value = handler(run)
+            if role.output_artifact and not self._has_meaningful_output(value):
+                raise ValueError(
+                    f"{role.label}가 필수 산출물 '{role.output_artifact}'을 "
+                    "비어 있는 상태로 반환했습니다."
+                )
             if role.output_artifact:
                 run.artifacts[role.output_artifact] = value
             run.record(role, "completed", started)
@@ -234,6 +247,7 @@ class SpecialistTeamRuntime:
                 "current_role": item.current_role, "started_at": item.started_at,
                 "updated_at": item.updated_at, "events": list(item.events),
                 "artifacts": list(item.artifacts),
+                "workspace_contract": dict(item.workspace_contract),
             } for item in values]
 
     def execute_workspace_request(
@@ -252,8 +266,27 @@ class SpecialistTeamRuntime:
         execution_key = self.EXECUTION_ROLES.get(key)
         if execution_key is None:
             raise KeyError(f"실행 가능한 전문가 팀이 등록되지 않았습니다: {key}")
+        from core.specialist_workspaces import get_specialist_workspace_registry
+        spec = get_specialist_workspace_registry().get(key)
+        if spec is None:
+            raise KeyError(f"작업공간 실행 계약이 등록되지 않았습니다: {key}")
+        workspace_contract = self._resolve_workspace_contract(
+            spec.execution_contract(), executor_available=callable(invoke_executor),
+        )
         paths = [str(item) for item in attachments if str(item).strip()]
-        with self.run(key, instruction, artifacts={"attachments": paths}) as run:
+        with self.run(
+            key, instruction,
+            artifacts={"attachments": paths, "workspace_contract": workspace_contract},
+            workspace_contract=workspace_contract,
+        ) as run:
+            if not workspace_contract["readiness"]["ready"]:
+                run.status = "failed"
+                missing = workspace_contract["readiness"]["missing_tool_families"]
+                failed_checks = workspace_contract["readiness"]["failed_checks"]
+                raise RuntimeError(
+                    "전문가 작업공간 실행 준비가 되지 않았습니다: "
+                    f"누락 도구={missing}, 실패 점검={failed_checks}"
+                )
             memory_role = roles[0]
             memory = self.execute_role(
                 run, memory_role.key,
@@ -266,46 +299,118 @@ class SpecialistTeamRuntime:
             plan = self.execute_role(
                 run, planning_role.key,
                 lambda _run: self._build_specialist_plan(
-                    planning_role, instruction, memory, paths
+                    planning_role, instruction, memory, paths, workspace_contract
                 ),
                 release=(lambda: self._release_role(planning_role.model_role))
                 if release_models else None,
             )
+            if plan.get("planning_status") != "ready":
+                run.status = "degraded"
+                run.events[-1]["status"] = "degraded"
+                run.events[-1]["detail"] = str(plan.get("planning_error", "계획 품질 저하"))[:500]
             execution_role = next(role for role in roles if role.key == execution_key)
 
             def execute(_run: TeamRun):
-                attachment_text = "\n".join(f"- {path}" for path in paths) or "- 없음"
-                enriched = (
-                    f"사용자 요청: {instruction}\n\n"
-                    f"전문 작업공간: {key}\n첨부 파일:\n{attachment_text}\n\n"
-                    f"이 작업공간에서 승인된 관련 기억:\n{memory}\n\n"
-                    f"전문가 요구사항 분석:\n{json.dumps(plan, ensure_ascii=False, default=str)}\n\n"
-                    "사용자 요청을 최우선으로 실제 도구를 실행하고, 실행 증거가 없으면 완료라고 말하지 마세요."
+                execution_context = self._execution_context(
+                    key, memory, paths, plan,
                 )
-                outcome = invoke_executor(enriched)
+                allowed_tool_names = list(
+                    workspace_contract.get("readiness", {}).get("resolved_tools") or ()
+                )
+                try:
+                    signature = inspect.signature(invoke_executor)
+                    accepts_scope = (
+                        "allowed_tool_names" in signature.parameters
+                        or any(parameter.kind == inspect.Parameter.VAR_KEYWORD
+                               for parameter in signature.parameters.values())
+                    )
+                    accepts_context = (
+                        "execution_context" in signature.parameters
+                        or any(parameter.kind == inspect.Parameter.VAR_KEYWORD
+                               for parameter in signature.parameters.values())
+                    )
+                except (TypeError, ValueError):
+                    accepts_scope = False
+                    accepts_context = False
+                invoke_kwargs = {}
+                if accepts_scope:
+                    invoke_kwargs["allowed_tool_names"] = allowed_tool_names
+                if accepts_context:
+                    invoke_kwargs["execution_context"] = execution_context
+                # Preserve the original user utterance exactly at the intent
+                # boundary. Structured control data travels out-of-band.
+                outcome = invoke_executor(instruction, **invoke_kwargs)
                 return self._outcome_payload(outcome)
 
             executed = self.execute_role(run, execution_role.key, execute)
             reviewer = next(role for role in roles if role.key == "reviewer")
             verdict = self.execute_role(
                 run, reviewer.key,
-                lambda _run: self._review_execution(executed),
+                lambda _run: self._review_execution(
+                    executed, workspace_contract,
+                    planning_degraded=plan.get("planning_status") != "ready",
+                ),
             )
             outcome = executed.pop("_outcome")
-            if verdict["passed"]:
-                self.remember_success(
-                    key, instruction=instruction,
-                    result={**executed, "team_events": list(run.events),
-                            "quality_verdict": verdict},
-                    approved=False,
-                )
+            run.artifacts["execution_contract_result"] = {
+                "contract": workspace_contract,
+                "execution": {key: value for key, value in executed.items()},
+                "review": verdict,
+            }
+            if not verdict["passed"] and run.status != "failed":
+                run.status = "degraded"
             return outcome, run
+
+    @staticmethod
+    def _execution_context(workspace_key: str, memory: str, paths: list[str],
+                           plan: dict[str, Any]) -> str:
+        """Build planner-only context without leaking tool catalogs into intent text."""
+        compact_plan = {
+            key: plan.get(key)
+            for key in ("goal", "inputs", "constraints", "acceptance")
+            if plan.get(key) not in (None, "", [])
+        }
+        payload = {
+            "workspace": workspace_key,
+            "attachments": list(paths),
+            "approved_memory": memory,
+            "requirements": compact_plan,
+            "policy": "사용자 원문 우선, 실제 도구 증거가 없으면 완료 주장 금지",
+        }
+        return json.dumps(payload, ensure_ascii=False, default=str)
 
     @staticmethod
     def _outcome_payload(outcome: Any) -> dict[str, Any]:
         tool_result = getattr(outcome, "tool_result", None)
-        evidence = list(getattr(tool_result, "evidence", ()) or ())
-        artifacts = list(getattr(tool_result, "artifacts", ()) or ())
+        tool_results = list(getattr(outcome, "tool_results", ()) or ())
+        if tool_result is not None and all(item is not tool_result for item in tool_results):
+            tool_results.append(tool_result)
+        evidence = [
+            item for result in tool_results
+            for item in (getattr(result, "evidence", ()) or ())
+        ]
+        artifacts = [
+            item for result in tool_results
+            for item in (getattr(result, "artifacts", ()) or ())
+        ]
+        tool_names = [
+            str(getattr(result, "tool_name", "")).strip()
+            for result in tool_results
+            if str(getattr(result, "tool_name", "")).strip()
+        ]
+        tool_statuses = []
+        for result in tool_results:
+            status = getattr(result, "status", "")
+            tool_statuses.append(str(status.value if hasattr(status, "value") else status))
+        if tool_statuses and all(status == "succeeded" for status in tool_statuses):
+            aggregate_status = "succeeded"
+        elif tool_statuses:
+            aggregate_status = next(
+                (status for status in tool_statuses if status != "succeeded"),
+                tool_statuses[-1],
+            )
+        else:
+            aggregate_status = ""
         return {
             "_outcome": outcome,
             "status": str(getattr(outcome, "status", "failed")),
@@ -313,25 +418,84 @@ class SpecialistTeamRuntime:
             "task_id": str(getattr(outcome, "task_id", "")),
             "completed_steps": int(getattr(outcome, "completed_steps", 0) or 0),
             "failed_steps": int(getattr(outcome, "failed_steps", 0) or 0),
+            "tool_name": tool_names[0] if len(tool_names) == 1 else "",
+            "tool_names": list(dict.fromkeys(tool_names)),
+            "tool_status": aggregate_status,
+            "tool_statuses": tool_statuses,
+            "evidence": [SpecialistTeamRuntime._evidence_payload(item) for item in evidence],
+            "artifacts": [SpecialistTeamRuntime._artifact_payload(item) for item in artifacts],
             "evidence_count": len(evidence), "artifact_count": len(artifacts),
         }
 
     @staticmethod
-    def _review_execution(payload: dict[str, Any]) -> dict[str, Any]:
+    def _review_execution(payload: dict[str, Any], contract: dict[str, Any], *,
+                          planning_degraded: bool = False) -> dict[str, Any]:
         status = payload.get("status")
-        completed_steps = int(payload.get("completed_steps", 0) or 0)
-        evidence_count = int(payload.get("evidence_count", 0) or 0)
-        passed = status in {"completed", "partial"} and (
-            completed_steps > 0 or evidence_count > 0
-        )
         # Clarification and approval are valid non-terminal outcomes, but they
         # are not recorded as successful work or approved style memory.
         if status in {"awaiting_user", "awaiting_input", "awaiting_approval"}:
             return {"passed": False, "status": status,
                     "reason": "사용자 입력 또는 승인을 기다리고 있습니다."}
-        return {"passed": passed, "status": status,
-                "reason": "검증된 실행 단계/근거 확인" if passed
-                else "실행 증거가 없거나 작업이 실패했습니다."}
+        failures: list[str] = []
+        if status != "completed":
+            failures.append(f"실행 상태가 완료가 아닙니다: {status}")
+        if payload.get("tool_status") != "succeeded":
+            failures.append(f"도구 결과가 검증된 성공이 아닙니다: {payload.get('tool_status') or '없음'}")
+
+        evidence = [item for item in payload.get("evidence", [])
+                    if isinstance(item, dict) and item.get("kind") and item.get("summary")]
+        if not evidence:
+            failures.append("종류와 설명이 있는 실제 검증 근거가 없습니다.")
+        for item in evidence:
+            data = dict(item.get("data") or {})
+            if item.get("kind") == "docx_structure" and int(data.get("paragraphs") or 0) <= 0:
+                failures.append("Word 산출물이 존재하지만 실제 문단 내용이 없는 빈 문서입니다.")
+
+        expected_types = set(contract.get("artifact_types") or ())
+        artifacts = [item for item in payload.get("artifacts", [])
+                     if isinstance(item, dict)
+                     and item.get("kind") in expected_types and item.get("uri")]
+        valid_artifacts = [item for item in artifacts if SpecialistTeamRuntime._artifact_exists(item)]
+        if expected_types and not valid_artifacts:
+            failures.append("작업공간 산출물 계약을 충족하는 실제 산출물이 없습니다.")
+
+        tool_names = {
+            str(item).strip() for item in (
+                payload.get("tool_names") or [payload.get("tool_name", "")]
+            ) if str(item).strip()
+        }
+        resolved_tools = set(contract.get("readiness", {}).get("resolved_tools") or ())
+        unexpected_tools = sorted(tool_names - resolved_tools) if resolved_tools else []
+        if unexpected_tools:
+            failures.append(
+                "작업공간 계약 밖의 도구가 실행되었습니다: " + ", ".join(unexpected_tools)
+            )
+        if planning_degraded:
+            failures.append("전문가 계획이 구조화 검증을 통과하지 못해 저하 모드로 실행되었습니다.")
+
+        passed = not failures
+        criteria_results = [{
+            "criterion": criterion,
+            "verified": passed,
+            "verification": "tool_evidence_and_artifact_contract" if passed else "not_verified",
+            "evidence": [item["summary"] for item in evidence],
+            "artifacts": [item["uri"] for item in valid_artifacts],
+        } for criterion in contract.get("acceptance_criteria") or ()]
+        return {
+            "passed": passed,
+            "status": "completed" if passed else "degraded",
+            "reason": "산출물 계약, 도구 성공 상태, 실제 근거를 모두 확인했습니다."
+            if passed else " ".join(failures),
+            "accepted_artifacts": valid_artifacts,
+            "evidence": evidence,
+            "acceptance_criteria": list(contract.get("acceptance_criteria") or ()),
+            "criteria_results": criteria_results,
+            "readiness_checks": {
+                **dict(contract.get("readiness", {}).get("checks") or {}),
+                "verified_evidence": bool(evidence),
+                "artifact_contract_satisfied": bool(valid_artifacts) or not expected_types,
+            },
+        }
 
     @staticmethod
     def _release_role(model_role: str) -> None:
@@ -346,8 +510,9 @@ class SpecialistTeamRuntime:
 
     @staticmethod
     def _build_specialist_plan(role: SpecialistRole, instruction: str,
-                               memory: str, attachments: list[str]) -> dict[str, Any]:
-        """Use the selected role model; fall back to an explicit minimal plan."""
+                               memory: str, attachments: list[str],
+                               workspace_contract: dict[str, Any]) -> dict[str, Any]:
+        """Use the selected role model and expose, rather than hide, degradation."""
         try:
             from core.llm import get_llm_client
             client = get_llm_client(role.model_role)
@@ -358,7 +523,8 @@ class SpecialistTeamRuntime:
                     "사용자 목표·입력·제약·검수 기준·필요 도구를 JSON 객체로만 정리한다."
                 ),
             }, {"role": "user", "content": (
-                f"요청: {instruction}\n관련 기억: {memory}\n첨부: {attachments}"
+                f"요청: {instruction}\n관련 기억: {memory}\n첨부: {attachments}\n"
+                f"실행 계약: {json.dumps(workspace_contract, ensure_ascii=False)}"
             )}]
             if "image" in getattr(getattr(client, "profile", None), "modalities", ()):
                 images = []
@@ -370,17 +536,31 @@ class SpecialistTeamRuntime:
                         continue
                 if images:
                     messages[-1]["images"] = images
-            schema = {"type": "object", "properties": {
-                "goal": {"type": "string"}, "inputs": {"type": "array"},
-                "constraints": {"type": "array"}, "acceptance": {"type": "array"},
-                "tools": {"type": "array"},
-            }, "required": ["goal", "acceptance"]}
+            string_array = {"type": "array", "items": {"type": "string"}}
+            schema = {
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string"},
+                    "inputs": string_array,
+                    "constraints": string_array,
+                    "acceptance": string_array,
+                    "tools": string_array,
+                },
+                "required": ["goal", "inputs", "constraints", "acceptance", "tools"],
+                "additionalProperties": False,
+            }
             raw = client.chat_structured(messages, json_schema=schema)
-            start, end = raw.find("{"), raw.rfind("}")
-            if start >= 0 and end > start:
-                parsed = json.loads(raw[start:end + 1])
-                if isinstance(parsed, dict) and parsed.get("goal"):
-                    return parsed
+            if isinstance(raw, dict):
+                parsed = raw
+            else:
+                raw = str(raw or "")
+                start, end = raw.find("{"), raw.rfind("}")
+                parsed = json.loads(raw[start:end + 1]) if start >= 0 and end > start else None
+            parsed = SpecialistTeamRuntime._normalize_specialist_plan(parsed)
+            if SpecialistTeamRuntime._valid_specialist_plan(parsed):
+                parsed["planning_status"] = "ready"
+                parsed["workspace_contract"] = workspace_contract
+                return parsed
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
         else:
@@ -388,9 +568,173 @@ class SpecialistTeamRuntime:
         return {
             "goal": instruction, "inputs": list(attachments),
             "constraints": ["사용자 원문 우선", "실행 증거 없는 완료 주장 금지"],
-            "acceptance": ["요청 결과를 실제 도구 결과와 증거로 검증"],
-            "tools": [], "planner_fallback": error,
+            "acceptance": list(workspace_contract.get("acceptance_criteria") or ()),
+            "tools": list(workspace_contract.get("readiness", {}).get("resolved_tools") or ()),
+            "planning_status": "degraded", "planning_error": error,
+            "workspace_contract": workspace_contract,
         }
+
+    @staticmethod
+    def _registered_tool_names() -> tuple[str, ...]:
+        from core.tools import get_tool_names
+        return tuple(get_tool_names())
+
+    _TOOL_FAMILY_ALIASES = {
+        "vision": ("analyze_image", "visual_analyze", "video_sample_analyze"),
+        "image_renderer": ("mockup_render",),
+        "rag_knowledge": ("rag_", "search_docs", "add_document"),
+        "knowledge_memory": ("memory_", "add_semantic_memory", "search_semantic_memory"),
+        "filesystem": ("filesystem_", "read_file", "write_file", "create_directory"),
+        "system_tools": ("run_command", "runtime_", "gpu_runtime_status"),
+    }
+
+    @classmethod
+    def _matches_tool_family(cls, tool_name: str, family: str) -> bool:
+        name, group = str(tool_name), str(family)
+        candidates = cls._TOOL_FAMILY_ALIASES.get(group, (f"{group}_", group))
+        return any(name == candidate or name.startswith(candidate) for candidate in candidates)
+
+    def _resolve_workspace_contract(self, contract: dict[str, Any], *,
+                                    executor_available: bool = True) -> dict[str, Any]:
+        registry_error = ""
+        try:
+            registered = tuple(dict.fromkeys(str(item) for item in self.tool_name_provider()))
+        except Exception as exc:
+            registered = ()
+            registry_error = f"{type(exc).__name__}: {exc}"
+        families = tuple(contract.get("required_tools") or ())
+        family_matches = {
+            family: [name for name in registered if self._matches_tool_family(name, family)]
+            for family in families
+        }
+        missing = [family for family, matches in family_matches.items() if not matches]
+        resolved = sorted({name for matches in family_matches.values() for name in matches})
+        checks = {
+            "required_tools_registered": not missing and not registry_error,
+            "executor_available": bool(executor_available),
+            # This is intentionally pending until the reviewer sees ToolRunResult.
+            "verified_evidence": False,
+        }
+        requested_checks = tuple(contract.get("readiness_checks") or ())
+        blocking_checks = [name for name in requested_checks
+                           if name != "verified_evidence" and not checks.get(name, False)]
+        return {
+            **contract,
+            "readiness": {
+                "ready": not missing and not blocking_checks,
+                "missing_tool_families": missing,
+                "failed_checks": blocking_checks,
+                "registry_error": registry_error,
+                "resolved_tools": resolved,
+                "family_matches": family_matches,
+                "checks": checks,
+            },
+        }
+
+    @staticmethod
+    def _valid_specialist_plan(value: Any) -> bool:
+        if not isinstance(value, dict) or not str(value.get("goal", "")).strip():
+            return False
+        acceptance = value.get("acceptance")
+        if not isinstance(acceptance, list) or not acceptance or not all(
+            isinstance(item, str) and item.strip() for item in acceptance
+        ):
+            return False
+        for key in ("inputs", "constraints", "tools"):
+            if key not in value or not isinstance(value[key], list) or not all(
+                isinstance(item, str) and item.strip() for item in value[key]
+            ):
+                return False
+        return True
+
+    @staticmethod
+    def _normalize_specialist_plan(value: Any) -> dict[str, Any] | None:
+        """Normalize schema-near local-model output without hiding bad plans.
+
+        Some local providers return ``[{"name": ...}]`` even when the schema
+        asks for ``array[string]``.  We preserve the meaningful scalar value,
+        but still reject missing/empty contract fields in ``_valid_specialist_plan``.
+        """
+        if not isinstance(value, dict):
+            return None
+        normalized = dict(value)
+        key_preferences = {
+            "inputs": ("value", "path", "content", "description", "name", "type"),
+            "constraints": ("description", "value", "name", "type"),
+            "acceptance": ("criterion", "description", "value", "name"),
+            "tools": ("name", "tool", "value", "description"),
+        }
+        for field, preferences in key_preferences.items():
+            items = normalized.get(field, [])
+            if not isinstance(items, list):
+                continue
+            converted: list[str] = []
+            for item in items:
+                if isinstance(item, str) and item.strip():
+                    converted.append(item.strip())
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                scalar = next(
+                    (item.get(key) for key in preferences
+                     if isinstance(item.get(key), (str, int, float, bool))
+                     and str(item.get(key)).strip()),
+                    None,
+                )
+                if scalar is not None:
+                    converted.append(str(scalar).strip())
+            normalized[field] = list(dict.fromkeys(converted))
+        return normalized
+
+    @staticmethod
+    def _has_meaningful_output(value: Any) -> bool:
+        """Reject role-play stages that produced no usable contract artifact."""
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (bytes, bytearray, list, tuple, set, frozenset, dict)):
+            return bool(value)
+        return True
+
+    @staticmethod
+    def _evidence_payload(item: Any) -> dict[str, Any]:
+        if isinstance(item, dict):
+            return {
+                "kind": str(item.get("kind", "")),
+                "summary": str(item.get("summary", "")),
+                "data": dict(item.get("data") or {}),
+            }
+        return {
+            "kind": str(getattr(item, "kind", "")),
+            "summary": str(getattr(item, "summary", "")),
+            "data": dict(getattr(item, "data", {}) or {}),
+        }
+
+    @staticmethod
+    def _artifact_payload(item: Any) -> dict[str, Any]:
+        if isinstance(item, dict):
+            return {
+                "kind": str(item.get("kind", "")),
+                "uri": str(item.get("uri", "")),
+                "metadata": dict(item.get("metadata") or {}),
+            }
+        return {
+            "kind": str(getattr(item, "kind", "")),
+            "uri": str(getattr(item, "uri", "")),
+            "metadata": dict(getattr(item, "metadata", {}) or {}),
+        }
+
+    @staticmethod
+    def _artifact_exists(item: dict[str, Any]) -> bool:
+        kind, uri = str(item.get("kind", "")), str(item.get("uri", "")).strip()
+        if not uri:
+            return False
+        if kind == "url":
+            return uri.casefold().startswith(("http://", "https://"))
+        if kind in {"knowledge_entity", "knowledge_relation", "semantic_memory"}:
+            return True
+        return Path(uri).exists()
 
     @staticmethod
     def _publish(event_type: str, run: TeamRun) -> None:
@@ -407,18 +751,54 @@ class SpecialistTeamRuntime:
     def recall(self, workspace_key: str, query: str, *, top_k: int = 6) -> SpecialistContext:
         if self.rag is None or not str(query).strip():
             return SpecialistContext(workspace_key, query, ())
-        with self._rag_lock:
-            original = getattr(self.rag, "namespace", "global")
-            try:
-                self.rag.set_namespace(self.namespace(workspace_key))
-                results = self.rag.search_docs(query, top_k=top_k)
-                return SpecialistContext(workspace_key, query, tuple(results or ()))
-            finally:
-                self.rag.set_namespace(original)
+        search = self.rag.search_docs
+        target_namespace = self.namespace(workspace_key)
+        kwargs = {"top_k": top_k}
+        if self._accepts_keyword(search, "metadata_filter"):
+            kwargs["metadata_filter"] = {"approved": True}
+
+        if self._accepts_keyword(search, "namespace"):
+            # Built-in RAG path: the namespace belongs to this recall operation,
+            # so concurrent specialist teams cannot overwrite one another.
+            results = search(query, namespace=target_namespace, **kwargs)
+        else:
+            # Compatibility boundary for legacy/lightweight adapters. Only this
+            # path mutates their default namespace and it remains serialized.
+            with self._rag_lock:
+                original = getattr(self.rag, "namespace", "global")
+                setter = getattr(self.rag, "set_namespace", None)
+                try:
+                    if callable(setter):
+                        setter(target_namespace)
+                    results = search(query, **kwargs)
+                finally:
+                    if callable(setter):
+                        setter(original)
+
+        approved = tuple(
+            item for item in (results or ())
+            if isinstance(item, dict) and item.get("approved") is True
+        )
+        return SpecialistContext(workspace_key, query, approved)
+
+    @staticmethod
+    def _accepts_keyword(callable_obj, keyword: str) -> bool:
+        try:
+            parameters = inspect.signature(callable_obj).parameters.values()
+        except (TypeError, ValueError):
+            return False
+        return any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            or parameter.name == keyword
+            for parameter in parameters
+        )
 
     def remember_success(self, workspace_key: str, *, instruction: str, result: dict,
                          approved: bool = False) -> str:
-        if self.rag is None or not str(instruction).strip():
+        # Drafts and merely executed outputs must never become retrieval memory.
+        # The workspace UI calls this with approved=True only after the user saves
+        # the reviewed preview/result.
+        if not approved or self.rag is None or not str(instruction).strip():
             return ""
         summary = {
             "workspace": workspace_key,

@@ -6,7 +6,7 @@ openness and swipe speed without hard-coding every future gesture in the loop.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Optional
 import math
@@ -18,6 +18,50 @@ import urllib.request
 from core.runtime.event_bus import Event, get_event_bus
 
 
+GESTURE_POSE_LABELS = {
+    "open_palm": "손바닥 펼치기",
+    "thumbs_up": "엄지 올리기",
+    "closed_fist": "주먹 쥐기",
+    "point_up": "검지 올리기",
+}
+
+GESTURE_ACTION_LABELS = {
+    "": "동작 없음",
+    "stop_tts": "음성 출력 중지",
+    "approve": "승인",
+    "cancel": "취소",
+    "next_workspace": "다음 전문가 작업공간",
+    "toggle_chat": "채팅 영역 접기/펼치기",
+}
+
+DEFAULT_GESTURE_MAPPING = {
+    "open_palm": "stop_tts",
+    "thumbs_up": "approve",
+    "closed_fist": "cancel",
+    "point_up": "next_workspace",
+}
+
+
+def normalize_gesture_sensitivity(value) -> int:
+    """Return a stable 0..100 sensitivity value for persisted/UI input."""
+    try:
+        numeric = int(round(float(value)))
+    except (TypeError, ValueError):
+        numeric = 60
+    return max(0, min(100, numeric))
+
+
+def normalize_gesture_mapping(mapping) -> dict[str, str]:
+    """Keep only supported physical poses and safe in-app actions."""
+    source = mapping if isinstance(mapping, dict) else {}
+    allowed_actions = set(GESTURE_ACTION_LABELS)
+    normalized = {}
+    for pose in GESTURE_POSE_LABELS:
+        action = str(source.get(pose, DEFAULT_GESTURE_MAPPING[pose]) or "").strip()
+        normalized[pose] = action if action in allowed_actions else DEFAULT_GESTURE_MAPPING[pose]
+    return normalized
+
+
 @dataclass(frozen=True)
 class GestureStatus:
     enabled: bool
@@ -27,6 +71,9 @@ class GestureStatus:
     last_gesture: str = ""
     error: str = ""
     privacy: str = "local-only; frames are not stored"
+    sensitivity: int = 60
+    command_gestures_enabled: bool = False
+    gesture_mapping: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -106,6 +153,29 @@ class GestureTuning:
     two_hand_phase_release_seconds: float = 0.10
     zoom_deadband: float = 0.003
 
+    def with_sensitivity(self, value) -> "GestureTuning":
+        """Scale recognition gates while preserving explicit device fields.
+
+        Fifty reproduces the historical thresholds. Higher values accept a
+        smaller/faster-to-confirm movement; lower values deliberately require a
+        larger and cleaner swipe. The returned immutable object is safe to swap
+        while the capture thread is running.
+        """
+        sensitivity = normalize_gesture_sensitivity(value)
+        normalized = sensitivity / 100.0
+        threshold_scale = 1.45 - (0.90 * normalized)
+        return replace(
+            self,
+            track_velocity_alpha=max(0.28, min(0.78, 0.34 + normalized * 0.34)),
+            swipe_min_openness=max(0.40, min(0.72, 0.68 - normalized * 0.20)),
+            swipe_enter_velocity=max(0.20, min(0.68, 0.42 * threshold_scale)),
+            swipe_exit_velocity=max(0.08, min(0.28, 0.16 * threshold_scale)),
+            swipe_horizontal_ratio=max(1.12, min(1.62, 1.57 - normalized * 0.42)),
+            swipe_min_travel=max(0.020, min(0.070, 0.045 * threshold_scale)),
+            swipe_release_seconds=max(0.06, min(0.16, 0.14 - normalized * 0.08)),
+            swipe_cooldown=max(0.16, min(0.55, 0.50 - normalized * 0.32)),
+        )
+
 
 @dataclass(frozen=True)
 class HandMotion:
@@ -178,6 +248,7 @@ class GestureRecognizer:
     predicate: Callable[[object], bool]
     cooldown: float = 1.5
     hold_seconds: float = 0.8
+    action: str = ""
 
 
 class GestureRuntime:
@@ -190,15 +261,21 @@ class GestureRuntime:
 
     def __init__(self, *, camera_index: int = 0, actions: dict[str, Callable] | None = None,
                  model_path: str | None = None, enable_command_gestures: bool = False,
-                 tuning: GestureTuning | None = None):
+                 tuning: GestureTuning | None = None, sensitivity: int = 60,
+                 gesture_mapping: dict[str, str] | None = None):
         self.camera_index = int(camera_index)
         self.actions = dict(actions or {})
-        self.tuning = tuning or GestureTuning()
+        self.sensitivity = normalize_gesture_sensitivity(sensitivity)
+        self._base_tuning = tuning or GestureTuning()
+        self.tuning = self._base_tuning.with_sensitivity(self.sensitivity)
+        self.command_gestures_enabled = bool(enable_command_gestures)
+        self.gesture_mapping = normalize_gesture_mapping(gesture_mapping)
         configured = model_path or os.getenv("JARVIS_HAND_LANDMARKER_MODEL", "")
         self.model_path = Path(configured or "data/models/mediapipe/hand_landmarker.task")
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_gesture = ""
+        self._last_pose = ""
         self._error = ""
         self._cooldown_until: dict[str, float] = {}
         self._ready = threading.Event()
@@ -219,24 +296,68 @@ class GestureRuntime:
         self._last_mode_active = False
         self._candidate_gesture = ""
         self._candidate_since = 0.0
-        if enable_command_gestures:
+        if self.command_gestures_enabled:
             self._register_builtin_gestures()
 
     def _register_builtin_gestures(self) -> None:
-        self.register_gesture("stop_tts", lambda points: self._classify(points) == "stop_tts")
-        self.register_gesture("approve", lambda points: self._classify(points) == "approve")
-        self.register_gesture("cancel", lambda points: self._classify(points) == "cancel")
+        self._recognizers = [
+            item for item in self._recognizers if not item.name.startswith("builtin_pose:")
+        ]
+        pose_classes = {
+            "open_palm": "stop_tts",
+            "thumbs_up": "approve",
+            "closed_fist": "cancel",
+            "point_up": "switch_workspace",
+        }
+        if not self.command_gestures_enabled:
+            return
+        for pose, legacy_class in pose_classes.items():
+            action = self.gesture_mapping.get(pose, "")
+            if not action:
+                continue
+            self.register_gesture(
+                f"builtin_pose:{pose}",
+                lambda points, expected=legacy_class: self._classify(points) == expected,
+                action=action,
+            )
+
+    def configure(self, *, sensitivity=None, command_gestures_enabled=None,
+                  gesture_mapping=None) -> dict:
+        """Apply persisted UI configuration without restarting the camera."""
+        if sensitivity is not None:
+            self.sensitivity = normalize_gesture_sensitivity(sensitivity)
+            self.tuning = self._base_tuning.with_sensitivity(self.sensitivity)
+            self._reset_motion_state(tracking_state=self._tracking_state)
+        if gesture_mapping is not None:
+            self.gesture_mapping = normalize_gesture_mapping(gesture_mapping)
+        if command_gestures_enabled is not None:
+            self.command_gestures_enabled = bool(command_gestures_enabled)
+        if gesture_mapping is not None or command_gestures_enabled is not None:
+            self._register_builtin_gestures()
+            self._candidate_gesture = ""
+            self._candidate_since = 0.0
+            self._last_gesture = ""
+            self._last_pose = ""
+        return self.configuration()
+
+    def configuration(self) -> dict:
+        return {
+            "sensitivity": self.sensitivity,
+            "command_gestures_enabled": self.command_gestures_enabled,
+            "gesture_mapping": dict(self.gesture_mapping),
+        }
 
     def register_gesture(self, name: str, predicate: Callable[[object], bool], *, cooldown: float = 1.5,
-                         hold_seconds: float = 0.8, callback: Callable | None = None) -> None:
+                         hold_seconds: float = 0.8, callback: Callable | None = None,
+                         action: str | None = None) -> None:
         """Register an opt-in command gesture with a stable-hold safety gate."""
         self._recognizers = [item for item in self._recognizers if item.name != name]
         self._recognizers.append(GestureRecognizer(
             str(name), predicate, max(0.0, float(cooldown)),
-            max(0.0, float(hold_seconds)),
+            max(0.0, float(hold_seconds)), str(action or name),
         ))
         if callback is not None:
-            self.actions[str(name)] = callback
+            self.actions[str(action or name)] = callback
 
     def register_event(self, gesture: str, callback: Callable[[dict], None]) -> None:
         """Subscribe to a continuous gesture without modifying the capture loop.
@@ -300,6 +421,9 @@ class GestureRuntime:
             bool(dependency["available"]), self._running, self.camera_index,
             dependency["backend"], self._last_gesture,
             self._error or dependency.get("error", ""),
+            sensitivity=self.sensitivity,
+            command_gestures_enabled=self.command_gestures_enabled,
+            gesture_mapping=dict(self.gesture_mapping),
         ))
 
     def start(self, *, ready_timeout: float = 5.0) -> GestureStatus:
@@ -986,12 +1110,14 @@ class GestureRuntime:
             self._candidate_gesture = ""
             self._candidate_since = 0.0
             self._last_gesture = ""
+            self._last_pose = ""
         return motion
 
     def _handle_hand_loss(self, now: float, *, emit_events: bool) -> None:
         self._candidate_gesture = ""
         self._candidate_since = 0.0
         self._last_gesture = ""
+        self._last_pose = ""
         if self._last_hand_seen is None:
             return
         elapsed = now - self._last_hand_seen
@@ -1043,6 +1169,7 @@ class GestureRuntime:
         self._hand_count_state = _HandCountState()
         self._two_hand_intent = _TwoHandIntentState()
         self._last_mode_active = False
+        self._last_pose = ""
         self._tracking_state = tracking_state
 
     def _emit_gesture_event(self, gesture_event: GestureEvent) -> None:
@@ -1086,10 +1213,11 @@ class GestureRuntime:
             self._candidate_gesture = ""
             self._candidate_since = 0.0
             self._last_gesture = ""
+            self._last_pose = ""
             return
 
         name = matched_recognizer.name
-        if name == self._last_gesture:
+        if name == self._last_pose:
             return
         if self._candidate_gesture != name:
             self._candidate_gesture = name
@@ -1102,7 +1230,7 @@ class GestureRuntime:
         self._cooldown_until[name] = now + matched_recognizer.cooldown
         self._candidate_gesture = ""
         self._candidate_since = 0.0
-        self._dispatch(name)
+        self._dispatch(matched_recognizer.action or name, pose=name)
 
     @staticmethod
     def _classify(points) -> str:
@@ -1120,9 +1248,13 @@ class GestureRuntime:
             return "switch_workspace"
         return ""
 
-    def _dispatch(self, gesture: str) -> None:
+    def _dispatch(self, gesture: str, *, pose: str = "") -> None:
         self._last_gesture = gesture
+        self._last_pose = pose or gesture
         callback = self.actions.get(gesture)
         if callback:
             callback()
-        get_event_bus().publish(Event("gesture.recognized", "gesture_runtime", data={"gesture": gesture}))
+        get_event_bus().publish(Event(
+            "gesture.recognized", "gesture_runtime",
+            data={"gesture": gesture, "pose": pose or gesture},
+        ))

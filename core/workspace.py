@@ -97,6 +97,7 @@ class WorkspaceManager:
             return False
 
     def restore_last_workspace(self) -> bool:
+        pruned = self._prune_transient_workspace_records()
         key = self._state.get("last_workspace", "")
         record = self._state.get("workspaces", {}).get(key, {})
         path = record.get("path", key)
@@ -105,11 +106,17 @@ class WorkspaceManager:
             # prevent the application from starting. Keep history but clear auto-restore.
             if key:
                 self._state["last_workspace"] = ""
+            if key or pruned:
                 try:
                     self._save_state()
                 except OSError as exc:
                     print(f"[Workspace] 복원 상태 정리 실패: {exc}")
             return False
+        if pruned:
+            try:
+                self._save_state()
+            except OSError as exc:
+                print(f"[Workspace] 임시 테스트 기록 정리 실패: {exc}")
         return self.set_workspace(path)
 
     @staticmethod
@@ -127,11 +134,36 @@ class WorkspaceManager:
                 return False
             candidate = Path(path).resolve()
             project_root = self.state_path.parent.parent.resolve()
-            return candidate.is_relative_to(project_root) and any(
+            project_transient = candidate.is_relative_to(project_root) and any(
                 part.casefold() in {".pytest-tmp", ".pytest_cache"} for part in candidate.parts
             )
+            system_temp = Path(tempfile.gettempdir()).resolve()
+            pytest_basetemp = candidate.is_relative_to(system_temp) and any(
+                part.casefold().startswith(("pytest-of-", "pytest-"))
+                for part in candidate.parts
+            )
+            return project_transient or pytest_basetemp
         except (OSError, ValueError, TypeError):
             return False
+
+    def _prune_transient_workspace_records(self) -> bool:
+        """Remove only test-run records from the real user catalog.
+
+        Custom state files are intentionally left untouched so tests and portable
+        callers can use temporary directories as legitimate workspaces.
+        """
+        if self.state_path.resolve() != Path("data/workspaces.json").resolve():
+            return False
+        workspaces = self._state.get("workspaces", {})
+        removed = [
+            key for key, record in list(workspaces.items())
+            if self._is_transient_test_path(record.get("path", key))
+        ]
+        for key in removed:
+            workspaces.pop(key, None)
+        if self._state.get("last_workspace") in removed:
+            self._state["last_workspace"] = ""
+        return bool(removed)
 
     def list_workspaces(self) -> List[WorkspaceInfo]:
         result: List[WorkspaceInfo] = []

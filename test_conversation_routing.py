@@ -86,9 +86,7 @@ def test_conversation_path_blocks_unexecuted_completion_claim(tmp_path):
 
     assert "실제 작업을 실행하지 않았습니다" in outcome.response
     assert "완료로 보고하지 않겠습니다" in outcome.response
-    assert "외부 작업을 완료했다고 절대 주장하지 마세요" in (
-        executor.llm.messages[0]["content"]
-    )
+    assert executor.llm.messages is None
 
 
 def test_conversation_guard_does_not_rewrite_ordinary_chat(tmp_path):

@@ -34,12 +34,25 @@ class WordPlugin(BasePlugin):
                 for text in data.get("paragraphs") or []: doc.add_paragraph(str(text))
                 path.parent.mkdir(parents=True,exist_ok=True); doc.save(path)
                 saved=Document(path)
+                saved_texts = [paragraph.text for paragraph in saved.paragraphs]
+                requested_texts = []
+                if data.get("title"):
+                    requested_texts.append(str(data["title"]))
+                requested_texts.extend(str(item) for item in (data.get("paragraphs") or []))
+                missing = [text for text in requested_texts if text not in saved_texts]
+                if missing:
+                    return ToolRunResult.failed(
+                        tool_name=name,
+                        error="저장한 DOCX를 다시 열었지만 요청 내용이 누락되었습니다: "
+                        + ", ".join(missing),
+                    )
                 return ToolRunResult.successful(
                     tool_name=name,
                     raw_output=f"Word 문서 생성 성공: {path}",
                     evidence=[Evidence(
                         "docx_structure", "저장된 Word 문서를 다시 열어 문단 구조를 확인했습니다.",
-                        {"path":str(path),"paragraphs":len(saved.paragraphs),"size":path.stat().st_size},
+                        {"path":str(path),"paragraphs":len(saved.paragraphs),
+                         "paragraph_texts":saved_texts,"size":path.stat().st_size},
                     )],
                     artifacts=[Artifact("document",str(path),{"format":"docx"})],
                 )

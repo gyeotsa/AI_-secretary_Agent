@@ -164,6 +164,8 @@ class BrainOrbitWidget(QWidget):
         self._exit_candidate_at: float | None = None
         self._exit_candidate_samples = 0
         self._last_gesture_wall = 0.0
+        self._gesture_sensitivity = 60
+        self._gesture_response_gain = 1.0
         self._manual_enter_at: float | None = None
         self._manual_exit_at: float | None = None
         self._manual_portal_active = False
@@ -271,6 +273,17 @@ class BrainOrbitWidget(QWidget):
         self.setToolTip(self.camera_error or "카메라 영상은 로컬에서만 처리되며 저장되지 않습니다.")
         self.update()
 
+    def set_gesture_sensitivity(self, value: int) -> None:
+        """Apply the same user sensitivity to visual motion and recognition.
+
+        The camera runtime controls whether a movement is recognized; this gain
+        controls how far the already-recognized movement travels on screen.
+        Keeping both sides tied to one setting avoids a slider that appears to
+        work while the visual response remains unchanged.
+        """
+        self._gesture_sensitivity = max(0, min(100, int(value)))
+        self._gesture_response_gain = 0.55 + (self._gesture_sensitivity / 100.0) * 1.35
+
     def apply_gesture_motion(self, payload: dict) -> None:
         zoom_signal = min(1.0, max(0.0, float(payload.get("zoom", 0.0))))
         timestamp = float(payload.get("timestamp", 0.0) or 0.0)
@@ -301,17 +314,19 @@ class BrainOrbitWidget(QWidget):
                 self.target_zoom = min(self.target_zoom, 1.18)
             vx = float(payload.get("velocity_x", swipe) or 0.0)
             vy = float(payload.get("velocity_y", 0.0) or 0.0)
-            if abs(vx) > .012:
-                self.yaw_velocity = max(-.095, min(.095, -vx * .040))
-                self.angular_velocity = max(-.085, min(.085, -vx * .035))
-            if abs(vy) > .012:
-                self.pitch_velocity = max(-.070, min(.070, vy * .034))
+            response = self._gesture_response_gain
+            motion_gate = .012 / max(.55, response)
+            if abs(vx) > motion_gate:
+                self.yaw_velocity = max(-.095, min(.095, -vx * .040 * response))
+                self.angular_velocity = max(-.085, min(.085, -vx * .035 * response))
+            if abs(vy) > motion_gate:
+                self.pitch_velocity = max(-.070, min(.070, vy * .034 * response))
             # Deep in the knowledge sphere, the same one-hand movement also
             # shifts the camera slightly.  It feels like travelling through a
             # 2.5D volume while orientation remains continuous.
             if self.portal_progress > .58:
-                self.pan_velocity_x = max(-6.0, min(6.0, -vx * 3.8))
-                self.pan_velocity_y = max(-5.0, min(5.0, vy * 3.2))
+                self.pan_velocity_x = max(-6.0, min(6.0, -vx * 3.8 * response))
+                self.pan_velocity_y = max(-5.0, min(5.0, vy * 3.2 * response))
             return
 
         if (gesture_hand_count != 2 or not gesture_mode_active or not zoom_active

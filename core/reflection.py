@@ -1,6 +1,6 @@
 from typing import Optional, Dict, Any
 from core.llm import get_llm_client
-from core.scratchpad import get_scratchpad
+from core.scratchpad import Scratchpad, get_scratchpad
 
 
 class Reflection:
@@ -11,9 +11,9 @@ class Reflection:
     - 재계획 필요 여부 반환
     """
 
-    def __init__(self):
-        self.llm = get_llm_client("reasoning")
-        self.scratchpad = get_scratchpad()
+    def __init__(self, *, llm=None, scratchpad: Optional[Scratchpad] = None):
+        self.llm = llm or get_llm_client("reasoning")
+        self.scratchpad = scratchpad or get_scratchpad()
 
     def analyze_failure(self, error: str, task_description: str) -> Dict[str, Any]:
         """

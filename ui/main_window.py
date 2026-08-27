@@ -15,6 +15,7 @@ from .specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindo
 from .knowledge_graph_workspace import KnowledgeGraphWindow
 from .command_center import CommandCenterDialog
 from .brain_orbit import BrainOrbitWidget
+from .gesture_settings import GestureSettingsDialog
 
 MAIN_STYLE = """
 QWidget { color: #dce8f5; font-family: "Segoe UI"; font-size: 12px; }
@@ -798,7 +799,7 @@ class PluginDiagnosticsDialog(QDialog):
         self.setWindowTitle("Plugin 상태 및 진단")
         self.resize(760, 520)
         layout = QVBoxLayout(self)
-        guide = QLabel("설치 · 연결 · 인증 · 계약 검증은 서로 다른 상태입니다.")
+        guide = QLabel("등록 · 설치 · 연결 · 인증 · 계약 · 실제 실행 검증은 서로 다른 상태입니다.")
         guide.setStyleSheet("color: #00d4ff; padding: 6px;")
         layout.addWidget(guide)
         self.plugin_list = QListWidget()
@@ -819,16 +820,33 @@ class PluginDiagnosticsDialog(QDialog):
         self.refresh()
 
     @staticmethod
-    def _mark(value):
-        return "정상" if value else "필요"
+    def _mark(value=None, state=""):
+        labels = {
+            "confirmed": "확인",
+            "failed": "실패",
+            "unchecked": "미확인",
+            "not_applicable": "해당 없음",
+            "partial": "부분 확인",
+        }
+        if state in labels:
+            return labels[state]
+        if value is True:
+            return "확인"
+        if value is False:
+            return "실패"
+        return "미확인"
 
     def refresh(self):
         self.plugin_list.clear()
         for status in self.plugin_registry.get_plugin_statuses():
             item = QListWidgetItem(
                 f"{status.name}  v{status.version}  | "
-                f"설치 {self._mark(status.installed)} · 연결 {self._mark(status.connected)} · "
-                f"인증 {self._mark(status.authenticated)} · 검증 {self._mark(status.verified)}"
+                f"등록 {'확인' if status.registered else '실패'} · "
+                f"설치 {self._mark(status.installed, status.installation_state)} · "
+                f"연결 {self._mark(status.connected, status.connection_state)} · "
+                f"인증 {self._mark(status.authenticated, status.authentication_state)} · "
+                f"실행 {self._mark(None, status.runtime_state)} · "
+                f"검증 {self._mark(status.verified, status.verification_state)}"
             )
             item.setData(Qt.ItemDataRole.UserRole, status)
             self.plugin_list.addItem(item)
@@ -843,9 +861,19 @@ class PluginDiagnosticsDialog(QDialog):
         diagnostics = "\n".join(f"- {item}" for item in status.diagnostics) or "- 발견된 문제가 없습니다."
         self.details.setPlainText(
             f"Plugin: {status.name}\nVersion: {status.version}\n"
-            f"설치됨: {status.installed}\n연결됨: {status.connected}\n"
-            f"인증됨: {status.authenticated}\n검증됨: {status.verified}\n"
-            f"활성화됨: {status.enabled}\n\n진단\n{diagnostics}"
+            f"등록: {'확인' if status.registered else '실패'}\n"
+            f"설치: {self._mark(status.installed, status.installation_state)}\n"
+            f"연결: {self._mark(status.connected, status.connection_state)}\n"
+            f"인증: {self._mark(status.authenticated, status.authentication_state)}\n"
+            f"계약: {self._mark(None, status.contract_state)}\n"
+            f"실제 실행: {self._mark(None, status.runtime_state)}\n"
+            f"종합 검증: {self._mark(status.verified, status.verification_state)}\n"
+            f"활성화됨: {status.enabled}\n"
+            f"마지막 Tool: {status.last_tool or '없음'}\n"
+            f"실행 요약: {status.runtime_summary}\n\n"
+            f"실행 증거\n"
+            f"{chr(10).join(f'- {item}' for item in status.runtime_evidence) or '- 없음'}\n\n"
+            f"진단\n{diagnostics}"
         )
 
 class JarvisMainWindow(QWidget):
@@ -862,6 +890,7 @@ class JarvisMainWindow(QWidget):
     task_control_requested = pyqtSignal(str, str)
     specialist_prompt_submitted = pyqtSignal(object)
     gesture_camera_requested = pyqtSignal(bool)
+    gesture_settings_requested = pyqtSignal(object)
     
     def __init__(self, audio_processor=None):
         super().__init__()
@@ -884,6 +913,12 @@ class JarvisMainWindow(QWidget):
         self.command_center_services = {}
         self.command_center_dialog = None
         self.gesture_camera_running = False
+        self.gesture_camera_status = {}
+        self.gesture_configuration = {
+            "sensitivity": 60,
+            "command_gestures_enabled": False,
+            "gesture_mapping": {},
+        }
         self.chat_collapsed = False
         self.current_session_id = ""
         self.specialist_registry = get_specialist_workspace_registry()
@@ -999,6 +1034,13 @@ class JarvisMainWindow(QWidget):
             lambda: self.gesture_camera_requested.emit(not self.gesture_camera_running)
         )
         tab_layout.addWidget(self.gesture_camera_btn)
+
+        self.gesture_settings_btn = QPushButton("G⚙")
+        self.gesture_settings_btn.setObjectName("toolbarButton")
+        self.gesture_settings_btn.setFixedSize(42, 35)
+        self.gesture_settings_btn.setToolTip("손 제스처 민감도·동작 매핑")
+        self.gesture_settings_btn.clicked.connect(self.show_gesture_settings)
+        tab_layout.addWidget(self.gesture_settings_btn)
         
         tab_layout.addStretch()
         
@@ -1712,6 +1754,7 @@ class JarvisMainWindow(QWidget):
             "plugins": self.show_plugin_diagnostics,
             "voice": self.show_tts_voice_settings,
             "specialists": self.show_specialist_hub,
+            "gesture": self.show_gesture_settings,
         }
         callback = actions.get(surface)
         if callback is not None:
@@ -1725,6 +1768,7 @@ class JarvisMainWindow(QWidget):
             self.command_center_dialog.apply_gesture_motion(payload)
 
     def set_gesture_camera_status(self, status: dict):
+        self.gesture_camera_status = dict(status or {})
         self.gesture_camera_running = bool(status.get("running"))
         self.gesture_camera_btn.setText("G●" if self.gesture_camera_running else "G")
         error = str(status.get("error") or "")
@@ -1733,8 +1777,35 @@ class JarvisMainWindow(QWidget):
                       if self.gesture_camera_running else "손 제스처 카메라 꺼짐")
         )
         self.brain_orbit.set_camera_status(status)
+        self.set_gesture_configuration(status)
         if self.command_center_dialog is not None:
             self.command_center_dialog.set_gesture_camera_status(status)
+
+    def set_gesture_configuration(self, configuration: dict):
+        if not isinstance(configuration, dict):
+            return
+        for key in ("sensitivity", "command_gestures_enabled", "gesture_mapping"):
+            if key in configuration:
+                self.gesture_configuration[key] = configuration[key]
+        sensitivity = int(self.gesture_configuration.get("sensitivity", 60) or 60)
+        self.brain_orbit.set_gesture_sensitivity(sensitivity)
+        if self.command_center_dialog is not None:
+            self.command_center_dialog.brain_map.set_gesture_sensitivity(sensitivity)
+
+    def show_gesture_settings(self):
+        status = {
+            **self.gesture_camera_status,
+            "running": self.gesture_camera_running,
+            **self.gesture_configuration,
+        }
+        dialog = GestureSettingsDialog(self.gesture_configuration, status, self)
+        dialog.preview_changed.connect(
+            lambda config: self.gesture_settings_requested.emit({**config, "persist": False})
+        )
+        dialog.settings_saved.connect(
+            lambda config: self.gesture_settings_requested.emit({**config, "persist": True})
+        )
+        dialog.exec()
 
     def show_plugin_diagnostics(self):
         if self.plugin_registry is None:
@@ -1770,6 +1841,19 @@ class JarvisMainWindow(QWidget):
         window.raise_()
         window.activateWindow()
         return window
+
+    def cycle_specialist_workspace(self):
+        """Move to the next real specialist surface without opening a shell."""
+        specs = list(self.specialist_registry.all())
+        if not specs:
+            return None
+        visible_key = next(
+            (key for key, window in self.specialist_windows.items() if window.isVisible()),
+            "",
+        )
+        keys = [spec.key for spec in specs]
+        next_index = (keys.index(visible_key) + 1) % len(keys) if visible_key in keys else 0
+        return self.open_specialist_workspace(keys[next_index])
 
     def open_knowledge_graph_note(self, relative_path: str):
         """Open the graph workspace with the double-clicked Vault note selected."""

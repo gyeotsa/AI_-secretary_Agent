@@ -1,8 +1,10 @@
 import sqlite3
+import threading
 import time
 
 from core.knowledge_memory import EpistemicStatus, KnowledgeMemoryStore, KnowledgeRecord, MemoryKind
 from core.memory_pipeline import MemoryEventPipeline
+from core.rag import VectorRAGManager
 
 
 class FakeConsolidator:
@@ -54,6 +56,11 @@ def test_retrieval_usage_tracks_inclusion(tmp_path):
     pipeline = MemoryEventPipeline(tmp_path / "events.db")
     trace = pipeline.record_retrieval("질문", [{"chunk_id": "c1", "source": "note.md"}])
     pipeline.mark_included(trace, ["c1"])
+    # 검색 결과를 prompt에 넣었다는 사실과 최종 답변이 실제 근거로 사용했다는
+    # 사실은 서로 다른 품질 지표다. 사용 여부는 답변 합성기가 명시적으로
+    # 확인한 뒤에만 기록한다.
+    assert pipeline.retrieval_summary() == {"total": 1, "included": 1, "used": 0}
+    pipeline.mark_used(trace, ["c1"])
     assert pipeline.retrieval_summary() == {"total": 1, "included": 1, "used": 1}
 
 
@@ -70,3 +77,53 @@ def test_memory_lifecycle_expires_stale_records_and_reports_conflicts(tmp_path):
     assert old.record_id in report["expired_ids"]
     assert report["conflicts"]
     assert store.get(old.record_id).status == "expired"
+
+
+def _simple_rag(tmp_path):
+    manager = VectorRAGManager.__new__(VectorRAGManager)
+    manager.data_dir = str(tmp_path)
+    manager.rag_file = str(tmp_path / "simple_rag.json")
+    manager.documents = {}
+    manager.namespace = "global"
+    manager._store_lock = threading.RLock()
+    manager.usage_tracker = None
+    manager.last_retrieval_trace = ""
+    manager._retrieval_local = threading.local()
+    manager.use_vector_rag = False
+    manager.reranker = None
+    return manager
+
+
+def test_concurrent_workspace_rag_operations_keep_namespaces_isolated(tmp_path):
+    manager = _simple_rag(tmp_path)
+    barrier = threading.Barrier(2)
+    observed = {}
+
+    def worker(namespace, content):
+        manager.add_text_document(
+            content, doc_id="same-id", namespace=namespace,
+            metadata={"approved": True},
+        )
+        barrier.wait(timeout=2)
+        observed[namespace] = manager.search_docs(
+            "공통검색어", namespace=namespace, top_k=5,
+        )
+
+    first = threading.Thread(
+        target=worker, args=("project-a:specialist:document", "공통검색어 A전용"),
+    )
+    second = threading.Thread(
+        target=worker, args=("project-b:specialist:document", "공통검색어 B전용"),
+    )
+    first.start(); second.start()
+    first.join(3); second.join(3)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert manager.namespace == "global"
+    assert [item["content"] for item in observed["project-a:specialist:document"]] == [
+        "공통검색어 A전용"
+    ]
+    assert [item["content"] for item in observed["project-b:specialist:document"]] == [
+        "공통검색어 B전용"
+    ]
+    assert (tmp_path / "simple_rag.json").is_file()

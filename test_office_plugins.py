@@ -1,6 +1,8 @@
 import ctypes
 import json
 
+from docx import Document
+
 from core.plugin import PluginRegistry
 from core.tool_result import ToolRunResult, ToolRunStatus
 from core.verifier import ToolVerifier
@@ -71,9 +73,41 @@ def test_document_intents_resolve_desktop_paths_without_core_branches():
         assert resolved.slots["path"].endswith(filename)
 
 
+def test_word_intent_preserves_explicit_title_and_body_for_fast_path(tmp_path):
+    registry = PluginRegistry()
+    registry.register_plugin(WordPlugin())
+    router = IntentRouter(registry)
+    path = tmp_path / "contract.docx"
+    request = (
+        f'{path} 경로에 제목은 "전문가 팀 실사용 검증", '
+        '본문은 "실제 도구 증거와 문서 내용이 모두 확인되었습니다."인 Word 문서를 생성해줘.'
+    )
+
+    resolved = router.resolve(request)
+
+    assert resolved.ready
+    assert resolved.slots["path"] == str(path)
+    assert resolved.slots["title"] == "전문가 팀 실사용 검증"
+    assert resolved.slots["paragraphs"] == [
+        "실제 도구 증거와 문서 내용이 모두 확인되었습니다."
+    ]
+    assert router.resolution_preserves_user_content(request, resolved)
+
+
 def test_new_file_verifier_checks_real_output(tmp_path):
-    path=tmp_path/"result.docx"; path.write_bytes(b"content")
+    path=tmp_path/"result.docx"
+    document = Document()
+    document.add_paragraph("검증할 실제 문서")
+    document.save(path)
     assert ToolVerifier().verify("word_create_document",{"path":str(path)},"성공").success
+
+
+def test_new_file_verifier_rejects_corrupted_office_output(tmp_path):
+    path = tmp_path / "broken.docx"
+    path.write_bytes(b"content")
+    result = ToolVerifier().verify("word_create_document", {"path": str(path)}, "성공")
+    assert not result.success
+    assert result.verified
 
 
 def test_office_create_tools_return_typed_evidence(tmp_path, monkeypatch):
@@ -91,6 +125,25 @@ def test_office_create_tools_return_typed_evidence(tmp_path, monkeypatch):
         assert result.succeeded
         assert result.evidence[0].kind == evidence_kind
         assert result.artifacts[0].uri == data["path"]
+
+
+def test_word_create_evidence_contains_reopened_document_text(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.Config.API_CONFIG.ALLOWED_PATHS", [str(tmp_path)])
+    path = tmp_path / "verified-content.docx"
+
+    result = WordPlugin().execute_tool("word_create_document", {
+        "path": str(path),
+        "title": "전문가 팀 실사용 검증",
+        "paragraphs": ["실제 도구 증거와 문서 내용이 모두 확인되었습니다."],
+    })
+
+    assert isinstance(result, ToolRunResult) and result.succeeded
+    data = result.evidence[0].data
+    assert data["paragraphs"] == 2
+    assert data["paragraph_texts"] == [
+        "전문가 팀 실사용 검증",
+        "실제 도구 증거와 문서 내용이 모두 확인되었습니다.",
+    ]
 
 
 def test_windows_launch_intent_bypasses_planner_and_resolves_configured_alias():

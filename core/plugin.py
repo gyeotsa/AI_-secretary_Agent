@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
 import importlib
 import inspect
+import json
 import platform
 import threading
 import time
+import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
@@ -35,13 +39,18 @@ class ToolSchema:
     timeout_seconds: float = 120.0
     max_retries: int = 0
     cancellable: bool = False
+    idempotency: str = "auto"
 
     def __post_init__(self):
         actions = set(self.name.casefold().split("_"))
         if self.side_effect == "auto":
             if actions & {"get", "read", "list", "find", "search", "status", "diff", "log"}:
                 self.side_effect = "read"
-            elif "mail_send" in self.required_permissions or actions & {"send", "push", "publish"}:
+            elif "mail_send" in self.required_permissions or actions & {
+                "send", "push", "publish", "pay", "payment", "purchase",
+                "checkout", "charge", "transfer", "buy", "sell", "order",
+                "refund",
+            }:
                 self.side_effect = "external_send"
             elif actions & {"create", "write", "update", "delete", "remove", "add", "commit", "set"}:
                 self.side_effect = "change"
@@ -62,6 +71,12 @@ class ToolSchema:
                     "artifacts": {"type": "array"},
                 },
             }
+        if self.idempotency == "auto":
+            # Read operations are intrinsically safe to repeat.  Mutating and
+            # externally visible operations need a caller-provided key so the
+            # registry can collapse duplicate submissions without executing
+            # the plugin twice.
+            self.idempotency = "intrinsic" if self.side_effect == "read" else "registry"
 
 
 @dataclass(frozen=True)
@@ -77,6 +92,8 @@ class CapabilityContract:
     timeout_seconds: float
     max_retries: int
     cancellable: bool
+    idempotency: str = "none"
+    automatic_retry_allowed: bool = False
 
 
 @dataclass
@@ -153,15 +170,96 @@ class CancellationToken:
 
 
 @dataclass(frozen=True)
+class ToolExecutionContext:
+    """Immutable identity and cooperative-cancellation context for one run."""
+
+    execution_id: str
+    tool_name: str
+    idempotency_key: str
+    attempt: int
+    started_at: float
+    cancellation_token: CancellationToken = field(compare=False, repr=False)
+
+    @property
+    def cancelled(self) -> bool:
+        return self.cancellation_token.cancelled
+
+    def raise_if_cancelled(self) -> None:
+        self.cancellation_token.raise_if_cancelled()
+
+
+@dataclass
+class _ExecutionState:
+    execution_id: str
+    tool_name: str
+    token: CancellationToken
+    started_at: float
+    future: Any = None
+
+
+@dataclass
+class _DeduplicationRecord:
+    execution_id: str
+    tool_name: str
+    idempotency_key: str = ""
+    request_fingerprint: str = ""
+    execution_ids: set[str] = field(default_factory=set)
+    created_at: float = field(default_factory=time.monotonic)
+    completed_at: float = 0.0
+    result: Optional[PluginToolOutput] = None
+    done: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass(frozen=True)
 class PluginStatus:
     name: str
     version: str
-    installed: bool
-    connected: bool
-    authenticated: bool
-    verified: bool
+    installed: Optional[bool]
+    connected: Optional[bool]
+    authenticated: Optional[bool]
+    verified: Optional[bool]
     enabled: bool
     diagnostics: List[str] = field(default_factory=list)
+    registered: bool = True
+    installation_state: str = "unchecked"
+    connection_state: str = "not_applicable"
+    authentication_state: str = "not_applicable"
+    contract_state: str = "unchecked"
+    verification_state: str = "unchecked"
+    runtime_state: str = "unchecked"
+    runtime_summary: str = "실제 도구 실행 이력이 없습니다."
+    runtime_evidence: List[str] = field(default_factory=list)
+    last_tool: str = ""
+    last_execution_at: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class PluginStateProbe:
+    """One independently evidenced plugin status axis.
+
+    ``confirmed`` and ``failed`` are the only conclusive states.  A missing
+    probe is represented as ``not_applicable``; configured-but-not-tested
+    integrations use ``unchecked``.  This prevents an importable package from
+    being presented as a working network/account integration.
+    """
+
+    state: str
+    summary: str = ""
+    evidence: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.state not in {
+            "confirmed", "failed", "unchecked", "not_applicable", "partial",
+        }:
+            raise ValueError(f"알 수 없는 Plugin 상태: {self.state}")
+
+
+def _state_as_optional_bool(state: str) -> Optional[bool]:
+    if state == "confirmed":
+        return True
+    if state == "failed":
+        return False
+    return None
 
 
 class BasePlugin(ABC):
@@ -190,8 +288,64 @@ class BasePlugin(ABC):
     def get_intents(self) -> List[IntentSchema]: return []
     def extract_slots(self, intent_name: str, text: str, current_slots: Dict[str, Any]) -> Dict[str, Any]: return dict(current_slots)
     def present_result(self, tool_name: str, result: PluginToolOutput) -> str: return str(result)
-    def is_connected(self) -> bool: return True
-    def is_authenticated(self) -> bool: return not self.auth_required
+    def is_connected(self) -> Optional[bool]:
+        """Legacy connection probe.
+
+        ``None`` means that this plugin has no connection probe.  Subclasses
+        must return ``True`` only after checking a real local/remote endpoint,
+        not merely because a Python dependency imported successfully.
+        """
+        return None
+
+    def is_authenticated(self) -> Optional[bool]:
+        """Legacy authentication probe; ``None`` means not yet verified."""
+        return None
+
+    def probe_connection(self) -> PluginStateProbe:
+        if type(self).is_connected is BasePlugin.is_connected:
+            return PluginStateProbe("not_applicable", "연결 상태를 요구하지 않는 로컬 Plugin입니다.")
+        try:
+            value = self.is_connected()
+        except Exception as exc:
+            return PluginStateProbe(
+                "failed", f"연결 상태 확인 실패: {type(exc).__name__}: {exc}",
+            )
+        if value is True:
+            return PluginStateProbe("confirmed", "Plugin이 실제 연결 상태를 확인했습니다.")
+        if value is False:
+            return PluginStateProbe("failed", "Plugin 연결 확인에 실패했습니다.")
+        return PluginStateProbe("unchecked", "연결 설정은 있으나 실제 연결은 아직 확인하지 않았습니다.")
+
+    def probe_authentication(self) -> PluginStateProbe:
+        if not self.auth_required:
+            return PluginStateProbe("not_applicable", "인증이 필요하지 않습니다.")
+        if type(self).is_authenticated is BasePlugin.is_authenticated:
+            return PluginStateProbe(
+                "unchecked", f"{self.auth_type} 인증을 확인하는 probe가 구현되지 않았습니다.",
+            )
+        try:
+            value = self.is_authenticated()
+        except Exception as exc:
+            return PluginStateProbe(
+                "failed", f"인증 상태 확인 실패: {type(exc).__name__}: {exc}",
+            )
+        if value is True:
+            return PluginStateProbe("confirmed", f"{self.auth_type} 인증을 실제 확인했습니다.")
+        if value is False:
+            return PluginStateProbe("failed", f"{self.auth_type} 인증이 없거나 유효하지 않습니다.")
+        return PluginStateProbe(
+            "unchecked", f"{self.auth_type} 설정은 있으나 실제 인증은 아직 확인하지 않았습니다.",
+        )
+
+    def get_execution_context(self) -> Optional[ToolExecutionContext]:
+        """Return this worker's context without changing legacy tool inputs.
+
+        Plugins that support cooperative cancellation can call
+        ``context.raise_if_cancelled()`` during long-running work.  The
+        context is thread-local, so concurrent runs of the same tool never
+        share cancellation state.
+        """
+        return self.registry.current_execution_context() if self.registry else None
 
     def diagnose(self) -> List[str]:
         issues = []
@@ -202,12 +356,28 @@ class BasePlugin(ABC):
                 importlib.import_module(dependency)
             except ImportError:
                 issues.append(f"의존성 누락: {dependency}")
-        if not self.is_connected(): issues.append("연결되지 않음")
-        if self.auth_required and not self.is_authenticated(): issues.append(f"인증 필요: {self.auth_type}")
+            except OSError as exc:
+                # Native packages (torch/OpenCV/COM wrappers, etc.) can import
+                # the Python module but fail while loading a DLL.  Treat this
+                # as an isolated plugin installation failure, never a process
+                # startup crash.
+                issues.append(f"의존성 DLL 로드 실패: {dependency} ({exc})")
         return issues
 
 
 class PluginRegistry:
+    _NON_RETRYABLE_EFFECTS = frozenset({"execute", "change", "external_send"})
+    _IRREVERSIBLE_ACTIONS = frozenset({
+        "send", "push", "publish", "delete", "remove", "commit", "write",
+        "create", "update", "set", "launch", "close", "execute", "run",
+        "pay", "payment", "purchase", "checkout", "charge", "transfer",
+        "buy", "sell", "order", "refund",
+    })
+    _IRREVERSIBLE_PERMISSIONS = frozenset({
+        "filesystem_write", "git_commit", "git_push", "mail_send",
+        "cloud_account", "windows_api",
+    })
+
     def __init__(self):
         self.plugins: Dict[str, BasePlugin] = {}
         self._tools: Dict[str, tuple[BasePlugin, ToolSchema]] = {}
@@ -215,7 +385,20 @@ class PluginRegistry:
         self._event_bus = get_event_bus()
         self._loaded_directories: set[str] = set()
         self._executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="jarvis-tool")
+        self._state_lock = threading.RLock()
+        self._execution_local = threading.local()
+        self._executions: Dict[str, _ExecutionState] = {}
+        self._active_by_tool: Dict[str, set[str]] = {}
+        # Kept as a compatibility alias for callers/tests that inspected the
+        # old mapping.  It is now keyed by execution_id, never by tool name.
         self._cancellations: Dict[str, CancellationToken] = {}
+        self._execution_records: Dict[str, _DeduplicationRecord] = {}
+        self._idempotency_records: Dict[tuple[str, str], _DeduplicationRecord] = {}
+        self._deduplication_ttl_seconds = 3600.0
+        self._deduplication_max_records = 1024
+        self._load_failures: Dict[str, Dict[str, Any]] = {}
+        self._runtime_by_plugin: Dict[str, Dict[str, Any]] = {}
+        self._runtime_by_tool: Dict[str, Dict[str, Any]] = {}
 
     def register_plugin(self, plugin: BasePlugin):
         if not plugin.name:
@@ -235,6 +418,13 @@ class PluginRegistry:
         self._tools.update({tool.name: (plugin, tool) for tool in tools})
         self._intents.update({intent.name: (plugin, intent) for intent in intents})
         self._event_bus.subscribe("*", plugin.on_event)
+        self._runtime_by_plugin.setdefault(plugin.name, {
+            "state": "unchecked",
+            "summary": "실제 도구 실행 이력이 없습니다.",
+            "evidence": [],
+            "last_tool": "",
+            "last_execution_at": None,
+        })
         print(f"[Plugin] Registered: {plugin.name} v{plugin.version}")
 
     def unregister_plugin(self, plugin_name: str):
@@ -255,9 +445,12 @@ class PluginRegistry:
         entry = self._tools.get(tool_name)
         if not entry or not entry[0].enabled: return None
         tool = entry[1]
+        retry_allowed = self._automatic_retry_allowed(tool)
         return CapabilityContract(tool.name, tool.description, tool.input_schema, tool.output_schema,
                                   tool.side_effect, list(tool.required_permissions), tool.verification_required,
-                                  tool.execution_mode, tool.timeout_seconds, tool.max_retries, tool.cancellable)
+                                  tool.execution_mode, tool.timeout_seconds,
+                                  tool.max_retries if retry_allowed else 0, tool.cancellable,
+                                  tool.idempotency, retry_allowed)
 
     def get_capabilities(self) -> List[CapabilityContract]:
         return [contract for name in self._tools if (contract := self.get_capability(name))]
@@ -267,6 +460,8 @@ class PluginRegistry:
         if not tool.name: raise PluginContractError("Tool 이름은 비어 있을 수 없습니다.")
         if tool.execution_mode not in {"sync", "async"}: raise PluginContractError(f"{tool.name}: 잘못된 execution_mode")
         if tool.timeout_seconds <= 0 or tool.max_retries < 0: raise PluginContractError(f"{tool.name}: timeout/retry 정책이 잘못되었습니다.")
+        if tool.idempotency not in {"intrinsic", "registry", "none"}:
+            raise PluginContractError(f"{tool.name}: 잘못된 idempotency 정책")
         try:
             Draft202012Validator.check_schema(tool.input_schema)
             Draft202012Validator.check_schema(tool.output_schema)
@@ -311,21 +506,292 @@ class PluginRegistry:
             if current: issues[f"intent:{intent.name}"] = current
         return issues
 
-    def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> PluginToolOutput:
+    @classmethod
+    def _automatic_retry_allowed(cls, tool: ToolSchema) -> bool:
+        """Only demonstrably read-only tools may be retried automatically."""
+        actions = set(tool.name.casefold().split("_"))
+        permissions = {item.casefold() for item in tool.required_permissions}
+        if tool.side_effect in cls._NON_RETRYABLE_EFFECTS:
+            return False
+        if actions & cls._IRREVERSIBLE_ACTIONS:
+            return False
+        if permissions & cls._IRREVERSIBLE_PERMISSIONS:
+            return False
+        return tool.side_effect == "read" and tool.idempotency == "intrinsic"
+
+    @staticmethod
+    def _clone_output(value: PluginToolOutput) -> PluginToolOutput:
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
+
+    @staticmethod
+    def _cancelled_result(
+        tool_name: str,
+        message: str,
+        duration_ms: float = 0.0,
+    ) -> ToolRunResult:
+        # Keep the legacy ``result.error`` inspection contract while exposing
+        # cancellation as its own typed terminal state.
+        result = ToolRunResult.cancelled(
+            tool_name=tool_name,
+            message=message,
+            duration_ms=duration_ms,
+        )
+        result.error = str(message)
+        return result
+
+    def _prune_deduplication_records_locked(self) -> None:
+        now = time.monotonic()
+        expired_execution_ids = [
+            key for key, record in self._execution_records.items()
+            if record.done.is_set()
+            and record.completed_at
+            and now - record.completed_at > self._deduplication_ttl_seconds
+        ]
+        for key in expired_execution_ids:
+            self._execution_records.pop(key, None)
+        expired_idempotency_keys = [
+            key for key, record in self._idempotency_records.items()
+            if record.done.is_set()
+            and record.completed_at
+            and now - record.completed_at > self._deduplication_ttl_seconds
+        ]
+        for key in expired_idempotency_keys:
+            self._idempotency_records.pop(key, None)
+
+        # Bound completed history while preserving all active executions.
+        completed = sorted(
+            {id(record): record for record in self._execution_records.values()
+             if record.done.is_set()}.values(),
+            key=lambda item: item.completed_at,
+        )
+        overflow = max(0, len(completed) - self._deduplication_max_records)
+        for record in completed[:overflow]:
+            for execution_id in record.execution_ids or {record.execution_id}:
+                self._execution_records.pop(execution_id, None)
+            if record.idempotency_key:
+                self._idempotency_records.pop((record.tool_name, record.idempotency_key), None)
+
+    def _claim_execution(
+        self,
+        tool_name: str,
+        execution_id: str,
+        idempotency_key: str,
+        idempotency_mode: str,
+        request_fingerprint: str,
+    ) -> tuple[_DeduplicationRecord, bool, Optional[str]]:
+        with self._state_lock:
+            self._prune_deduplication_records_locked()
+            existing = self._execution_records.get(execution_id)
+            if existing is not None:
+                if existing.tool_name != tool_name:
+                    return existing, False, (
+                        f"execution_id '{execution_id}'은 이미 "
+                        f"{existing.tool_name} 도구에 사용되었습니다."
+                    )
+                if existing.request_fingerprint != request_fingerprint:
+                    return existing, False, (
+                        f"execution_id '{execution_id}'을 서로 다른 입력에 "
+                        "재사용할 수 없습니다."
+                    )
+                return existing, False, None
+            if idempotency_key and idempotency_mode != "none":
+                existing = self._idempotency_records.get((tool_name, idempotency_key))
+                if existing is not None:
+                    if existing.request_fingerprint != request_fingerprint:
+                        return existing, False, (
+                            f"멱등 키 '{idempotency_key}'를 서로 다른 입력에 "
+                            "재사용할 수 없습니다."
+                        )
+                    existing.execution_ids.add(execution_id)
+                    self._execution_records[execution_id] = existing
+                    return existing, False, None
+            record = _DeduplicationRecord(
+                execution_id=execution_id,
+                tool_name=tool_name,
+                idempotency_key=idempotency_key,
+                request_fingerprint=request_fingerprint,
+                execution_ids={execution_id},
+            )
+            self._execution_records[execution_id] = record
+            if idempotency_key and idempotency_mode != "none":
+                self._idempotency_records[(tool_name, idempotency_key)] = record
+            return record, True, None
+
+    def _await_existing_execution(
+        self,
+        record: _DeduplicationRecord,
+        token: CancellationToken,
+        timeout_seconds: float,
+    ) -> PluginToolOutput:
+        deadline = time.monotonic() + timeout_seconds
+        while not record.done.wait(timeout=0.05):
+            token.raise_if_cancelled()
+            if time.monotonic() >= deadline:
+                return ToolRunResult.failed(
+                    tool_name=record.tool_name,
+                    error=(
+                        "동일한 멱등 요청이 이미 실행 중입니다. "
+                        "중복 실행을 방지하기 위해 새 작업을 시작하지 않았습니다."
+                    ),
+                )
+        if record.result is None:
+            return ToolRunResult.failed(
+                tool_name=record.tool_name,
+                error="중복 요청의 기존 실행 결과를 확인할 수 없습니다.",
+            )
+        return self._clone_output(record.result)
+
+    def _register_active_execution(
+        self,
+        execution_id: str,
+        tool_name: str,
+        token: CancellationToken,
+        started_at: float,
+    ) -> _ExecutionState:
+        state = _ExecutionState(execution_id, tool_name, token, started_at)
+        with self._state_lock:
+            self._executions[execution_id] = state
+            self._cancellations[execution_id] = token
+            self._active_by_tool.setdefault(tool_name, set()).add(execution_id)
+        return state
+
+    def _cleanup_active_execution(self, execution_id: str) -> None:
+        with self._state_lock:
+            state = self._executions.pop(execution_id, None)
+            self._cancellations.pop(execution_id, None)
+            if state is None:
+                return
+            active = self._active_by_tool.get(state.tool_name)
+            if active is not None:
+                active.discard(execution_id)
+                if not active:
+                    self._active_by_tool.pop(state.tool_name, None)
+
+    def _complete_execution_record(
+        self,
+        record: _DeduplicationRecord,
+        result: PluginToolOutput,
+    ) -> None:
+        with self._state_lock:
+            record.result = self._clone_output(result)
+            record.completed_at = time.monotonic()
+            record.done.set()
+
+    def _record_runtime_result(
+        self,
+        plugin: BasePlugin,
+        tool: ToolSchema,
+        result: PluginToolOutput,
+    ) -> None:
+        """Persist only evidence-backed runtime truth for diagnostics.
+
+        A schema-valid ``dict`` or a legacy string is not proof that the
+        requested action happened.  Such results remain ``unchecked`` until a
+        plugin returns the typed ToolRunResult evidence contract.
+        """
+        state = "unchecked"
+        summary = "도구가 형식상 응답했지만 실행 증거를 제공하지 않았습니다."
+        evidence: List[str] = []
+        if isinstance(result, ToolRunResult):
+            status = str(getattr(result.status, "value", result.status))
+            evidence = [
+                f"{item.kind}: {item.summary}" for item in (result.evidence or [])
+                if getattr(item, "summary", "")
+            ]
+            if status == "succeeded" and evidence:
+                state = "confirmed"
+                summary = "증거가 포함된 실제 도구 실행이 성공했습니다."
+            elif status == "failed":
+                state = "failed"
+                summary = str(result.error or result.raw_output or "도구 실행 실패")
+            elif status == "partial":
+                state = "partial"
+                summary = str(result.raw_output or "도구가 일부만 완료되었습니다.")
+            elif status == "cancelled":
+                state = "failed"
+                summary = str(result.error or result.raw_output or "도구 실행이 취소되었습니다.")
+            else:
+                summary = str(result.raw_output or "도구 결과가 검증되지 않았습니다.")
+        snapshot = {
+            "state": state,
+            "summary": summary,
+            "evidence": evidence[:10],
+            "last_tool": tool.name,
+            "last_execution_at": time.time(),
+        }
+        with self._state_lock:
+            self._runtime_by_tool[tool.name] = dict(snapshot)
+            self._runtime_by_plugin[plugin.name] = dict(snapshot)
+
+    def execute_tool(
+        self,
+        tool_name: str,
+        tool_input: Dict[str, Any],
+        *,
+        execution_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        cancellation_token: Optional[CancellationToken] = None,
+    ) -> PluginToolOutput:
         entry = self._tools.get(tool_name)
         if entry is None or not entry[0].enabled: return ToolRunResult.failed(tool_name=tool_name, error=f"등록되지 않은 도구: {tool_name}")
         plugin, tool = entry
         errors = self.validate_tool_call(tool_name, tool_input)
         if errors: return ToolRunResult.failed(tool_name=tool_name, error="; ".join(errors))
-        token, started = CancellationToken(), time.perf_counter()
-        self._cancellations[tool_name] = token
+        run_id = str(execution_id or uuid.uuid4().hex).strip()
+        if not run_id:
+            return ToolRunResult.failed(tool_name=tool_name, error="execution_id는 비어 있을 수 없습니다.")
+        key = str(idempotency_key or "").strip()
+        request_fingerprint = hashlib.sha256(
+            json.dumps(
+                {"tool": tool_name, "input": tool_input},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        record, owner, claim_error = self._claim_execution(
+            tool_name, run_id, key, tool.idempotency, request_fingerprint,
+        )
+        if claim_error:
+            return ToolRunResult.failed(tool_name=tool_name, error=claim_error)
+        duplicate_token = cancellation_token or CancellationToken()
+        if not owner:
+            try:
+                return self._await_existing_execution(
+                    record, duplicate_token, tool.timeout_seconds,
+                )
+            except ToolCancelledError as exc:
+                return self._cancelled_result(tool_name, str(exc))
+
+        token = cancellation_token or CancellationToken()
+        started = time.perf_counter()
+        state = self._register_active_execution(run_id, tool_name, token, started)
+        result: PluginToolOutput
+        lingering_future = None
         try:
-            for attempt in range(tool.max_retries + 1):
+            max_retries = tool.max_retries if self._automatic_retry_allowed(tool) else 0
+            for attempt in range(max_retries + 1):
                 if attempt:
                     from core.productization import METRICS
                     METRICS.increment(f"plugin.{tool_name}.retry")
                 token.raise_if_cancelled()
-                future = self._executor.submit(self._invoke, plugin, tool, tool_input, token)
+                context = ToolExecutionContext(
+                    execution_id=run_id,
+                    tool_name=tool_name,
+                    idempotency_key=key,
+                    attempt=attempt,
+                    started_at=started,
+                    cancellation_token=token,
+                )
+                future = self._executor.submit(
+                    self._invoke, plugin, tool, tool_input, context,
+                )
+                with self._state_lock:
+                    state.future = future
                 try:
                     deadline = time.monotonic() + tool.timeout_seconds
                     while True:
@@ -334,54 +800,229 @@ class PluginRegistry:
                         if remaining <= 0:
                             raise FutureTimeoutError()
                         try:
-                            result = future.result(timeout=min(0.05, remaining))
+                            plugin_result = future.result(timeout=min(0.05, remaining))
                             break
                         except FutureTimeoutError:
                             if future.done():
                                 raise
                             continue
-                    output = result.to_dict() if isinstance(result, ToolRunResult) else result
+                    output = (
+                        plugin_result.to_dict()
+                        if isinstance(plugin_result, ToolRunResult)
+                        else plugin_result
+                    )
                     if (tool.output_schema.get("required") == ["status", "raw_output", "evidence", "artifacts"]
-                            and not isinstance(result, ToolRunResult)):
+                            and not isinstance(plugin_result, ToolRunResult)):
                         output = {
-                            "status": "unverified", "raw_output": str(result),
+                            "status": "unverified", "raw_output": str(plugin_result),
                             "evidence": [], "artifacts": [],
                         }
                     output_errors = self._validate_instance(output, tool.output_schema, "출력")
-                    if output_errors: return ToolRunResult.failed(tool_name=tool_name, error="; ".join(output_errors), duration_ms=(time.perf_counter()-started)*1000)
-                    return result
+                    if output_errors:
+                        result = ToolRunResult.failed(tool_name=tool_name, error="; ".join(output_errors), duration_ms=(time.perf_counter()-started)*1000)
+                    else:
+                        result = plugin_result
+                    break
                 except FutureTimeoutError:
+                    # A running Python thread cannot be killed safely.  Signal
+                    # cooperative cancellation and *never* launch a second
+                    # attempt after an uncertain timeout.
+                    token.cancel()
                     future.cancel()
-                    if attempt >= tool.max_retries: return ToolRunResult.failed(tool_name=tool_name, error=f"도구 실행 시간 초과: {tool.timeout_seconds:g}초", duration_ms=(time.perf_counter()-started)*1000)
+                    lingering_future = future
+                    retry_note = (
+                        " 부작용이 있는 도구는 중복 실행 위험으로 "
+                        "자동 재시도하지 않았습니다."
+                        if not self._automatic_retry_allowed(tool) else
+                        " 기존 실행이 완전히 종료되지 않아 자동 재시도하지 않았습니다."
+                    )
+                    result = ToolRunResult.failed(
+                        tool_name=tool_name,
+                        error=f"도구 실행 시간 초과: {tool.timeout_seconds:g}초.{retry_note}",
+                        duration_ms=(time.perf_counter()-started)*1000,
+                    )
+                    break
                 except ToolCancelledError as exc:
-                    return ToolRunResult.failed(tool_name=tool_name, error=str(exc), duration_ms=(time.perf_counter()-started)*1000)
+                    future.cancel()
+                    lingering_future = future
+                    result = self._cancelled_result(
+                        tool_name,
+                        str(exc),
+                        (time.perf_counter()-started)*1000,
+                    )
+                    break
                 except Exception as exc:
-                    if attempt >= tool.max_retries: return ToolRunResult.failed(tool_name=tool_name, error=f"Plugin 실행 오류: {exc}", duration_ms=(time.perf_counter()-started)*1000)
+                    if attempt >= max_retries:
+                        result = ToolRunResult.failed(tool_name=tool_name, error=f"Plugin 실행 오류: {exc}", duration_ms=(time.perf_counter()-started)*1000)
+                        break
+            else:  # pragma: no cover - the bounded loop always breaks/returns
+                result = ToolRunResult.failed(tool_name=tool_name, error="Plugin 실행 결과가 없습니다.")
+        except ToolCancelledError as exc:
+            result = self._cancelled_result(
+                tool_name,
+                str(exc),
+                (time.perf_counter()-started)*1000,
+            )
+        except Exception as exc:
+            result = ToolRunResult.failed(
+                tool_name=tool_name,
+                error=f"Plugin 실행 오류: {exc}",
+                duration_ms=(time.perf_counter()-started)*1000,
+            )
         finally:
-            self._cancellations.pop(tool_name, None)
-
-    @staticmethod
-    def _invoke(plugin: BasePlugin, tool: ToolSchema, tool_input: Dict[str, Any], token: CancellationToken):
-        token.raise_if_cancelled()
-        result = plugin.execute_tool(tool.name, dict(tool_input))
-        result = asyncio.run(result) if inspect.isawaitable(result) else result
-        token.raise_if_cancelled()
+            # The deduplication result becomes visible atomically before a
+            # duplicate caller can submit another side effect.
+            if "result" in locals():
+                self._record_runtime_result(plugin, tool, result)
+                self._complete_execution_record(record, result)
+            if lingering_future is not None and not lingering_future.done():
+                lingering_future.add_done_callback(
+                    lambda _future, current_id=run_id: self._cleanup_active_execution(current_id)
+                )
+            else:
+                self._cleanup_active_execution(run_id)
         return result
 
-    def cancel_tool(self, tool_name: str) -> bool:
-        token = self._cancellations.get(tool_name)
-        if token is None: return False
+    def _invoke(
+        self,
+        plugin: BasePlugin,
+        tool: ToolSchema,
+        tool_input: Dict[str, Any],
+        context: ToolExecutionContext,
+    ):
+        self._execution_local.context = context
+        try:
+            context.raise_if_cancelled()
+            result = plugin.execute_tool(tool.name, dict(tool_input))
+            result = asyncio.run(result) if inspect.isawaitable(result) else result
+            context.raise_if_cancelled()
+            return result
+        finally:
+            self._execution_local.context = None
+
+    def current_execution_context(self) -> Optional[ToolExecutionContext]:
+        return getattr(self._execution_local, "context", None)
+
+    def get_active_execution_ids(self, tool_name: str = "") -> List[str]:
+        with self._state_lock:
+            if tool_name:
+                return sorted(self._active_by_tool.get(tool_name, set()))
+            return sorted(self._executions)
+
+    def get_execution_result(self, execution_id: str) -> Optional[PluginToolOutput]:
+        with self._state_lock:
+            record = self._execution_records.get(str(execution_id))
+            if record is None or not record.done.is_set() or record.result is None:
+                return None
+            return self._clone_output(record.result)
+
+    def cancel_execution(self, execution_id: str) -> bool:
+        with self._state_lock:
+            token = self._cancellations.get(str(execution_id))
+        if token is None:
+            return False
         token.cancel()
         return True
 
+    def cancel_tool(self, tool_name_or_execution_id: str) -> bool:
+        """Cancel one execution ID, or all active runs of a legacy tool name."""
+        identifier = str(tool_name_or_execution_id)
+        if self.cancel_execution(identifier):
+            return True
+        with self._state_lock:
+            execution_ids = list(self._active_by_tool.get(identifier, set()))
+        cancelled = False
+        for execution_id in execution_ids:
+            cancelled = self.cancel_execution(execution_id) or cancelled
+        return cancelled
+
     def get_plugin_statuses(self) -> List[PluginStatus]:
         contract_issues = self.validate_contracts()
-        statuses = []
+        statuses: List[PluginStatus] = []
         for plugin in self.plugins.values():
-            diagnostics = plugin.diagnose()
-            for tool in plugin.get_tools(): diagnostics.extend(contract_issues.get(tool.name, []))
-            statuses.append(PluginStatus(plugin.name, plugin.version, True, plugin.is_connected(),
-                                         plugin.is_authenticated(), not diagnostics, plugin.enabled, diagnostics))
+            try:
+                diagnostics = list(plugin.diagnose())
+            except Exception as exc:
+                diagnostics = [f"진단 실행 실패: {type(exc).__name__}: {exc}"]
+            try:
+                tools = list(plugin.get_tools())
+            except Exception as exc:
+                tools = []
+                diagnostics.append(f"도구 목록 확인 실패: {type(exc).__name__}: {exc}")
+
+            current_contract_issues: List[str] = []
+            for tool in tools:
+                current_contract_issues.extend(contract_issues.get(tool.name, []))
+            diagnostics.extend(current_contract_issues)
+
+            install_failures = [
+                item for item in diagnostics
+                if item.startswith((
+                    "지원하지 않는 OS:", "의존성 누락:", "의존성 DLL 로드 실패:",
+                    "진단 실행 실패:", "도구 목록 확인 실패:",
+                ))
+            ]
+            installation_state = "failed" if install_failures else "confirmed"
+            contract_state = "failed" if current_contract_issues else "confirmed"
+            connection = plugin.probe_connection()
+            authentication = plugin.probe_authentication()
+            for label, probe in (("연결", connection), ("인증", authentication)):
+                if probe.state in {"failed", "unchecked"} and probe.summary:
+                    diagnostics.append(f"{label} {probe.state}: {probe.summary}")
+
+            with self._state_lock:
+                runtime = dict(self._runtime_by_plugin.get(plugin.name, {}))
+            runtime_state = str(runtime.get("state") or "unchecked")
+            if installation_state == "failed" or contract_state == "failed" or runtime_state == "failed":
+                verification_state = "failed"
+            elif runtime_state == "confirmed":
+                verification_state = "confirmed"
+            elif runtime_state == "partial":
+                verification_state = "partial"
+            else:
+                verification_state = "unchecked"
+            statuses.append(PluginStatus(
+                name=plugin.name,
+                version=plugin.version,
+                installed=_state_as_optional_bool(installation_state),
+                connected=_state_as_optional_bool(connection.state),
+                authenticated=_state_as_optional_bool(authentication.state),
+                verified=_state_as_optional_bool(verification_state),
+                enabled=plugin.enabled,
+                diagnostics=list(dict.fromkeys(diagnostics)),
+                registered=True,
+                installation_state=installation_state,
+                connection_state=connection.state,
+                authentication_state=authentication.state,
+                contract_state=contract_state,
+                verification_state=verification_state,
+                runtime_state=runtime_state,
+                runtime_summary=str(runtime.get("summary") or "실제 도구 실행 이력이 없습니다."),
+                runtime_evidence=list(runtime.get("evidence") or []),
+                last_tool=str(runtime.get("last_tool") or ""),
+                last_execution_at=runtime.get("last_execution_at"),
+            ))
+
+        for key, failure in sorted(self._load_failures.items()):
+            message = str(failure.get("error") or "Plugin 로드 실패")
+            statuses.append(PluginStatus(
+                name=key,
+                version=str(failure.get("version") or "unknown"),
+                installed=False,
+                connected=None,
+                authenticated=None,
+                verified=False,
+                enabled=False,
+                diagnostics=[message],
+                registered=False,
+                installation_state="failed",
+                connection_state="not_applicable",
+                authentication_state="not_applicable",
+                contract_state="unchecked",
+                verification_state="failed",
+                runtime_state="unchecked",
+                runtime_summary="Plugin 로드에 실패하여 실행되지 않았습니다.",
+            ))
         return statuses
 
     def present_result(self, tool_name: str, result: PluginToolOutput) -> str:
@@ -393,16 +1034,37 @@ class PluginRegistry:
     def load_plugins_from_directory(self, directory: Optional[str] = None):
         path = Path(directory).resolve() if directory else Path(__file__).resolve().parent.parent / "plugins"
         if not path.exists() or str(path) in self._loaded_directories: return
-        for item in path.iterdir():
+        for item in sorted(path.iterdir(), key=lambda candidate: candidate.name.casefold()):
             if item.is_file() and item.suffix == ".py" and item.name != "__init__.py":
                 try:
                     module = importlib.import_module(f"plugins.{item.stem}")
-                    for _name, obj in inspect.getmembers(module):
-                        if inspect.isclass(obj) and issubclass(obj, BasePlugin) and obj is not BasePlugin:
-                            instance = obj()
-                            if getattr(instance, "auto_discover", True): self.register_plugin(instance)
                 except Exception as exc:
-                    raise PluginContractError(f"Plugin 로드 실패 ({item.name}): {exc}") from exc
+                    key = item.stem
+                    self._load_failures[key] = {
+                        "error": f"Plugin 모듈 로드 실패 ({item.name}): {type(exc).__name__}: {exc}",
+                    }
+                    print(f"[Plugin] Load failed: {item.name} ({type(exc).__name__}: {exc})")
+                    continue
+                for class_name, obj in inspect.getmembers(module):
+                    if (inspect.isclass(obj) and issubclass(obj, BasePlugin)
+                            and obj is not BasePlugin and obj.__module__ == module.__name__):
+                        key = f"{item.stem}.{class_name}"
+                        try:
+                            instance = obj()
+                            if getattr(instance, "auto_discover", True):
+                                self.register_plugin(instance)
+                            self._load_failures.pop(key, None)
+                        except Exception as exc:
+                            self._load_failures[key] = {
+                                "error": (
+                                    f"Plugin 클래스 로드 실패 ({item.name}:{class_name}): "
+                                    f"{type(exc).__name__}: {exc}"
+                                ),
+                            }
+                            print(
+                                f"[Plugin] Load failed: {item.name}:{class_name} "
+                                f"({type(exc).__name__}: {exc})"
+                            )
         self._loaded_directories.add(str(path))
 
 

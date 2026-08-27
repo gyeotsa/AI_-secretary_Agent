@@ -3000,13 +3000,23 @@ def get_tools_description_text(exclude: Optional[list[str]] = None,
             continue
         if include_set is not None and tool["name"] not in include_set:
             continue
-        # 파라미터 이름까지 같이 보여줘야 LLM이 tool_input을 정확히 채울 수 있음
+        # 이름만 보여주면 모델이 ``paragraphs``에 문자열을 넣거나 선택 필드를
+        # 통째로 생략하는 일이 잦다. Registry의 JSON Schema를 그대로 요약해
+        # Planner가 실제 실행 가능한 tool_input을 만들 수 있게 한다.
         properties = tool.get("input_schema", {}).get("properties", {})
         required = set(tool.get("input_schema", {}).get("required", []))
         if properties:
+            def type_label(schema: dict) -> str:
+                kind = str(schema.get("type") or "any")
+                if kind == "array":
+                    return f"array[{type_label(dict(schema.get('items') or {}))}]"
+                if kind == "object":
+                    return "object"
+                return kind
+
             params = ", ".join(
-                f"{name}{'*' if name in required else ''}"
-                for name in properties.keys()
+                f"{name}{'*' if name in required else ''}: {type_label(dict(schema or {}))}"
+                for name, schema in properties.items()
             )
             lines.append(f"- {tool['name']}({params}): {tool['description']}")
         else:

@@ -117,14 +117,33 @@ class EpisodeMemoryManager:
         return episode_id
         
     def get_session_episodes(self, session_id: str, limit: Optional[int] = None) -> List[Episode]:
-        """세션의 에피소드 가져오기"""
+        """세션의 에피소드를 시간순으로 가져옵니다.
+
+        ``limit``가 주어지면 *가장 최근* N개를 고른 뒤 오래된 항목부터
+        반환합니다. 이전 구현은 ``ORDER BY timestamp ASC LIMIT N``을 사용해
+        세션 초반의 오래된 메시지를 최근 문맥으로 잘못 전달했습니다.
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        query = "SELECT id, session_id, role, content, summary, importance, metadata, timestamp FROM episodes WHERE session_id = ? ORDER BY timestamp ASC"
-        if limit:
-            query += f" LIMIT {limit}"
-        cursor.execute(query, (session_id,))
-        rows = cursor.fetchall()
+        columns = "id, session_id, role, content, summary, importance, metadata, timestamp"
+        if limit is None:
+            cursor.execute(
+                f"SELECT {columns} FROM episodes WHERE session_id = ? "
+                "ORDER BY timestamp ASC, id ASC",
+                (session_id,),
+            )
+            rows = cursor.fetchall()
+        else:
+            bounded_limit = max(0, int(limit))
+            if bounded_limit == 0:
+                rows = []
+            else:
+                cursor.execute(
+                    f"SELECT {columns} FROM episodes WHERE session_id = ? "
+                    "ORDER BY timestamp DESC, id DESC LIMIT ?",
+                    (session_id, bounded_limit),
+                )
+                rows = cursor.fetchall()[::-1]
         conn.close()
         
         episodes = []
@@ -143,14 +162,17 @@ class EpisodeMemoryManager:
         
     def get_recent_episodes(self, limit: int = 50) -> List[Episode]:
         """최근 에피소드 가져오기"""
+        bounded_limit = max(0, int(limit))
+        if bounded_limit == 0:
+            return []
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, session_id, role, content, summary, importance, metadata, timestamp 
             FROM episodes 
-            ORDER BY timestamp DESC 
+            ORDER BY timestamp DESC, id DESC
             LIMIT ?
-        """, (limit,))
+        """, (bounded_limit,))
         rows = cursor.fetchall()
         conn.close()
         
@@ -233,8 +255,10 @@ class EpisodeMemoryManager:
         now = datetime.now().timestamp()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO conversation_sessions VALUES (?, ?, ?, ?)",
-                (session_id, title.strip() or "새 대화", now, now),
+                "INSERT INTO conversation_sessions "
+                "(session_id,title,created_at,updated_at,workspace_namespace) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, title.strip() or "새 대화", now, now, "global"),
             )
         return session_id
 
@@ -353,17 +377,28 @@ class SemanticMemoryManager:
             )
         return None
         
-    def get_memories_by_category(self, category: str) -> List[SemanticMemory]:
+    def get_memories_by_category(
+        self, category: str, limit: Optional[int] = None
+    ) -> List[SemanticMemory]:
         """카테고리별 메모리 가져오기"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("""
+        query = """
             SELECT id, key, category, content, metadata, timestamp 
             FROM semantic_memory 
             WHERE category = ?
-            ORDER BY timestamp DESC
-        """, (category,))
-        rows = cursor.fetchall()
+            ORDER BY timestamp DESC, id DESC
+        """
+        if limit is None:
+            cursor.execute(query, (category,))
+            rows = cursor.fetchall()
+        else:
+            bounded_limit = max(0, int(limit))
+            if bounded_limit == 0:
+                rows = []
+            else:
+                cursor.execute(query + " LIMIT ?", (category, bounded_limit))
+                rows = cursor.fetchall()
         conn.close()
         
         memories = []
@@ -504,6 +539,64 @@ def get_memory() -> ConversationMemory:
     return _memory
 
 
+def _normalized_memory_value(value: Any) -> str:
+    """Return a stable identity fragment without changing user-facing text."""
+    return " ".join(str(value or "").casefold().split())
+
+
+def _knowledge_identity(subject: Any, predicate: Any, content: Any) -> tuple[str, str, str]:
+    return (
+        _normalized_memory_value(subject),
+        _normalized_memory_value(predicate),
+        _normalized_memory_value(content),
+    )
+
+
+def _select_typed_memories(
+    query: str, workspace_namespace: str, limit: int
+) -> List[Any]:
+    """Merge workspace/global memories without duplicating the same fact.
+
+    ``KnowledgeMemoryStore.search`` already returns each namespace in relevance
+    order. Interleaving equal ranks keeps that relevance while preferring the
+    active workspace over a global copy of the same memory.
+    """
+    from core.knowledge_memory import get_knowledge_memory
+
+    bounded_limit = max(0, int(limit))
+    if bounded_limit == 0:
+        return []
+    store = get_knowledge_memory()
+    namespaces = [str(workspace_namespace or "global")]
+    if namespaces[0] != "global":
+        namespaces.append("global")
+
+    ranked = []
+    per_namespace_limit = max(bounded_limit * 2, 10)
+    for namespace_priority, namespace in enumerate(namespaces):
+        for rank, record in enumerate(store.search(
+            query,
+            workspace_namespace=namespace,
+            limit=per_namespace_limit,
+        )):
+            ranked.append((rank, namespace_priority, record))
+    ranked.sort(key=lambda item: (
+        item[0], item[1], -float(item[2].confidence), -float(item[2].recorded_at)
+    ))
+
+    selected = []
+    seen = set()
+    for _rank, _namespace_priority, record in ranked:
+        identity = _knowledge_identity(record.subject, record.predicate, record.content)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        selected.append(record)
+        if len(selected) >= bounded_limit:
+            break
+    return selected
+
+
 def build_memory_context(session_id: str, max_episodes: int = 20, include_semantic: bool = True,
                          query: str = "") -> str:
     """LLM 컨텍스트용 메모리 빌더"""
@@ -523,33 +616,34 @@ def build_memory_context(session_id: str, max_episodes: int = 20, include_semant
     # 2. 시맨틱 메모리 (사용자 프로필, 프로젝트 정보 등)
     if include_semantic:
         semantic_manager = get_semantic_memory()
-        
-        # 사용자 프로필
-        user_memories = semantic_manager.get_memories_by_category("사용자_프로필")
-        if user_memories:
-            context_parts.append("## 사용자 정보")
-            for mem in user_memories:
-                context_parts.append(f"- {mem.key}: {mem.content}")
-            context_parts.append("")
-        
-        # 프로젝트 정보
-        project_memories = semantic_manager.get_memories_by_category("프로젝트_정보")
-        if project_memories:
-            context_parts.append("## 프로젝트 정보")
-            for mem in project_memories:
-                context_parts.append(f"- {mem.key}: {mem.content}")
-            context_parts.append("")
-
-        from core.knowledge_memory import get_knowledge_memory
         namespace = get_memory().workspace_namespace
-        store = get_knowledge_memory()
-        typed_records = store.search(query, workspace_namespace=namespace, limit=10)
-        if namespace != "global":
-            typed_records.extend(store.search(query, workspace_namespace="global", limit=10))
-        unique_records = {record.record_id: record for record in typed_records}
-        typed_records = sorted(
-            unique_records.values(), key=lambda record: (record.confidence, record.recorded_at), reverse=True
-        )[:12]
+        typed_records = _select_typed_memories(query, namespace, 12)
+        typed_identities = {
+            _knowledge_identity(record.subject, record.predicate, record.content)
+            for record in typed_records
+        }
+
+        # Legacy semantic rows are retained for backwards compatibility, but
+        # add_memory() also mirrors them into the typed store. Render a legacy
+        # row only when no equivalent typed record is already in this prompt.
+        rendered_legacy = set()
+        legacy_sections = (
+            ("사용자_프로필", "## 사용자 정보"),
+            ("프로젝트_정보", "## 프로젝트 정보"),
+        )
+        for category, heading in legacy_sections:
+            lines = []
+            for mem in semantic_manager.get_memories_by_category(category, limit=10):
+                identity = _knowledge_identity(mem.key, "describes", mem.content)
+                if identity in typed_identities or identity in rendered_legacy:
+                    continue
+                rendered_legacy.add(identity)
+                lines.append(f"- {mem.key}: {mem.content}")
+            if lines:
+                context_parts.append(heading)
+                context_parts.extend(lines)
+                context_parts.append("")
+
         if typed_records:
             context_parts.append("## 검증 가능한 장기 메모리")
             for record in typed_records:
@@ -567,15 +661,7 @@ def build_memory_context(session_id: str, max_episodes: int = 20, include_semant
 def build_relevant_knowledge_context(query: str, workspace_namespace: str = "global",
                                      limit: int = 6) -> str:
     """Return only durable memories relevant to the current utterance."""
-    from core.knowledge_memory import get_knowledge_memory
-    store = get_knowledge_memory()
-    records = store.search(query, workspace_namespace=workspace_namespace, limit=limit)
-    if workspace_namespace != "global":
-        records.extend(store.search(query, workspace_namespace="global", limit=limit))
-    unique = {record.record_id: record for record in records}
-    selected = sorted(
-        unique.values(), key=lambda record: (record.confidence, record.recorded_at), reverse=True
-    )[:limit]
+    selected = _select_typed_memories(query, workspace_namespace, limit)
     return "\n".join(
         f"- {record.subject} {record.predicate}: {record.content} "
         f"(사용자 기억, 신뢰도 {record.confidence:.2f})"

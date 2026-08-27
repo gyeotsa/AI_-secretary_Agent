@@ -1,8 +1,13 @@
 import json
+from types import SimpleNamespace
 
 from core.agent_services import ConversationService
+from core import knowledge_memory as knowledge_memory_module
+from core import memory as memory_module
+from core.context import ContextManager
 from core.knowledge_memory import KnowledgeMemoryStore, MemoryKind
 from core.memory_consolidator import ConversationMemoryConsolidator
+from core.memory import Episode, EpisodeMemoryManager, SemanticMemory, SemanticMemoryManager
 from core.rag import VectorRAGManager
 
 
@@ -97,3 +102,110 @@ def test_profile_bootstrap_ignores_legacy_identity_keys(tmp_path):
     assert {record.subject for record in records} == {
         "사용자 프로필 email", "사용자 설정 assistant_name", "사용자 설정 user_address",
     }
+
+
+def test_limited_session_history_returns_latest_messages_in_chronological_order(tmp_path):
+    manager = EpisodeMemoryManager(str(tmp_path / "episodes.db"))
+    for index in range(6):
+        manager.add_episode(Episode(
+            session_id="session-a",
+            role="user" if index % 2 == 0 else "assistant",
+            content=f"message-{index}",
+            timestamp=1000.0 + index,
+        ))
+
+    recent = manager.get_session_episodes("session-a", limit=3)
+
+    assert [item.content for item in recent] == ["message-3", "message-4", "message-5"]
+    assert manager.get_session_episodes("session-a", limit=0) == []
+
+
+def test_limited_session_history_is_deterministic_when_timestamps_match(tmp_path):
+    manager = EpisodeMemoryManager(str(tmp_path / "episodes.db"))
+    for index in range(4):
+        manager.add_episode(Episode(
+            session_id="session-a", role="user", content=f"same-time-{index}", timestamp=1000.0,
+        ))
+
+    recent = manager.get_session_episodes("session-a", limit=2)
+
+    assert [item.content for item in recent] == ["same-time-2", "same-time-3"]
+
+
+def test_build_memory_context_does_not_repeat_mirrored_legacy_memory(tmp_path, monkeypatch):
+    episode_manager = EpisodeMemoryManager(str(tmp_path / "episodes.db"))
+    semantic_manager = SemanticMemoryManager(str(tmp_path / "semantic.db"))
+    semantic_manager.add_memory(SemanticMemory(
+        key="보고서 글꼴",
+        category="사용자_프로필",
+        content="보고서는 맑은 고딕을 사용한다",
+        timestamp=1000.0,
+    ))
+
+    monkeypatch.setattr(memory_module, "get_episode_memory", lambda: episode_manager)
+    monkeypatch.setattr(memory_module, "get_semantic_memory", lambda: semantic_manager)
+    monkeypatch.setattr(
+        memory_module,
+        "get_memory",
+        lambda: SimpleNamespace(workspace_namespace="global"),
+    )
+    monkeypatch.setattr(
+        knowledge_memory_module,
+        "get_knowledge_memory",
+        lambda: semantic_manager.knowledge_store,
+    )
+
+    context = memory_module.build_memory_context(
+        "session-a", max_episodes=5, include_semantic=True, query="보고서 글꼴"
+    )
+
+    assert context.count("보고서는 맑은 고딕을 사용한다") == 1
+
+
+def test_relevant_context_deduplicates_workspace_and_global_copies(tmp_path, monkeypatch):
+    store = KnowledgeMemoryStore(str(tmp_path / "knowledge.db"))
+    for namespace in ("project-a", "global"):
+        store.remember(knowledge_memory_module.KnowledgeRecord(
+            content="문서에는 맑은 고딕을 사용한다",
+            kind=MemoryKind.PREFERENCE,
+            subject="문서 글꼴",
+            predicate="prefers",
+            workspace_namespace=namespace,
+            recorded_at=1000.0,
+        ))
+    monkeypatch.setattr(knowledge_memory_module, "get_knowledge_memory", lambda: store)
+
+    context = memory_module.build_relevant_knowledge_context(
+        "문서 글꼴", workspace_namespace="project-a", limit=6
+    )
+
+    assert context.count("문서에는 맑은 고딕을 사용한다") == 1
+
+
+def test_episode_manager_can_create_global_session_after_schema_migration(tmp_path):
+    manager = EpisodeMemoryManager(str(tmp_path / "episodes.db"))
+
+    session_id = manager.create_session("테스트 대화")
+
+    sessions = manager.list_sessions("global")
+    assert [item["session_id"] for item in sessions] == [session_id]
+
+
+def test_context_manager_can_exclude_memory_already_supplied_by_outer_pipeline():
+    manager = ContextManager.__new__(ContextManager)
+    manager.memory = SimpleNamespace(load_session=lambda _session_id: [
+        {"role": "user", "content": "중복되면 안 되는 대화"},
+    ])
+    manager.rag = SimpleNamespace()
+    manager.scratchpad = SimpleNamespace(get_context=lambda: "중복되면 안 되는 작업 상태")
+    manager.lifecycle = SimpleNamespace(compact_messages=lambda messages: messages)
+    manager._get_os_status = lambda: "OS: Windows"
+
+    context = manager.get_full_context(
+        session_id="session-a",
+        include_conversation=False,
+        include_scratchpad=False,
+    )
+
+    assert context == "[OS 상태]\nOS: Windows"
+    assert "중복되면 안 되는" not in context

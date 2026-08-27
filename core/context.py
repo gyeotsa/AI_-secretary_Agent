@@ -1,7 +1,8 @@
 from typing import Optional, Dict, Any
+import inspect
 from core.memory import get_memory
 from core.rag import get_rag
-from core.scratchpad import get_scratchpad
+from core.scratchpad import Scratchpad, get_scratchpad
 import os
 import platform
 import re
@@ -21,20 +22,54 @@ class ContextManager:
     - 현재 디렉토리
     """
 
-    def __init__(self):
-        self.memory = get_memory()
-        self.rag = get_rag()
-        self.scratchpad = get_scratchpad()
+    def __init__(
+        self,
+        *,
+        memory=None,
+        rag=None,
+        scratchpad: Optional[Scratchpad] = None,
+    ):
+        """Create a context assembler.
+
+        Dependencies are injectable so a turn-owned executor can keep its
+        working memory isolated from other UI, voice, and workspace turns.
+        The singleton defaults remain available for legacy callers.
+        """
+        self.memory = memory or get_memory()
+        self.rag = rag or get_rag()
+        self.scratchpad = scratchpad or get_scratchpad()
         self.lifecycle = ContextLifecycleManager()
         self._retrieval_local = threading.local()
 
-    def get_rag_context(self, user_query: str, top_k: int = 3) -> str:
+    @staticmethod
+    def _accepts_keyword(callable_obj, keyword: str) -> bool:
+        """Check adapter capability without catching errors raised inside it."""
+        try:
+            parameters = inspect.signature(callable_obj).parameters.values()
+        except (TypeError, ValueError):
+            return False
+        return any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            or parameter.name == keyword
+            for parameter in parameters
+        )
+
+    def get_rag_context(self, user_query: str, top_k: int = 3, *,
+                        namespace: Optional[str] = None) -> str:
         """Retrieve grounded context and remember exactly what entered this prompt."""
         self._retrieval_local.trace_id = ""
         self._retrieval_local.chunk_ids = []
         if not user_query:
             return ""
-        retrieval = self.rag.search_with_confidence(user_query, top_k=top_k)
+        search = self.rag.search_with_confidence
+        if namespace is not None and self._accepts_keyword(search, "namespace"):
+            retrieval = search(
+                user_query, top_k=top_k, namespace=str(namespace or "global"),
+            )
+        else:
+            # Compatibility for third-party RAG adapters that predate explicit
+            # request namespaces. The built-in manager always takes the safe path.
+            retrieval = search(user_query, top_k=top_k)
         rag_docs = retrieval["results"]
         if not retrieval["answerable"]:
             return (
@@ -81,13 +116,24 @@ class ContextManager:
         except Exception:
             pass
 
-    def get_full_context(self, user_query: str = "", session_id: Optional[str] = None) -> str:
+    def get_full_context(
+        self,
+        user_query: str = "",
+        session_id: Optional[str] = None,
+        *,
+        include_conversation: bool = True,
+        include_scratchpad: bool = True,
+        rag_namespace: Optional[str] = None,
+    ) -> str:
         """
         모든 소스의 컨텍스트를 통합합니다.
 
         Args:
             user_query: 사용자 쿼리 (RAG 검색용)
             session_id: 대화 세션 ID
+            include_conversation: 외부 파이프라인이 이미 대화 기억을 넣은 경우 False
+            include_scratchpad: 외부 파이프라인이 이미 작업 상태를 넣은 경우 False
+            rag_namespace: 이번 요청이 검색할 작업공간 네임스페이스
 
         Returns:
             통합된 컨텍스트 문자열
@@ -100,7 +146,7 @@ class ContextManager:
             context_parts.append(f"[OS 상태]\n{os_status}")
 
         # 2. 대화 Memory (최근 10개)
-        if session_id:
+        if include_conversation and session_id:
             conversation = self.memory.load_session(session_id)
             if conversation:
                 recent_messages = self.lifecycle.compact_messages(conversation)
@@ -113,14 +159,17 @@ class ContextManager:
 
         # 3. RAG 문서 (사용자 쿼리와 관련된 것)
         if user_query:
-            rag_context = self.get_rag_context(user_query)
+            rag_context = self.get_rag_context(
+                user_query, namespace=rag_namespace,
+            )
             if rag_context:
                 context_parts.append("\n" + rag_context)
 
         # 4. Scratchpad (현재 작업 상태)
-        scratchpad_context = self.scratchpad.get_context()
-        if scratchpad_context:
-            context_parts.append(f"\n[현재 작업 상태]\n{scratchpad_context}")
+        if include_scratchpad:
+            scratchpad_context = self.scratchpad.get_context()
+            if scratchpad_context:
+                context_parts.append(f"\n[현재 작업 상태]\n{scratchpad_context}")
 
         # 통합
         full_context = "\n".join(context_parts)

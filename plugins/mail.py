@@ -20,11 +20,23 @@ class MailPlugin(BasePlugin):
         self.description = "환경변수 기반 SMTP 전송과 로컬 메일 초안 저장"
         self.auth_required = True
         self.auth_type = "SMTP 환경 변수"
+        self._smtp_connected = False
+        self._smtp_authenticated = False
 
-    def is_authenticated(self) -> bool:
-        return all(os.getenv(name) for name in (
+    def is_connected(self):
+        if self._smtp_connected:
+            return True
+        return None if os.getenv("MAIL_SMTP_HOST") else False
+
+    def is_authenticated(self):
+        if self._smtp_authenticated:
+            return True
+        configured = all(os.getenv(name) for name in (
             "MAIL_SMTP_HOST", "MAIL_SMTP_USERNAME", "MAIL_SMTP_PASSWORD"
         ))
+        # Credentials being present is configuration readiness, not proof that
+        # the SMTP server accepted them.
+        return None if configured else False
 
     def get_tools(self) -> List[ToolSchema]:
         message = {
@@ -94,7 +106,9 @@ class MailPlugin(BasePlugin):
                     raise ValueError("MAIL_SMTP_HOST/USERNAME/PASSWORD 설정이 필요합니다.")
                 port = int(os.getenv("MAIL_SMTP_PORT", "465"))
                 with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=30) as smtp:
+                    self._smtp_connected = True
                     smtp.login(username, password)
+                    self._smtp_authenticated = True
                     refused = smtp.send_message(message)
                 if refused:
                     raise RuntimeError(f"일부 수신자 전송이 거부되었습니다: {list(refused)}")

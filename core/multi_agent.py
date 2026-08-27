@@ -291,7 +291,12 @@ class MultiAgentOrchestrator:
             
         # 2. 컨텍스트 매니저
         try:
-            context_info = self.context_manager.get_full_context(query, "multi_agent")
+            context_info = self.context_manager.get_full_context(
+                query,
+                "multi_agent",
+                include_conversation=False,
+                include_scratchpad=False,
+            )
             if context_info:
                 parts.append(f"\n### 시스템 상태 ###\n{context_info}")
         except Exception as e:

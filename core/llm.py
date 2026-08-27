@@ -9,6 +9,35 @@ from core.tools import get_tools_schema, AUTO_LOOP_EXCLUDED_TOOLS
 from core.model_registry import get_model_registry
 
 
+class ModelCallError(RuntimeError):
+    """Typed transport/provider failure that must never be treated as model text."""
+
+    def __init__(
+        self,
+        provider: str,
+        model: str,
+        code: str,
+        detail: str,
+        *,
+        retryable: bool = False,
+    ):
+        self.provider = str(provider)
+        self.model = str(model)
+        self.code = str(code)
+        self.detail = str(detail)
+        self.retryable = bool(retryable)
+        super().__init__(f"{self.provider}/{self.model} {self.code}: {self.detail}")
+
+    def user_message(self) -> str:
+        if self.code == "connection":
+            return "로컬 AI 모델 서버에 연결할 수 없습니다. Ollama 실행 상태를 확인해 주세요."
+        if self.code == "timeout":
+            return "AI 모델 응답 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요."
+        if self.code == "authentication":
+            return "AI 제공자 인증 설정을 확인해 주세요."
+        return "AI 모델 호출에 실패했습니다. 진단 로그에서 상세 원인을 확인해 주세요."
+
+
 def has_configured_anthropic_key() -> bool:
     key = (Config.ANTHROPIC_API_KEY or "").strip()
     if not key:
@@ -26,7 +55,7 @@ class BaseLLMClient:
             tool for tool in get_tools_schema()
             if tool.get("name") not in AUTO_LOOP_EXCLUDED_TOOLS
         ]
-        self.system_prompt = Config.SYSTEM_PROMPT_TEMPLATE.format(user_profile_section="")
+        self.system_prompt = Config.get_system_prompt()
 
     def set_system_prompt(self, prompt: str):
         self.system_prompt = prompt
@@ -81,7 +110,9 @@ class AnthropicClient(BaseLLMClient):
 
             return "", []
         except Exception as e:
-            return f"오류가 발생했습니다: {str(e)}", []
+            raise ModelCallError(
+                "anthropic", Config.ANTHROPIC_MODEL, "provider", str(e), retryable=True
+            ) from e
 
     def chat(self, messages: List[Dict]) -> str:
         try:
@@ -95,7 +126,9 @@ class AnthropicClient(BaseLLMClient):
             )
             return response.content[0].text
         except Exception as e:
-            return f"오류가 발생했습니다: {str(e)}"
+            raise ModelCallError(
+                "anthropic", Config.ANTHROPIC_MODEL, "provider", str(e), retryable=True
+            ) from e
 
 
 class OllamaClient(BaseLLMClient):
@@ -197,9 +230,12 @@ class OllamaClient(BaseLLMClient):
     def chat_with_tools(self, messages: List[Dict], allowed_tool_names=None) -> Tuple[str, List[Dict]]:
         metric_started = time.perf_counter()
         try:
-            # 시스템 프롬프트를 메시지에 추가
+            # 호출별 system 메시지가 있으면 전역 기본 프롬프트를 중복 삽입하지
+            # 않는다. 이 규칙 덕분에 공유 클라이언트를 변경하지 않고 역할별
+            # 프롬프트를 안전하게 전달할 수 있다.
             ollama_messages = []
-            if self.system_prompt:
+            has_explicit_system = any(message.get("role") == "system" for message in messages)
+            if self.system_prompt and not has_explicit_system:
                 ollama_messages.append({"role": "system", "content": self.system_prompt})
             ollama_messages.extend(messages)
 
@@ -265,10 +301,18 @@ class OllamaClient(BaseLLMClient):
                     return text, []
 
             return "", []
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.ConnectionError as exc:
             from core.productization import METRICS
             METRICS.increment(f"model.{self.model}.failure")
-            return "오류: Ollama가 실행 중이지 않습니다. 'ollama serve'로 시작해주세요.", []
+            raise ModelCallError(
+                "ollama", self.model, "connection", str(exc), retryable=True
+            ) from exc
+        except requests.exceptions.Timeout as exc:
+            from core.productization import METRICS
+            METRICS.increment(f"model.{self.model}.failure")
+            raise ModelCallError(
+                "ollama", self.model, "timeout", str(exc), retryable=True
+            ) from exc
         except requests.exceptions.HTTPError as e:
             # tool calling 미지원 모델일 경우 fallback으로 chat 메서드 사용
             try:
@@ -277,15 +321,27 @@ class OllamaClient(BaseLLMClient):
                     # tool calling 미지원시 일반 chat으로 fallback
                     text = self.chat(messages)
                     return text, []
-                return f"오류: {e.response.status_code} - {error_detail}", []
-            except:
+                raise ModelCallError(
+                    "ollama", self.model, f"http_{e.response.status_code}",
+                    str(error_detail), retryable=e.response.status_code >= 500,
+                ) from e
+            except ModelCallError:
+                raise
+            except Exception:
                 # tool calling 미지원일 가능성 있으면 fallback
                 if e.response.status_code == 400:
                     text = self.chat(messages)
                     return text, []
-                return f"오류: {e.response.status_code} - {str(e)}", []
+                raise ModelCallError(
+                    "ollama", self.model, f"http_{e.response.status_code}",
+                    str(e), retryable=e.response.status_code >= 500,
+                ) from e
+        except ModelCallError:
+            raise
         except Exception as e:
-            return f"오류가 발생했습니다: {str(e)}", []
+            raise ModelCallError(
+                "ollama", self.model, "protocol", str(e), retryable=False
+            ) from e
 
     def chat(self, messages: List[Dict]) -> str:
         return self.chat_structured(messages)
@@ -356,19 +412,34 @@ class OllamaClient(BaseLLMClient):
                 return text
 
             return ""
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.ConnectionError as exc:
             from core.productization import METRICS
             METRICS.increment(f"model.{self.model}.failure")
-            return "오류: Ollama가 실행 중이지 않습니다. 'ollama serve'로 시작해주세요."
+            raise ModelCallError(
+                "ollama", self.model, "connection", str(exc), retryable=True
+            ) from exc
+        except requests.exceptions.Timeout as exc:
+            from core.productization import METRICS
+            METRICS.increment(f"model.{self.model}.failure")
+            raise ModelCallError(
+                "ollama", self.model, "timeout", str(exc), retryable=True
+            ) from exc
         except requests.exceptions.HTTPError as e:
             # 오류 응답 자세히 보기
             try:
                 error_detail = e.response.json()
-                return f"오류: {e.response.status_code} - {error_detail}"
-            except:
-                return f"오류: {e.response.status_code} - {str(e)}"
+            except Exception:
+                error_detail = str(e)
+            raise ModelCallError(
+                "ollama", self.model, f"http_{e.response.status_code}",
+                str(error_detail), retryable=e.response.status_code >= 500,
+            ) from e
+        except ModelCallError:
+            raise
         except Exception as e:
-            return f"오류가 발생했습니다: {str(e)}"
+            raise ModelCallError(
+                "ollama", self.model, "protocol", str(e), retryable=False
+            ) from e
 
 
 class HybridLLMClient(BaseLLMClient):

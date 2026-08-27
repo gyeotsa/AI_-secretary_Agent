@@ -271,7 +271,16 @@ class CommandCenterDialog(QDialog):
         self.cards["ram"].value.setText("—" if system.get("ram_percent") is None else f"{system['ram_percent']:.0f}%")
         vram_total = system.get("vram_total_mb")
         self.cards["vram"].value.setText("—" if not vram_total else f"{system.get('vram_used_mb', 0) / vram_total * 100:.0f}%")
-        self.cards["plugins"].value.setText(f"{sum(bool(item.get('verified')) for item in data['plugins'])}/{len(data['plugins'])}")
+        plugin_confirmed = sum(
+            item.get("verification_state") == "confirmed" for item in data["plugins"]
+        )
+        plugin_failed = sum(
+            item.get("verification_state") == "failed" for item in data["plugins"]
+        )
+        self.cards["plugins"].value.setText(
+            f"{plugin_confirmed}/{len(data['plugins'])}"
+            + (f" · 실패 {plugin_failed}" if plugin_failed else "")
+        )
         self.cards["approvals"].value.setText(str(len(pending)))
         health = data["diagnostics"].get("summary", {}).get("status", "not_run")
         self.cards["health"].value.setText(health.upper())

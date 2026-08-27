@@ -60,6 +60,18 @@ def test_registry_driven_tool_loadout_is_bounded():
     assert selector.select("그냥 안녕").tool_names == ()
 
 
+def test_tool_loadout_honors_specialist_execution_scope():
+    registry = PluginRegistry()
+    registry.register_plugin(_DemoPlugin())
+    selector = ToolLoadoutSelector(registry, max_tools=2)
+    scoped = selector.select(
+        "메모장을 실행한 뒤 웹 자료도 검색해줘",
+        allowed_tools=("demo_open",),
+    )
+    assert scoped.tool_names == ("demo_open",)
+    assert "demo_search" not in scoped.tool_names
+
+
 def test_context_compacts_and_offloads_large_tool_result(tmp_path):
     lifecycle = ContextLifecycleManager(tmp_path, ContextBudget(recent_messages=3, max_chars=1000, max_tool_result_chars=20))
     result = lifecycle.compact_messages([

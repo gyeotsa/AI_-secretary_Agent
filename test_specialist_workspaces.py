@@ -13,7 +13,9 @@ from plugins.photoshop import PhotoshopPlugin
 from ui.specialist_workspaces import (ImageDropList, MockupWorkspaceWindow,
                                       SpecialistWorkspaceWindow, ZoomableImageView)
 from core.specialist_team import SpecialistTeamRuntime
+from core.executor import ExecutionOutcome
 from core.harness import SafetyLayer
+from core.tool_result import Artifact, Evidence, ToolRunResult
 from ui.knowledge_graph_workspace import KnowledgeGraphWindow, NativeGraphView
 from ui.main_window import JarvisMainWindow
 
@@ -197,7 +199,8 @@ def test_specialist_team_scopes_recall_and_stores_only_compact_success():
         namespace = "global"
         def __init__(self): self.added = []
         def set_namespace(self, value): self.namespace = value
-        def search_docs(self, query, top_k=5): return [{"content": f"memory:{query}"}]
+        def search_docs(self, query, top_k=5, metadata_filter=None):
+            return [{"content": f"memory:{query}", "approved": True}]
         def add_text_document(self, text, **kwargs): self.added.append((text, kwargs)); return kwargs["doc_id"]
 
     rag = Rag(); team = SpecialistTeamRuntime(rag, namespace_provider=lambda: "project-a")
@@ -209,9 +212,349 @@ def test_specialist_team_scopes_recall_and_stores_only_compact_success():
     assert "output" not in rag.added[0][0]
 
 
+def test_specialist_workspace_contract_declares_tools_artifacts_and_acceptance():
+    spec = get_specialist_workspace_registry().get("coding")
+    contract = spec.execution_contract()
+    assert contract["required_tools"] == ["git", "filesystem", "coding", "system_tools"]
+    assert "file" in contract["artifact_types"]
+    assert contract["acceptance_criteria"]
+    assert "required_tools_registered" in contract["readiness_checks"]
+    assert spec.tools == spec.required_tools
+
+
+def test_specialist_recall_excludes_drafts_and_does_not_store_unapproved():
+    class Rag:
+        namespace = "global"
+        def __init__(self): self.added = []
+        def set_namespace(self, value): self.namespace = value
+        def search_docs(self, query, top_k=5, metadata_filter=None):
+            return [
+                {"content": "승인됨", "approved": True},
+                {"content": "초안", "approved": False},
+            ]
+        def add_text_document(self, text, **kwargs): self.added.append(text); return "id"
+
+    rag = Rag(); team = SpecialistTeamRuntime(rag)
+    assert team.recall("document", "보고서").as_prompt() == "- 승인됨"
+    assert team.remember_success(
+        "document", instruction="초안", result={"renderer": "draft"}, approved=False,
+    ) == ""
+    assert rag.added == []
+
+
+def test_specialist_reviewer_requires_real_contract_artifact_and_evidence(tmp_path):
+    team = SpecialistTeamRuntime()
+    contract = {
+        "artifact_types": ["document", "file"],
+        "acceptance_criteria": ["문서 저장 검증"],
+        "readiness": {"resolved_tools": ["word_create_document"]},
+    }
+    fake = {
+        "status": "completed", "tool_status": "succeeded",
+        "tool_name": "word_create_document", "completed_steps": 1,
+        "evidence_count": 99, "artifact_count": 99,
+        "evidence": [], "artifacts": [{"kind": "document", "uri": str(tmp_path / "missing.docx")}],
+    }
+    rejected = team._review_execution(fake, contract)
+    assert not rejected["passed"]
+    assert "실제 검증 근거" in rejected["reason"]
+    assert "실제 산출물" in rejected["reason"]
+
+    output = tmp_path / "report.docx"; output.write_bytes(b"verified")
+    verified = {
+        **fake,
+        "evidence": [{"kind": "file_content", "summary": "저장 후 해시 확인", "data": {}}],
+        "artifacts": [{"kind": "document", "uri": str(output), "metadata": {}}],
+    }
+    accepted = team._review_execution(verified, contract)
+    assert accepted["passed"]
+    assert accepted["accepted_artifacts"][0]["uri"] == str(output)
+
+
+def test_specialist_reviewer_rejects_empty_word_document_evidence(tmp_path):
+    output = tmp_path / "empty.docx"
+    output.write_bytes(b"docx-shell")
+    contract = {
+        "artifact_types": ["document"],
+        "acceptance_criteria": ["요청한 내용이 저장된 Word 문서"],
+        "readiness": {"resolved_tools": ["word_create_document"]},
+    }
+    payload = {
+        "status": "completed",
+        "tool_status": "succeeded",
+        "tool_name": "word_create_document",
+        "tool_names": ["word_create_document"],
+        "evidence": [{
+            "kind": "docx_structure",
+            "summary": "저장된 Word 문서를 다시 열었습니다.",
+            "data": {"paragraphs": 0, "paragraph_texts": []},
+        }],
+        "artifacts": [{"kind": "document", "uri": str(output)}],
+    }
+
+    reviewed = SpecialistTeamRuntime._review_execution(payload, contract)
+
+    assert not reviewed["passed"]
+    assert "빈 문서" in reviewed["reason"]
+
+
+def test_specialist_planning_failure_is_visible_degraded(monkeypatch):
+    class BrokenClient:
+        profile = None
+        def chat_structured(self, messages, json_schema=None): return "JSON이 아닌 응답"
+
+    monkeypatch.setattr("core.llm.get_llm_client", lambda _role: BrokenClient())
+    plan = SpecialistTeamRuntime._build_specialist_plan(
+        SpecialistTeamRuntime.TEAM_BLUEPRINTS["document"][1],
+        "보고서를 작성해줘", "관련 기억 없음", [],
+        {"acceptance_criteria": ["문서 검증"],
+         "readiness": {"resolved_tools": ["word_create_document"]}},
+    )
+    assert plan["planning_status"] == "degraded"
+    assert plan["planning_error"] == "구조화된 요구사항을 반환하지 않았습니다."
+
+
+def test_specialist_plan_rejects_incomplete_structured_json(monkeypatch):
+    class IncompleteClient:
+        profile = None
+        def chat_structured(self, messages, json_schema=None):
+            return '{"goal":"보고서 작성","acceptance":"문자열이면 안 됨"}'
+
+    monkeypatch.setattr("core.llm.get_llm_client", lambda _role: IncompleteClient())
+    plan = SpecialistTeamRuntime._build_specialist_plan(
+        SpecialistTeamRuntime.TEAM_BLUEPRINTS["document"][1],
+        "보고서를 작성해줘", "관련 기억 없음", [],
+        {"acceptance_criteria": ["문서 검증"], "readiness": {"resolved_tools": []}},
+    )
+    assert plan["planning_status"] == "degraded"
+    assert "planning_error" in plan
+
+
+def test_specialist_plan_normalizes_schema_near_local_model_output(monkeypatch):
+    class LocalClient:
+        profile = None
+
+        def chat_structured(self, messages, json_schema=None):
+            assert json_schema["properties"]["inputs"]["items"] == {"type": "string"}
+            return {
+                "goal": "검증 문서 작성",
+                "inputs": [{"value": "제목과 본문"}],
+                "constraints": [{"description": "사용자 원문 보존"}],
+                "acceptance": [{"criterion": "저장 후 본문 재확인"}],
+                "tools": [{"name": "word_create_document"}],
+            }
+
+    monkeypatch.setattr("core.llm.get_llm_client", lambda _role: LocalClient())
+    plan = SpecialistTeamRuntime._build_specialist_plan(
+        SpecialistTeamRuntime.TEAM_BLUEPRINTS["document"][1],
+        "검증 문서를 작성해줘", "관련 기억 없음", [],
+        {"acceptance_criteria": ["문서 검증"],
+         "readiness": {"resolved_tools": ["word_create_document"]}},
+    )
+
+    assert plan["planning_status"] == "ready"
+    assert plan["inputs"] == ["제목과 본문"]
+    assert plan["constraints"] == ["사용자 원문 보존"]
+    assert plan["acceptance"] == ["저장 후 본문 재확인"]
+    assert plan["tools"] == ["word_create_document"]
+
+
+def test_workspace_readiness_records_each_check_and_blocks_missing_executor():
+    team = SpecialistTeamRuntime(tool_name_provider=lambda: ("word_create_document",))
+    contract = team._resolve_workspace_contract({
+        "required_tools": ["word"],
+        "readiness_checks": ["required_tools_registered", "executor_available", "verified_evidence"],
+    }, executor_available=False)
+    assert contract["readiness"]["checks"] == {
+        "required_tools_registered": True,
+        "executor_available": False,
+        "verified_evidence": False,
+    }
+    assert contract["readiness"]["ready"] is False
+    assert contract["readiness"]["failed_checks"] == ["executor_available"]
+
+
+def test_workspace_readiness_exposes_tool_registry_failure():
+    def broken_registry():
+        raise RuntimeError("registry unavailable")
+
+    team = SpecialistTeamRuntime(tool_name_provider=broken_registry)
+    contract = team._resolve_workspace_contract({
+        "required_tools": ["word"],
+        "readiness_checks": ["required_tools_registered"],
+    })
+    assert contract["readiness"]["ready"] is False
+    assert contract["readiness"]["registry_error"] == "RuntimeError: registry unavailable"
+    assert contract["readiness"]["failed_checks"] == ["required_tools_registered"]
+
+
+def test_team_run_records_workspace_contract_and_degraded_plan(tmp_path, monkeypatch):
+    output = tmp_path / "report.docx"; output.write_bytes(b"document")
+    available = (
+        "word_create_document", "excel_create_workbook", "hwpx_create_document",
+        "powerpoint_create_presentation", "pdf_create_document",
+    )
+    team = SpecialistTeamRuntime(tool_name_provider=lambda: available)
+    monkeypatch.setattr(team, "_build_specialist_plan", lambda *args, **kwargs: {
+        "goal": "보고서 작성", "acceptance": ["문서 검증"],
+        "planning_status": "degraded", "planning_error": "invalid JSON",
+    })
+
+    def invoke(_prompt):
+        result = ToolRunResult.successful(
+            tool_name="word_create_document", raw_output=str(output),
+            evidence=[Evidence("file_content", "저장 후 파일 해시를 확인했습니다.")],
+            artifacts=[Artifact("document", str(output))],
+        )
+        return ExecutionOutcome(
+            "문서를 저장하고 검증했습니다.", status="completed",
+            tool_result=result, completed_steps=1,
+        )
+
+    _, run = team.execute_workspace_request(
+        "document", "보고서를 작성해줘", invoke_executor=invoke,
+    )
+    assert run.status == "degraded"
+    assert run.workspace_contract["required_tools"]
+    assert run.artifacts["execution_contract_result"]["review"]["passed"] is False
+    assert any(event["status"] == "degraded" for event in run.events)
+
+
+def test_team_run_completes_only_when_plan_and_contract_evidence_pass(tmp_path, monkeypatch):
+    output = tmp_path / "report.docx"; output.write_bytes(b"document")
+    available = (
+        "word_create_document", "excel_create_workbook", "hwpx_create_document",
+        "powerpoint_create_presentation", "pdf_create_document",
+    )
+    team = SpecialistTeamRuntime(tool_name_provider=lambda: available)
+    monkeypatch.setattr(team, "_build_specialist_plan", lambda *args, **kwargs: {
+        "goal": "보고서 작성", "inputs": [], "constraints": [],
+        "acceptance": ["저장 후 검증"], "tools": ["word_create_document"],
+        "planning_status": "ready",
+    })
+
+    def invoke(_prompt):
+        result = ToolRunResult.successful(
+            tool_name="word_create_document", raw_output=str(output),
+            evidence=[Evidence("file_hash", "저장된 파일의 해시를 확인했습니다.")],
+            artifacts=[Artifact("document", str(output))],
+        )
+        return ExecutionOutcome(
+            "문서를 저장하고 검증했습니다.", status="completed",
+            tool_result=result, completed_steps=1,
+        )
+
+    _, run = team.execute_workspace_request(
+        "document", "보고서를 작성해줘", invoke_executor=invoke,
+    )
+    review = run.artifacts["execution_contract_result"]["review"]
+    assert run.status == "completed"
+    assert review["passed"] is True
+    assert all(item["verified"] for item in review["criteria_results"])
+    assert review["readiness_checks"]["verified_evidence"] is True
+
+
+def test_specialist_team_passes_resolved_tool_scope_to_executor(tmp_path, monkeypatch):
+    output = tmp_path / "report.docx"; output.write_bytes(b"document")
+    available = (
+        "word_create_document", "excel_create_workbook", "hwpx_create_document",
+        "powerpoint_create_presentation", "pdf_create_document",
+    )
+    team = SpecialistTeamRuntime(tool_name_provider=lambda: available)
+    monkeypatch.setattr(team, "_build_specialist_plan", lambda *args, **kwargs: {
+        "goal": "보고서 작성", "inputs": [], "constraints": [],
+        "acceptance": ["저장 후 검증"], "tools": ["word_create_document"],
+        "planning_status": "ready",
+    })
+    captured = {}
+
+    def invoke(_prompt, *, allowed_tool_names=None, execution_context=""):
+        captured["prompt"] = _prompt
+        captured["allowed_tool_names"] = list(allowed_tool_names or ())
+        captured["execution_context"] = execution_context
+        result = ToolRunResult.successful(
+            tool_name="word_create_document", raw_output=str(output),
+            evidence=[Evidence("file_hash", "저장된 파일의 해시를 확인했습니다.")],
+            artifacts=[Artifact("document", str(output))],
+        )
+        return ExecutionOutcome(
+            "문서를 저장하고 검증했습니다.", status="completed",
+            tool_result=result, completed_steps=1,
+        )
+
+    _, run = team.execute_workspace_request(
+        "document", "보고서를 작성해줘", invoke_executor=invoke,
+    )
+    assert set(captured["allowed_tool_names"]) == set(available)
+    assert captured["prompt"] == "보고서를 작성해줘"
+    assert "workspace" in captured["execution_context"]
+    assert "word_create_document" not in captured["execution_context"]
+    assert run.status == "completed"
+
+
 def test_specialist_team_exposes_sequential_role_pipeline():
     team = SpecialistTeamRuntime()
     assert team.role_pipeline("mockup") == (
         "기억 검색", "Vision 관찰", "레이아웃 설계", "제약 검증", "비파괴 렌더링"
     )
     assert "순차 실행/해제" in team.describe_team("mockup")
+
+
+def test_specialist_role_rejects_empty_required_artifact():
+    team = SpecialistTeamRuntime()
+    run = team.run("document", "요구사항을 분석해줘")
+    with run as state:
+        try:
+            team.execute_role(state, "requirements", lambda _run: {})
+        except ValueError as exc:
+            assert "비어 있는 상태" in str(exc)
+        else:
+            raise AssertionError("빈 역할 산출물을 완료로 처리했습니다.")
+    assert state.status == "failed"
+    assert state.events[-1]["status"] == "failed"
+
+
+def test_specialist_reviewer_aggregates_multi_step_tool_evidence(tmp_path):
+    first = tmp_path / "report.docx"
+    second = tmp_path / "report.pdf"
+    first.write_bytes(b"docx")
+    second.write_bytes(b"pdf")
+    outcome = ExecutionOutcome(
+        "문서 작성과 렌더 검증을 완료했습니다.", status="completed",
+        completed_steps=2,
+        tool_results=(
+            ToolRunResult.successful(
+                tool_name="word_create_document", raw_output=str(first),
+                evidence=[Evidence("file_hash", "DOCX 저장 해시를 확인했습니다.")],
+                artifacts=[Artifact("document", str(first))],
+            ),
+            ToolRunResult.successful(
+                tool_name="pdf_create_document", raw_output=str(second),
+                evidence=[Evidence("rendered_pdf", "PDF 렌더 결과를 확인했습니다.")],
+                artifacts=[Artifact("pdf", str(second))],
+            ),
+        ),
+    )
+    payload = SpecialistTeamRuntime._outcome_payload(outcome)
+    contract = {
+        "artifact_types": ["document", "pdf", "file"],
+        "acceptance_criteria": ["저장 후 렌더링을 검증한다"],
+        "readiness": {
+            "resolved_tools": ["word_create_document", "pdf_create_document"],
+            "checks": {"required_tools_registered": True, "executor_available": True},
+        },
+    }
+    review = SpecialistTeamRuntime._review_execution(payload, contract)
+    assert payload["tool_status"] == "succeeded"
+    assert payload["tool_names"] == ["word_create_document", "pdf_create_document"]
+    assert payload["evidence_count"] == 2
+    assert payload["artifact_count"] == 2
+    assert review["passed"] is True
+    assert {item["uri"] for item in review["accepted_artifacts"]} == {
+        str(first), str(second),
+    }
+
+
+def test_photoshop_contract_accepts_plugin_image_document_artifact():
+    spec = get_specialist_workspace_registry().get("photoshop")
+    assert "image_document" in spec.artifact_types

@@ -38,10 +38,29 @@ class ToolLoadoutSelector:
         return words
 
     def select(self, request: str, resolution: IntentResolution | None = None,
-               required_tools: Iterable[str] = ()) -> ToolLoadout:
+               required_tools: Iterable[str] = (),
+               allowed_tools: Iterable[str] | None = None) -> ToolLoadout:
+        """Select a compact loadout inside an optional execution contract.
+
+        ``allowed_tools`` is a hard capability boundary supplied by a specialist
+        workspace or supervisor. ``required_tools`` remains a smaller set pinned
+        to the front of the loadout.
+        """
         resolution = resolution or self.router.resolve(request)
-        selected = [name for name in required_tools if self.registry.get_capability(name)]
-        if resolution.matched and resolution.tool_name:
+        allowed = None if allowed_tools is None else {
+            str(name) for name in allowed_tools
+            if self.registry.get_capability(str(name)) is not None
+        }
+
+        def in_scope(name: str) -> bool:
+            return allowed is None or name in allowed
+
+        selected = [
+            name for name in required_tools
+            if self.registry.get_capability(name) and in_scope(name)
+        ]
+        if (resolution.matched and resolution.tool_name
+                and in_scope(resolution.tool_name)):
             selected.insert(0, resolution.tool_name)
             return ToolLoadout(tuple(dict.fromkeys(selected))[:self.max_tools],
                                f"intent:{resolution.intent_name}", resolution.confidence)
@@ -49,6 +68,8 @@ class ToolLoadoutSelector:
         query = self._tokens(request)
         scored = []
         for contract in self.registry.get_capabilities():
+            if not in_scope(contract.name):
+                continue
             descriptor = self._tokens(f"{contract.name} {contract.description}")
             overlap = len(query & descriptor)
             if overlap:

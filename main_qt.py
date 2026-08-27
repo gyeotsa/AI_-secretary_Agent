@@ -5,6 +5,7 @@ import re
 import uuid
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtCore import QTimer, QObject, pyqtSignal
@@ -13,7 +14,7 @@ from config import Config, request_windows_permissions
 from core.state_machine import StateMachine, State
 from core.mode_manager import ModeManager
 from core.memory import get_memory
-from core.llm import get_llm_client
+from core.llm import ModelCallError, get_llm_client
 from core.tools import get_tool_executor
 from core.user_profile import get_user_profile
 from core.rag import get_rag_manager
@@ -37,7 +38,11 @@ from core.task_contracts import get_supervisor_runtime
 from core.workflow_runtime import MorningBriefService, WorkflowRuntime
 from core.diagnostics_runtime import DiagnosticsRuntime
 from core.command_center import CommandCenterRuntime
-from core.gesture_runtime import GestureRuntime
+from core.gesture_runtime import (
+    GestureRuntime,
+    normalize_gesture_mapping,
+    normalize_gesture_sensitivity,
+)
 from core.interface_control import get_interface_control_bridge
 from core.observer import get_observer_layer
 from ui.command_center import FirstRunWizard
@@ -55,6 +60,28 @@ def strip_leading_wake_word(text: str, wake_word: str) -> str:
     ).strip()
     return stripped or original.strip()
 from ui.main_window import JarvisMainWindow
+
+
+@dataclass(frozen=True)
+class TurnEnvelope:
+    """Immutable attribution data captured before a background turn starts."""
+
+    turn_id: str
+    session_id: str
+    user_text: str
+    conversation_history: tuple
+    specialist_key: str = ""
+    memory_namespace: str = "global"
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    """Thread-safe result paired with the exact input that produced it."""
+
+    turn: TurnEnvelope
+    response_text: str
+    status: str = "completed"
+    error_code: str = ""
 
 
 def resource_path(relative_path: str) -> Path:
@@ -113,7 +140,7 @@ class ConsoleReader(QObject):
 
 class AppSignals(QObject):
     """Thread-safe bridge for callbacks that must run on the Qt GUI thread."""
-    ai_response_ready = pyqtSignal(str)
+    ai_response_ready = pyqtSignal(object)
     tts_finished = pyqtSignal()
     # 권한 요청용 시그널: (permission_name, permission_description)
     permission_request = pyqtSignal(str, str)
@@ -189,6 +216,7 @@ class JarvisApp:
         self.signals.gesture_status.connect(self.window.set_gesture_camera_status)
         self.signals.interface_surface.connect(self.window.open_interface_surface)
         self.window.gesture_camera_requested.connect(self._request_gesture_camera)
+        self.window.gesture_settings_requested.connect(self._apply_gesture_configuration)
 
         self.diagnostics_runtime = DiagnosticsRuntime(
             tool_executor=self.tool_executor, workspace_manager=self.workspace_manager,
@@ -209,12 +237,25 @@ class JarvisApp:
             memory_maintenance=lambda: self._run_idle_memory_maintenance(force=True),
             context_provider=self._command_center_context,
         )
-        self.gesture_runtime = GestureRuntime(actions={
-            "motion": lambda payload: self.signals.gesture_motion.emit(payload),
-        })
+        gesture_configuration = self._load_gesture_configuration()
+        self.gesture_runtime = GestureRuntime(
+            actions={
+                "motion": lambda payload: self.signals.gesture_motion.emit(payload),
+                "stop_tts": lambda: self.signals.gesture_action.emit("stop_tts"),
+                "approve": lambda: self.signals.gesture_action.emit("approve"),
+                "cancel": lambda: self.signals.gesture_action.emit("cancel"),
+                "next_workspace": lambda: self.signals.gesture_action.emit("next_workspace"),
+                "toggle_chat": lambda: self.signals.gesture_action.emit("toggle_chat"),
+            },
+            sensitivity=gesture_configuration["sensitivity"],
+            enable_command_gestures=gesture_configuration["command_gestures_enabled"],
+            gesture_mapping=gesture_configuration["gesture_mapping"],
+        )
         interface_bridge = get_interface_control_bridge()
         interface_bridge.register("set_gesture_camera", self._set_gesture_camera_sync)
         interface_bridge.register("get_gesture_status", self.gesture_runtime.status)
+        interface_bridge.register("set_gesture_configuration", self._apply_gesture_configuration)
+        interface_bridge.register("get_gesture_configuration", self.gesture_runtime.configuration)
         interface_bridge.register("open_surface", self._open_interface_surface)
         self.command_center_runtime = CommandCenterRuntime(
             supervisor=self.supervisor_runtime, specialist_team=self.specialist_team_runtime,
@@ -258,7 +299,8 @@ class JarvisApp:
         self.messages = []
         self.session_id = str(uuid.uuid4())
         self.last_response = ""
-        self._response_user_request = ""
+        # Results carry an immutable TurnEnvelope.  Keep no mutable global
+        # "last request" because control turns and queued work can overlap.
         
         self._is_processing_ai = False
         self._queued_dispatch_inflight = set()
@@ -306,7 +348,8 @@ class JarvisApp:
         self._init_ui()
         threading.Thread(target=self.tool_executor.prepare_selected_tts, daemon=True).start()
         QTimer.singleShot(0, self._run_next_queued_task)
-        if FirstRunWizard.should_show():
+        if (os.getenv("JARVIS_SKIP_FIRST_RUN_WIZARD") != "1"
+                and FirstRunWizard.should_show()):
             QTimer.singleShot(700, self._show_first_run_wizard)
         else:
             self._schedule_gesture_autostart()
@@ -371,9 +414,14 @@ class JarvisApp:
         # print("\n자비스가 준비되었습니다! 질문을 입력하세요 (종료하려면 'exit'):")
         # self.console_reader.start()
         
-        # 자동으로 지속적인 음성 감지 시작
-        print("[마이크] 자동으로 음성 감지를 시작합니다...")
-        self._start_continuous_listen()
+        # 실제 사용자 실행에서는 기존처럼 자동으로 음성 감지를 시작한다.
+        # 다만 배포/CI 진단이 장치 권한을 건드리거나 백그라운드 녹음을
+        # 시작하지 않도록 명시적인 비활성화 경계를 제공한다.
+        if os.getenv("JARVIS_DISABLE_MIC_AUTOSTART") == "1":
+            print("[마이크] 자동 시작을 진단 설정으로 건너뜁니다.")
+        else:
+            print("[마이크] 자동으로 음성 감지를 시작합니다...")
+            self._start_continuous_listen()
         
         print(
             f"\n{self.assistant_settings.assistant_name}가 준비되었습니다! "
@@ -508,9 +556,24 @@ class JarvisApp:
         self.state_machine.start_processing()
         
         # AI 호출을 별도 스레드로 처리
+        specialist_key = ""
+        if isinstance(specialist_payload, dict):
+            specialist_key = str(specialist_payload.get("workspace", "")).strip()
+        turn = TurnEnvelope(
+            turn_id=uuid.uuid4().hex,
+            session_id=self.session_id,
+            user_text=text,
+            conversation_history=tuple(dict(item) for item in self.messages[-10:]),
+            specialist_key=specialist_key,
+            memory_namespace=str(
+                getattr(getattr(self, "memory", None), "workspace_namespace", "global")
+                or "global"
+            ),
+        )
+        self.messages.append({"role": "user", "content": text})
         thread = threading.Thread(
             target=self._process_ai,
-            args=(text, existing_task_id, specialist_payload),
+            args=(turn, existing_task_id, specialist_payload),
             daemon=True,
         )
         thread.start()
@@ -538,9 +601,29 @@ class JarvisApp:
         if instruction:
             self._on_user_input(instruction, specialist_payload=payload)
 
-    def _process_ai(self, text: str, existing_task_id=None, specialist_payload=None):
+    def _process_ai(self, turn, existing_task_id=None, specialist_payload=None):
+        if isinstance(turn, TurnEnvelope):
+            envelope = turn
+        else:
+            # Compatibility for diagnostic callers that invoke this method
+            # directly rather than through _on_user_input.
+            text_value = str(turn or "").strip()
+            envelope = TurnEnvelope(
+                turn_id=uuid.uuid4().hex,
+                session_id=self.session_id,
+                user_text=text_value,
+                conversation_history=tuple(dict(item) for item in self.messages[-10:]),
+                specialist_key=(
+                    str(specialist_payload.get("workspace", "")).strip()
+                    if isinstance(specialist_payload, dict) else ""
+                ),
+                memory_namespace=str(
+                    getattr(getattr(self, "memory", None), "workspace_namespace", "global")
+                    or "global"
+                ),
+            )
+        text = envelope.user_text
         print("[DEBUG] _process_ai called with:", text)
-        self._response_user_request = text
         
         # RAG로 문서 검색
         try:
@@ -555,24 +638,26 @@ class JarvisApp:
         
         # AI 호출: Planner → Executor → Reflection 파이프라인 사용!
         print("[DEBUG] Calling Executor.execute_goal...")
-        conversation_history = list(self.messages[-10:])
-        self.messages.append({"role": "user", "content": text})
+        conversation_history = [dict(item) for item in envelope.conversation_history]
         
         try:
             if specialist_payload:
                 workspace_key = str(specialist_payload.get("workspace", "document"))
-                self._active_specialist_key = workspace_key
                 outcome, team_run = self.specialist_team_runtime.execute_workspace_request(
                     workspace_key, text,
                     attachments=list(specialist_payload.get("attachments") or ()),
-                    invoke_executor=lambda enriched: self.executor.execute_turn(
-                        enriched, self.session_id, conversation_history,
+                    invoke_executor=lambda request, allowed_tool_names=None,
+                                           execution_context="": self.executor.execute_turn(
+                        request, self.session_id, conversation_history,
                         self.signals.progress_update.emit, existing_task_id,
+                        allowed_tool_names, execution_context,
                     ),
                 )
                 response_text = outcome.response
                 print(f"[SpecialistTeam] run={team_run.run_id} status={team_run.status}")
-                self.signals.ai_response_ready.emit(response_text)
+                self.signals.ai_response_ready.emit(TurnResult(
+                    envelope, response_text, getattr(outcome, "status", "completed")
+                ))
                 return
             # Declarative workflow triggers are part of the real conversation
             # path.  The trigger vocabulary lives only in workflows.json.
@@ -585,7 +670,9 @@ class JarvisApp:
                 )
                 response_text = workflow_runtime.present_run(run)
                 print("[DEBUG] WorkflowRuntime returned:", response_text)
-                self.signals.ai_response_ready.emit(response_text)
+                self.signals.ai_response_ready.emit(TurnResult(
+                    envelope, response_text, str(getattr(run, "status", "completed"))
+                ))
                 return
             # Executor로 목표 실행!
             if hasattr(self.executor, "execute_turn"):
@@ -609,13 +696,24 @@ class JarvisApp:
                     getattr(self, "_queued_dispatch_inflight", set()).discard(existing_task_id)
 
             # 최종 응답 전송
-            self.signals.ai_response_ready.emit(response_text)
+            self.signals.ai_response_ready.emit(TurnResult(
+                envelope,
+                response_text,
+                getattr(outcome, "status", "completed") if 'outcome' in locals() else "completed",
+            ))
         except Exception as e:
             print(f"[Executor] 오류: {e}")
             import traceback
             traceback.print_exc()
-            error_response = f"죄송해요, 보스! 작업 실행 중 오류가 발생했어요: {str(e)}"
-            self.signals.ai_response_ready.emit(error_response)
+            if isinstance(e, ModelCallError):
+                error_response = e.user_message()
+                error_code = e.code
+            else:
+                error_response = "작업을 처리하는 중 내부 오류가 발생했습니다. 진단 로그를 확인해 주세요."
+                error_code = type(e).__name__
+            self.signals.ai_response_ready.emit(TurnResult(
+                envelope, error_response, "failed", error_code
+            ))
 
     def _on_progress_update(self, message: str):
         """최종 답변 전의 짧은 작업 진행 상황을 GUI에 표시한다."""
@@ -652,11 +750,25 @@ class JarvisApp:
                 daemon=True,
             ).start()
     
-    def _on_ai_response(self, response_text: str):
+    def _on_ai_response(self, result):
         from core.korean_naturalizer import light_polish_korean
+        if isinstance(result, TurnResult):
+            turn = result.turn
+            response_text = result.response_text
+            turn_status = result.status
+        else:
+            # Backward-compatible UI callback for tests/legacy integrations.
+            turn = TurnEnvelope(
+                turn_id=uuid.uuid4().hex,
+                session_id=self.session_id,
+                user_text="",
+                conversation_history=tuple(),
+            )
+            response_text = str(result or "")
+            turn_status = "completed"
         if hasattr(self.window, "set_assistant_identity"):
             self.window.set_assistant_identity(get_assistant_settings().assistant_name)
-        channels = present_channels(response_text, self._response_user_request)
+        channels = present_channels(response_text, turn.user_text)
         print("[DEBUG] _on_ai_response technical result:", channels.technical_text)
         response_text = channels.screen_text
         response_text = self._personalize_address(response_text)
@@ -674,8 +786,7 @@ class JarvisApp:
         print("[DEBUG] Calling window.show_assistant_text")
         self.window.show_assistant_text(response_text)
         if hasattr(self.window, "show_specialist_result"):
-            self.window.show_specialist_result(response_text, self._active_specialist_key)
-            self._active_specialist_key = ""
+            self.window.show_specialist_result(response_text, turn.specialist_key)
         workspace_manager = getattr(self, "workspace_manager", None)
         if workspace_manager is not None and workspace_manager.is_set():
             workspace_info = workspace_manager.get_info()
@@ -702,10 +813,21 @@ class JarvisApp:
         self._is_processing_ai = False
         
         # 대화 저장
-        self.memory.save_message(self.session_id, "user", self.messages[-2]["content"])
-        self.memory.save_message(self.session_id, "assistant", response_text)
-        self._archive_obsidian_exchange_async(self._response_user_request, response_text)
-        self._consolidate_memory_async(self._response_user_request, response_text)
+        if turn.user_text:
+            self.memory.save_message(turn.session_id, "user", turn.user_text)
+        self.memory.save_message(turn.session_id, "assistant", response_text)
+        self._archive_obsidian_exchange_async(
+            turn.user_text, response_text, session_id=turn.session_id
+        )
+        # Provider/transport failures are useful in diagnostics and chat
+        # history, but must never become durable user knowledge or preferences.
+        if turn_status != "failed":
+            self._consolidate_memory_async(
+                turn.user_text,
+                response_text,
+                session_id=turn.session_id,
+                namespace=turn.memory_namespace,
+            )
         
         # 자동으로 음성 응답 (RESPONDING 상태로)
         print(f"[DEBUG] TTS 스레드 시작 전, self.last_response: {self.last_response}")
@@ -714,14 +836,23 @@ class JarvisApp:
         thread.start()
         print("[DEBUG] TTS 스레드 시작됨")
 
-    def _consolidate_memory_async(self, user_text: str, assistant_text: str = ""):
+    def _consolidate_memory_async(
+        self,
+        user_text: str,
+        assistant_text: str = "",
+        *,
+        session_id: str = "",
+        namespace: str = "",
+    ):
         """Capture cheaply; expensive extraction and embedding run only while idle."""
         pipeline = getattr(self, "memory_pipeline", None)
         if pipeline is None:
             return
-        namespace = getattr(getattr(self, "memory", None), "workspace_namespace", "global")
+        namespace = namespace or getattr(
+            getattr(self, "memory", None), "workspace_namespace", "global"
+        )
         pipeline.record_exchange(
-            session_id=self.session_id, workspace=namespace,
+            session_id=session_id or self.session_id, workspace=namespace,
             user_text=user_text, assistant_text=assistant_text,
         )
 
@@ -752,15 +883,19 @@ class JarvisApp:
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _archive_obsidian_exchange_async(self, user_text: str, assistant_text: str):
+    def _archive_obsidian_exchange_async(
+        self, user_text: str, assistant_text: str, *, session_id: str = ""
+    ):
         """Keep complete chat only in the non-indexed raw layer for audit/recompilation."""
         vault = getattr(self, "obsidian_vault", None)
         if vault is None or not str(user_text or "").strip():
             return
 
+        target_session_id = session_id or self.session_id
+
         def run():
             try:
-                vault.archive_exchange(self.session_id, user_text, assistant_text)
+                vault.archive_exchange(target_session_id, user_text, assistant_text)
             except Exception as exc:
                 print(f"[Obsidian] 대화 원문 보관 오류: {exc}")
 
@@ -1013,6 +1148,64 @@ class JarvisApp:
                 self._permission_result = False
                 self._permission_event.set()
             self._reset_all()
+        elif action == "next_workspace":
+            self.window.cycle_specialist_workspace()
+        elif action == "toggle_chat":
+            self.window.toggle_chat_panel()
+
+    def _load_gesture_configuration(self) -> dict:
+        try:
+            mapping = json.loads(self.assistant_settings.get("gesture_mapping"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            mapping = {}
+        return {
+            "sensitivity": normalize_gesture_sensitivity(
+                self.assistant_settings.get("gesture_sensitivity")
+            ),
+            "command_gestures_enabled": (
+                self.assistant_settings.get("gesture_command_enabled").casefold() == "true"
+            ),
+            "gesture_mapping": normalize_gesture_mapping(mapping),
+        }
+
+    def _apply_gesture_configuration(self, payload: dict | None = None) -> dict:
+        """Apply a UI/tool configuration and persist only explicit saves."""
+        source = dict(payload or {})
+        persist_value = source.pop("persist", False)
+        persist = (
+            persist_value if isinstance(persist_value, bool)
+            else str(persist_value).strip().casefold() in {"1", "true", "yes", "on", "사용", "켜짐"}
+        )
+        current = self.gesture_runtime.configuration()
+        command_value = source.get(
+            "command_gestures_enabled", current["command_gestures_enabled"]
+        )
+        command_enabled = (
+            command_value if isinstance(command_value, bool)
+            else str(command_value).strip().casefold() in {"1", "true", "yes", "on", "사용", "켜짐"}
+        )
+        configuration = {
+            "sensitivity": normalize_gesture_sensitivity(
+                source.get("sensitivity", current["sensitivity"])
+            ),
+            "command_gestures_enabled": command_enabled,
+            "gesture_mapping": normalize_gesture_mapping(
+                source.get("gesture_mapping", current["gesture_mapping"])
+            ),
+        }
+        applied = self.gesture_runtime.configure(**configuration)
+        if persist:
+            self.assistant_settings.set("gesture_sensitivity", str(applied["sensitivity"]))
+            self.assistant_settings.set(
+                "gesture_command_enabled",
+                "true" if applied["command_gestures_enabled"] else "false",
+            )
+            self.assistant_settings.set(
+                "gesture_mapping",
+                json.dumps(applied["gesture_mapping"], ensure_ascii=False, separators=(",", ":")),
+            )
+        self.signals.gesture_status.emit(self.gesture_runtime.status())
+        return applied
 
     def _open_interface_surface(self, surface: str):
         value = str(surface or "")

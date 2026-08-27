@@ -39,6 +39,27 @@ class ConversationContextResolver:
         r"(?:\s*(?:부터|까지|~|-).*)?\s*$",
         re.IGNORECASE,
     )
+    _CONTINUATION_PATTERN = re.compile(
+        r"^\s*(?:그리고|그다음|그\s*다음|다음으로|또|추가로|마저|나머지도|"
+        r"이번에는|이번엔|반대로|똑같이|동일하게|원래대로|이전처럼|방금처럼)\b",
+        re.IGNORECASE,
+    )
+    _REPETITION_PATTERN = re.compile(
+        r"(?:^|\s)(?:다시|또\s*한\s*번|한\s*번\s*더)(?:\s|$|[,.!?])",
+        re.IGNORECASE,
+    )
+    _CONTEXTUAL_EDIT_PATTERN = re.compile(
+        r"(?:바꿔|바꾸|변경|수정|고쳐|옮겨|이동|키워|크게|작게|줄여|"
+        r"올려|내려|확대|축소|지워|제거|추가|되돌려|복원|유지|적용)"
+        r"(?:\s*줘|\s*주세요|\s*줄래|\s*해\s*줘|\s*해\s*주세요)?[.!?\s]*$",
+        re.IGNORECASE,
+    )
+    _STYLE_OR_POSITION_FRAGMENT_PATTERN = re.compile(
+        r"^\s*.{0,40}(?:색|색상|폰트|글꼴|크기|굵기|자간|행간|테두리|"
+        r"배경|위쪽|아래쪽|왼쪽|오른쪽|가운데|중앙|안쪽|바깥쪽)"
+        r"(?:으로|로|처럼|하게|정도로)?[.!?\s]*$",
+        re.IGNORECASE,
+    )
 
     def __init__(self, llm):
         self.llm = llm
@@ -131,4 +152,8 @@ class ConversationContextResolver:
             or cls._REVISION_PATTERN.search(text)
             or cls._ELLIPTICAL_QUESTION_PATTERN.search(text)
             or cls._VALUE_FRAGMENT_PATTERN.fullmatch(text)
+            or cls._CONTINUATION_PATTERN.search(text)
+            or cls._REPETITION_PATTERN.search(text)
+            or cls._CONTEXTUAL_EDIT_PATTERN.search(text)
+            or cls._STYLE_OR_POSITION_FRAGMENT_PATTERN.fullmatch(text)
         )
