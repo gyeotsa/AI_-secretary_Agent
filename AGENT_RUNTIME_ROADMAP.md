@@ -1,6 +1,6 @@
 # JARVIS Agent Runtime 개선 로드맵
 
-기준일: 2026-07-27
+기준일: 2026-08-27
 
 ## 목표
 
@@ -15,20 +15,33 @@ JARVIS의 목표는 기능이 많은 챗봇이 아니라 다음 순환을 신뢰
 이 로드맵은 모델 성능보다 실행 구조, 문맥 유지, 검증 가능성, 안전성과 제품 품질을
 우선합니다.
 
+## 2026-08-27 수락 갱신
+
+P0~P12의 파일 존재 여부가 아니라 현재 통합 실행 계약을 다시 검사했습니다. 요청 귀속은
+`TurnEnvelope`, 계획은 단일 Tool 단계와 의존성 DAG, 실행은 typed 결과·execution ID·
+취소·idempotency, 완료는 Evidence·Artifact 검증으로 연결됩니다. 전문가 작업공간도 같은
+계약을 사용하며 실제 DOCX 생성·재열기 수락을 통과했습니다. 기본 LLM은 Ollama이고 선택형
+Anthropic 경로의 미설정 키나 공급자 오류는 정상 답변으로 처리하지 않습니다.
+
+자동 기준선은 `591 passed, 4 deselected`이며 `compileall`, `pip check`,
+`git diff --check`, Qt offscreen `JarvisApp` 기동 smoke를 통과했습니다. 남은 항목은 자동
+검증을 더 쌓는 것과 별개로 실제 물리 장치·OAuth 계정·외부 앱 전달·Office COM 환경에서의
+제품 수락입니다.
+
 ## 현재 판정
 
 | 영역 | 현재 수준 | 판정 |
 |---|---|---|
-| 대화 UI·세션·음성 | 실제 사용 가능, 장치별 편차 존재 | 부분 완료 |
-| Plugin Registry | 동적 Tool·Intent 로딩 | 기반 완료 |
-| Intent/Slot | 선언형 계약+패턴, 표현 확장에 민감 | 개선 중 |
-| 파일·문서 작업 | 주요 형식 생성·읽기와 일부 실검증 | 부분 완료 |
-| 웹 조사 | DDGS 검색·출처·후속 문맥 | 1차 완료 |
-| Coding | 단일 파일 생성·수정·문법 검증 | 초기 단계 |
-| Planner/Executor | 구성 요소 존재, 책임 과대·문자열 계약 잔존 | 재설계 필요 |
-| Verify/Recover | 일부 Tool별 검증·복구 | 부분 완료 |
-| Workspace/Indexer | 수동 선택·기초 인덱서 | 연결 보강 필요 |
-| RAG/Memory | 로컬 벡터 검색·복수 메모리 DB | 정책 보강 필요 |
+| 대화 UI·세션·음성 | Turn 귀속·동시성 자동 수락, 물리 장치 품질은 환경별 편차 | 자동 수락·실장치 대기 |
+| Plugin Registry | 동적 Tool·Intent, 7축 상태, 실행·취소·재시도 정책 | 자동 수락 |
+| Intent/Slot | 선언형 계약, 후속 문맥, 인용 원문 보존, 모호성 질문 | 자동 수락·표현 회귀 지속 |
+| 파일·문서 작업 | 주요 형식 생성·재열기·내용·Evidence 검증 | 로컬 수락·COM 대기 |
+| 웹 조사 | 실제 방문·최신성·출처·교차검증 | 자동 수락·사이트별 E2E 지속 |
+| Coding | 저장소 분석·최소 patch·lint/test·diff·rollback | 실행 폐쇄루프 수락 |
+| Planner/Executor | 단일 Tool 단계·DAG·typed 오류·인스턴스 격리 | 자동 수락 |
+| Verify/Recover | typed Evidence·Artifact·범위 제한 복구 | 자동 수락·외부 E2E 지속 |
+| Workspace/Indexer | 복원·세션 격리·증분 인덱싱 | 자동 수락 |
+| RAG/Memory | namespace 격리·증분 반영·사용 추적·통합 잠금 | 자동 수락·품질 관찰 지속 |
 | Automation/Observer | 알람·스케줄·감시 기반 | 장시간 검증 필요 |
 | OAuth/Cloud | DPAPI OAuth·승인 원장·Drive/OneDrive/Notion·Slack/Teams 어댑터 | 자격증명별 실환경 검증 필요 |
 | 배포 | 대형 오프라인 설치본 존재 | 경량화 예정 |

@@ -1,5 +1,41 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
 
+## 2026-08-27 에이전트 실행 계약·전문가 팀 통합 수락
+
+- 고정 이름·호칭·짧은 답변 길이·모드 태그를 강제하던 System Prompt를 제거했다. 현재
+  음성/사용자 설정과 요청 목적을 반영하고, 단순 질문은 간결하게 답하되 분석 요청에서
+  필요한 근거를 임의로 생략하지 않는다.
+- `TurnEnvelope`로 session/task/workspace/request 원문과 라우팅을 요청 시점에 고정했다.
+  비동기 결과 순서가 바뀌어도 다른 세션·이전 요청에 기록되지 않으며 Conversation Context,
+  RAG, Memory의 공유 상태는 잠금과 namespace로 격리한다.
+- Planner는 한 단계 한 Tool, 유효한 dependency DAG, 인용된 사용자 literal 보존을 강제한다.
+  Executor와 전문가 팀의 Scratchpad·Planner·Reflection은 인스턴스 소유이며 같은 인스턴스의
+  동시 실행은 turn lock으로 직렬화한다.
+- Ollama/Anthropic 공급자 실패는 typed `ModelCallError`로 처리한다. timeout·연결 실패·빈
+  응답을 모델의 정상 문장이나 성공 결과로 저장하지 않는다. 기본 공급자는 Ollama이며
+  Anthropic은 실제 키와 역할을 명시했을 때만 선택적으로 사용한다.
+- Plugin Registry에 execution ID, cancellation, idempotency, 부작용별 retry 정책을 연결했다.
+  read-only Tool만 안전 조건에서 재시도하고 파일 변경·외부 전송은 자동 중복 실행하지 않는다.
+  상태는 registered/installed/connected/authenticated/contract/runtime/verification으로
+  분리해 등록만 된 Plugin을 연결 완료로 표시하지 않는다.
+- 전문가 팀은 역할별 Tool 범위, 계획 스키마, 출력 계약, Evidence와 Artifact를 검증한다.
+  실제 Word Plugin 수락에서 DOCX를 생성한 뒤 다시 열어 `전문가 팀 실사용 검증` 제목과
+  `실제 도구 증거와 문서 내용이 모두 확인되었습니다.` 본문을 확인했다.
+- 상단 `G⚙` 제스처 설정을 추가했다. 민감도 0~100은 즉시 미리보기로 반영되고 저장/취소
+  의미가 분리된다. 명령 제스처는 기본 비활성이며 안전한 앱 내부 동작만 손 모양에 매핑한다.
+- `main_qt.py`는 테스트·진단 환경에서 마이크/카메라 자동 시작과 최초 설정 마법사를 환경
+  변수로 비활성화할 수 있다. 이 조건으로 실제 `JarvisApp` 생성과 Qt 이벤트 루프 정상 종료를
+  확인했다.
+- 검증: 전체 회귀 `591 passed, 4 deselected`, `compileall`, `pip check`,
+  `git diff --check` 통과. 구현 커밋은 `0abfbd7`
+  (`[Fix] 에이전트 실행 계약과 전문가 팀 신뢰성 강화`)이다.
+- `data/chroma_db/chroma.sqlite3`, `brain/`, `greeting.pptx`, `tmp/`, `tmpdozr9d5t/`와
+  `.pytest-tmp-*`는 사용자/런타임/검증 데이터이므로 커밋하지 않았다.
+- 다음 해야 할 일: 실제 스피커에서 Anis TTS 음질·지연과 사전 로딩 상태 코드 101을 재현
+  확인한다. 실제 조명·거리에서 장시간 제스처 임계값을 수락하고, 사용자가 제공하는 OAuth
+  계정·외부 메시지·Office COM 환경은 각각 실제 전달/저장 증거까지 확인한 뒤에만 완료로
+  표시한다.
+
 ## 2026-08-24 연속 2.5D Brain 지식 공간·제스처 역할 분리
 
 - `BrainOrbitWidget`을 하나의 연속 2.5D 공간으로 재구성했다. 색칠한 뇌 영역이나 별도 뇌 그림을

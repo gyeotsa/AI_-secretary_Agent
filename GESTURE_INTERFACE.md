@@ -27,6 +27,19 @@
 
 기존 네 가지 이산 제스처(`stop_tts`, `approve`, `cancel`, `switch_workspace`)도 유지됩니다.
 
+## 사용자 조절 설정
+
+- 상단 `G⚙` 버튼은 카메라 전원 버튼과 별개인 제스처 설정 창을 엽니다.
+- 민감도는 0~100 범위이며 슬라이더를 움직이면 카메라를 재시작하지 않고 현재
+  `GestureRuntime`에 즉시 미리보기로 반영됩니다. 저장하면 영구 설정에 기록하고,
+  취소하면 창을 열기 전 값으로 복원합니다.
+- 명령 제스처는 오탐으로 승인·취소가 실행되지 않도록 기본 비활성입니다. 사용자가 켠 뒤
+  `open_palm`, `thumbs_up`, `closed_fist`, `point_up`에 동작을 각각 지정합니다.
+- 매핑할 수 있는 동작은 `stop_tts`, `approve`, `cancel`, `next_workspace`,
+  `toggle_chat`, `none`처럼 현재 앱 내부에서 검증 가능한 안전 동작으로 제한합니다.
+- 동일 설정은 `interface_control` Plugin을 통해 대화 명령으로 조회·변경할 수 있고 UI와
+  하나의 영구 설정을 공유합니다.
+
 ## 확장 지점
 
 - 새 이산 제스처는 `GestureRuntime.register_gesture(name, predicate, cooldown, callback)`으로

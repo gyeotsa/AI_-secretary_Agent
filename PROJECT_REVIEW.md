@@ -1,4 +1,30 @@
-# Level 2 전수 검토 결과 (2026-07-22)
+# JARVIS Agent Runtime 전수 검토 결과
+
+## 2026-08-27 통합 재검토
+
+이전 검토에서 가장 큰 문제였던 문자열 성공 판정, 전역 문맥 혼선, 느슨한 계획,
+등록만 된 Plugin의 과장 표시는 이번 주기에 실행 계약 수준에서 보완했습니다.
+
+- `TurnEnvelope`가 session/task/workspace/request 귀속을 고정하고, 대화·RAG·Memory·
+  전문가 작업공간의 동시 접근을 잠금과 namespace로 격리합니다.
+- Planner는 한 단계 한 Tool, 존재하는 의존성, 인용 원문 보존을 검증하며 잘못된 계획을
+  실행 전에 거절합니다.
+- Plugin Registry는 실행 ID·취소·idempotency·부작용별 재시도 정책을 중앙 적용합니다.
+  읽기 전용 요청만 제한적으로 재시도하고 외부 전송·파일 변경은 중복 실행하지 않습니다.
+- 모델 공급자 실패는 typed `ModelCallError`이며, 오류 문구가 일반 답변이나 성공 결과로
+  섞이지 않습니다.
+- Plugin 상태는 registered/installed/connected/authenticated/contract/runtime/verification
+  축으로 분리해 실제 준비 상태를 표시합니다.
+- 전문가 팀은 역할별 허용 Tool과 출력 계약, Evidence와 Artifact를 검사합니다. 실제
+  Word 수락 테스트에서 생성된 DOCX를 다시 열어 제목·본문을 확인했습니다.
+- 고정 응답 템플릿을 제거하고 런타임 이름·호칭·말투와 요청 목적을 System Prompt에
+  반영합니다. 제스처는 사용자 조절식 민감도와 안전한 앱 내부 동작 매핑을 제공합니다.
+
+검증 기준선은 전체 자동 회귀 `591 passed, 4 deselected`, Python `compileall`,
+`pip check`, `git diff --check` 통과입니다. 마이크·카메라 자동 시작을 끈 Qt offscreen
+환경에서 실제 `JarvisApp` 생성과 이벤트 루프 종료도 확인했습니다. 따라서 로컬 자동
+검증 범위의 실행 기반은 수락하지만, 물리 음성 품질·사용자 조명에서의 장시간 제스처,
+OAuth·외부 전송·Office COM은 해당 장치와 계정으로 별도 제품 수락이 필요합니다.
 
 ## 2026-07-27 재평가
 

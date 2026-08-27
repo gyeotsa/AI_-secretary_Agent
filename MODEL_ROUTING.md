@@ -5,6 +5,17 @@
 Coding Agent 폐쇄 루프입니다. 더 강한 모델은 복잡한 계획과 검토 역할에 선택적으로
 사용합니다.
 
+## 공급자 선택과 오류 계약
+
+- 기본값은 `LLM_PROVIDER=ollama`이며 API 키 없이 로컬 역할 모델만 사용합니다.
+- Anthropic은 향후 선택적 하이브리드 경로입니다. 실제 키와 역할 목록을 사용자가 명시한
+  경우에만 `anthropic` 또는 `hybrid`로 활성화합니다. 예제 placeholder 키는 설정된 키로
+  간주하지 않습니다.
+- timeout, 연결 실패, 빈 응답과 공급자 오류는 typed `ModelCallError`로 전달합니다.
+  이 오류는 모델의 자연어 답변, 학습 데이터, 작업 성공 결과로 저장되지 않습니다.
+- System Prompt는 고정된 이름·호칭·25자 제한·모드 태그가 아니라 현재 사용자 설정,
+  응답 목적, Tool 사용 가능성과 최신성 요구를 조합합니다.
+
 ## 현재 활성 구성
 
 | 역할 | 모델 | 목적 | Ollama 유지 시간 |
@@ -53,6 +64,7 @@ VRAM 부족을 피하기 위한 정책이다.
 바꿀 수 있다.
 
 ```dotenv
+LLM_PROVIDER=ollama
 OLLAMA_CONVERSATION_MODEL=qwen2.5:7b-instruct
 OLLAMA_REASONING_MODEL=qwen2.5:7b-instruct
 OLLAMA_CODE_MODEL=qwen2.5-coder:7b-instruct
