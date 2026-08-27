@@ -1,5 +1,41 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
 
+## 2026-08-27 Anis GPT-SoVITS 런타임 복구와 진단·종료 계약 강화
+
+- 실제 원인: 시작 로그의 `GPT-SoVITS가 종료됐습니다(code=101)`은 음성 프로필이나 Heami
+  fallback 문제가 아니었다. `.gpt-sovits-venv/pyvenv.cfg`가 삭제된 Python 3.10 설치 경로를
+  가리켜 전용 Python 자체를 시작하지 못했다.
+- 로컬 런타임 복구: 공식 Python 3.10.11을 사용자 범위
+  `C:\Users\ice31\AppData\Local\Programs\Python\Python310\python.exe`에 설치하고
+  `.gpt-sovits-venv`를 `venv --upgrade`로 복구했다. 이 설치와 가상환경은 개발 PC의 외부
+  런타임이므로 Git 커밋 대상이 아니다. 다른 PC 배포 시에는 첫 실행 부트스트랩 또는 휴대형
+  Python/GPT-SoVITS 런타임으로 별도 보장해야 한다.
+- 시작 진단: 커스텀 음성 클라이언트가 runtime root, 전용 Python, `api_v2.py`, YAML 설정,
+  참조 음성을 프로세스 시작 전에 모두 검사한다. stdout/stderr는
+  `data/logs/tts/gpt-sovits-<voice>.log`로 보내고 조기 종료 오류에는 제한된 로그 마지막 부분과
+  로그 경로를 포함한다. 시작 잠금으로 UI 선택과 사전 로딩의 중복 서버 실행을 막는다.
+- UI·오류 계약: TTS 설정 창에 `아직 준비하지 않음/모델 로딩 중/준비 완료/준비 실패` 상태를
+  표시하고 음성 선택 시 별도 스레드에서 준비한다. 기존
+  `TTSVoiceDialog(settings_manager, parent)` 호출도 그대로 지원한다. 실제 오디오 장치 실패는
+  더 이상 사용자 끼어들기 취소로 표시하지 않고 `TTS 오류`로 전달한다. 선택한 Anis 합성이
+  실패해도 Heami로 조용히 대체하지 않는다.
+- 종료 계약: 앱의 모든 종료 경로는 한 번만 camera/proactive/runtime/TTS 정리를 수행한다.
+  종료와 백그라운드 모델 로딩이 겹쳐도 종료 플래그가 뒤늦은 자식 프로세스 시작을 차단하고,
+  이 앱이 시작한 GPT-SoVITS 프로세스만 terminate/kill하여 GPU·RAM을 해제한다.
+- 실환경 검증: RTX 4060 Laptop GPU에서 Anis 모델 준비 17.15초, 준비 후 실제 24kHz
+  5.64초 WAV 합성 8.87초를 확인했다. 마이크·카메라·최초 설정을 끈 offscreen
+  `JarvisApp`에서도 Anis 상태가 ready가 된 뒤 정상 종료했고, 종료 후 TCP 9881 포트가
+  해제됐다. `pip check` 충돌은 없다.
+- 자동 검증: TTS 집중 회귀 `24 passed`, 전체 회귀 `615 passed, 4 deselected`, 변경 모듈
+  `py_compile`, `git diff --check`를 통과했다. 새 TTS 두 테스트 파일을 기본 pytest 목록에
+  포함해 이후 회귀에서 빠지지 않도록 했다.
+- 구현 커밋: `08bb443` (`[Fix] Anis TTS 런타임 진단과 종료 처리 강화`).
+- 사용자/런타임 소유 변경인 `data/chroma_db/chroma.sqlite3`, `brain/`, `greeting.pptx`,
+  `tmp/`, `tmpdozr9d5t/`, `.pytest-tmp-*`는 수정하거나 커밋하지 않았다.
+- 다음 해야 할 일: 사용자가 실제 스피커로 Anis의 음색·끊김·첫 응답 체감 지연을 수락한다.
+  배포 재구성 때는 가벼운 설치 스텁이 Python 3.10, GPT-SoVITS 코드·가중치와 음성 프로필을
+  내려받고 해시 검증·재시도·오프라인 오류 안내까지 수행하도록 제품 설치 계약을 완성한다.
+
 ## 2026-08-27 에이전트 실행 계약·전문가 팀 통합 수락
 
 - 고정 이름·호칭·짧은 답변 길이·모드 태그를 강제하던 System Prompt를 제거했다. 현재
@@ -26,13 +62,13 @@
 - `main_qt.py`는 테스트·진단 환경에서 마이크/카메라 자동 시작과 최초 설정 마법사를 환경
   변수로 비활성화할 수 있다. 이 조건으로 실제 `JarvisApp` 생성과 Qt 이벤트 루프 정상 종료를
   확인했다.
-- 검증: 전체 회귀 `591 passed, 4 deselected`, `compileall`, `pip check`,
+- 검증: 전체 회귀 `615 passed, 4 deselected`, `compileall`, `pip check`,
   `git diff --check` 통과. 구현 커밋은 `0abfbd7`
   (`[Fix] 에이전트 실행 계약과 전문가 팀 신뢰성 강화`)이다.
 - `data/chroma_db/chroma.sqlite3`, `brain/`, `greeting.pptx`, `tmp/`, `tmpdozr9d5t/`와
   `.pytest-tmp-*`는 사용자/런타임/검증 데이터이므로 커밋하지 않았다.
-- 다음 해야 할 일: 실제 스피커에서 Anis TTS 음질·지연과 사전 로딩 상태 코드 101을 재현
-  확인한다. 실제 조명·거리에서 장시간 제스처 임계값을 수락하고, 사용자가 제공하는 OAuth
+- 다음 해야 할 일: 실제 스피커에서 Anis TTS 음질·지연을 수락 확인한다. 실제 조명·거리에서
+  장시간 제스처 임계값을 수락하고, 사용자가 제공하는 OAuth
   계정·외부 메시지·Office COM 환경은 각각 실제 전달/저장 증거까지 확인한 뒤에만 완료로
   표시한다.
 
