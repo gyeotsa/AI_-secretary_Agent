@@ -10,5 +10,44 @@
   {"id": "launch_application", "utterance": "메모장 실행해줘", "intent": "windows.launch_app", "request_type": "execute"},
   {"id": "generic_file_creation", "utterance": "456이라는 이름으로 파일 생성해줘", "intent": "filesystem.create_file", "request_type": "change"},
   {"id": "calendar_creation", "utterance": "바탕화면에 캘린더 파일 만들어줘", "intent": "calendar.create_event", "request_type": "change"},
-  {"id": "repository_code_change", "utterance": "UserService 코드 수정하고 테스트까지 실행해줘", "intent": "coding.change_repository", "request_type": "change"}
+  {"id": "repository_code_change", "utterance": "UserService 코드 수정하고 테스트까지 실행해줘", "intent": "coding.change_repository", "request_type": "change"},
+
+  {"id": "ordinary_long_greeting", "utterance": "오랜만이야, 요즘 어떻게 지냈어?", "intent": null},
+  {"id": "emotional_conversation", "utterance": "오늘 회사에서 실수해서 마음이 무거워", "intent": null},
+  {"id": "opinion_conversation", "utterance": "내가 너무 조급하게 생각하는 걸까?", "intent": null},
+  {"id": "thanks_conversation", "utterance": "아까 도와줘서 정말 고마워", "intent": null},
+
+  {"id": "youtube_search_polite", "utterance": "유튜브에서 재즈 플레이리스트를 검색해 주세요", "intent": "web.site_search", "request_type": "execute"},
+  {"id": "youtube_search_casual", "utterance": "유튜브에서 고양이 영상 좀 찾아줘", "intent": "web.site_search", "request_type": "execute"},
+  {"id": "youtube_play_song", "utterance": "유튜브에서 아이유 좋은 날 틀어줘", "intent": "media.play", "request_type": "execute"},
+  {"id": "play_music_colloquial", "utterance": "집중할 때 듣는 음악 하나 재생해 줄래?", "intent": "media.play", "request_type": "execute"},
+
+  {"id": "equity_analysis_korean", "utterance": "삼성전자 주식의 실적과 밸류에이션을 분석해줘", "intent": "finance.equity_analysis", "request_type": "query"},
+  {"id": "market_overview", "utterance": "오늘 국내 주식시장 상황을 분석해줘", "intent": "finance.market_overview", "request_type": "query"},
+  {"id": "current_crypto_price", "utterance": "지금 비트코인 시세를 출처와 함께 알려줘", "intent": "web.search", "request_type": "query", "freshness": "live"},
+
+  {"id": "kakao_send_casual", "utterance": "형택이한테 카톡으로 늦는다고 전해줘", "intent": "messaging.send", "request_type": "external_send"},
+  {"id": "kakao_send_short", "utterance": "민수에게 톡 하나 보내줘", "intent": "messaging.send", "request_type": "external_send"},
+  {"id": "messaging_capability", "utterance": "카카오톡 메시지도 보낼 수 있어?", "intent": "messaging.send", "request_type": "external_send"},
+
+  {"id": "relative_alarm", "utterance": "20분 뒤에 알람 맞춰줘", "intent": "alarm.set_relative", "request_type": "change"},
+  {"id": "open_calculator", "utterance": "계산기 좀 켜줄래?", "intent": "windows.launch_app", "request_type": "execute"},
+  {"id": "close_notepad", "utterance": "메모장 이제 닫아줘", "intent": "windows.close_app", "request_type": "execute"},
+  {"id": "create_word_report", "utterance": "워드로 주간 보고서 문서를 만들어줘", "intent": "word.create", "request_type": "change"},
+  {"id": "create_powerpoint", "utterance": "분기 실적 발표 자료를 파워포인트로 만들어줘", "intent": "powerpoint.create", "request_type": "change"},
+  {"id": "create_excel", "utterance": "이번 달 지출 내역을 엑셀로 정리해줘", "intent": "excel.create", "request_type": "change"},
+  {"id": "create_pdf", "utterance": "이 내용을 PDF 문서로 만들어줘", "intent": "pdf.create", "request_type": "change"},
+
+  {"id": "gesture_camera_off", "utterance": "손 제스처 카메라 꺼줘", "intent": "interface.gesture_camera", "request_type": "change"},
+  {"id": "gesture_sensitivity", "utterance": "스와이프 제스처 민감도를 조금 높여줘", "intent": "interface.gesture_sensitivity", "request_type": "change"},
+  {"id": "gesture_status", "utterance": "지금 손 인식 상태가 어떻게 돼?", "intent": "interface.gesture_status", "request_type": "query"},
+
+  {"id": "assistant_self_status", "utterance": "아니스 네 현재 상태와 문제점을 분석해줘", "intent": "self.status", "request_type": "query"},
+  {"id": "assistant_capabilities", "utterance": "네가 실제로 할 수 있는 작업을 알려줘", "intent": "self.capabilities", "request_type": "query"},
+  {"id": "assistant_ui_change", "utterance": "아니스 메인 UI의 글자 크기를 수정해줘", "intent": "self.execute_change", "request_type": "change"},
+
+  {"id": "obsidian_explore", "utterance": "옵시디언에서 지난 프로젝트 결정 사항을 찾아줘", "intent": "obsidian.explore", "request_type": "query"},
+  {"id": "obsidian_sync", "utterance": "옵시디언에서 바뀐 노트를 RAG에 동기화해줘", "intent": "obsidian.sync", "request_type": "change"},
+  {"id": "workspace_create", "utterance": "새 프로젝트 작업공간을 만들어줘", "intent": "workspace.create_project", "request_type": "change"},
+  {"id": "user_feedback", "utterance": "방금 답변은 틀렸어. 이 피드백을 기록해줘", "intent": "learning.feedback", "request_type": "change"}
 ]

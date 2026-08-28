@@ -53,7 +53,9 @@ class ObsidianPlugin(BasePlugin):
                 [SlotSchema("query", "검색 주제", "어떤 주제를 찾아볼까요?")],
                 execution_hints=["찾아", "검색", "조회", "알려"], request_type="query"),
             IntentSchema("obsidian.sync", "옵시디언 위키를 RAG에 동기화", "obsidian_sync_to_rag",
-                ["옵시디언 동기화", "볼트 동기화"], [], execution_hints=["동기화", "반영"], request_type="change"),
+                ["옵시디언 동기화", "볼트 동기화"], [], execution_hints=["동기화", "반영"],
+                utterance_patterns=[r"(?:옵시디언|볼트).{0,80}(?:동기화|RAG에\s*반영|RAG로\s*반영)"],
+                request_type="change"),
             IntentSchema("obsidian.open", "옵시디언 볼트 열기", "obsidian_open_vault",
                 ["옵시디언 열", "볼트 열"], [], execution_hints=["열어", "실행"], request_type="execute"),
         ]

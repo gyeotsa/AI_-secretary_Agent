@@ -62,7 +62,8 @@ class DesktopMessagingPlugin(BasePlugin):
             "messaging.send", "카카오톡 메시지 전송", "desktop_send_message",
             [
                 "카카오톡으로", "카카오 톡으로", "카톡으로", "카톡 보내",
-                "카카오톡 보내", "톡 하나 보내", "톡 보내",
+                "카카오톡 보내", "카카오톡 메시지", "카톡 메시지",
+                "톡 하나 보내", "톡 보내",
             ],
             [
                 SlotSchema("provider", "사용할 메신저", "어떤 메신저로 보낼까요, 보스?", role="constraint"),

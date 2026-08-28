@@ -88,7 +88,8 @@ class FinancePlugin(BasePlugin):
                 [SlotSchema("query", "분석할 회사명 또는 종목 코드", "어떤 종목을 분석할까요, 보스?", role="target")],
                 execution_hints=["분석", "분석해", "살펴봐", "알려"],
                 utterance_patterns=[
-                    r"(?:[0-9A-Za-z가-힣.^-]+(?:\s+[0-9A-Za-z가-힣.^-]+){0,3})\s*(?:주식|종목|주가)\s*(?:을|를|은|는)?\s*(?:분석|살펴)",
+                    r"(?:[0-9A-Za-z가-힣.^-]+(?:\s+[0-9A-Za-z가-힣.^-]+){0,3})\s*(?:주식(?!\s*시장)|종목|주가)"
+                    r"\s*(?:(?:을|를|은|는|의|에\s*대해)\s*)?.{0,40}?(?:분석|살펴)",
                 ],
                 freshness="live", requires_sources=True, request_type="query",
             ),

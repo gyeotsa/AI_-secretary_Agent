@@ -76,9 +76,9 @@ class WindowsControlPlugin(BasePlugin):
     def get_intents(self):
         return [
             IntentSchema("windows.launch_app", "Windows 프로그램 실행", "windows_launch_app",
-                         ["실행해", "실행해줘", "열어줘", "켜줘"],
+                         ["실행해", "실행해줘", "실행할래", "열어줘", "열어줄래", "켜줘", "켜줄래"],
                          [SlotSchema("target", "실행할 프로그램", "어떤 프로그램을 실행할까요, 보스?")],
-                         execution_hints=["실행해", "실행해줘", "열어줘", "켜줘", "켜"],
+                         execution_hints=["실행해", "실행해줘", "실행할래", "열어줘", "열어줄래", "켜줘", "켜줄래", "켜"],
                          follow_up_hints=["다시"]),
             IntentSchema("windows.close_app", "Windows 프로그램 종료", "windows_close_app",
                          ["꺼줘", "종료해줘", "닫아줘", "종료해", "닫아"],
