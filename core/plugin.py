@@ -124,6 +124,7 @@ class IntentSchema:
     reference_slots: List[str] = field(default_factory=list)
     freshness: str = "static"
     requires_sources: bool = False
+    negation_is_constraint: bool = False
 
     def __post_init__(self):
         parts = self.name.split(".", 1)

@@ -62,8 +62,15 @@ class ToolLoadoutSelector:
         if (resolution.matched and resolution.tool_name
                 and in_scope(resolution.tool_name)):
             selected.insert(0, resolution.tool_name)
-            return ToolLoadout(tuple(dict.fromkeys(selected))[:self.max_tools],
-                               f"intent:{resolution.intent_name}", resolution.confidence)
+            if not resolution.compound:
+                return ToolLoadout(tuple(dict.fromkeys(selected))[:self.max_tools],
+                                   f"intent:{resolution.intent_name}", resolution.confidence)
+            selected.extend(
+                str(item.get("tool"))
+                for item in resolution.alternatives
+                if item.get("tool") and self.registry.get_capability(str(item.get("tool")))
+                and in_scope(str(item.get("tool")))
+            )
 
         query = self._tokens(request)
         scored = []
@@ -81,4 +88,6 @@ class ToolLoadoutSelector:
         unique = tuple(dict.fromkeys(selected))[:self.max_tools]
         if not unique:
             return ToolLoadout((), "conversation_or_unresolved", 0.0)
-        return ToolLoadout(unique, "registry_descriptor_match", scored[0][0])
+        reason = "compound_registry_match" if resolution.compound else "registry_descriptor_match"
+        confidence = max(resolution.confidence, scored[0][0] if scored else 0.0)
+        return ToolLoadout(unique, reason, confidence)

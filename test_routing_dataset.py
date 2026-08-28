@@ -23,11 +23,21 @@ def router():
 def test_realistic_user_utterance_routing_dataset(router, case):
     resolution = router.resolve(case["utterance"])
     expected = case.get("intent")
+    expected_any = case.get("intent_any") or []
     if expected is None:
         assert not resolution.matched
         return
-    assert resolution.intent_name == expected
+    if expected_any:
+        assert resolution.intent_name in expected_any
+    else:
+        assert resolution.intent_name == expected
     assert resolution.request_type == case["request_type"]
+    if case.get("negated"):
+        assert resolution.negated
+        assert not resolution.ready
+    if case.get("compound"):
+        assert resolution.compound
+        assert not resolution.ready
     if case.get("freshness"):
         assert resolution.freshness == case["freshness"]
         assert resolution.requires_sources

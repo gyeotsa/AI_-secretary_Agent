@@ -78,6 +78,62 @@ def test_pending_request_can_be_cancelled(tmp_path):
     assert not executor.has_pending_request("session-2")
 
 
+def test_negated_action_is_never_sent_to_planner_or_tool(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+    executor.planner = type(
+        "ForbiddenPlanner", (),
+        {"decompose_goal": lambda *_args: (_ for _ in ()).throw(
+            AssertionError("부정 명령은 Planner에 도달하면 안 됩니다")
+        )},
+    )()
+
+    outcome = executor.execute_turn(
+        "바탕화면에 캘린더 파일 만들지 마", "negative-action-session"
+    )
+
+    assert outcome.status == "cancelled"
+    assert "실행하지 않겠습니다" in outcome.response
+
+
+def test_negated_action_cancels_matching_pending_task(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+    pending = executor.execute_turn(
+        "바탕화면에 캘린더 파일 만들어줘", "negative-pending-session"
+    )
+
+    outcome = executor.execute_turn(
+        "캘린더 파일 만들지 마", "negative-pending-session"
+    )
+
+    assert pending.status == "awaiting_user"
+    assert outcome.status == "cancelled"
+    assert not executor.has_pending_request("negative-pending-session")
+    stored = executor.dialogue_state.get_task(
+        "negative-pending-session", pending.task_id
+    )
+    assert stored.status == "cancelled"
+
+
+def test_negated_unrelated_action_preserves_existing_pending_task(tmp_path):
+    executor = _executor_for_dialogue_test(tmp_path)
+    executor.intent_router.registry.register_plugin(WindowsControlPlugin())
+    pending = executor.execute_turn(
+        "바탕화면에 캘린더 파일 만들어줘", "negative-unrelated-session"
+    )
+
+    outcome = executor.execute_turn(
+        "메모장 실행하지 마", "negative-unrelated-session"
+    )
+
+    assert outcome.status == "cancelled"
+    assert "그대로 유지" in outcome.response
+    assert executor.has_pending_request("negative-unrelated-session")
+    stored = executor.dialogue_state.get_task(
+        "negative-unrelated-session", pending.task_id
+    )
+    assert stored.status == "awaiting_user"
+
+
 def test_pending_request_survives_executor_restart_and_supports_task_id(tmp_path):
     first_executor = _executor_for_dialogue_test(tmp_path)
     first = first_executor.execute_turn("발표 자료를 수정해줘", "persistent-session")

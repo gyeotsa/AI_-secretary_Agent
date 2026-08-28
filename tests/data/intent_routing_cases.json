@@ -49,5 +49,10 @@
   {"id": "obsidian_explore", "utterance": "옵시디언에서 지난 프로젝트 결정 사항을 찾아줘", "intent": "obsidian.explore", "request_type": "query"},
   {"id": "obsidian_sync", "utterance": "옵시디언에서 바뀐 노트를 RAG에 동기화해줘", "intent": "obsidian.sync", "request_type": "change"},
   {"id": "workspace_create", "utterance": "새 프로젝트 작업공간을 만들어줘", "intent": "workspace.create_project", "request_type": "change"},
-  {"id": "user_feedback", "utterance": "방금 답변은 틀렸어. 이 피드백을 기록해줘", "intent": "learning.feedback", "request_type": "change"}
+  {"id": "user_feedback", "utterance": "방금 답변은 틀렸어. 이 피드백을 기록해줘", "intent": "learning.feedback", "request_type": "change"},
+
+  {"id": "negated_message_send", "utterance": "형택이한테 카톡 보내지 마", "intent": "messaging.send", "request_type": "prohibition", "negated": true},
+  {"id": "negated_app_launch", "utterance": "메모장 실행하지 마세요", "intent": "windows.launch_app", "request_type": "prohibition", "negated": true},
+  {"id": "negated_calendar_creation", "utterance": "캘린더 파일 만들지 말아줘", "intent": "calendar.create_event", "request_type": "prohibition", "negated": true},
+  {"id": "compound_app_and_media", "utterance": "메모장을 실행해줘. 그리고 유튜브에서 재즈 음악을 틀어줘", "intent": "compound", "intent_any": ["windows.launch_app", "media.play"], "request_type": "execute", "compound": true}
 ]

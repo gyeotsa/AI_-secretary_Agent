@@ -2515,3 +2515,25 @@ AI_-secretary_Agent/
 - 검증: 관련 `76 passed`, 전체 `745 passed, 4 deselected`.
 - 다음: 부정(`보내지 마`), 정정, 복합 요청, 오타/STT 변형과 다중 턴 주제 전환 데이터셋을
   별도 상태 기계 테스트로 확장한다.
+
+## 2026-08-29 부정·복합 요청·STT·주제 전환 안전성 강화
+
+- 부정 명령: Intent 라우팅용으로만 종결 동사를 긍정 원형에 가깝게 복원하고, 결과에는
+  `negated/prohibition`을 표시한다. `ready=False`라 Planner나 Tool 실행으로 이어지지 않는다.
+- 대기 상태: 동일 Intent의 부정만 해당 대기 작업을 취소한다. 다른 작업을 금지하는 새 발화는
+  기존 대기 작업을 보존한다.
+- 설정 예외의 일반화: `IntentSchema.negation_is_constraint`를 추가했다. “내 말 따라하지 마”처럼
+  금지 표현 자체를 대화 설정으로 저장하는 Intent는 실행 금지로 오인하지 않는다.
+- 복합 요청: 명시적 연결어와 서로 다른 후보 Intent가 있을 때 `compound=True`로 fast path를
+  차단한다. 후보 Intent의 Tool 이름을 alternative 계약에 포함하고 ToolLoadout이 모두 제공한다.
+  단순 마침표는 복합 증거에서 제외했다.
+- STT: hotword/음소 교정이 ToolExecutor가 먼저 Plugin을 로드했는지에 따라 켜졌다 꺼지던
+  초기화 순서 의존성을 제거했다. STT 경로가 Registry를 직접 로드한다.
+- 문맥: 완결된 새 주제는 이전 디자인 문맥을 상속하지 않고, 정정 표지는 최근 대상만 유지하는
+  테스트를 추가했다.
+- 발견된 전체 회귀: 첫 전체 실행 `754 passed, 2 failed, 4 deselected`. 실패는 부정형 설정의
+  과잉 차단과 파일 작성 문장의 마침표를 복합 요청으로 본 오분류였으며 위 계약으로 수정했다.
+- 최종 검증: 변경 모듈 `py_compile`, 집중 `121 passed`, 관련 상호작용 `110 passed`, 전체
+  `756 passed, 4 deselected`.
+- 다음: Planner가 실제로 복합 Plan을 누락·중복 없이 만드는 구조화 출력 시험, 다중 턴 승인/정정
+  경쟁 상태, 사용자 입력 fuzz 및 전문가 작업공간 산출물 QA로 이어간다.

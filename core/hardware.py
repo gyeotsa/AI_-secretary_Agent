@@ -182,7 +182,9 @@ class HardwareManager:
             vocabulary.extend(aliases)
         try:
             from core.plugin import get_plugin_registry
-            for _plugin, intent in get_plugin_registry().get_all_intents():
+            registry = get_plugin_registry()
+            registry.load_plugins_from_directory()
+            for _plugin, intent in registry.get_all_intents():
                 vocabulary.extend(intent.utterance_hints)
                 vocabulary.extend(intent.execution_hints)
         except Exception:
@@ -253,6 +255,7 @@ class HardwareManager:
         try:
             from core.plugin import get_plugin_registry
             registry = get_plugin_registry()
+            registry.load_plugins_from_directory()
             intents = [
                 intent for _plugin, intent in registry.get_all_intents()
                 if any(slot.name == "target" for slot in intent.slots)

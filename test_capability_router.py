@@ -1,5 +1,6 @@
 from core.intent_router import IntentRouter
 from core.plugin import BasePlugin, IntentSchema, PluginRegistry, SlotSchema, ToolSchema
+from core.tool_loadout import ToolLoadoutSelector
 
 
 class _CapabilityPlugin(BasePlugin):
@@ -173,3 +174,17 @@ def test_social_word_does_not_block_explicit_web_research():
     registry.load_plugins_from_directory()
     resolution = IntentRouter(registry).resolve("오늘 기분 관련 최신 연구를 웹에서 찾아줘")
     assert resolution.intent_name == "web.search"
+
+
+def test_compound_request_uses_multi_tool_loadout_instead_of_fast_path():
+    registry = PluginRegistry()
+    registry.load_plugins_from_directory()
+    request = "메모장을 실행해줘. 그리고 유튜브에서 재즈 음악을 틀어줘"
+    resolution = IntentRouter(registry).resolve(request)
+
+    assert resolution.compound
+    assert not resolution.ready
+    loadout = ToolLoadoutSelector(registry).select(request, resolution)
+    assert "windows_launch_app" in loadout.tool_names
+    assert "browser_play_media" in loadout.tool_names
+    assert loadout.reason == "compound_registry_match"

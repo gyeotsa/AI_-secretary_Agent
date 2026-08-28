@@ -213,6 +213,18 @@ def test_hangul_phoneme_similarity_prefers_kyeo_over_kkeo():
     )
 
 
+def test_stt_registry_correction_loads_intents_without_tool_executor(monkeypatch):
+    import core.plugin as plugin_runtime
+
+    registry = plugin_runtime.PluginRegistry()
+    monkeypatch.setattr(plugin_runtime, "_plugin_registry", registry)
+
+    corrected = hardware.HardwareManager._correct_registry_command("메모장 케어")
+
+    assert corrected == "메모장 켜"
+    assert registry.get_all_intents()
+
+
 def test_continuous_listener_submits_after_silence(monkeypatch):
     manager = _bare_hardware_manager()
 

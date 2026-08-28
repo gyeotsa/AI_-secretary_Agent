@@ -359,6 +359,27 @@ class Executor:
             # The specialist supervisor has already fixed the capability domain.
             # Ignore an unrelated lexical hit rather than escaping that contract.
             direct_resolution = IntentResolution()
+        if direct_resolution.negated:
+            if pending is not None:
+                pending_intent = self.dialogue_state.get_intent_state(pending.task_id) or {}
+                if pending_intent.get("intent_name") == direct_resolution.intent_name:
+                    self.dialogue_state.delete(session_key, pending.task_id)
+                    self.dialogue_state.delete_intent_state(pending.task_id)
+                    self.dialogue_state.transition_task(
+                        pending.task_id, "cancelled", result="사용자가 작업 실행을 명시적으로 금지함",
+                    )
+                    return ExecutionOutcome(
+                        f"진행 중인 작업 {pending.task_id}을 취소했고 실행하지 않겠습니다, 보스.",
+                        "cancelled", goal, task_id=pending.task_id,
+                    )
+                return ExecutionOutcome(
+                    f"요청하신 작업은 실행하지 않겠습니다. 기존 대기 작업 {pending.task_id}은 "
+                    "다른 작업이므로 그대로 유지합니다, 보스.",
+                    "cancelled", goal,
+                )
+            return terminal_outcome(
+                "요청하신 작업은 실행하지 않겠습니다, 보스.", "cancelled",
+            )
         deterministic_follow_up = False
         if not pending and not direct_resolution.matched:
             recent_intent = self.dialogue_state.get_recent_intent(

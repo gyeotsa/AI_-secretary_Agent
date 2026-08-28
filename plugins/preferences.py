@@ -64,6 +64,7 @@ class PreferencesPlugin(BasePlugin):
                 r"(?:나를|내|사용자)\s*(?:부를|호칭).{0,30}(?:변경|바꿔|설정)",
                 r"(?:호칭.{0,20}님.{0,20})?(?:반말|존댓말)(?:로|을)?.{0,20}(?:사용|말해|대답|답해)",
             ],
+            negation_is_constraint=True,
             request_type="change",
         ), IntentSchema(
             "profile.get_value", "저장된 사용자 개인 정보 조회", "get_user_profile_value",

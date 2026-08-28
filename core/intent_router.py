@@ -28,10 +28,15 @@ class IntentResolution:
     ambiguous: bool = False
     freshness: str = "static"
     requires_sources: bool = False
+    negated: bool = False
+    compound: bool = False
 
     @property
     def ready(self) -> bool:
-        return self.matched and bool(self.tool_name) and not self.question and not self.capability_response
+        return (
+            self.matched and bool(self.tool_name) and not self.question
+            and not self.capability_response and not self.negated and not self.compound
+        )
 
 
 class IntentRouter:
@@ -59,9 +64,36 @@ class IntentRouter:
         "title", "paragraphs", "content", "body", "text", "message",
         "slides", "rows", "bullets", "sections",
     })
+    NEGATED_ACTION_PATTERN = re.compile(
+        r"(?:지|하지)\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)"
+        r"[.!?\s]*$",
+        re.IGNORECASE,
+    )
+    COMPOUND_CONNECTOR_PATTERN = re.compile(
+        r"(?:그리고|그다음|그\s*다음|동시에|한\s*뒤|한\s*다음|하고\s*나서|"
+        r",\s*(?:그리고|그다음))",
+        re.IGNORECASE,
+    )
+    NEGATED_AFFIRMATIVE_ENDINGS = (
+        (re.compile(r"하지\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)[.!?\s]*$", re.I), "해줘"),
+        (re.compile(r"보내지\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)[.!?\s]*$", re.I), "보내줘"),
+        (re.compile(r"만들지\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)[.!?\s]*$", re.I), "만들어줘"),
+        (re.compile(r"열지\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)[.!?\s]*$", re.I), "열어줘"),
+        (re.compile(r"켜지\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)[.!?\s]*$", re.I), "켜줘"),
+        (re.compile(r"끄지\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)[.!?\s]*$", re.I), "꺼줘"),
+        (re.compile(r"지\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)[.!?\s]*$", re.I), "줘"),
+    )
 
     def __init__(self, registry: PluginRegistry):
         self.registry = registry
+
+    @classmethod
+    def _affirmative_routing_probe(cls, text: str) -> str:
+        """Restore only the final verb ending for intent lookup, never execution."""
+        for pattern, replacement in cls.NEGATED_AFFIRMATIVE_ENDINGS:
+            if pattern.search(text):
+                return pattern.sub(replacement, text)
+        return text
 
     @staticmethod
     def _terms(text: str) -> set[str]:
@@ -194,6 +226,8 @@ class IntentRouter:
 
     def resolve(self, text: str, intent_name: str = "",
                 current_slots: Optional[Dict[str, Any]] = None) -> IntentResolution:
+        negated = bool(self.NEGATED_ACTION_PATTERN.search(text))
+        routing_text = self._affirmative_routing_probe(text) if negated else text
         selected = None
         if intent_name:
             selected = next(
@@ -202,6 +236,8 @@ class IntentRouter:
             )
         else:
             selected = self._find(text)
+            if not selected and negated:
+                selected = self._find(routing_text)
             if not selected:
                 selected = self._fresh_information_intent(text)
         if not selected:
@@ -209,6 +245,8 @@ class IntentRouter:
 
         plugin, intent, confidence = selected
         ranked = self._rank(text) if not intent_name else []
+        if not ranked and negated and not intent_name:
+            ranked = self._rank(routing_text)
         if ranked:
             routing_reason = ranked[0][3]
         elif not intent_name and intent.freshness == "live":
@@ -216,7 +254,8 @@ class IntentRouter:
         else:
             routing_reason = "기존 intent 문맥과 Slot을 이어받음"
         alternatives = [
-            {"intent": candidate.name, "score": round(score, 3)}
+            {"intent": candidate.name, "tool": candidate.tool_name,
+             "score": round(score, 3)}
             for score, _plugin, candidate, _reason in ranked[1:4]
         ]
         ambiguous = bool(
@@ -234,6 +273,20 @@ class IntentRouter:
         has_action_hint = any(hint.casefold() in normalized for hint in intent.execution_hints)
         is_execution = has_action_hint or intent.request_type == "query"
         is_capability = any(hint in normalized for hint in self.CAPABILITY_HINTS)
+        if negated and not intent.negation_is_constraint:
+            return self._resolution(
+                intent, {}, confidence, explicit=not bool(intent_name),
+                execution_requested=False, request_type="prohibition",
+                routing_reason=f"{routing_reason}; explicit_action_negation",
+                alternatives=alternatives, negated=True,
+            )
+        distinct_ranked_intents = {
+            candidate.name for _score, _plugin, candidate, _reason in ranked
+        }
+        compound = bool(
+            not intent_name and len(distinct_ranked_intents) >= 2
+            and self.COMPOUND_CONNECTOR_PATTERN.search(text)
+        )
         if not intent_name and is_capability and not has_action_hint:
             return self._resolution(
                 intent, {}, confidence, capability_response=intent.capability_response,
@@ -249,7 +302,7 @@ class IntentRouter:
             intent, slots, confidence, question=question,
             explicit=not bool(intent_name), execution_requested=is_execution,
             request_type=intent.request_type, routing_reason=routing_reason,
-            alternatives=alternatives, ambiguous=ambiguous,
+            alternatives=alternatives, ambiguous=ambiguous, compound=compound,
         )
 
     @staticmethod

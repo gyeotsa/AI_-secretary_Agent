@@ -55,6 +55,49 @@ def test_independent_message_request_never_receives_previous_stock_context():
     assert not result.context_used
 
 
+def test_explicit_topic_switch_does_not_inherit_previous_design_context():
+    class NeverCalledLLM:
+        def chat(self, _messages):
+            raise AssertionError("완결된 새 주제에는 문맥 복원 LLM을 호출하면 안 됩니다")
+
+    resolver = ConversationContextResolver(NeverCalledLLM())
+    request = "그런데 내일 서울 날씨를 알려줘"
+    result = resolver.resolve(request, [
+        {"role": "user", "content": "현재 시안의 문구를 아래로 내려줘"},
+        {"role": "assistant", "content": "문구를 아래로 이동했습니다."},
+    ], "topic-switch-session")
+
+    assert result.resolved_request == request
+    assert result.relation == "independent"
+    assert not result.context_used
+
+
+def test_correction_marker_keeps_recent_target_but_not_unrelated_facts():
+    class CorrectionLLM:
+        def chat(self, messages):
+            prompt = messages[-1]["content"]
+            assert "삼성전자" not in prompt
+            return json.dumps({
+                "resolved_request": "현재 시안 문구를 파란색으로 변경해줘",
+                "topic": "mockup_edit",
+                "entities": {"target": "현재 시안 문구", "color": "파란색"},
+                "confidence": 0.96,
+                "needs_clarification": False,
+                "clarification_question": "",
+                "relation": "follow_up",
+                "context_used": True,
+            }, ensure_ascii=False)
+
+    resolver = ConversationContextResolver(CorrectionLLM())
+    result = resolver.resolve("아니, 빨간색 말고 파란색으로 바꿔줘", [
+        {"role": "user", "content": "현재 시안 문구를 빨간색으로 바꿔줘"},
+        {"role": "assistant", "content": "문구를 빨간색으로 변경했습니다."},
+    ], "correction-session")
+
+    assert result.context_used
+    assert result.entities == {"target": "현재 시안 문구", "color": "파란색"}
+
+
 def test_elliptical_visual_edit_uses_recent_context_without_domain_keywords():
     class EditLLM:
         def chat(self, _messages):
