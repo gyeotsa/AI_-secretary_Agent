@@ -2248,15 +2248,13 @@ class Executor:
 
     @staticmethod
     def _unsupported_capability_message(goal: str) -> Optional[str]:
-        normalized = goal.lower()
-        mail_account = any(word in normalized for word in ("gmail", "지메일", "구글 메일"))
-        connection = any(word in normalized for word in ("연결", "연동", "oauth", "로그인", "인증"))
-        if mail_account and connection:
-            return (
-                "현재 Gmail OAuth 계정 연결 기능은 아직 구현되어 있지 않습니다, 보스. "
-                "지금 제공되는 Mail 기능은 .env에 설정한 SMTP 계정으로 초안을 만들거나 메일을 전송하는 방식입니다. "
-                "Google OAuth 클라이언트와 토큰 저장 기능을 구현하기 전에는 Gmail 연결을 진행했다고 보고하지 않겠습니다."
-            )
+        """Return only product-level blocks that Registry cannot represent.
+
+        Capability availability belongs to PluginRegistry and runtime
+        diagnostics. Feature-specific denylists here become stale and can make
+        implemented tools unreachable. Missing credentials or runtimes are
+        therefore reported by the selected tool with evidence.
+        """
         return None
 
     def finalize(self) -> str:
@@ -2278,8 +2276,10 @@ class Executor:
             # request.  The structural absence of ToolRunResult evidence is
             # decisive, so never ask a conversational model to narrate success.
             return (
-                "실제 작업을 실행하지 않았습니다. 연결된 도구 실행 증거가 없어 "
-                "완료로 보고하지 않겠습니다. 지원되는 실행 경로를 다시 확인하겠습니다."
+                "실제 작업을 실행하지 않았습니다. 도구 실행 증거가 없습니다. "
+                "따라서 완료로 보고하지 않겠습니다. 완료했다고 안내하지 않겠습니다. "
+                "지원되는 실행 경로와 "
+                "필요한 연결 상태를 다시 확인하겠습니다."
             )
         custom_voice, address, conversation_style = self._selected_voice_preferences()
         selected_profile = next(

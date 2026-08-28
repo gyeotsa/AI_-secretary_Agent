@@ -2470,3 +2470,32 @@ AI_-secretary_Agent/
 - 사용자/런타임 소유 변경인 `data/chroma_db/chroma.sqlite3`, `brain/`, `greeting.pptx`, `tmp/`,
   `tmpdozr9d5t/`는 구현 커밋에 포함하지 않는다.
 - 구현 커밋: 이번 작업 완료 후 생성하는 `[Fix] 카카오톡 승인과 실제 전송 검증 강화` 커밋.
+
+## 2026-08-28 제품 전체 QA 1차 감사와 기능 도달성 수정
+
+- 사용자 기준: 강화학습은 적용하지 않는다. 기반 모델 차이를 제외한 자연 대화, 명령 이해,
+  문맥, 도구 실행, 전문가 공간, 팀 실행, 기억, 제스처, 외부 연동과 운영 품질을 Codex 수준의
+  계약·검증·복구 구조로 끌어올린다. 자동 테스트만 통과한 껍데기는 완료로 표시하지 않는다.
+- 기준 문서: `QA_MASTER_AUDIT.md`에 4단계 완료 정의(계약/자동 회귀/통합/사용자 수락)와
+  전 영역 QA 축을 추가했다.
+- 기준선: 기존 `pytest.ini` 회귀는 `615 passed, 4 deselected`였다. 저장소의 안전한 pytest
+  파일 10개가 명시적 수집 목록에서 누락되어 있었고, 이를 직접 실행하자 `97 passed, 2 failed`로
+  실행 요청 무증거 안내 회귀 2건이 드러났다.
+- 수정: 실행형 요청이 도구 경로 없이 대화 fallback에 도달하면 `도구 실행 증거가 없습니다`와
+  `완료했다고 안내하지 않겠습니다`를 명시하도록 공통 실패 계약을 복원했다.
+- 기능 도달성: Google/Microsoft OAuth, DPAPI 토큰 저장과 원격 API 검증 플러그인이 구현되어
+  있는데도 `Executor`가 Gmail OAuth를 미구현으로 차단하던 과거 예외를 제거했다. 지원 여부와
+  연결 실패는 Plugin Registry와 실제 Runtime 진단/증거를 단일 기준으로 사용한다.
+- 회귀 수집: 누락됐던 agent self, alarm, desktop messaging hardening, approval safety, finance,
+  live-info/TTS, mockup architecture, model registry, response presenter, session management 테스트를
+  기본 `pytest.ini` 목록에 편입했다.
+- 집중 검증: 실행 안전/OAuth 관련 `28 passed`.
+- 확장 전체 회귀 1차 결과: `713 passed, 1 failed, 4 deselected`. 남은 1건은 기존 테스트가 각각
+  `완료로 보고하지 않겠습니다`와 `완료했다고 안내하지 않겠습니다`를 요구한 문구 계약 불일치였고,
+  두 의미를 함께 보존하는 단일 표준 문장으로 통합했다.
+- 최종 검증: 관련 집중 회귀 `34 passed`, 안전한 누락 테스트를 편입한 확장 전체 회귀
+  `714 passed, 4 deselected`.
+- 미완료/다음: 전체 확장 회귀를 다시 실행하고, 12건뿐인 현실 발화 데이터셋을 도메인·오타·부정·
+  정정·복합 요청·다중 턴으로 확장한다. import 즉시 카메라·스피커·Ollama·GUI를 실행하는 옛
+  수동 스크립트는 자동 테스트가 아니므로 명시적 수락 하네스로 격리한다. 실제 계정·사람·물리
+  장치 검증은 사용자 승인과 시험 대상을 받은 뒤에만 수행하고 그전에는 조건부 준비로 기록한다.

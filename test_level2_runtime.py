@@ -151,10 +151,9 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertIn("execute_multi_agent", AUTO_LOOP_EXCLUDED_TOOLS)
         self.assertIn("get_task_history", AUTO_LOOP_EXCLUDED_TOOLS)
 
-    def test_unimplemented_gmail_oauth_connection_fails_fast(self):
+    def test_gmail_oauth_is_not_blocked_before_registry_routing(self):
         message = Executor._unsupported_capability_message("내 Gmail을 연결해줘")
-        self.assertIsNotNone(message)
-        self.assertIn("아직 구현되어 있지 않습니다", message)
+        self.assertIsNone(message)
 
 
 if __name__ == "__main__":
