@@ -1,4 +1,5 @@
 import os
+import zipfile
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -19,6 +20,17 @@ from core.harness import SafetyLayer
 from core.tool_result import Artifact, Evidence, ToolRunResult
 from ui.knowledge_graph_workspace import KnowledgeGraphWindow, NativeGraphView
 from ui.main_window import JarvisMainWindow
+
+
+def _write_test_docx(path):
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", "<document><body><p>verified</p></body></document>")
+
+
+def _write_test_pdf(path):
+    # Minimal envelope used when the optional pypdf parser is not installed.
+    path.write_bytes(b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n")
 
 
 def test_natural_commands_route_to_declared_specialist_workspace():
@@ -261,7 +273,7 @@ def test_specialist_reviewer_requires_real_contract_artifact_and_evidence(tmp_pa
     assert "실제 검증 근거" in rejected["reason"]
     assert "실제 산출물" in rejected["reason"]
 
-    output = tmp_path / "report.docx"; output.write_bytes(b"verified")
+    output = tmp_path / "report.docx"; _write_test_docx(output)
     verified = {
         **fake,
         "evidence": [{"kind": "file_content", "summary": "저장 후 해시 확인", "data": {}}],
@@ -342,7 +354,7 @@ def test_specialist_artifact_validation_accepts_decodable_image_and_pdf_envelope
     image_path = tmp_path / "result.png"
     pdf_path = tmp_path / "result.pdf"
     Image.new("RGB", (4, 4), "white").save(image_path)
-    pdf_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    _write_test_pdf(pdf_path)
 
     assert SpecialistTeamRuntime._artifact_exists({
         "kind": "image", "uri": str(image_path),
@@ -443,7 +455,7 @@ def test_workspace_readiness_exposes_tool_registry_failure():
 
 
 def test_team_run_records_workspace_contract_and_degraded_plan(tmp_path, monkeypatch):
-    output = tmp_path / "report.docx"; output.write_bytes(b"document")
+    output = tmp_path / "report.docx"; _write_test_docx(output)
     available = (
         "word_create_document", "excel_create_workbook", "hwpx_create_document",
         "powerpoint_create_presentation", "pdf_create_document",
@@ -475,7 +487,7 @@ def test_team_run_records_workspace_contract_and_degraded_plan(tmp_path, monkeyp
 
 
 def test_team_run_completes_only_when_plan_and_contract_evidence_pass(tmp_path, monkeypatch):
-    output = tmp_path / "report.docx"; output.write_bytes(b"document")
+    output = tmp_path / "report.docx"; _write_test_docx(output)
     available = (
         "word_create_document", "excel_create_workbook", "hwpx_create_document",
         "powerpoint_create_presentation", "pdf_create_document",
@@ -509,7 +521,7 @@ def test_team_run_completes_only_when_plan_and_contract_evidence_pass(tmp_path, 
 
 
 def test_specialist_team_passes_resolved_tool_scope_to_executor(tmp_path, monkeypatch):
-    output = tmp_path / "report.docx"; output.write_bytes(b"document")
+    output = tmp_path / "report.docx"; _write_test_docx(output)
     available = (
         "word_create_document", "excel_create_workbook", "hwpx_create_document",
         "powerpoint_create_presentation", "pdf_create_document",
@@ -571,8 +583,8 @@ def test_specialist_role_rejects_empty_required_artifact():
 def test_specialist_reviewer_aggregates_multi_step_tool_evidence(tmp_path):
     first = tmp_path / "report.docx"
     second = tmp_path / "report.pdf"
-    first.write_bytes(b"docx")
-    second.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    _write_test_docx(first)
+    _write_test_pdf(second)
     outcome = ExecutionOutcome(
         "문서 작성과 렌더 검증을 완료했습니다.", status="completed",
         completed_steps=2,
