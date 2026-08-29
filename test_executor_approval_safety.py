@@ -1,6 +1,7 @@
 """Focused, side-effect-free regression tests for Executor approval safety."""
 
 from types import SimpleNamespace
+import threading
 
 import pytest
 
@@ -80,6 +81,9 @@ def _executor(tmp_path):
     executor.current_agent_task_id = ""
     executor.response_realizer = None
     executor.context_manager = None
+    executor._control_condition = threading.Condition()
+    executor._task_controls = {}
+    executor._approval_inflight = set()
     return executor
 
 
@@ -305,3 +309,60 @@ def test_bare_id_for_non_awaiting_task_never_calls_llm_or_tool(tmp_path):
     assert outcome.status == "queued"
     assert "queued 상태" in outcome.response
     assert executor.dialogue_state.get_task(SESSION, queued.task_id, "").status == "queued"
+
+
+def test_awaiting_approval_can_be_revised_without_executing_old_send(tmp_path):
+    executor = _executor(tmp_path)
+    task = _create_approval(executor, "형택", "기존 본문")
+
+    def forbidden_execute(*_args, **_kwargs):
+        raise AssertionError("수정 전 외부 전송 계획을 실행하면 안 됩니다")
+
+    executor.execute_plan_dag = forbidden_execute
+    outcome = executor.handle_control_command(
+        f"{task.task_id} 수정: 수신자를 민수로 바꿔줘", SESSION,
+    )
+
+    assert outcome.status == "cancelled"
+    assert "수신자를 민수로 바꿔줘" in outcome.next_goal
+    assert "기존 본문" in outcome.next_goal
+    stored = executor.dialogue_state.get_task(SESSION, task.task_id, "")
+    assert stored.status == "cancelled"
+
+
+def test_cancel_never_claims_success_after_approved_external_send_has_started(tmp_path):
+    executor = _executor(tmp_path)
+    task = _create_approval(executor, "형택", "경합 본문")
+    started = threading.Event()
+    release = threading.Event()
+    results = {}
+
+    def blocking_plan_runner(plan, approved_step_ids=None):
+        step = plan.steps[0]
+        started.set()
+        assert release.wait(timeout=5)
+        step.status = StepStatus.COMPLETED
+        result = ToolRunResult.successful(
+            tool_name=TOOL_NAME,
+            raw_output="sent-once",
+            evidence=[Evidence("test", "verified external send")],
+        )
+        return PlanRunResult(plan, "completed", {step.id: result}, [])
+
+    executor.execute_plan_dag = blocking_plan_runner
+    worker = threading.Thread(
+        target=lambda: results.setdefault(
+            "approval", executor.handle_control_command(f"{task.task_id} 승인", SESSION)
+        )
+    )
+    worker.start()
+    assert started.wait(timeout=5)
+
+    cancel = executor.handle_control_command(f"{task.task_id} 취소", SESSION)
+    release.set()
+    worker.join(timeout=5)
+
+    assert cancel.status == "running"
+    assert "취소 완료로 표시할 수 없습니다" in cancel.response
+    assert results["approval"].status == "completed"
+    assert executor.dialogue_state.get_task(SESSION, task.task_id, "").status == "completed"

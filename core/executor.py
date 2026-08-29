@@ -139,6 +139,7 @@ class Executor:
         self._progress_callback: Optional[Callable[[str], None]] = None
         self.current_agent_task_id = ""
         self._task_controls: Dict[str, Dict[str, bool]] = {}
+        self._approval_inflight: set[str] = set()
         self._control_condition = threading.Condition()
         # The executor still owns mutable plan/goal fields. Serialize complete
         # turns until those fields are migrated into an immutable turn context.
@@ -702,12 +703,27 @@ class Executor:
                 f"{str(execution_context).strip()}"
             )
         allowed_tools = self._allowed_tools_for_goal(goal, tool_scope)
+        required_tools: list[str] = []
+        if direct_resolution.compound:
+            required_tools = list(dict.fromkeys(
+                name for name in (
+                    [direct_resolution.tool_name]
+                    + [
+                        str(item.get("tool_name", "")).strip()
+                        for item in direct_resolution.alternatives
+                        if isinstance(item, dict)
+                    ]
+                )
+                if name and (allowed_tools is None or name in allowed_tools)
+            ))
         planning_service = getattr(self, "planning_service", None)
         if planning_service is None:
             planning_service = PlanningService(self.planner)
             self.planning_service = planning_service
         try:
-            self.current_plan = planning_service.create(goal, initial_context, allowed_tools)
+            self.current_plan = planning_service.create(
+                goal, initial_context, allowed_tools, required_tools,
+            )
         except Exception as exc:
             # A planning/provider failure is a real failed turn.  Never convert
             # it to a vague tool-free fallback or leave a task stuck in running.
@@ -1463,6 +1479,11 @@ class Executor:
                         f"작업 {task_id}의 승인을 선점하지 못해 실행하지 않았습니다, 보스.",
                         "failed", task.goal, task_id=task_id,
                     )
+                approval_inflight = getattr(self, "_approval_inflight", None)
+                if approval_inflight is None:
+                    approval_inflight = set()
+                    self._approval_inflight = approval_inflight
+                approval_inflight.add(task_id)
             try:
                 plan, approved_resolution = self._canonical_external_send_approval_plan(task)
                 if plan is None:
@@ -1527,6 +1548,8 @@ class Executor:
                 )
             finally:
                 self.current_agent_task_id = ""
+                with self._APPROVAL_CLAIM_LOCK:
+                    getattr(self, "_approval_inflight", set()).discard(task_id)
         priority_match = re.fullmatch(r"우선순위\s*(-?\d+)", command)
         if priority_match:
             priority = int(priority_match.group(1))
@@ -1534,11 +1557,20 @@ class Executor:
             return ExecutionOutcome(f"작업 {task_id}의 우선순위를 {priority}로 변경했습니다, 보스.", task.status, task_id=task_id)
 
         if command in {"취소", "중단"}:
-            if not self.dialogue_state.transition_task(task_id, "cancelled", result="사용자 취소"):
-                return ExecutionOutcome(
-                    f"작업 {task_id}은 현재 {task.status} 상태라 취소할 수 없습니다, 보스.",
-                    "failed", task_id=task_id,
-                )
+            with self._APPROVAL_CLAIM_LOCK:
+                if task_id in getattr(self, "_approval_inflight", set()):
+                    return ExecutionOutcome(
+                        f"작업 {task_id}은 승인을 선점해 외부 실행을 시작한 상태라 "
+                        "취소 완료로 표시할 수 없습니다, 보스.",
+                        "running", task.goal, task_id=task_id,
+                    )
+                if not self.dialogue_state.transition_task(
+                    task_id, "cancelled", result="사용자 취소"
+                ):
+                    return ExecutionOutcome(
+                        f"작업 {task_id}은 현재 {task.status} 상태라 취소할 수 없습니다, 보스.",
+                        "failed", task_id=task_id,
+                    )
             self.dialogue_state.delete(session_key, task_id)
             with self._control_condition:
                 control = self._task_controls.setdefault(task_id, {"cancel": False, "pause": False})
@@ -1549,13 +1581,20 @@ class Executor:
         revision_match = re.fullmatch(r"수정\s*[:：]\s*(.+)", command, re.S)
         if revision_match:
             revision = revision_match.group(1).strip()
-            if not self.dialogue_state.transition_task(
-                task_id, "cancelled", result=f"수정 지시로 대체: {revision}"
-            ):
-                return ExecutionOutcome(
-                    f"작업 {task_id}은 현재 {task.status} 상태라 수정할 수 없습니다, 보스.",
-                    "failed", task_id=task_id,
-                )
+            with self._APPROVAL_CLAIM_LOCK:
+                if task_id in getattr(self, "_approval_inflight", set()):
+                    return ExecutionOutcome(
+                        f"작업 {task_id}은 승인을 선점해 외부 실행을 시작한 상태라 "
+                        "지금 수정할 수 없습니다, 보스.",
+                        "running", task.goal, task_id=task_id,
+                    )
+                if not self.dialogue_state.transition_task(
+                    task_id, "cancelled", result=f"수정 지시로 대체: {revision}"
+                ):
+                    return ExecutionOutcome(
+                        f"작업 {task_id}은 현재 {task.status} 상태라 수정할 수 없습니다, 보스.",
+                        "failed", task_id=task_id,
+                    )
             with self._control_condition:
                 control = self._task_controls.setdefault(task_id, {"cancel": False, "pause": False})
                 control["cancel"] = True

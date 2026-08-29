@@ -175,10 +175,17 @@ class PlanningService:
     def __init__(self, planner):
         self.planner = planner
 
-    def create(self, goal: str, context: str, allowed_tools: Optional[List[str]]) -> PlanDAG:
+    def create(
+        self, goal: str, context: str, allowed_tools: Optional[List[str]],
+        required_tools: Optional[List[str]] = None,
+    ) -> PlanDAG:
         if hasattr(self.planner, "build_plan_dag"):
-            return self.planner.build_plan_dag(goal, context, allowed_tools)
-        tasks = self.planner.decompose_goal(goal, context, allowed_tools)
+            return self.planner.build_plan_dag(
+                goal, context, allowed_tools, required_tools,
+            )
+        tasks = self.planner.decompose_goal(
+            goal, context, allowed_tools, required_tools,
+        )
         return PlanDAG(goal, [PlanStep(
             id=task.id, description=task.description,
             tool_name=(getattr(task, "required_tools", []) or [""])[0],

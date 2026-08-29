@@ -103,7 +103,8 @@ class Planner:
         return False
         
     def decompose_goal(self, goal: str, context: str = "",
-                       allowed_tool_names: List[str] | None = None) -> List[DecomposedTask]:
+                       allowed_tool_names: List[str] | None = None,
+                       required_tool_names: List[str] | None = None) -> List[DecomposedTask]:
         """
         사용자의 목표를 작업으로 분해합니다.
 
@@ -176,6 +177,16 @@ __TOOLS_TEXT__
         user_prompt = f"사용자 요청: {goal}\n\n"
         if context:
             user_prompt += f"추가 컨텍스트:\n{context}\n\n"
+        required_tools = list(dict.fromkeys(
+            str(name).strip() for name in (required_tool_names or [])
+            if str(name).strip()
+        ))
+        if required_tools:
+            user_prompt += (
+                "반드시 계획에 각각 한 번 이상 포함해야 하는 Tool: "
+                + ", ".join(required_tools) + "\n"
+                "사용자 요청의 각 독립 작업을 누락하지 말고 Tool별 작업으로 분리하세요.\n\n"
+            )
         user_prompt += "위 요청을 작업으로 분해해주세요."
 
         # A malformed plan is corrected as a plan, never disguised as a
@@ -202,6 +213,7 @@ __TOOLS_TEXT__
                 decomposed_tasks = self._validated_tasks(
                     result.get("tasks"), allowed_tool_names,
                     original_goal=goal,
+                    required_tool_names=required_tools,
                 )
                 for task in decomposed_tasks:
                     self.scratchpad.add_task(task.description, task.priority)
@@ -232,6 +244,7 @@ __TOOLS_TEXT__
         allowed_tool_names: List[str] | None,
         *,
         original_goal: str = "",
+        required_tool_names: List[str] | None = None,
     ) -> List[DecomposedTask]:
         if not isinstance(tasks_data, list) or not tasks_data:
             raise PlanningError("tasks는 비어 있지 않은 배열이어야 합니다.")
@@ -285,6 +298,17 @@ __TOOLS_TEXT__
             raise PlanningError(f"존재하지 않는 dependency가 있습니다: {unknown}")
         if any(task.id in task.dependencies for task in tasks):
             raise PlanningError("작업은 자기 자신에 의존할 수 없습니다.")
+        required = {
+            str(name).strip() for name in (required_tool_names or [])
+            if str(name).strip()
+        }
+        planned = {task.required_tools[0] for task in tasks}
+        missing_tools = sorted(required - planned)
+        if missing_tools:
+            raise PlanningError(
+                "복합 요청의 독립 작업이 계획에서 누락되었습니다. 필요한 Tool: "
+                + ", ".join(missing_tools)
+            )
         Planner._validate_goal_grounding(tasks, original_goal)
         # PlanDAG performs the canonical cycle validation before execution.
         PlanDAG(goal="validation", steps=[PlanStep(
@@ -352,9 +376,12 @@ __TOOLS_TEXT__
                 )
 
     def build_plan_dag(self, goal: str, context: str = "",
-                       allowed_tool_names: List[str] | None = None) -> PlanDAG:
+                       allowed_tool_names: List[str] | None = None,
+                       required_tool_names: List[str] | None = None) -> PlanDAG:
         """Create and validate the executable contract used by the coordinator."""
-        tasks = self.decompose_goal(goal, context, allowed_tool_names)
+        tasks = self.decompose_goal(
+            goal, context, allowed_tool_names, required_tool_names,
+        )
         steps = []
         for task in tasks:
             tool_name = task.required_tools[0] if task.required_tools else ""
@@ -391,8 +418,15 @@ __TOOLS_TEXT__
             f"실제 관찰 결과: {observation[:2000]}\n"
             "같은 실패를 반복하지 말고 완료된 단계는 다시 계획하지 마세요."
         )
-        replacement = self.build_plan_dag(current.goal, replan_context, allowed_tool_names)
         completed = [step for step in current.steps if step.status.value == "completed"]
+        required_remaining_tools = list(dict.fromkeys(
+            step.tool_name for step in current.steps
+            if step.status.value != "completed" and step.tool_name
+        ))
+        replacement = self.build_plan_dag(
+            current.goal, replan_context, allowed_tool_names,
+            required_remaining_tools,
+        )
         completed_descriptions = {step.description for step in completed}
         candidates = [step for step in replacement.steps if step.description not in completed_descriptions]
         revision = current.revision + 1

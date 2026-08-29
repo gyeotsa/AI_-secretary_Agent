@@ -734,7 +734,27 @@ class SpecialistTeamRuntime:
             return uri.casefold().startswith(("http://", "https://"))
         if kind in {"knowledge_entity", "knowledge_relation", "semantic_memory"}:
             return True
-        return Path(uri).exists()
+        path = Path(uri)
+        # A path-only shell is not a deliverable.  This generic boundary protects
+        # every specialist workspace, including future plugins that do not yet
+        # have a format-specific verifier.
+        try:
+            if not path.is_file() or path.stat().st_size <= 0:
+                return False
+            suffix = path.suffix.casefold()
+            if suffix == ".pdf":
+                payload = path.read_bytes()
+                return payload.startswith(b"%PDF-") and payload.rstrip().endswith(b"%%EOF")
+            if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+                from PIL import Image
+                with Image.open(path) as image:
+                    image.verify()
+                return True
+            return True
+        except OSError:
+            return False
+        except Exception:
+            return False
 
     @staticmethod
     def _publish(event_type: str, run: TeamRun) -> None:

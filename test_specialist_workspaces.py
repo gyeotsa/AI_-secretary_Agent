@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import Qt, QMimeData, QPointF, QUrl
 from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtWidgets import QApplication
+from PIL import Image
 
 from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
@@ -298,6 +299,59 @@ def test_specialist_reviewer_rejects_empty_word_document_evidence(tmp_path):
     assert "빈 문서" in reviewed["reason"]
 
 
+def test_specialist_reviewer_rejects_zero_byte_artifact_shell(tmp_path):
+    output = tmp_path / "empty-result.bin"
+    output.touch()
+    contract = {
+        "artifact_types": ["file"],
+        "acceptance_criteria": ["실제 파일이 생성되어야 한다"],
+        "readiness": {"resolved_tools": ["tool_a"]},
+    }
+    payload = {
+        "status": "completed",
+        "tool_status": "succeeded",
+        "tool_name": "tool_a",
+        "tool_names": ["tool_a"],
+        "evidence": [{
+            "kind": "file_hash", "summary": "파일 경로를 확인했습니다.", "data": {},
+        }],
+        "artifacts": [{"kind": "file", "uri": str(output)}],
+    }
+
+    reviewed = SpecialistTeamRuntime._review_execution(payload, contract)
+
+    assert not reviewed["passed"]
+    assert "실제 산출물" in reviewed["reason"]
+
+
+def test_specialist_reviewer_rejects_corrupt_image_and_pdf_payloads(tmp_path):
+    corrupt_image = tmp_path / "result.png"
+    corrupt_pdf = tmp_path / "result.pdf"
+    corrupt_image.write_bytes(b"not-an-image")
+    corrupt_pdf.write_bytes(b"not-a-pdf")
+
+    assert not SpecialistTeamRuntime._artifact_exists({
+        "kind": "image", "uri": str(corrupt_image),
+    })
+    assert not SpecialistTeamRuntime._artifact_exists({
+        "kind": "pdf", "uri": str(corrupt_pdf),
+    })
+
+
+def test_specialist_artifact_validation_accepts_decodable_image_and_pdf_envelope(tmp_path):
+    image_path = tmp_path / "result.png"
+    pdf_path = tmp_path / "result.pdf"
+    Image.new("RGB", (4, 4), "white").save(image_path)
+    pdf_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+    assert SpecialistTeamRuntime._artifact_exists({
+        "kind": "image", "uri": str(image_path),
+    })
+    assert SpecialistTeamRuntime._artifact_exists({
+        "kind": "pdf", "uri": str(pdf_path),
+    })
+
+
 def test_specialist_planning_failure_is_visible_degraded(monkeypatch):
     class BrokenClient:
         profile = None
@@ -518,7 +572,7 @@ def test_specialist_reviewer_aggregates_multi_step_tool_evidence(tmp_path):
     first = tmp_path / "report.docx"
     second = tmp_path / "report.pdf"
     first.write_bytes(b"docx")
-    second.write_bytes(b"pdf")
+    second.write_bytes(b"%PDF-1.4\n%%EOF\n")
     outcome = ExecutionOutcome(
         "문서 작성과 렌더 검증을 완료했습니다.", status="completed",
         completed_steps=2,
