@@ -30,6 +30,12 @@ class SensitiveDataRedactor:
     PATTERNS = (
         (re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer [REDACTED]"),
         (re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"), "[REDACTED_JWT]"),
+        (re.compile(r"\b(?:sk|sk-ant|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}\b", re.I),
+         "[REDACTED_TOKEN]"),
+        (re.compile(
+            r"(?i)(access_token|refresh_token|id_token|token|api[_-]?key|client_secret|password)"
+            r"(\s*[=:]\s*|%3[dD])([^\s&;,\"']+)"
+        ), r"\1\2[REDACTED]"),
         (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "[REDACTED_EMAIL]"),
         (re.compile(r"(?<!\d)(?:01[016789])[- ]?\d{3,4}[- ]?\d{4}(?!\d)"), "[REDACTED_PHONE]"),
     )

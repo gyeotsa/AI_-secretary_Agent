@@ -12,7 +12,7 @@ import urllib.request
 
 from config import Config
 from core.model_registry import get_model_registry
-from core.productization import METRICS
+from core.productization import METRICS, SensitiveDataRedactor
 from core.quality_metrics import get_quality_metric_store
 from core.runtime.event_bus import Event, get_event_bus
 
@@ -71,12 +71,12 @@ class DiagnosticsRuntime:
                 key, label, status, summary, evidence,
                 round((time.perf_counter() - started) * 1000, 2), remediation,
             ))
-        report = {
+        report = SensitiveDataRedactor.redact({
             "generated_at": datetime.now(timezone.utc).astimezone().isoformat(),
             "scope": scope, "live": bool(live),
             "summary": self._summary(probes),
             "probes": [asdict(item) for item in probes],
-        }
+        })
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
         self.report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         METRICS.gauge("diagnostics.last_summary", report["summary"])

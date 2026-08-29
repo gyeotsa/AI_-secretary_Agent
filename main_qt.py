@@ -1227,8 +1227,6 @@ class JarvisApp:
 
     def _set_gesture_camera_sync(self, enabled: bool, *, persist: bool = True) -> dict:
         enabled = bool(enabled)
-        if persist:
-            self.assistant_settings.set("gesture_camera_enabled", "true" if enabled else "false")
         try:
             if enabled:
                 if not self.permission_manager.request_permission("camera"):
@@ -1241,6 +1239,13 @@ class JarvisApp:
         except Exception as exc:
             status = self.gesture_runtime.status()
             status["error"] = str(exc)
+        # Persist observed runtime truth, not merely the requested state. A
+        # denied permission or missing camera must not silently re-enable the
+        # device at every subsequent startup.
+        if persist:
+            self.assistant_settings.set(
+                "gesture_camera_enabled", "true" if status.get("running") else "false"
+            )
         self.signals.gesture_status.emit(status)
         return status
     
@@ -1254,14 +1259,32 @@ class JarvisApp:
         if getattr(self, "_runtime_shutdown_started", False):
             return
         self._runtime_shutdown_started = True
-        if hasattr(self, "gesture_runtime"):
-            self.gesture_runtime.stop()
-        if hasattr(self, "proactive_policy"):
-            self.proactive_policy.stop()
-        if hasattr(self, "runtime_services"):
-            self.runtime_services.stop()
-        if hasattr(self, "tool_executor"):
-            self.tool_executor.shutdown_tts()
+        self._shutdown_errors = []
+        cleanup = (
+            ("gesture_runtime", "stop"),
+            ("proactive_policy", "stop"),
+            ("runtime_services", "stop"),
+            ("tool_executor", "shutdown_tts"),
+        )
+        for owner_name, method_name in cleanup:
+            owner = getattr(self, owner_name, None)
+            method = getattr(owner, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                method()
+            except Exception as exc:
+                self._shutdown_errors.append(
+                    f"{owner_name}.{method_name}: {type(exc).__name__}: {exc}"
+                )
+        # Bound UI handlers otherwise keep a closed JarvisApp alive and allow
+        # later tool calls to target a stale window/device runtime.
+        bridge = get_interface_control_bridge()
+        for name in (
+            "set_gesture_camera", "get_gesture_status",
+            "set_gesture_configuration", "get_gesture_configuration", "open_surface",
+        ):
+            bridge.unregister(name)
     
     def run(self):
         return self.app.exec()

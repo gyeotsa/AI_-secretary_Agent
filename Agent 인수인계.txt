@@ -2603,3 +2603,18 @@ AI_-secretary_Agent/
 - 기존 성공 테스트의 가짜 DOCX 바이트를 실제 최소 OOXML 패키지로 교체했다. 집중 회귀
   `104 passed`.
 - 다음: 전체 회귀 후 커밋하고, UI/제스처·장치/외부 연동·장시간 운영 수락 하네스를 계속한다.
+
+## 2026-08-29 UI·장치·운영 수락 계약 강화
+
+- 제스처 카메라 자동 실행 설정은 권한 거부/장치 실패 시 `false`로 유지하고 실제 실행 성공 때만
+  `true`로 저장한다. 실패한 요청값과 실제 장치 상태가 어긋나던 문제를 수정했다.
+- 종료 시 gesture/proactive/runtime/TTS를 독립 정리하며 한 단계 예외가 나도 나머지를 계속한다.
+  닫힌 UI의 InterfaceControl Bridge handler도 해제해 stale window 호출과 객체 누수를 막았다.
+- 실제 Qt 채팅 패널 접기·복원, 카메라 상태 저장, 종료 예외 격리 테스트를 추가했다. 기존 GUI
+  round-trip 테스트가 전역 ToolExecutor의 초기화 순서와 시간에 의존하던 테스트 결함도 제거했다.
+- DiagnosticsRuntime의 증거는 반환/저장 전에 SensitiveDataRedactor를 통과한다. 공급자 토큰과
+  URL/문자열 secret 할당까지 마스킹 범위를 확대했다.
+- 검증: UI/장치 `62 passed`, 외부 연동 `88 passed, 3 deselected`, 운영/패키징 `43 passed`,
+  `pip check`, `compileall`, 패키징 smoke `OK`, 최종 전체 `816 passed, 6 skipped, 4 deselected`.
+- 실제 외부 계정 전송, 실제 스피커 청취, 카메라 조명/거리 수락은 시험 대상과 사용자 확인이
+  없으므로 자동 통과로 가장하지 않는다.

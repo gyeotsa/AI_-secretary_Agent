@@ -1,4 +1,5 @@
 import os
+from datetime import date
 import threading
 import time
 from types import SimpleNamespace
@@ -9,7 +10,6 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 
 from core.permission import PermissionManager
-from core.tools import get_tool_executor
 from main_qt import AppSignals, JarvisApp
 from ui.main_window import PermissionRequestDialog
 
@@ -76,7 +76,10 @@ class _Rag:
 
 class _Executor:
     def execute_goal(self, _text, _session_id, _conversation_history=None):
-        return f"오늘 날짜는 {get_tool_executor().execute_tool('get_date', {})}입니다."
+        # This test validates the GUI thread round trip, not cold Plugin Registry
+        # startup. Depending on a process-global ToolExecutor made the result
+        # order-dependent and could exceed the UI pump timeout on a cold run.
+        return f"오늘 날짜는 {date.today().isoformat()}입니다."
 
 
 class _ControllableExecutor(_Executor):

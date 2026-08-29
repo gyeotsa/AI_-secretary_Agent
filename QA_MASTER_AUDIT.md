@@ -158,3 +158,19 @@ ANIS의 품질 목표는 특정 데모가 동작하는 상태가 아니라, 사�
   성공용 DOCX도 실제 최소 패키지로 바꾸어 테스트가 허술한 껍데기에 의존하지 않게 했다.
 - URL과 지식 메모리처럼 로컬 파일이 아닌 산출물 계약은 별도로 유지한다.
 - 전문가·시안·형식 집중 회귀 `104 passed`.
+
+## 2026-08-29 UI·장치 수명주기와 운영 비밀 마스킹
+
+- 제스처 카메라의 저장 상태를 사용자 요청값이 아니라 실제 `running` 결과로 기록한다. 권한 거부나
+  장치 시작 실패 뒤 다음 실행에서 카메라가 자동 재시도되는 개인정보·상태 불일치를 막았다.
+- 앱 종료는 제스처, proactive policy, runtime service, TTS를 각각 독립적으로 정리한다. 한 정리
+  단계가 예외를 내도 나머지를 계속하고 오류 목록을 보존한다. 닫힌 앱을 가리키는 UI Bridge의
+  bound handler도 모두 해제한다.
+- 실제 `JarvisMainWindow`에서 채팅 패널 접기/복원과 Brain 중심 확장을 offscreen Qt로 검증했다.
+  UI·제스처·수명주기 집중 회귀는 `62 passed`다.
+- 운영 진단 보고서는 반환 전과 디스크 저장 전에 공통 민감정보 마스킹을 거친다. Bearer/JWT뿐
+  아니라 공급자 토큰, URL/문자열의 access·refresh token, API key, client secret, password를
+  제거한다.
+- 외부 연동 실패·복구 회귀 `88 passed`, 운영/연동/패키징 집중 회귀 `43 passed`, `pip check`,
+  `compileall`, 개발 런타임 패키징 smoke `OK`를 확인했다.
+- 최종 전체 회귀 `816 passed, 6 skipped, 4 deselected`.

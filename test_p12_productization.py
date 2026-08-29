@@ -16,6 +16,41 @@ def test_redaction_masks_secrets_and_pii():
     assert "xyz" not in value["note"] and "example.com" not in value["note"] and "1234" not in value["note"]
 
 
+def test_redaction_masks_provider_tokens_and_url_or_assignment_secrets():
+    payload = SensitiveDataRedactor.redact({
+        "message": (
+            "sk-ant-abcdefghijklmnopqrst "
+            "https://example.com/callback?access_token=visible-token&state=ok "
+            "client_secret: another-secret"
+        )
+    })["message"]
+    assert "abcdefghijklmnopqrst" not in payload
+    assert "visible-token" not in payload
+    assert "another-secret" not in payload
+    assert "state=ok" in payload
+
+
+def test_runtime_diagnostics_redacts_probe_evidence_before_return_and_disk(tmp_path, monkeypatch):
+    from core.diagnostics_runtime import DiagnosticsRuntime
+
+    runtime = DiagnosticsRuntime(report_path=str(tmp_path / "diagnostics.json"))
+    probe = lambda: ("passed", "token=visible-token", {
+        "Authorization": "Bearer secret-value",
+        "url": "https://example.com/?refresh_token=refresh-value&safe=1",
+    }, "")
+    for name in ("_runtime", "_ollama", "_cuda", "_memory", "_workspace",
+                 "_plugins", "_tool_flow", "_scheduler_soak", "_microphone"):
+        monkeypatch.setattr(runtime, name, probe)
+    monkeypatch.setattr(runtime, "_speaker", lambda *, live: probe())
+
+    report = runtime.run(scope="core", live=False)
+    serialized = json.dumps(report, ensure_ascii=False)
+    disk = (tmp_path / "diagnostics.json").read_text(encoding="utf-8")
+    for value in ("visible-token", "secret-value", "refresh-value"):
+        assert value not in serialized
+        assert value not in disk
+
+
 def test_json_trace_has_correlation_ids_and_redaction(tmp_path):
     logger = JsonTraceLogger(str(tmp_path / "trace.jsonl"), max_bytes=10000)
     with trace_context(task_id="task", tool_call_id="tool", verification_id="verify"):
