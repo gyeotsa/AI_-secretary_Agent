@@ -10,6 +10,7 @@ import urllib.request
 
 from config import Config
 from core.coding_agent import CodingAgent
+from core.capability_audit import audit_capabilities
 from core.permission import get_permission_manager
 from core.tool_loadout import ToolLoadoutSelector
 
@@ -73,11 +74,18 @@ class SelfDevelopmentRuntime:
                     "runtime_state": status.runtime_state if status else "unchecked",
                     "tools": tools,
                 })
+        from core.tools import AUTO_LOOP_EXCLUDED_TOOLS
+        audit = audit_capabilities(
+            registry,
+            known_permission_ids=permissions.permissions,
+            runtime_only_tools=AUTO_LOOP_EXCLUDED_TOOLS,
+        )
         return {
             "query": str(query), "selection_reason": selection_reason,
             "confidence": confidence, "plugin_count": len(plugins),
             "tool_count": sum(len(item["tools"]) for item in plugins),
             "plugins": plugins,
+            "capability_audit": audit.to_dict(),
         }
 
     def inspect_status(self, registry) -> dict[str, Any]:
@@ -106,6 +114,12 @@ class SelfDevelopmentRuntime:
             and item not in unconfigured_plugins
         ]
         permissions = get_permission_manager().get_all_permissions()
+        from core.tools import AUTO_LOOP_EXCLUDED_TOOLS
+        capability_audit = audit_capabilities(
+            registry,
+            known_permission_ids=(item.id for item in permissions),
+            runtime_only_tools=AUTO_LOOP_EXCLUDED_TOOLS,
+        )
         report: dict[str, Any] = {
             "runtime": {
                 "python": platform.python_version(), "platform": platform.platform(),
@@ -130,6 +144,7 @@ class SelfDevelopmentRuntime:
                 "allowed": sum(get_permission_manager().check_permission(item.id) for item in permissions),
                 "self_modify": get_permission_manager().check_permission("self_modify"),
             },
+            "capability_audit": capability_audit.to_dict(),
         }
         try:
             import psutil
@@ -167,6 +182,8 @@ class SelfDevelopmentRuntime:
             problems.append("계약 또는 의존성 문제가 있는 플러그인이 있습니다.")
         if report["plugins"]["unconfigured"]:
             problems.append("선택 계정 연동이 설정되지 않은 플러그인이 있습니다.")
+        if not capability_audit.passed:
+            problems.append("도구 계약·권한·도달성 감사에서 오류가 발견되었습니다.")
         if not report["ollama"]["reachable"]:
             problems.append("Ollama 서버에 연결하지 못했습니다.")
         if float(report.get("memory", {}).get("used_percent", 0)) >= 85:

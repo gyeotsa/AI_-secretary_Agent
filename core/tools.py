@@ -3014,7 +3014,7 @@ def get_tools_description_text(exclude: Optional[list[str]] = None,
     Args:
         exclude: 프롬프트에서 제외할 도구 이름 목록 (예: UI 전용 도구 등)
     """
-    exclude_set = set(exclude or [])
+    exclude_set = set(exclude or []) | set(AUTO_LOOP_EXCLUDED_TOOLS)
     include_set = set(include) if include is not None else None
     lines = []
     for tool in get_tools_schema():

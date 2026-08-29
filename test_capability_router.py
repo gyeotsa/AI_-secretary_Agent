@@ -184,6 +184,7 @@ def test_compound_request_uses_multi_tool_loadout_instead_of_fast_path():
 
     assert resolution.compound
     assert not resolution.ready
+    assert all(item.get("tool_name") for item in resolution.alternatives)
     loadout = ToolLoadoutSelector(registry).select(request, resolution)
     assert "windows_launch_app" in loadout.tool_names
     assert "browser_play_media" in loadout.tool_names

@@ -2578,3 +2578,18 @@ AI_-secretary_Agent/
   승인 시스템이 사용 가능해진 뒤 AUTHOR/한국어 태그 규칙을 지켜 이전 변경과 함께 커밋한다.
 - 다음: 전체 회귀를 다시 실행하고, 이후 실제 취소 가능한 장시간 Tool에는 Plugin별 cooperative
   cancellation 계약을 추가한다. 외부 전송은 실행 시작 뒤 취소 가능하다고 약속하지 않는다.
+
+## 2026-08-29 기능 도달성·권한·라우팅 자동 감사
+
+- Registry의 33개 플러그인, 137개 도구, 51개 Intent를 자동 검사하는
+  `core/capability_audit.py`와 `test_capability_inventory.py`를 추가했다. 필수 입력 스키마,
+  미등록 권한 ID, Intent/Planner/Runtime 도달성을 단일 보고서로 검증한다.
+- 복합 요청 alternatives의 `tool`/`tool_name` 계약 불일치 때문에 Executor의 필수 도구 집합이
+  비던 결함을 수정했다. 작업공간 생성의 존재하지 않는 `run_command` 권한도 `shell_execute`로
+  바로잡았다.
+- 재귀 에이전트, 중복 TTS, 블로킹 마이크 등 전용 Runtime 도구가 Planner에 노출되지 않도록
+  ToolLoadout과 전체 도구 설명의 제외 기준을 통일했다.
+- 51개 Intent 대표 발화와 현실 발화의 앞뒤 공백·반복 공백·문장부호 변형을 자동 검사한다.
+  아니스 자기 상태/역량 응답에도 계약 감사 결과와 오류 수를 포함했다.
+- 집중 검증: `106 passed, 6 skipped`. 다음은 전체 회귀 후 전문가/멀티모달 산출물의 형식·시각
+  품질, 제스처/UI와 장치·외부 연동 수락 하네스 순서로 계속한다.

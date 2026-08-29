@@ -47,6 +47,8 @@ class ToolLoadoutSelector:
         to the front of the loadout.
         """
         resolution = resolution or self.router.resolve(request)
+        from core.tools import AUTO_LOOP_EXCLUDED_TOOLS
+        runtime_only = set(AUTO_LOOP_EXCLUDED_TOOLS)
         allowed = None if allowed_tools is None else {
             str(name) for name in allowed_tools
             if self.registry.get_capability(str(name)) is not None
@@ -66,15 +68,21 @@ class ToolLoadoutSelector:
                 return ToolLoadout(tuple(dict.fromkeys(selected))[:self.max_tools],
                                    f"intent:{resolution.intent_name}", resolution.confidence)
             selected.extend(
-                str(item.get("tool"))
+                str(item.get("tool_name") or item.get("tool"))
                 for item in resolution.alternatives
-                if item.get("tool") and self.registry.get_capability(str(item.get("tool")))
-                and in_scope(str(item.get("tool")))
+                if (item.get("tool_name") or item.get("tool"))
+                and self.registry.get_capability(str(item.get("tool_name") or item.get("tool")))
+                and in_scope(str(item.get("tool_name") or item.get("tool")))
             )
 
         query = self._tokens(request)
         scored = []
         for contract in self.registry.get_capabilities():
+            # These tools are invoked by dedicated runtime/UI flows. Offering
+            # them to Planner would reintroduce recursive agent execution,
+            # duplicate TTS, or a blocking microphone wait.
+            if contract.name in runtime_only:
+                continue
             if not in_scope(contract.name):
                 continue
             descriptor = self._tokens(f"{contract.name} {contract.description}")

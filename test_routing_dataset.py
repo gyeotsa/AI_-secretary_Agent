@@ -41,3 +41,27 @@ def test_realistic_user_utterance_routing_dataset(router, case):
     if case.get("freshness"):
         assert resolution.freshness == case["freshness"]
         assert resolution.requires_sources
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: f"variant-{case['id']}")
+def test_routing_is_stable_under_harmless_spacing_and_punctuation(router, case):
+    expected = case.get("intent")
+    if expected is None:
+        pytest.skip("대화 발화는 의도적으로 Tool Intent가 없습니다.")
+    utterance = case["utterance"]
+    variants = (
+        f"  {utterance}  ",
+        utterance.replace(" ", "   "),
+        utterance.rstrip(" .!?") + "!!!",
+    )
+    for variant in variants:
+        resolution = router.resolve(variant)
+        expected_any = case.get("intent_any") or []
+        if expected_any:
+            assert resolution.intent_name in expected_any, (variant, resolution)
+        else:
+            assert resolution.intent_name == expected, (variant, resolution)
+        if case.get("negated"):
+            assert resolution.negated and not resolution.ready
+        if case.get("compound"):
+            assert resolution.compound and not resolution.ready

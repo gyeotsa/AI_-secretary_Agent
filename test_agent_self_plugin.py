@@ -38,6 +38,24 @@ def test_capability_query_is_derived_from_registry_contracts():
         tool["name"] == "agent_self_status"
         for group in payload["plugins"] for tool in group["tools"]
     )
+    assert payload["capability_audit"]["passed"]
+    assert payload["capability_audit"]["tool_count"] == len(registry.get_all_tools())
+    assert "계약 감사 통과" in plugin.present_result(
+        "agent_self_capabilities", result.raw_output
+    )
+
+
+def test_self_status_exposes_registry_contract_audit():
+    registry = _registry()
+    plugin = registry.get_plugin("agent_self")
+    result = plugin.execute_tool("agent_self_status", {})
+
+    assert result.succeeded
+    payload = json.loads(result.raw_output)
+    assert payload["capability_audit"]["passed"]
+    assert payload["capability_audit"]["intent_count"] == len(
+        registry.get_all_intents()
+    )
 
 
 def test_self_status_presentation_reports_real_problem_summary(monkeypatch):

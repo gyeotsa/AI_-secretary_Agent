@@ -710,6 +710,7 @@ class Executor:
                     [direct_resolution.tool_name]
                     + [
                         str(item.get("tool_name", "")).strip()
+                        or str(item.get("tool", "")).strip()
                         for item in direct_resolution.alternatives
                         if isinstance(item, dict)
                     ]

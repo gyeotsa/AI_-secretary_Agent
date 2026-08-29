@@ -164,14 +164,27 @@ class AgentSelfPlugin(BasePlugin):
         if tool_name == "agent_self_status":
             summary = payload.get("summary", {})
             problems = summary.get("problems", [])
-            return ("현재 상태는 정상입니다." if not problems else
+            audit = payload.get("capability_audit", {})
+            audit_text = (
+                f" 기능 계약 감사: 플러그인 {audit.get('plugin_count', 0)}개, "
+                f"도구 {audit.get('tool_count', 0)}개, Intent {audit.get('intent_count', 0)}개, "
+                f"오류 {sum(len(items) for items in audit.get('errors', {}).values())}건."
+            )
+            return (("현재 상태는 정상입니다." if not problems else
                     "현재 확인된 문제는 " + " ".join(str(item) for item in problems))
+                    + audit_text)
         if tool_name == "agent_self_capabilities":
             labels = [
                 f"{item['name']}({len(item.get('tools', []))}개)"
                 for item in payload.get("plugins", [])
             ]
+            audit = payload.get("capability_audit", {})
+            audit_summary = (
+                "계약 감사 통과" if audit.get("passed") else
+                f"계약 감사 오류 {sum(len(items) for items in audit.get('errors', {}).values())}건"
+            )
             return (f"현재 {payload.get('plugin_count', 0)}개 분야, {payload.get('tool_count', 0)}개 도구를 사용할 수 있습니다. "
+                    + f"전체 Registry는 {audit.get('tool_count', 0)}개 도구이며 {audit_summary}입니다. "
                     + ", ".join(labels[:12]))
         if tool_name == "agent_self_plan_change":
             files = payload.get("related_files", [])

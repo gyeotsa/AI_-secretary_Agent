@@ -38,7 +38,7 @@ class WorkspacePlugin(BasePlugin):
                     "create_venv": {"type": "boolean", "default": True},
                     "init_git": {"type": "boolean", "default": True},
                 }, "required": ["parent", "name"]
-            }, ["filesystem_write", "run_command"], side_effect="change"),
+            }, ["filesystem_write", "shell_execute"], side_effect="change"),
         ]
 
     def get_intents(self) -> List[IntentSchema]:

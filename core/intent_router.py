@@ -160,7 +160,7 @@ class IntentRouter:
         return any(resolution.slots.get(name) not in (None, "", []) for name in supported)
 
     def _rank(self, text: str) -> List[tuple[float, BasePlugin, IntentSchema, str]]:
-        normalized = text.casefold()
+        normalized = " ".join(text.casefold().split())
         query_terms = self._terms(text)
         candidates = []
         for plugin, intent in self.registry.get_all_intents():
@@ -168,7 +168,7 @@ class IntentRouter:
             execution_hits = [hint for hint in intent.execution_hints if hint.casefold() in normalized]
             pattern_hits = [
                 match.group(0) for pattern in intent.utterance_patterns
-                if (match := re.search(pattern, text, re.IGNORECASE))
+                if (match := re.search(pattern, normalized, re.IGNORECASE))
             ]
             descriptor = " ".join([
                 intent.name, intent.domain, intent.action, intent.description,
@@ -255,6 +255,7 @@ class IntentRouter:
             routing_reason = "기존 intent 문맥과 Slot을 이어받음"
         alternatives = [
             {"intent": candidate.name, "tool": candidate.tool_name,
+             "tool_name": candidate.tool_name,
              "score": round(score, 3)}
             for score, _plugin, candidate, _reason in ranked[1:4]
         ]
@@ -269,7 +270,7 @@ class IntentRouter:
                 f"'{ranked[0][2].description}'과 '{ranked[1][2].description}' 중 "
                 "어떤 작업을 원하시는지 말씀해 주세요."
             )
-        normalized = text.casefold()
+        normalized = " ".join(text.casefold().split())
         has_action_hint = any(hint.casefold() in normalized for hint in intent.execution_hints)
         is_execution = has_action_hint or intent.request_type == "query"
         is_capability = any(hint in normalized for hint in self.CAPABILITY_HINTS)
