@@ -315,9 +315,19 @@ class BootstrapInstaller:
 
     def install(self, manifest_path: str, roles: Iterable[str]) -> list[str]:
         manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-        selected = set(roles); installed = []
-        for asset in manifest.get("assets", []):
-            if asset.get("role") not in selected: continue
+        selected = {str(role).strip() for role in roles if str(role).strip()}
+        assets = [asset for asset in manifest.get("assets", []) if asset.get("role") in selected]
+        if not assets:
+            raise ValueError(f"선택한 역할에 설치 가능한 검증 자산이 없습니다: {sorted(selected)}")
+        for asset in assets:
+            missing = [key for key in ("path", "url", "sha256") if not str(asset.get(key, "")).strip()]
+            if missing:
+                raise ValueError(f"Bootstrap asset 필수 항목이 없습니다: {missing}")
+            digest = str(asset["sha256"]).lower()
+            if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                raise ValueError("Bootstrap asset SHA-256 형식이 올바르지 않습니다.")
+        installed = []
+        for asset in assets:
             relative = Path(asset["path"])
             if relative.is_absolute() or ".." in relative.parts: raise ValueError("Unsafe asset path")
             target = self.install_root / relative; target.parent.mkdir(parents=True, exist_ok=True)

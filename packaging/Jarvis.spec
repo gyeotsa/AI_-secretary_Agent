@@ -18,13 +18,27 @@ datas = [
 ]
 binaries = []
 
-for package in ("faster_whisper", "ctranslate2", "whisper", "diffusers", "accelerate", "yt_dlp", "yfinance", "pywinauto"):
-    package_datas, package_binaries, package_hidden = collect_all(package)
+def runtime_submodule(name):
+    """Keep dynamic runtime modules while excluding package QA/CLI payloads."""
+    blocked = (
+        ".tests", ".test_", ".testing_utils", ".commands", ".__main__",
+        ".__pyinstaller", "pywinauto.linux", "ctranslate2.converters",
+    )
+    return not any(part in name for part in blocked)
+
+for package in (
+    "faster_whisper", "ctranslate2", "whisper", "diffusers", "accelerate",
+    "yt_dlp", "yfinance", "pywinauto", "jamo", "g2pk",
+):
+    package_datas, package_binaries, package_hidden = collect_all(
+        package,
+        filter_submodules=runtime_submodule,
+    )
     datas += package_datas
     binaries += package_binaries
     hiddenimports += package_hidden
 
-a = Analysis(
+runtime_a = Analysis(
     [os.path.join(repo_root, "main_qt.py")],
     pathex=[repo_root],
     binaries=binaries,
@@ -33,15 +47,52 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["pytest", "IPython", "jupyter", "notebook"],
+    excludes=["pytest", "IPython", "jupyter", "notebook", "tensorboard", "tensorflow", "tkinter"],
     noarchive=False,
     optimize=1,
 )
-pyz = PYZ(a.pure)
+# Poppler's ICU uses version-suffixed exports while Qt 6 deliberately imports
+# Windows' unversioned system ICU.  The bundled Codex runtime places Poppler on
+# PATH during builds, so PyInstaller can mistake that incompatible DLL for a
+# Qt dependency.  Shipping it makes QtCore fail with WinError 127.
+poppler_icu_names = {"icuuc.dll", "icudt78.dll", "icuin78.dll"}
+runtime_a.binaries = [
+    entry for entry in runtime_a.binaries
+    if entry[0].lower() not in poppler_icu_names
+]
+runtime_pyz = PYZ(runtime_a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
+runtime_exe = EXE(
+    runtime_pyz,
+    runtime_a.scripts,
+    [],
+    exclude_binaries=True,
+    name="JARVIS-runtime",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    icon=os.path.join(repo_root, "assets", "jarvis.ico"),
+)
+
+launcher_a = Analysis(
+    [os.path.join(repo_root, "packaging", "entrypoint.py")],
+    pathex=[repo_root],
+    binaries=[],
+    datas=[(os.path.join(repo_root, "assets", "jarvis.ico"), "assets")],
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=1,
+)
+launcher_pyz = PYZ(launcher_a.pure)
+launcher_exe = EXE(
+    launcher_pyz,
+    launcher_a.scripts,
     [],
     exclude_binaries=True,
     name="JARVIS",
@@ -54,9 +105,12 @@ exe = EXE(
 )
 
 coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
+    launcher_exe,
+    runtime_exe,
+    launcher_a.binaries,
+    launcher_a.datas,
+    runtime_a.binaries,
+    runtime_a.datas,
     strip=False,
     upx=False,
     upx_exclude=[],

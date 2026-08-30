@@ -1290,14 +1290,19 @@ class JarvisApp:
         return self.app.exec()
 
 if __name__ == "__main__":
-    if os.getenv("JARVIS_PACKAGING_SMOKE") == "1":
+    runtime_smoke = "--runtime-smoke" in sys.argv or os.getenv("JARVIS_RUNTIME_SMOKE") == "1"
+    if runtime_smoke:
         configure_windows_app_identity()
         smoke_app = QApplication(sys.argv)
         smoke_icon = QIcon(str(resource_path("assets/jarvis.ico")))
         smoke_app.setWindowIcon(smoke_icon)
         if smoke_icon.isNull():
             raise RuntimeError("배포 아이콘을 불러오지 못했습니다.")
-        smoke_report = os.getenv("JARVIS_PACKAGING_SMOKE_REPORT")
+        smoke_report = os.getenv("JARVIS_RUNTIME_SMOKE_REPORT", "").strip()
+        for argument in sys.argv[1:]:
+            if argument.startswith("--runtime-smoke-report="):
+                smoke_report = argument.split("=", 1)[1]
+                break
         if smoke_report:
             Path(smoke_report).write_text("OK", encoding="utf-8")
         sys.exit(0)

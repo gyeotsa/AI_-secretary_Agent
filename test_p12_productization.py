@@ -88,6 +88,28 @@ def test_bootstrap_checksum_and_role_selection(tmp_path, monkeypatch):
     assert len(installed) == 1 and (tmp_path / "install/models/stt.bin").read_bytes() == b"verified"
 
 
+def test_bootstrap_rejects_empty_or_unpublished_role(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"assets": []}), encoding="utf-8")
+    with pytest.raises(ValueError, match="설치 가능한 검증 자산"):
+        BootstrapInstaller(str(tmp_path / "install")).install(str(manifest), ["core"])
+
+
+def test_bootstrap_validates_manifest_before_downloading(tmp_path, monkeypatch):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"assets": [
+        {"role": "core", "path": "app.bin", "url": "https://example.invalid/app", "sha256": "bad"}
+    ]}), encoding="utf-8")
+    called = False
+    def download(*_args):
+        nonlocal called
+        called = True
+    monkeypatch.setattr("urllib.request.urlretrieve", download)
+    with pytest.raises(ValueError, match="SHA-256"):
+        BootstrapInstaller(str(tmp_path / "install")).install(str(manifest), ["core"])
+    assert called is False
+
+
 def test_migration_update_and_rollback(tmp_path):
     db = tmp_path / "app.db"; DatabaseMigrator(str(db)).apply(1, ["CREATE TABLE sample(id INTEGER)"])
     with sqlite3.connect(db) as conn: assert conn.execute("SELECT version FROM schema_migrations").fetchone()[0] == 1

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Jarvis lightweight bootstrap asset manifest. Release automation fills URLs and SHA-256 values.",
+  "description": "Hosting 미구성 템플릿입니다. assets가 비어 있으면 설치기는 성공으로 가장하지 않고 중단합니다.",
   "assets": [],
   "roles": ["core", "conversation", "coding", "vision", "stt", "tts", "rag"]
 }

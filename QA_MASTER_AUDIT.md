@@ -174,3 +174,21 @@ ANIS의 품질 목표는 특정 데모가 동작하는 상태가 아니라, 사�
 - 외부 연동 실패·복구 회귀 `88 passed`, 운영/연동/패키징 집중 회귀 `43 passed`, `pip check`,
   `compileall`, 개발 런타임 패키징 smoke `OK`를 확인했다.
 - 최종 전체 회귀 `816 passed, 6 skipped, 4 deselected`.
+
+## 2026-08-30 실제 배포 실행 계약 QA
+
+- 개발 Python smoke로 끝내지 않고 PyInstaller onedir 산출물 5.75GB를 직접
+  생성해 가벼운 `JARVIS.exe` 런처와 `JARVIS-runtime.exe` Qt 런타임을 따로 실행했다.
+- 최초 런타임은 `QtWidgets: WinError 127`로 실패했다. 빌드 환경 PATH의 Poppler
+  `icuuc.dll`은 버전 suffix export를 사용하지만 Qt 6는 Windows system ICU의 unversioned
+  export를 요구했다. 해당 Poppler ICU를 배포 binary TOC에서 제외해 충돌을 제거했다.
+- Qt 로딩 후에는 `jamo/data/U+11xx.json`과 `g2pk/rules.txt` 누락이 실제 import에서
+  드러났다. 두 패키지의 runtime data를 명시적으로 수집해 빈 폴더가 아닌 실제
+  음성 정규화 런타임을 완성했다.
+- 런처 smoke는 Qt/ML을 import하지 않고 런타임 EXE·아이콘·쓰기 경로를 검사한다.
+  런타임 smoke는 Qt application과 아이콘을 직접 적재한다. 최종 실행 결과는
+  둘 다 `exit 0 / OK`이며 Poppler ICU 미포함, jamo/g2pk data 포함을 확인했다.
+- 오프라인 페이로드는 기본 역할 모델 4개(대화·추론·코드·Vision)를 모두
+  manifest/blob 무결성 검사 대상으로 포함한다. 빈/미게시 bootstrap manifest는
+  설치 성공으로 가장하지 않고 URL·SHA-256·role 계약을 fail-closed 한다.
+- 최종 전체 회귀 `818 passed, 6 skipped, 4 deselected`.
