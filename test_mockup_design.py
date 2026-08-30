@@ -811,6 +811,19 @@ def test_save_uses_current_history_metadata_instead_of_stale_global_metadata(tmp
     assert saved["edit_instruction"] == "마지막 명령"
 
 
+def test_save_preview_rejects_corrupt_image_before_copy(tmp_path):
+    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(),
+                                  generation_backend=FakeGenerationBackend())
+    preview_root = Path(__import__("tempfile").gettempdir()) / "jarvis_mockup_previews"
+    preview_root.mkdir(parents=True, exist_ok=True)
+    source = preview_root / "corrupt-preview.png"
+    source.write_bytes(b"not-a-real-png")
+    target = tmp_path / "must-not-exist.png"
+    with pytest.raises(ValueError, match="손상된 미리보기"):
+        runtime.save_preview(source, target, {})
+    assert not target.exists()
+
+
 def test_completed_ai_edit_is_discarded_if_user_changed_active_preview(tmp_path):
     app = QApplication.instance() or QApplication([])
     spec = get_specialist_workspace_registry().get("mockup")

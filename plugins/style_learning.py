@@ -40,7 +40,10 @@ class StyleLearningPlugin(BasePlugin):
             ["이 문장들로 말투 학습", "이 내용을 말투에 반영", "이 대화체를 배워", "말투 예시를 학습"],
             [SlotSchema("examples", "학습할 문장 예시", "학습할 문장이나 대화 예시를 보내 주세요."),
              SlotSchema("subject", "말투 프로필 이름", "어떤 이름으로 이 말투를 저장할까요?", required=False)],
-            execution_hints=["학습", "배워", "반영", "기억"], request_type="change",
+            execution_hints=["학습", "배워", "반영", "기억"],
+            utterance_patterns=[
+                r"(?:내|이|지금).{0,20}(?:대화체|말투|답변\s*스타일).{0,30}(?:학습|배워|반영|기억)",
+            ], request_type="change",
         )]
 
     def extract_slots(self, intent_name, text, current_slots):

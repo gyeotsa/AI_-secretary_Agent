@@ -100,7 +100,10 @@ class InterfaceControlPlugin(BasePlugin):
                     SlotSchema("pose", "손 모양", "손바닥·엄지·주먹·검지 중 어떤 손 모양인가요?"),
                     SlotSchema("action", "실행 동작", "그 손 모양으로 어떤 동작을 실행할까요?"),
                 ],
-                execution_hints=["연결", "매핑", "설정", "바꿔", "할당"], request_type="change",
+                execution_hints=["연결", "매핑", "설정", "바꿔", "할당"],
+                utterance_patterns=[
+                    r"(?:손바닥|엄지|주먹|검지|손\s*모양|제스처).{0,40}(?:연결|매핑|설정|바꿔|할당)",
+                ], request_type="change",
             ),
             IntentSchema(
                 "interface.open_surface", "애플리케이션 관리 화면 열기", "open_interface_surface",

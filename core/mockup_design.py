@@ -302,7 +302,8 @@ class MockupDesignRuntime:
                                            if violations else ""),
             }
         except Exception as exc:
-            return {"passed": False, "score": 0.0, "violations": [f"시각 검수 실패: {exc}"],
+            return {"passed": False, "status": "unverified", "score": 0.0,
+                    "violations": [f"시각 검수 실패: {exc}"],
                     "correction_instruction": "", "review_error": True}
         finally:
             vision.release_model()
@@ -1328,9 +1329,14 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                     correction_history.append({"instruction": correction, "error": str(exc)})
                     break
         if quality_verdict.get("review_error"):
-            raise ScenePlanError("렌더링 결과를 시각적으로 검수하지 못해 미리보기를 제공하지 않았습니다: " +
-                                 "; ".join(quality_verdict.get("violations", [])))
-        if self.enable_visual_review and not quality_verdict.get("passed"):
+            # The deterministic scene and pixel contracts above have already
+            # passed.  A transient VLM/JSON failure is not proof that the image
+            # is bad, so preserve the preview as explicitly *unverified* for
+            # human review instead of destroying usable work.
+            quality_verdict["passed"] = False
+            quality_verdict["status"] = "unverified"
+        if (self.enable_visual_review and not quality_verdict.get("passed")
+                and not quality_verdict.get("review_error")):
             raise ScenePlanError(
                 "렌더링 결과가 시각 품질 검수를 통과하지 못해 미리보기를 제공하지 않았습니다: "
                 + "; ".join(quality_verdict.get("violations", []))
@@ -1381,8 +1387,16 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         target = Path(destination).expanduser().resolve()
         if target.suffix.casefold() != ".png":
             target = target.with_suffix(".png")
+        from core.artifact_validation import validate_local_artifact
+        valid_source, source_reason = validate_local_artifact(source)
+        if not valid_source:
+            raise ValueError(f"손상된 미리보기는 저장할 수 없습니다: {source_reason}")
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+        valid_target, target_reason = validate_local_artifact(target)
+        if not valid_target:
+            target.unlink(missing_ok=True)
+            raise ValueError(f"저장된 이미지 검증에 실패했습니다: {target_reason}")
         result = dict(metadata or {})
         editable_svg = Path(str(result.get("editable_svg", ""))) if result.get("editable_svg") else None
         if editable_svg and editable_svg.is_file():
@@ -1390,6 +1404,16 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             shutil.copy2(editable_svg, target_svg)
             result["editable_svg"] = str(target_svg)
         result.update({"output": str(target), "preview_only": False, "saved_from_preview": str(source)})
+        result["artifact_validation"] = {"passed": True, "details": target_reason}
+        from core.quality_metrics import get_quality_metric_store
+        quality = get_quality_metric_store()
+        quality.record("specialist_artifact_quality", 1.0, success=True, context={
+            "workspace": "mockup", "path": str(target), "validation": target_reason,
+        })
+        quality.record("mockup_visual_approval", 1.0, success=True, context={
+            "workspace": "mockup", "source": "explicit_preview_save",
+            "review_status": str((result.get("quality_verdict") or {}).get("status", "passed")),
+        })
         profile_id = str(result.get("profile_id", ""))
         if profile_id:
             self.style_index.add(profile_id, target, kind="approved_result", approved=True,

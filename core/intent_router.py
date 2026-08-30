@@ -201,12 +201,11 @@ class IntentRouter:
             overlap = len(query_terms & descriptor_terms) / max(1, len(query_terms))
             # Descriptor similarity ranks already-declared candidates; it must not
             # manufacture a domain match from generic words such as "파일" alone.
-            # Inflected Korean commands often preserve the action stem but not
-            # an entire example utterance ("열어 줘", "할당해줘").  Execution
-            # evidence may admit a declared intent only when descriptor terms
-            # also overlap; a generic action word alone must not create a tool.
-            execution_grounded = bool(execution_hits) and overlap >= 0.12
-            if not hint_hits and not pattern_hits and not execution_grounded:
+            # An action verb alone ("만들어", "열어") is never domain
+            # evidence.  Plugins must declare a domain hint or an utterance
+            # pattern for inflected commands; otherwise a generic file request
+            # can silently inherit an unrelated calendar/Office intent.
+            if not hint_hits and not pattern_hits:
                 continue
             score = (
                 sum(12 + len(hit) for hit in hint_hits)
@@ -279,7 +278,13 @@ class IntentRouter:
         elif clause_matches:
             selected = clause_matches[0]
         else:
-            selected = self._find(routing_text if negated else text)
+            # Some intents treat negation as the requested persistent
+            # constraint (e.g. "내 말 따라하지마").  Preserve an
+            # explicitly declared negative utterance before probing an
+            # affirmative form solely to identify prohibited actions.
+            selected = self._find(text)
+            if not selected and negated:
+                selected = self._find(routing_text)
             if not selected:
                 selected = self._fresh_information_intent(text)
         if not selected:

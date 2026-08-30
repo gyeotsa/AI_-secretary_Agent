@@ -3,6 +3,7 @@ from pathlib import Path
 from core.evaluation_runtime import ApplicationEvaluator
 from core.learning_runtime import EvaluationCase, LearningRuntime
 from core.tool_result import Evidence, ToolRunResult
+from core.quality_metrics import AcceptanceScenarioEvaluator, QualityMetricStore
 
 
 def test_execution_contract_accepts_evidence_backed_success():
@@ -66,3 +67,12 @@ def test_application_evaluator_runs_persistent_contract_cases(tmp_path: Path):
     }, "execution_contract")
     assert len(results) == 1 and results[0].passed
     assert evaluator.gate(results, minimum_pass_rate=1.0)["passed"]
+
+
+def test_specialist_quality_metrics_need_real_sample_volume(tmp_path: Path):
+    store = QualityMetricStore(str(tmp_path / "quality.db"))
+    store.record("specialist_artifact_quality", 1.0, success=True)
+    store.record("mockup_visual_approval", 1.0, success=True)
+    scenarios = {item["key"]: item for item in AcceptanceScenarioEvaluator(store).evaluate()["scenarios"]}
+    assert scenarios["specialist_artifact_quality"]["status"] == "insufficient"
+    assert scenarios["mockup_visual_approval"]["status"] == "insufficient"
