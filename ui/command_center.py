@@ -9,11 +9,12 @@ from PyQt6.QtCore import QObject, QPointF, QSettings, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QRadialGradient
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout,
-    QHBoxLayout, QLabel, QMessageBox, QProgressBar, QPushButton, QScrollArea,
+    QFileDialog, QHBoxLayout, QLabel, QInputDialog, QMessageBox, QProgressBar, QPushButton, QScrollArea,
     QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout,
     QWidget,
 )
 from core.specialist_workspaces import get_specialist_workspace_registry
+from core.acceptance_runtime import LOCAL_EVIDENCE_KINDS, get_acceptance_runtime
 from .brain_orbit import BrainOrbitWidget
 
 
@@ -119,6 +120,7 @@ class CommandCenterDialog(QDialog):
         self.surface_callback = surface_callback
         self.gesture_callback = gesture_callback
         self._contract_rows = []
+        self._acceptance_rows = []
         self.bridge = _AsyncBridge(self)
         self.bridge.completed.connect(self._async_completed)
         self.bridge.failed.connect(self._async_failed)
@@ -209,8 +211,10 @@ class CommandCenterDialog(QDialog):
         self.tabs.addTab(self.artifact_table, "산출물·증거")
         self.diagnostic_table = self._table(("상태", "검사", "결과", "조치"))
         self.tabs.addTab(self.diagnostic_table, "진단")
-        self.quality_table = self._table(("상태", "지표", "측정", "목표"))
+        self.quality_table = self._table(("상태", "지표", "측정", "표본", "목표"))
         self.tabs.addTab(self.quality_table, "품질 지표")
+        self.acceptance_table = self._table(("상태", "영역", "실환경 수락", "증거", "차단/만료"))
+        self.tabs.addTab(self.acceptance_table, "제품 완료 게이트")
         self.event_table = self._table(("시간", "이벤트", "출처", "데이터"))
         self.tabs.addTab(self.event_table, "이벤트")
         root.addWidget(self.tabs, 1)
@@ -227,6 +231,17 @@ class CommandCenterDialog(QDialog):
         task_controls.addWidget(cancel_btn)
         task_controls.addStretch()
         root.addLayout(task_controls)
+
+        acceptance_controls = QHBoxLayout()
+        acceptance_controls.addWidget(QLabel("제품 완료 게이트"))
+        pass_btn = QPushButton("선택 항목 수락 증거 기록")
+        pass_btn.clicked.connect(self._record_selected_acceptance)
+        acceptance_controls.addWidget(pass_btn)
+        blocked_btn = QPushButton("선택 항목 차단 사유 기록")
+        blocked_btn.clicked.connect(self._block_selected_acceptance)
+        acceptance_controls.addWidget(blocked_btn)
+        acceptance_controls.addStretch()
+        root.addLayout(acceptance_controls)
 
         self.detail = QTextEdit()
         self.detail.setReadOnly(True)
@@ -332,7 +347,15 @@ class CommandCenterDialog(QDialog):
                                                for item in probes])
         scenarios = data["acceptance"].get("scenarios", [])
         self._set_rows(self.quality_table, [(item["status"], item["key"], item["value"],
+                                            f"{item.get('sample_count', 0)}/{item.get('minimum_samples', 0)}",
                                             f"{item['operator']} {item['target']}") for item in scenarios])
+        live_scenarios = data.get("live_acceptance", {}).get("scenarios", [])
+        self._acceptance_rows = list(live_scenarios)
+        self._set_rows(self.acceptance_table, [(
+            item.get("status"), item.get("category"), item.get("label"),
+            item.get("evidence_count", 0),
+            item.get("reason") or ", ".join(item.get("blockers") or []),
+        ) for item in live_scenarios])
         self._set_rows(self.event_table, [(item["timestamp"][11:19], item["type"], item["source"],
                                           json.dumps(item["data"], ensure_ascii=False)[:180]) for item in data["events"][:50]])
         if self.gesture_runtime:
@@ -340,6 +363,65 @@ class CommandCenterDialog(QDialog):
             self.gesture_btn.setText("제스처 끄기" if gesture["running"] else "제스처 켜기")
             self.gesture_btn.setToolTip(gesture.get("error", ""))
             self.brain_map.set_camera_status(gesture)
+
+    def _selected_acceptance(self):
+        row = self.acceptance_table.currentRow()
+        if row < 0 or row >= len(self._acceptance_rows):
+            QMessageBox.information(self, "제품 완료 게이트", "먼저 제품 완료 게이트 탭에서 항목을 선택하세요.")
+            return None
+        return self._acceptance_rows[row]
+
+    def _record_selected_acceptance(self):
+        scenario = self._selected_acceptance()
+        if not scenario:
+            return
+        operator, accepted = QInputDialog.getText(
+            self, "수락 확인자", "실제로 결과를 확인한 사용자 이름을 입력하세요.")
+        if not accepted or not operator.strip():
+            return
+        evidence = []
+        for kind in scenario.get("evidence_kinds") or []:
+            if kind in LOCAL_EVIDENCE_KINDS:
+                value, _ = QFileDialog.getOpenFileName(
+                    self, f"{kind} 증거 파일 선택", "", "모든 파일 (*.*)")
+            else:
+                value, ok = QInputDialog.getText(
+                    self, "원격 증거", f"{kind}의 원격 ID 또는 수신 확인값을 입력하세요.")
+                if not ok:
+                    value = ""
+            if not str(value).strip():
+                QMessageBox.warning(self, "수락 중단", f"필수 증거 {kind}가 선택되지 않았습니다.")
+                return
+            evidence.append({"kind": kind, "value": str(value)})
+        notes, _ = QInputDialog.getMultiLineText(
+            self, "수락 메모", "시험 환경·절차·관찰 결과를 기록하세요.")
+        try:
+            get_acceptance_runtime().record(
+                scenario["key"], "passed", operator=operator,
+                environment={"source": "command_center"}, evidence=evidence, notes=notes,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "수락 기록 실패", str(exc))
+            return
+        self.refresh()
+
+    def _block_selected_acceptance(self):
+        scenario = self._selected_acceptance()
+        if not scenario:
+            return
+        reason, accepted = QInputDialog.getMultiLineText(
+            self, "차단 사유", "완료를 위해 필요한 계정·장치·사용자 선택을 구체적으로 적으세요.")
+        if not accepted or not reason.strip():
+            return
+        try:
+            get_acceptance_runtime().record(
+                scenario["key"], "blocked", environment={"source": "command_center"},
+                blockers=[reason.strip()],
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "차단 기록 실패", str(exc))
+            return
+        self.refresh()
 
     def _run_async(self, callback):
         def worker():

@@ -75,6 +75,14 @@ class AcceptanceScenarioEvaluator:
         "long_run_recovery": (">=", 0.95), "stt_false_wake": ("<=", 0.02),
         "stt_echo": ("<=", 0.01),
     }
+    # A single lucky interaction is not product acceptance.  These are small
+    # enough for local operation while still preventing one-sample "100%".
+    MIN_SAMPLES = {
+        "task_success": 30, "false_completion": 30,
+        "clarification_quality": 15, "tool_selection_accuracy": 30,
+        "latency_ms": 20, "rag_used": 15, "long_run_recovery": 3,
+        "stt_false_wake": 30, "stt_echo": 30,
+    }
 
     def __init__(self, store: QualityMetricStore):
         self.store = store
@@ -85,12 +93,17 @@ class AcceptanceScenarioEvaluator:
         for key, (operator, target) in self.TARGETS.items():
             metric = snapshot["metrics"][key]
             value = metric["average"]
+            count = int(metric.get("count") or 0)
+            minimum = self.MIN_SAMPLES[key]
             if value is None:
                 status, reason = "not_run", "실제 관측 데이터가 없습니다."
+            elif count < minimum:
+                status, reason = "insufficient", f"표본 {count}/{minimum}개로 판정할 수 없습니다."
             else:
                 passed = value >= target if operator == ">=" else value <= target
                 status, reason = ("passed" if passed else "failed"), f"측정 {value} {operator} 목표 {target}"
             scenarios.append({"key": key, "status": status, "value": value,
+                              "sample_count": count, "minimum_samples": minimum,
                               "operator": operator, "target": target, "reason": reason})
         return {"generated_at": datetime.now().astimezone().isoformat(), "scenarios": scenarios,
                 "all_passed": bool(scenarios) and all(item["status"] == "passed" for item in scenarios)}
@@ -104,4 +117,3 @@ def get_quality_metric_store() -> QualityMetricStore:
     if _quality_store is None:
         _quality_store = QualityMetricStore()
     return _quality_store
-

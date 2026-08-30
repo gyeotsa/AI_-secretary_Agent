@@ -49,6 +49,7 @@ env/
 data/models/
 data/logs/
 data/diagnostics/
+data/acceptance/
 data/cache/
 data/browser_profiles/
 data/AnisKnowledgeVault/

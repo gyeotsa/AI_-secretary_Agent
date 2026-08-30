@@ -16,6 +16,7 @@ from core.gpu_scheduler import get_gpu_resource_queue
 from core.model_registry import get_model_registry
 from core.productization import METRICS
 from core.quality_metrics import AcceptanceScenarioEvaluator, get_quality_metric_store
+from core.acceptance_runtime import get_acceptance_runtime
 from core.runtime.action_journal import get_action_journal
 from core.runtime.event_bus import Event, get_event_bus
 
@@ -91,6 +92,7 @@ class CommandCenterRuntime:
         models = self._model_snapshot()
         quality = get_quality_metric_store().snapshot()
         acceptance = AcceptanceScenarioEvaluator(get_quality_metric_store()).evaluate()
+        live_acceptance = get_acceptance_runtime().snapshot()
         with self._event_lock:
             events = list(self._events)
         return {
@@ -102,7 +104,8 @@ class CommandCenterRuntime:
             "plugins": plugins, "scheduler": scheduler, "observer": observer,
             "automation": automation,
             "workflow_runs": workflow_runs, "diagnostics": diagnostics,
-            "quality": quality, "acceptance": acceptance, "events": events,
+            "quality": quality, "acceptance": acceptance,
+            "live_acceptance": live_acceptance, "events": events,
             "artifacts": self._artifacts(contracts),
         }
 
