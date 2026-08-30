@@ -2655,3 +2655,19 @@ AI_-secretary_Agent/
 - 최종 전체 회귀 `818 passed, 6 skipped, 4 deselected`. 다음은 diff/check 후 커밋한다.
   실제 스피커·카메라·외부 계정 전송은
   사용자 수락 세션이 있을 때만 완료로 판정한다.
+
+## 2026-08-30 라우팅 현실 발화·거짓 완료 방지 평가
+
+- Intent 현실 발화 집합을 대화·실시간 질문·미디어·금융·메시지·알람·Windows·
+  Office·Photoshop·제스처·Obsidian·선호·금지·복합 명령으로 확장했다.
+- STT 유사 표기(`유투브`), 띄어쓰기, 정중형, 한국어 수사 알람을 일반화 규칙으로
+  처리했다. 플러그인 Intent 계약에도 개별 주식, URL, 앱 위치, Photoshop 상태,
+  Obsidian 열기, TTS 인용 표현을 보강했다.
+- 일반 `확인` 질문은 전용 날씨·금융·상태 Intent를 우선하고 명시적 웹 조사만
+  `web.search`를 유지한다. 복합 연결어는 앞 절의 동사를 보존해 둘 이상의 Tool이
+  Planner 필수 집합에서 사라지지 않게 했다.
+- `ApplicationEvaluator` 실행 계약은 중첩 필드·허용값·필수 Evidence를 검사한다.
+  완료를 주장하지만 Evidence가 없는 외부 전송·파일·작업 결과는 fail-closed다.
+- 확장 라우팅 집합 `163 passed, 9 skipped`; 평가·Executor 관련 회귀도 통과했다.
+- 다음: 시안·전문가 산출물의 자동 품질 지표를 품질 원장에 연결하고, 실제 장치·
+  계정 수락 테스트는 `AcceptanceRuntime`에 검증자·증거와 함께만 기록한다.

@@ -37,7 +37,9 @@ class PhotoshopPlugin(BasePlugin):
             IntentSchema(
                 "photoshop.status", "Photoshop 연결 상태 조회", "photoshop_status",
                 ["포토샵 상태", "photoshop 상태", "포토샵 연결"], [],
-                execution_hints=["확인", "알려", "조회"], request_type="query",
+                execution_hints=["확인", "알려", "조회"],
+                utterance_patterns=[r"(?:포토샵|photoshop).{0,20}(?:상태|연결).{0,12}(?:확인|알려|조회)"],
+                request_type="query",
             ),
             IntentSchema(
                 "photoshop.open", "Photoshop 문서 열기", "photoshop_open_document",

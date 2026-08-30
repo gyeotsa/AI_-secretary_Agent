@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict
 import json
+import re
 import time
 
 from core.learning_runtime import EvaluationCase, LearningRuntime, get_learning_runtime
@@ -24,8 +25,74 @@ class ApplicationEvaluator:
     def __init__(self, runtime: LearningRuntime | None = None):
         self.runtime = runtime or get_learning_runtime()
 
+    SUCCESS_CLAIM_PATTERN = re.compile(
+        r"(?:완료했|성공했|보냈|저장했|생성했|적용했|실행했)",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _mapping(actual: Any) -> dict[str, Any] | None:
+        if hasattr(actual, "to_dict") and callable(actual.to_dict):
+            value = actual.to_dict()
+            return value if isinstance(value, dict) else None
+        if isinstance(actual, dict):
+            return actual
+        if isinstance(actual, str):
+            try:
+                value = json.loads(actual)
+            except (TypeError, json.JSONDecodeError):
+                return None
+            return value if isinstance(value, dict) else None
+        return None
+
+    @staticmethod
+    def _path(value: Any, dotted_path: str) -> tuple[bool, Any]:
+        current = value
+        for part in str(dotted_path).split("."):
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            elif isinstance(current, (list, tuple)) and part.isdigit() and int(part) < len(current):
+                current = current[int(part)]
+            else:
+                return False, None
+        return True, current
+
+    @classmethod
+    def check_execution_contract(cls, actual: Any, expected: Dict[str, Any]) -> tuple[bool, str]:
+        """Evaluate structured outcomes without allowing prose to impersonate evidence."""
+        payload = cls._mapping(actual)
+        if payload is None:
+            return False, "구조화 실행 결과가 아닙니다."
+        for path in expected.get("required_paths", []):
+            present, value = cls._path(payload, path)
+            if not present or value in (None, "", [], {}):
+                return False, f"필수 결과 경로 누락: {path}"
+        for path, wanted in expected.get("path_equals", {}).items():
+            present, value = cls._path(payload, path)
+            if not present or value != wanted:
+                return False, f"결과 경로 불일치: {path}"
+        for path, allowed in expected.get("path_in", {}).items():
+            present, value = cls._path(payload, path)
+            if not present or value not in allowed:
+                return False, f"허용되지 않은 결과: {path}={value!r}"
+        status = str(payload.get("status", "")).casefold()
+        evidence = payload.get("evidence") or []
+        if expected.get("evidence_required_when_succeeded", True):
+            if status in {"succeeded", "success", "completed", "complete"} and not evidence:
+                return False, "성공 상태에 검증 증거가 없습니다."
+        response = str(payload.get("response") or payload.get("raw_output") or "")
+        if cls.SUCCESS_CLAIM_PATTERN.search(response) and not evidence:
+            return False, "완료 표현에 대응하는 실행 증거가 없습니다."
+        return True, "실행 상태·증거 계약 통과"
+
     @staticmethod
     def check(actual: Any, expected: Dict[str, Any]) -> tuple[bool, str]:
+        if any(key in expected for key in (
+                "required_paths", "path_equals", "path_in",
+                "evidence_required_when_succeeded")):
+            passed, details = ApplicationEvaluator.check_execution_contract(actual, expected)
+            if not passed:
+                return passed, details
         text = actual if isinstance(actual, str) else json.dumps(actual, ensure_ascii=False, default=str)
         for required in expected.get("contains", []):
             if str(required) not in text:

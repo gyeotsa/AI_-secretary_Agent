@@ -31,9 +31,10 @@ class AlarmPlugin(BasePlugin):
     def get_intents(self) -> List[IntentSchema]:
         return [IntentSchema(
             "alarm.set_relative", "상대 시간 알람 설정", "set_alarm",
-            ["알람", "타이머"],
+            ["알람", "타이머", "깨워줘", "깨워 주세요"],
             [SlotSchema("delay_seconds", "알람까지 남은 초", "얼마 뒤에 알람을 울릴까요, 보스?")],
-            execution_hints=["맞춰", "설정", "울려", "알람", "타이머"],
+            execution_hints=["맞춰", "설정", "울려", "깨워", "알람", "타이머"],
+            utterance_patterns=[r"(?:\d+|한|두|세|네)\s*(?:초|분|시간)\s*(?:뒤|후|있다가).{0,12}(?:깨워|알려|울려)"],
         )]
 
     def extract_slots(self, intent_name: str, text: str,
@@ -41,10 +42,11 @@ class AlarmPlugin(BasePlugin):
         slots = dict(current_slots)
         if intent_name != "alarm.set_relative":
             return slots
-        match = re.search(r"(\d+)\s*(초|분|시간)\s*(?:뒤|후)?", text)
+        match = re.search(r"(\d+|한|두|세|네)\s*(초|분|시간)\s*(?:뒤|후|있다가)?", text)
         if match:
             multiplier = {"초": 1, "분": 60, "시간": 3600}[match.group(2)]
-            slots["delay_seconds"] = int(match.group(1)) * multiplier
+            amount = {"한": 1, "두": 2, "세": 3, "네": 4}.get(match.group(1), match.group(1))
+            slots["delay_seconds"] = int(amount) * multiplier
         message_match = re.search(r"(?:메시지|내용)\s*[:：]?\s*(.+)", text)
         if message_match:
             slots["message"] = message_match.group(1).strip()

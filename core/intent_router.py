@@ -47,7 +47,7 @@ class IntentRouter:
     )
     INFORMATION_PATTERN = re.compile(
         r"(?:무엇|뭐|누구|어디|언제|어떻게|어때|알려|확인|찾아|검색|조회|"
-        r"소식|뉴스|결과|현황|상태|가격|시세|순위|일정|\?)", re.IGNORECASE,
+        r"소식|뉴스|결과|현황|상태|가격|시세|환율|얼마|증시|순위|일정|\?)", re.IGNORECASE,
     )
     CONVERSATION_PATTERN = re.compile(
         r"(?:안녕|반가워|고마워|감사해|잘\s*지내|기분|너는|넌|네\s*생각|"
@@ -56,6 +56,14 @@ class IntentRouter:
     EXPLICIT_RESEARCH_PATTERN = re.compile(
         r"(?:검색|찾아\s*봐|찾아\s*줘|조사|뉴스|소식|출처|웹에서|인터넷에서|"
         r"확인해\s*줘|조회해\s*줘)", re.IGNORECASE,
+    )
+    # A generic "check it" request still belongs to a dedicated weather,
+    # finance, status, or calendar capability when one exists.  Only an
+    # explicit request to browse/research should keep generic web.search ahead
+    # of such a capability.
+    EXPLICIT_WEB_RESEARCH_PATTERN = re.compile(
+        r"(?:검색|찾아\s*봐|찾아\s*줘|조사|뉴스|소식|출처|웹에서|인터넷에서)",
+        re.IGNORECASE,
     )
     CONTENT_REQUEST_PATTERN = re.compile(
         r"(?:제목|본문|문구|내용)(?:은|는|을|를|\s*[:：=])", re.IGNORECASE,
@@ -70,7 +78,8 @@ class IntentRouter:
         re.IGNORECASE,
     )
     COMPOUND_CONNECTOR_PATTERN = re.compile(
-        r"(?:그리고|그다음|그\s*다음|동시에|한\s*뒤|한\s*다음|하고\s*나서|"
+        r"(?:그리고|그다음|그\s*다음|동시에|한\s*뒤|한\s*다음|"
+        r"고\s*(?:나서|난\s*뒤)|"
         r",\s*(?:그리고|그다음))",
         re.IGNORECASE,
     )
@@ -81,11 +90,25 @@ class IntentRouter:
         (re.compile(r"열지\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)[.!?\s]*$", re.I), "열어줘"),
         (re.compile(r"켜지\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)[.!?\s]*$", re.I), "켜줘"),
         (re.compile(r"끄지\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)[.!?\s]*$", re.I), "꺼줘"),
+        (re.compile(r"틀지\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)[.!?\s]*$", re.I), "틀어줘"),
         (re.compile(r"지\s*(?:는\s*)?(?:마|말아|마세요|말아\s*줘|말아\s*주세요)[.!?\s]*$", re.I), "줘"),
     )
 
     def __init__(self, registry: PluginRegistry):
         self.registry = registry
+
+    @staticmethod
+    def _normalize_routing_text(text: str) -> str:
+        """Normalize harmless STT/typing variants without rewriting user slots."""
+        normalized = " ".join(str(text or "").casefold().split())
+        replacements = {
+            "유투브": "유튜브", "유 튜브": "유튜브", "카톡 으로": "카톡으로",
+            "열어 줘": "열어줘", "틀어 줘": "틀어줘", "보내 줘": "보내줘",
+            "만들어 줘": "만들어줘", "찾아 줘": "찾아줘", "알려 줘": "알려줘",
+        }
+        for source, target in replacements.items():
+            normalized = normalized.replace(source, target)
+        return normalized
 
     @classmethod
     def _affirmative_routing_probe(cls, text: str) -> str:
@@ -160,8 +183,8 @@ class IntentRouter:
         return any(resolution.slots.get(name) not in (None, "", []) for name in supported)
 
     def _rank(self, text: str) -> List[tuple[float, BasePlugin, IntentSchema, str]]:
-        normalized = " ".join(text.casefold().split())
-        query_terms = self._terms(text)
+        normalized = self._normalize_routing_text(text)
+        query_terms = self._terms(normalized)
         candidates = []
         for plugin, intent in self.registry.get_all_intents():
             hint_hits = [hint for hint in intent.utterance_hints if hint.casefold() in normalized]
@@ -178,7 +201,12 @@ class IntentRouter:
             overlap = len(query_terms & descriptor_terms) / max(1, len(query_terms))
             # Descriptor similarity ranks already-declared candidates; it must not
             # manufacture a domain match from generic words such as "파일" alone.
-            if not hint_hits and not pattern_hits:
+            # Inflected Korean commands often preserve the action stem but not
+            # an entire example utterance ("열어 줘", "할당해줘").  Execution
+            # evidence may admit a declared intent only when descriptor terms
+            # also overlap; a generic action word alone must not create a tool.
+            execution_grounded = bool(execution_hits) and overlap >= 0.12
+            if not hint_hits and not pattern_hits and not execution_grounded:
                 continue
             score = (
                 sum(12 + len(hit) for hit in hint_hits)
@@ -198,6 +226,12 @@ class IntentRouter:
         candidates = self._rank(text)
         if not candidates:
             return None
+        if candidates[0][2].name == "web.search" and not self.EXPLICIT_WEB_RESEARCH_PATTERN.search(text):
+            specialized = next((item for item in candidates[1:]
+                                if item[2].request_type == "query" and item[2].name != "web.search"), None)
+            if specialized:
+                candidates.remove(specialized)
+                candidates.insert(0, specialized)
         score, plugin, intent, _reason = candidates[0]
         runner_up = candidates[1][0] if len(candidates) > 1 else 0.0
         margin = max(0.0, score - runner_up) / max(1.0, score)
@@ -229,15 +263,23 @@ class IntentRouter:
         negated = bool(self.NEGATED_ACTION_PATTERN.search(text))
         routing_text = self._affirmative_routing_probe(text) if negated else text
         selected = None
+        clause_matches: list[tuple[BasePlugin, IntentSchema, float]] = []
+        if not intent_name and self.COMPOUND_CONNECTOR_PATTERN.search(text):
+            clauses = [part.strip(" ,.!?") for part in self.COMPOUND_CONNECTOR_PATTERN.split(text)
+                       if part.strip(" ,.!?")]
+            for clause in clauses:
+                found = self._find(clause) or self._fresh_information_intent(clause)
+                if found and found[1].name not in {item[1].name for item in clause_matches}:
+                    clause_matches.append(found)
         if intent_name:
             selected = next(
                 ((plugin, intent, 0.9) for plugin, intent in self.registry.get_all_intents()
                  if intent.name == intent_name), None,
             )
+        elif clause_matches:
+            selected = clause_matches[0]
         else:
-            selected = self._find(text)
-            if not selected and negated:
-                selected = self._find(routing_text)
+            selected = self._find(routing_text if negated else text)
             if not selected:
                 selected = self._fresh_information_intent(text)
         if not selected:
@@ -259,6 +301,13 @@ class IntentRouter:
              "score": round(score, 3)}
             for score, _plugin, candidate, _reason in ranked[1:4]
         ]
+        for _plugin, candidate, score in clause_matches[1:]:
+            if candidate.name != intent.name and not any(
+                    item.get("intent") == candidate.name for item in alternatives):
+                alternatives.insert(0, {
+                    "intent": candidate.name, "tool": candidate.tool_name,
+                    "tool_name": candidate.tool_name, "score": round(score, 3),
+                })
         ambiguous = bool(
             not intent_name and len(ranked) > 1 and ranked[0][0] < 100
             and ranked[1][0] / max(1.0, ranked[0][0]) >= 0.88
@@ -285,7 +334,7 @@ class IntentRouter:
             candidate.name for _score, _plugin, candidate, _reason in ranked
         }
         compound = bool(
-            not intent_name and len(distinct_ranked_intents) >= 2
+            not intent_name and (len(clause_matches) >= 2 or len(distinct_ranked_intents) >= 2)
             and self.COMPOUND_CONNECTOR_PATTERN.search(text)
         )
         if not intent_name and is_capability and not has_action_hint:

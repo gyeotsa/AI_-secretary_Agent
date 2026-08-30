@@ -90,6 +90,8 @@ class FinancePlugin(BasePlugin):
                 utterance_patterns=[
                     r"(?:[0-9A-Za-z가-힣.^-]+(?:\s+[0-9A-Za-z가-힣.^-]+){0,3})\s*(?:주식(?!\s*시장)|종목|주가)"
                     r"\s*(?:(?:을|를|은|는|의|에\s*대해)\s*)?.{0,40}?(?:분석|살펴)",
+                    r"(?:[0-9A-Za-z가-힣.^-]+(?:\s+[0-9A-Za-z가-힣.^-]+){0,3})\s*"
+                    r"(?:전망|실적|밸류에이션).{0,20}(?:분석|살펴|알려)",
                 ],
                 freshness="live", requires_sources=True, request_type="query",
             ),

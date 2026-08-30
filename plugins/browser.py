@@ -133,7 +133,7 @@ class BrowserPlugin(BasePlugin):
                 execution_hints=["틀어", "재생", "들려"],
                 follow_up_hints=["그 노래", "그 영상", "다른 버전", "다음 곡"],
                 utterance_patterns=[
-                    r".{1,80}(?:노래|음악|영상|뮤직비디오).{0,20}(?:틀어|재생|들려)",
+                    r".{1,80}(?:노래|음악|영상|뮤직비디오|피아노곡|연주곡|곡).{0,20}(?:틀어|재생|들려)",
                     r".{1,80}(?:틀어\s*줘|재생해\s*줘|들려\s*줘)",
                 ],
                 request_type="execute", freshness="live", requires_sources=True,
@@ -145,7 +145,8 @@ class BrowserPlugin(BasePlugin):
                 ["링크 열어", "주소 열어", "웹페이지 열어"],
                 [SlotSchema("url", "열 URL", "열 웹 주소를 알려주세요.")],
                 execution_hints=["열어", "접속"],
-                utterance_patterns=[r"https?://\S+.{0,20}(?:열어|접속)"],
+                utterance_patterns=[r"https?://\S+.{0,20}(?:열어|접속)",
+                                    r"(?:열어|접속).{0,40}https?://\S+"],
                 request_type="execute", freshness="live", requires_sources=True,
             ),
             IntentSchema(

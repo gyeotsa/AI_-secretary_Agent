@@ -57,7 +57,9 @@ class ObsidianPlugin(BasePlugin):
                 utterance_patterns=[r"(?:옵시디언|볼트).{0,80}(?:동기화|RAG에\s*반영|RAG로\s*반영)"],
                 request_type="change"),
             IntentSchema("obsidian.open", "옵시디언 볼트 열기", "obsidian_open_vault",
-                ["옵시디언 열", "볼트 열"], [], execution_hints=["열어", "실행"], request_type="execute"),
+                ["옵시디언 열", "옵시디언 노트", "볼트 열"], [], execution_hints=["열어", "실행"],
+                utterance_patterns=[r"(?:옵시디언|obsidian|볼트).{0,20}(?:노트|볼트)?.{0,8}(?:열어|실행)"],
+                request_type="execute"),
         ]
 
     def extract_slots(self, intent_name: str, text: str, current_slots: Dict[str, Any]):
