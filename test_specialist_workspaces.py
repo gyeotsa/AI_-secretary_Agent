@@ -52,8 +52,9 @@ def test_photoshop_has_separate_multimodal_model_role():
 def test_photoshop_plugin_contract_is_discoverable_without_photoshop_installed():
     plugin = PhotoshopPlugin()
     names = {tool.name for tool in plugin.get_tools()}
-    assert names == {"photoshop_status", "photoshop_open_document", "photoshop_active_document"}
-    assert {intent.name for intent in plugin.get_intents()} == {"photoshop.status", "photoshop.open"}
+    assert names == {"photoshop_status", "photoshop_open_document", "photoshop_active_document",
+                     "photoshop_list_fonts", "photoshop_edit_document"}
+    assert {intent.name for intent in plugin.get_intents()} == {"photoshop.status", "photoshop.open", "photoshop.fonts"}
 
 
 def test_document_workspace_constructs_and_accepts_agent_results():
@@ -624,3 +625,37 @@ def test_specialist_reviewer_aggregates_multi_step_tool_evidence(tmp_path):
 def test_photoshop_contract_accepts_plugin_image_document_artifact():
     spec = get_specialist_workspace_registry().get("photoshop")
     assert "image_document" in spec.artifact_types
+
+
+def test_photoshop_opening_original_cannot_satisfy_edit_contract(tmp_path):
+    original = tmp_path / "original.png"
+    Image.new("RGB", (10, 10), "red").save(original)
+    contract = get_specialist_workspace_registry().get("photoshop").execution_contract()
+    payload = {
+        "status": "completed", "tool_status": "succeeded", "tool_name": "photoshop_open_document",
+        "evidence": [{"kind": "photoshop_document", "summary": "원본만 열었습니다.", "data": {}}],
+        "artifacts": [{"kind": "image_document", "uri": str(original), "metadata": {"role": "input"}}],
+    }
+    review = SpecialistTeamRuntime._review_execution(payload, contract)
+    assert not review["passed"] and review["status"] == "degraded"
+    assert review["accepted_artifacts"] == []
+    assert all(not criterion["verified"] for criterion in review["criteria_results"])
+    assert review["readiness_checks"]["verified_evidence"] is False
+
+
+def test_photoshop_open_only_registry_is_not_edit_ready():
+    team = SpecialistTeamRuntime(tool_name_provider=lambda: ("photoshop_open_document", "photoshop_status", "analyze_image"))
+    contract = team._resolve_workspace_contract(get_specialist_workspace_registry().get("photoshop").execution_contract())
+    assert not contract["readiness"]["ready"]
+    assert "photoshop_edit_document" in contract["readiness"]["missing_tool_families"]
+
+
+def test_unknown_or_misaligned_criterion_verifier_fails_closed(tmp_path):
+    original = tmp_path / "original.png"
+    Image.new("RGB", (10, 10), "red").save(original)
+    payload = {"status": "completed", "tool_status": "succeeded",
+               "evidence": [{"kind": "file", "summary": "exists"}],
+               "artifacts": [{"kind": "image", "uri": str(original)}]}
+    for verifiers in (["unknown"], ["photoshop_saved_copy", "unused"]):
+        contract = {"artifact_types": ["image"], "acceptance_criteria": ["편집 검증"], "acceptance_verifiers": verifiers}
+        assert not SpecialistTeamRuntime._review_execution(payload, contract)["passed"]

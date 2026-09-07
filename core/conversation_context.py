@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 import json
+import math
 import re
 import threading
 
@@ -82,6 +83,27 @@ class ConversationContextResolver:
             except json.JSONDecodeError:
                 return None
 
+    @staticmethod
+    def _payload_bool(value: Any, default: bool) -> bool:
+        """JSON strings from a small model are not Python truth values."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().casefold() in {"true", "false"}:
+            return value.strip().casefold() == "true"
+        return default
+
+    @staticmethod
+    def _payload_confidence(value: Any) -> float:
+        if isinstance(value, bool):
+            return 0.0
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        if not math.isfinite(confidence):
+            return 0.0
+        return max(0.0, min(confidence, 1.0))
+
     def resolve(self, request: str, history: Optional[List[Dict[str, str]]] = None,
                 session_id: str = "") -> ResolvedRequest:
         history = [m for m in (history or []) if m.get("role") in {"user", "assistant"}][-8:]
@@ -116,24 +138,37 @@ class ConversationContextResolver:
             ]))
         except Exception:
             payload = None
-        if not payload or not str(payload.get("resolved_request", "")).strip():
-            return ResolvedRequest(request, request, confidence=0.0)
+        if (not payload or not isinstance(payload.get("resolved_request"), str)
+                or not payload["resolved_request"].strip()):
+            return ResolvedRequest(
+                request, request, confidence=0.0, needs_clarification=True,
+                clarification_question="이전 대화에서 어떤 대상을 말씀하시는지 다시 알려주시겠어요?",
+                relation="ambiguous", context_used=False,
+            )
 
         result = ResolvedRequest(
             original_request=request,
             resolved_request=str(payload["resolved_request"]).strip(),
             topic=str(payload.get("topic", "general")),
             entities=payload.get("entities") if isinstance(payload.get("entities"), dict) else {},
-            confidence=max(0.0, min(float(payload.get("confidence", 0.5)), 1.0)),
-            needs_clarification=bool(payload.get("needs_clarification", False)),
+            confidence=self._payload_confidence(payload.get("confidence", 0.5)),
+            needs_clarification=self._payload_bool(payload.get("needs_clarification", False), True),
             clarification_question=str(payload.get("clarification_question", "")).strip(),
             relation=str(payload.get("relation", "follow_up")).strip().casefold(),
-            context_used=bool(payload.get("context_used", True)),
+            context_used=self._payload_bool(payload.get("context_used", True), False),
         )
         if result.relation not in {"follow_up", "ambiguous"} or not result.context_used:
             result.resolved_request = request
             result.relation = "independent"
             result.context_used = False
+        elif result.confidence < 0.5:
+            # An invalid/low-confidence target rewrite must not quietly become
+            # executable state (nor be persisted for later turns).
+            result.resolved_request = request
+            result.needs_clarification = True
+            result.clarification_question = (
+                result.clarification_question or "어떤 대상을 말씀하시는지 한 번만 더 알려주시겠어요?"
+            )
         if session_id and not result.needs_clarification:
             with self._lock:
                 state = self._states.setdefault(session_id, {})

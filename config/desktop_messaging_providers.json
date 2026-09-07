@@ -21,9 +21,10 @@
       "메시지 입력",
       "채팅 입력",
       "대화 입력",
-      "메시지를 입력하세요"
+      "메시지를 입력하세요",
+      "RichEdit Control"
     ],
-    "message_input_automation_id_keywords": ["message", "chat", "input"],
+    "message_input_automation_id_keywords": ["message", "chat", "input", "1006"],
     "outgoing_message_control_types": ["Text", "ListItem", "Document"],
     "outgoing_message_direction_keywords": [
       "outgoing",

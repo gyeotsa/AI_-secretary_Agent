@@ -3,7 +3,8 @@ import time
 import pytest
 
 from core.remote_runtime import (OAuthCoordinator, PendingRemoteAction, ProviderApi,
-                                 RemoteActionStore, RemoteCatalogStore, SecureTokenVault)
+                                 RemoteActionStore, RemoteApplyReceipt,
+                                 RemoteCatalogStore, SecureTokenVault)
 from plugins.cloud_communication import CloudCommunicationPlugin
 
 
@@ -18,19 +19,23 @@ class Response:
 class Session:
     def __init__(self):
         self.calls = []
+        self.slack_text = ""
 
     def post(self, url, **kwargs):
         self.calls.append(("POST", url, kwargs))
         if "oauth" in url:
             return Response({"access_token": "access", "refresh_token": "refresh", "expires_in": 3600})
         if "chat.postMessage" in url:
+            self.slack_text = kwargs["json"]["text"]
             return Response({"ok": True, "ts": "171.42"})
         return Response({"id": "remote-42"})
 
     def get(self, url, **kwargs):
         self.calls.append(("GET", url, kwargs))
         if "conversations.history" in url:
-            return Response({"ok": True, "messages": [{"ts": "171.42", "text": "배포 완료", "user": "U1"}]})
+            return Response({"ok": True, "messages": [{"ts": "171.42", "text": self.slack_text, "user": "U1"}]})
+        if "/events/" in url:
+            return Response({"id": "remote-42", "summary": "회의"})
         return Response({"id": "remote-42"})
 
     def request(self, method, url, **kwargs):
@@ -79,6 +84,7 @@ def test_remote_draft_and_catalog_are_persisted(tmp_path):
     actions = RemoteActionStore(str(tmp_path / "actions.db"))
     draft = actions.create("google", "boss", "google_calendar_create", {"event": {"summary": "회의"}})
     assert draft.status == "draft" and not draft.remote_id
+    assert actions.claim_for_apply(draft.action_id).status == "applying"
     assert actions.mark_applied(draft.action_id, "event-1").remote_id == "event-1"
     catalog = RemoteCatalogStore(str(tmp_path / "catalog.db"))
     assert catalog.replace("google_drive", "boss", [{"id": "file-1", "name": "보고서"}]) == ["file-1"]
@@ -102,7 +108,10 @@ def test_google_calendar_and_slack_requery_remote_ids(monkeypatch):
 def test_plugin_keeps_draft_and_apply_separate(tmp_path, monkeypatch):
     plugin = CloudCommunicationPlugin()
     plugin.actions = RemoteActionStore(str(tmp_path / "actions.db"))
-    monkeypatch.setattr(plugin.api, "apply", lambda action: "message-9")
+    monkeypatch.setattr(plugin.api, "apply", lambda action: RemoteApplyReceipt(
+        "message-9", {"provider": "slack", "remote_id": "message-9",
+                      "verified_fields": ["ts", "channel", "text"]},
+    ))
     draft = plugin.execute_tool("remote_create_draft", {
         "provider": "slack", "account": "boss", "operation": "slack_send",
         "payload": {"channel": "C1", "text": "검토 요청"},

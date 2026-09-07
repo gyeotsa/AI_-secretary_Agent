@@ -134,8 +134,10 @@ Plugin Registry 상태는 Command Center의 `권한/플러그인` 탭과 첫 실
 - Gmail/Outlook/Slack/Teams/Notion과 SMTP는 자격증명 미설정 상태를 경고로 노출합니다.
 - 로컬 Office/HWP COM, 카메라, 마이크, 스피커는 설치·장치 상태와 사용자 라이브 수락을 별도
   검사합니다.
-- 제스처 제어는 핵심 Plugin 의존성이 아닙니다. 사용자가 켤 때만 `requirements-gesture.txt`의
-  고정 조합과 MediaPipe HandLandmarker 모델을 사용하며 카메라를 기본 자동 실행하지 않습니다.
+- 제스처 제어는 핵심 Plugin 의존성이 아닙니다. `requirements-gesture.txt`의 고정 조합과
+  MediaPipe HandLandmarker 모델을 사용합니다. 이후 사용자 요청에 따라 카메라는 기본 자동
+  실행하며 설정/명령으로 끌 수 있습니다. 승인/취소 같은 명령 제스처는 별도 opt-in으로 기본
+  비활성입니다. 장치·권한 실패와 실제 활성 상태는 분리합니다.
 
 새 외부 서비스는 먼저 Registry capability, 권한 범위, 진단 probe, 실제 Evidence와 실패 복구를
 함께 구현해야 합니다. 버튼과 schema만 있는 연결은 로드맵 완료로 처리하지 않습니다.

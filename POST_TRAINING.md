@@ -1,5 +1,12 @@
 # 아니스 Post-training 운영 설계
 
+## 현재 운영 결정 (2026-09-01)
+
+사용자 결정에 따라 **강화학습은 적용하지 않는다.** Verifier-RL은 이번 제품의
+필수 개선·완성 범위가 아니며 자동 또는 수동 학습 실행 계획에도 포함하지 않는다.
+현재 trajectory/피드백 기록은 QA·회귀 분석용이며 모델이 스스로 성장했다는 뜻이 아니다.
+SFT/DPO/LoRA도 데이터 준비와 실제 학습·평가·배포를 구분하며 자동 실행하지 않는다.
+
 Post-training은 현재 실행 품질을 대신하는 기능이 아니다. 먼저 Runtime에서 검증된 실행
 이력과 사용자 피드백을 축적하고, 오프라인 평가에서 기존 버전보다 나아진 경우에만
 별도 Adapter를 배포한다.
@@ -9,7 +16,8 @@ Post-training은 현재 실행 품질을 대신하는 기능이 아니다. 먼�
 1. `Executor.execute_turn()`이 개인정보가 마스킹된 trajectory를 `learning.db`에 기록한다.
 2. 라우팅 근거, Tool Loadout, reasoning level, Tool 입력·결과와 최종 상태가 연결된다.
 3. 사용자 피드백은 원본 응답과 정정 답변을 연결한다.
-4. `python scripts/export_post_training_data.py`가 SFT, DPO, verifier-RL 후보를 JSONL로 내보낸다.
+4. `python scripts/export_post_training_data.py`가 SFT, DPO 및 레거시 verifier-RL 후보 형식의 JSONL을 내보낸다.
+   마지막 파일은 과거 데이터 포맷 호환이며 강화학습 활성화나 학습 완료를 뜻하지 않는다.
 5. 내보낸 데이터는 `review_required=true`이며 자동 학습이나 자동 배포를 수행하지 않는다.
 
 ## 학습 진입 기준
@@ -21,13 +29,13 @@ Post-training은 현재 실행 품질을 대신하는 기능이 아니다. 먼�
 - 최소 500개의 고품질 승인 SFT 사례와 200개의 선호 쌍이 쌓이기 전에는 QLoRA/DPO를 시작하지 않는다.
 - 모델 학습 전후에 동일한 애플리케이션 평가 세트를 실행한다.
 
-## 권장 실험
+## 선택적 비강화학습 실험 (제품 완성의 전제 아님)
 
 - 기반 모델: 현재 로컬 7B 역할 모델
 - 방식: 4bit QLoRA, Adapter 역할별 분리
 - SFT 대상: 한국어 응답, 문맥 질문, Intent/Slot 및 Tool 인자
 - DPO 대상: 사용자가 직접 정정한 chosen/rejected 쌍
-- Verifier-RL 대상: 파일·코드·문서처럼 실제 결과를 결정론적으로 검증할 수 있는 작업만
+- Verifier-RL: 사용자 결정으로 제외. 결정론적 검증기는 실행 결과 QA에만 사용한다.
 - 배포: conversation/tool-selection/code Adapter를 별도로 유지하고 평가를 통과한 Adapter만 활성화
 
 ## 금지 사항

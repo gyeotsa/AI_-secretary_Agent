@@ -1,4 +1,10 @@
 import sys
+# Frozen builds re-enter this executable for isolated stateless tools. Bypass
+# all Qt, model, camera and runtime initialization in those worker processes.
+if __name__ == "__main__" and "--plugin-worker" in sys.argv:
+    from core.plugin_worker import main as _plugin_worker_main
+    raise SystemExit(_plugin_worker_main(sys.argv[sys.argv.index("--plugin-worker") + 1:]))
+
 import os
 import json
 import re
@@ -1277,6 +1283,17 @@ class JarvisApp:
                 self._shutdown_errors.append(
                     f"{owner_name}.{method_name}: {type(exc).__name__}: {exc}"
                 )
+        registry = getattr(getattr(self, "tool_executor", None), "plugin_registry", None)
+        if registry is not None and callable(getattr(registry, "shutdown", None)):
+            try:
+                report = registry.shutdown(timeout_seconds=2.0)
+                if report.get("remaining_execution_ids"):
+                    self._shutdown_errors.append(
+                        "plugin_registry.shutdown: 아직 종료되지 않은 실행 "
+                        + ", ".join(report["remaining_execution_ids"])
+                    )
+            except Exception as exc:
+                self._shutdown_errors.append(f"plugin_registry.shutdown: {type(exc).__name__}: {exc}")
         # Bound UI handlers otherwise keep a closed JarvisApp alive and allow
         # later tool calls to target a stale window/device runtime.
         bridge = get_interface_control_bridge()

@@ -531,7 +531,8 @@ def test_desktop_message_runtime_verifies_exact_recipient_before_dispatch(monkey
 
     result = runtime.send("카카오톡", "형택이", "테스트")
 
-    assert typed == ["형택이"]
+    # 이미 정확히 일치하는 대화창이 열려 있으면 불필요한 메인 검색/재입력을 하지 않는다.
+    assert typed == []
     assert pressed == ["ENTER"]
     assert result["recipient"] == "형택이"
     assert result["send_accepted_verified"] is True
@@ -545,6 +546,12 @@ def test_desktop_message_runtime_blocks_wrong_recipient_window(monkeypatch):
     wrong = WindowInfo(11, "다른 사람", 99, True, True, True)
 
     class Automation:
+        search_value = ""
+        search_identity = {
+            "window_handle": main.handle, "runtime_id": [30, 1],
+            "control_type": "Edit", "token": "contact-search-30-1",
+        }
+
         def list_windows(self):
             return [main, wrong]
 
@@ -560,7 +567,24 @@ def test_desktop_message_runtime_blocks_wrong_recipient_window(monkeypatch):
                 raise LookupError("검색 결과에 정확한 이름이 없음")
             if "친구" in names:
                 return {"control_type": "TabItem", "activation": "invoke"}
-            return {"control_type": "Edit", "activation": "focus"}
+            return {
+                "control_type": "Edit", "activation": "focus",
+                "control_identity": self.search_identity,
+            }
+
+        def set_accessibility_text(self, _handle, value, **_kwargs):
+            self.search_value = str(value)
+            return {
+                "control_type": "Edit", "value": self.search_value,
+                "value_verified": True, "control_identity": self.search_identity,
+            }
+
+        def read_accessibility_text(self, _handle, **kwargs):
+            return {
+                "control_type": "Edit", "value": self.search_value,
+                "keyboard_focus_verified": bool(kwargs.get("require_keyboard_focus")),
+                "control_identity": self.search_identity,
+            }
 
     runtime.automation = Automation()
     typed = []
@@ -577,7 +601,7 @@ def test_desktop_message_runtime_blocks_wrong_recipient_window(monkeypatch):
         assert "전송을 중단" in str(exc)
     else:
         raise AssertionError("잘못된 수신자 창에서 전송이 차단되어야 합니다")
-    assert typed == ["형택이"]
+    assert typed == []
 
 
 def test_desktop_message_runtime_never_uses_provider_search_hotkey(monkeypatch):
@@ -693,6 +717,39 @@ def test_accessibility_text_setter_reads_back_exact_unicode(monkeypatch):
     assert state["value"] == "한글 테스트"
 
 
+def test_accessibility_text_setter_accepts_native_richedit_terminator(monkeypatch):
+    runtime = WindowsAutomationRuntime()
+
+    class Wrapper:
+        value = "\r"
+
+        def set_focus(self):
+            pass
+
+        def set_edit_text(self, value):
+            self.value = str(value) + "\r"
+
+        def get_value(self):
+            return self.value
+
+    wrapper = Wrapper()
+    monkeypatch.setattr(runtime, "_accessibility_candidates", lambda *_args, **_kwargs: [(
+        100, wrapper, {
+            "name": "RichEdit Control", "automation_id": "1006",
+            "control_type": "Document", "class_name": "RICHEDIT50W",
+        },
+    )])
+    monkeypatch.setattr("core.windows_automation.time.sleep", lambda _seconds: None)
+
+    result = runtime.set_accessibility_text(11, "한글 테스트", control_types=["Document"])
+    cleared = runtime.set_accessibility_text(11, "", control_types=["Document"])
+
+    assert result["value_verified"] is True
+    assert result["value"] == "한글 테스트\r"
+    assert cleared["value_verified"] is True
+    assert cleared["value"] == "\r"
+
+
 def test_desktop_message_runtime_never_falls_back_to_different_korean_contact(monkeypatch):
     runtime = DesktopMessagingRuntime()
     main = WindowInfo(10, "카카오톡", 99, True, True, True)
@@ -701,7 +758,14 @@ def test_desktop_message_runtime_never_falls_back_to_different_korean_contact(mo
     class Automation:
         def __init__(self):
             self.composer_value = ""
+            self.search_value = ""
             self.bubbles = []
+            self.search_identity = {
+                "window_handle": main.handle,
+                "runtime_id": [30, 2],
+                "control_type": "Edit",
+                "token": "contact-search-runtime-id-30-2",
+            }
             self.composer_identity = {
                 "window_handle": chat.handle,
                 "runtime_id": [42, 2],
@@ -726,19 +790,29 @@ def test_desktop_message_runtime_never_falls_back_to_different_korean_contact(mo
                 return {"control_type": "ListItem", "activation": "invoke"}
             if "친구" in names:
                 return {"control_type": "TabItem", "activation": "invoke"}
-            return {"control_type": "Edit", "activation": "focus"}
-
-        def set_accessibility_text(self, _handle, value, **_kwargs):
-            self.composer_value = value
             return {
-                "control_type": "Edit", "value_verified": True,
-                "control_identity": self.composer_identity,
+                "control_type": "Edit", "activation": "focus",
+                "control_identity": self.search_identity,
             }
 
-        def read_accessibility_text(self, _handle, **kwargs):
+        def set_accessibility_text(self, handle, value, **_kwargs):
+            if int(handle) == main.handle:
+                self.search_value = str(value)
+                identity = self.search_identity
+            else:
+                self.composer_value = value
+                identity = self.composer_identity
             return {
-                "control_type": "Edit", "value": self.composer_value,
-                "control_identity": self.composer_identity,
+                "control_type": "Edit", "value_verified": True,
+                "value": str(value), "control_identity": identity,
+            }
+
+        def read_accessibility_text(self, handle, **kwargs):
+            is_search = int(handle) == main.handle
+            return {
+                "control_type": "Edit",
+                "value": self.search_value if is_search else self.composer_value,
+                "control_identity": self.search_identity if is_search else self.composer_identity,
                 "keyboard_focus_verified": bool(kwargs.get("require_keyboard_focus")),
             }
 
@@ -770,8 +844,8 @@ def test_desktop_message_runtime_never_falls_back_to_different_korean_contact(mo
     with pytest.raises(RuntimeError, match="수신자 이름과 정확히 일치"):
         runtime.send("카카오톡", "형택이", "테스트")
 
-    assert typed == ["형택이"]
-    assert pressed == ["ENTER", "ESC"]
+    assert typed == []
+    assert pressed == []
     assert automation.composer_value == ""
     assert automation.bubbles == []
 

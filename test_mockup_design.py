@@ -530,6 +530,11 @@ def test_invalid_ai_edit_can_apply_only_explicit_safe_constraints(tmp_path):
     original = runtime.render(profile.profile_id, [_image(tmp_path / "person.png", (90, 100, 110))],
                               visible_copy="테스트", backend="auto", preview_only=True)
     original["scene_plan"]["assets"][0]["fit"] = "cover"
+    # A changed scene is not the current preview until it has been rendered.
+    # Keep this fallback test realistic instead of bypassing revision binding.
+    original = runtime.render(profile.profile_id, original["production_sources"],
+                              visible_copy="테스트", scene_plan=original["scene_plan"],
+                              backend="auto", preview_only=True)
     edited = runtime.edit_preview(original, "얼굴과 머리가 모두 보이고 문구는 중앙에 오게 해줘")
     assert edited["scene_plan"]["assets"][0]["fit"] == "contain"
     assert edited["renderer"] == "structured-scene-patch-v4"

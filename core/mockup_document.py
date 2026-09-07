@@ -49,9 +49,9 @@ def assert_scene_document(scene_plan: dict, *, expected_digest: str = "") -> dic
     document = scene_plan.get("document") if isinstance(scene_plan.get("document"), dict) else {}
     actual = scene_digest(scene_plan)
     declared = str(document.get("scene_digest", ""))
-    # UI controls may legitimately mutate the active in-memory scene before an
-    # AI edit. The optimistic token protects *which revision* is active; the
-    # freshly calculated digest becomes the new transaction baseline.
-    if expected_digest and declared and expected_digest != declared:
+    # Every displayed revision is bound to the scene that produced its pixels.
+    # UI controls must create a new rendered revision, never mutate this plan
+    # behind the bitmap and pass the old optimistic token as authorization.
+    if (declared and actual != declared) or (expected_digest and actual != expected_digest):
         raise ValueError("현재 미리보기와 편집 기준 문서가 다릅니다. 최신 미리보기를 다시 선택해 주세요.")
     return {"scene_digest": actual, "revision": int(document.get("revision", 0))}

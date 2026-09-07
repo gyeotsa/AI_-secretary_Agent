@@ -14,16 +14,17 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from statistics import median
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from core.vision_runtime import VisionRuntime
 from core.mockup_scene import (SCENE_PLAN_JSON_SCHEMA, SCENE_EDIT_PATCH_JSON_SCHEMA,
                                SCENE_EDIT_VERDICT_JSON_SCHEMA, ScenePlanError,
                                apply_scene_edit_patch, build_evidence_fallback_plan, extract_json_object,
                                normalize_scene_plan, enforce_explicit_user_constraints,
+                               enforce_subject_background_constraints,
                                enforce_exact_user_copy,
                                enforce_measured_style_evidence, infer_edit_scopes, merge_scoped_scene_edit,
-                               parse_explicit_colored_copy,
+                               parse_explicit_colored_copy, requested_font_size_pixels,
                                preserve_unrequested_scene_fields, requests_visible_copy_change,
                                scene_diff_fields,
                                filter_scene_edit_patch,
@@ -33,8 +34,13 @@ from core.mockup_layer_graph import (scene_plan_to_layer_graph, validate_layer_g
                                      layer_graph_to_svg, render_svg_with_qt)
 from core.mockup_style_index import VisualStyleIndex
 from core.mockup_subject_runtime import SubjectAnalysisRuntime
+from core.mockup_subject_assets import prepared_subject_sources
 from core.mockup_document import assert_scene_document, scene_digest, stamp_scene_document
-from core.mockup_pipeline_policy import route_mockup_request
+from core.mockup_preview_effects import (ADJUSTMENTS, TRANSFORMS, apply_preview_effects,
+                                         assert_preview_state, instruction_in_source_coordinates,
+                                         normalize_preview_effects, undo_preview_geometry,
+                                         normalized_adjustments, with_preview_state)
+from core.mockup_pipeline_policy import route_mockup_request, subject_background_edits
 from core.mockup_post_training import StyleTrainingDataset
 from config import Config
 from core.specialist_team import TeamRun
@@ -255,15 +261,30 @@ class MockupDesignRuntime:
         alpha = rgba.getchannel("A")
         if alpha.getbbox() is None:
             return ["렌더링 결과가 완전히 투명합니다."]
-        if requests_circular_shape(instruction):
+        if requests_circular_shape(instruction) and (
+                plan.get("canvas", {}).get("background") == "transparent" or "스티커" in instruction):
             width, height = rgba.size
             sample = max(1, min(width, height) // 100)
             corners = ((sample, sample), (width-sample-1, sample),
                        (sample, height-sample-1), (width-sample-1, height-sample-1))
             if any(alpha.getpixel(point) > 8 for point in corners):
                 violations.append("원형 결과의 바깥 모서리가 실제 픽셀에서 투명하지 않습니다.")
-            if alpha.getpixel((width // 2, height // 2)) <= 8:
-                violations.append("원형 결과의 중심 피사체가 실제 픽셀에서 보이지 않습니다.")
+            ellipses = [item for item in plan.get("assets", []) if item.get("shape") == "ellipse"]
+            visible_asset = False
+            for item in ellipses:
+                box = (max(0, int(float(item.get("x", 0)) * width)),
+                       max(0, int(float(item.get("y", 0)) * height)),
+                       min(width, int((float(item.get("x", 0)) + float(item.get("width", 0))) * width)),
+                       min(height, int((float(item.get("y", 0)) + float(item.get("height", 0))) * height)))
+                if box[2] <= box[0] or box[3] <= box[1]:
+                    continue
+                histogram = alpha.crop(box).histogram()
+                opaque = sum(histogram[9:])
+                if opaque >= max(16, int((box[2] - box[0]) * (box[3] - box[1]) * .01)):
+                    visible_asset = True
+                    break
+            if not visible_asset:
+                violations.append("원형 사진 영역에 실제로 보이는 피사체 픽셀이 없습니다.")
         return violations
 
     def _review_rendered_image(self, output_path: Path, profile: MockupStyleProfile,
@@ -1080,7 +1101,8 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             with Image.open(paths[item["index"]]) as opened:
                 source = opened.convert("RGBA")
                 alpha_bbox = source.getchannel("A").getbbox()
-                if alpha_bbox and alpha_bbox != (0, 0, source.width, source.height):
+                if (not item.get("remove_background") and alpha_bbox
+                        and alpha_bbox != (0, 0, source.width, source.height)):
                     source = source.crop(alpha_bbox)
                 zoom = max(1.0, float(item.get("zoom", 1)))
                 if zoom > 1:
@@ -1108,7 +1130,8 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 if item["shape"] == "ellipse": shape_draw.ellipse((0, 0, cell[0]-1, cell[1]-1), fill=255)
                 else: shape_draw.rounded_rectangle((0, 0, cell[0]-1, cell[1]-1), radius=max(8, min(cell)//12), fill=255)
                 mask = Image.composite(mask, Image.new("L", cell, 0), shape_mask)
-            canvas.paste(layer, (x1, y1), mask); draw = ImageDraw.Draw(canvas, "RGBA")
+            layer.putalpha(mask)
+            canvas.alpha_composite(layer, (x1, y1)); draw = ImageDraw.Draw(canvas, "RGBA")
         for item in sorted((d for d in plan["decorations"] if d["z"] >= 0), key=lambda d: d["z"]):
             self._draw_scene_decoration(draw, item, box(item), width)
         for item in sorted(plan["texts"], key=lambda text: text["z"]):
@@ -1153,56 +1176,157 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         background = self._rgba(item["background"])
         if background[3]: draw.rectangle(bounds, fill=background)
         padding = int(item["padding"] * min(width, height)); x1 += padding; y1 += padding; x2 -= padding; y2 -= padding
-        font_size = max(14, int(item["font_size"] * min(width, height)))
-        content = item["content"]
-        bold = item.get("font_weight", "bold") == "bold"
-        family = str(item.get("font_family", ""))
-        font = self._font(font_size, bold=bold, family=family)
-        while font_size > 14:
-            font = self._font(font_size, bold=bold, family=family); measured = draw.textbbox((0, 0), content, font=font)
-            if measured[2] - measured[0] <= max(1, x2-x1) and measured[3] - measured[1] <= max(1, y2-y1): break
-            font_size -= 2
-        measured = draw.textbbox((0, 0), content, font=font, spacing=max(1, int(font_size * float(item.get("line_height", 1.2)))))
-        text_w, text_h = measured[2]-measured[0], measured[3]-measured[1]
-        x = x1 if item["align"] == "left" else x2-text_w if item["align"] == "right" else x1+(x2-x1-text_w)//2
-        y = y1 + (y2-y1-text_h)//2 - measured[1]
-        fill = self._rgba(item["color"], (17, 17, 17, 255))
+        content = str(item.get("content", ""))
+        minimum = min(width, height)
+        parent_style = {
+            "font_size": float(item.get("font_size", .055)),
+            "font_family": str(item.get("font_family", "")),
+            "font_weight": str(item.get("font_weight", "bold")),
+            "color": str(item.get("color", "#111111")),
+        }
+
+        def semantic_runs():
+            """Map span content back onto the exact visible string.
+
+            Normalized spans omit the separating space (``A`` + ``B`` while
+            visible copy is ``A B``).  Keeping the intervening substring with
+            the following run mirrors the SVG layer graph and prevents either
+            lost copy or a parent-style gap in the Pillow fallback.
+            """
+            spans = item.get("spans") if isinstance(item.get("spans"), list) else []
+            if not spans:
+                return [{"content": content, **parent_style}]
+            result, cursor = [], 0
+            for span in spans:
+                if not isinstance(span, dict):
+                    return [{"content": content, **parent_style}]
+                fragment = str(span.get("content", ""))
+                if not fragment:
+                    return [{"content": content, **parent_style}]
+                position = content.find(fragment, cursor)
+                if position < cursor:
+                    return [{"content": content, **parent_style}]
+                run = dict(parent_style)
+                run.update({key: span[key] for key in (
+                    "font_size", "font_family", "font_weight", "color"
+                ) if key in span})
+                run["content"] = content[cursor:position] + fragment
+                result.append(run)
+                cursor = position + len(fragment)
+            if cursor < len(content):
+                result[-1]["content"] += content[cursor:]
+            return result if "".join(run["content"] for run in result) == content else [
+                {"content": content, **parent_style}
+            ]
+
+        logical_lines = [[]]
+        for run in semantic_runs():
+            pieces = str(run["content"]).split("\n")
+            for piece_index, piece in enumerate(pieces):
+                if piece:
+                    logical_lines[-1].append({**run, "content": piece})
+                if piece_index < len(pieces) - 1:
+                    logical_lines.append([])
+
+        letter_spacing = int(float(item.get("letter_spacing", 0)) * minimum)
+
+        def materialize(scale):
+            lines = []
+            for logical in logical_lines:
+                rendered, line_width, line_height = [], 0.0, 0
+                for run in logical:
+                    pixels = max(8, int(float(run.get("font_size", parent_style["font_size"])) * minimum * scale))
+                    font = self._font(
+                        pixels,
+                        bold=str(run.get("font_weight", parent_style["font_weight"])) == "bold",
+                        family=str(run.get("font_family", parent_style["font_family"])),
+                    )
+                    text_value = str(run["content"])
+                    bbox = draw.textbbox((0, 0), text_value, font=font)
+                    if letter_spacing:
+                        advances = [float(draw.textlength(character, font=font)) for character in text_value]
+                        run_width = sum(advances) + letter_spacing * max(0, len(advances) - 1)
+                    else:
+                        advances = []
+                        run_width = float(draw.textlength(text_value, font=font))
+                    run_height = max(1, bbox[3] - bbox[1])
+                    rendered.append({
+                        **run, "font": font, "pixels": pixels, "bbox": bbox,
+                        "width": run_width, "height": run_height, "advances": advances,
+                        "fill": self._rgba(run.get("color", parent_style["color"]), (17, 17, 17, 255)),
+                    })
+                    line_width += run_width
+                    line_height = max(line_height, run_height)
+                lines.append({"runs": rendered, "width": line_width,
+                              "height": max(1, line_height)})
+            parent_pixels = max(8, int(parent_style["font_size"] * minimum * scale))
+            gap = max(1, int(parent_pixels * max(0.0, float(item.get("line_height", 1.2)) - 1.0)))
+            total_height = sum(line["height"] for line in lines) + gap * max(0, len(lines) - 1)
+            return lines, gap, max((line["width"] for line in lines), default=0), total_height
+
+        scale = 1.0
+        available_width, available_height = max(1, x2 - x1), max(1, y2 - y1)
+        while True:
+            lines, line_gap, measured_width, measured_height = materialize(scale)
+            if ((measured_width <= available_width and measured_height <= available_height)
+                    or scale <= .2):
+                break
+            scale = max(.2, scale * .92)
+
         stroke_fill = self._rgba(item.get("stroke", "transparent"))
-        stroke_width = max(0, int(float(item.get("stroke_width", 0)) * min(width, height)))
+        stroke_width = max(0, int(float(item.get("stroke_width", 0)) * minimum))
         shadow = item.get("shadow") if isinstance(item.get("shadow"), dict) else {}
-        if shadow:
-            offset_x = int(float(shadow.get("offset_x", .006)) * width)
-            offset_y = int(float(shadow.get("offset_y", .006)) * height)
-            draw.multiline_text((x + offset_x, y + offset_y), content, font=font,
-                                fill=self._rgba(shadow.get("color", "#00000066")),
-                                spacing=max(1, int(font_size * float(item.get("line_height", 1.2)))))
         path = item.get("path") if isinstance(item.get("path"), dict) else None
-        letter_spacing = int(float(item.get("letter_spacing", 0)) * min(width, height))
+        shadow_fill = self._rgba(shadow.get("color", "#00000066")) if shadow else None
+        shadow_offset = (
+            int(float(shadow.get("offset_x", .006)) * width),
+            int(float(shadow.get("offset_y", .006)) * height),
+        ) if shadow else (0, 0)
+
         if path and path.get("type") == "arc" and content:
-            radius = max(font_size, int(float(path.get("radius", .25)) * min(width, height)))
+            styled_characters = [
+                (character, run) for line in lines for run in line["runs"]
+                for character in str(run["content"])
+            ]
+            largest_font = max((run["pixels"] for line in lines for run in line["runs"]), default=8)
+            radius = max(largest_font, int(float(path.get("radius", .25)) * minimum))
             center_x, center_y = x1 + (x2 - x1) // 2, y1 + (y2 - y1) // 2
             start = math.radians(float(path.get("start_angle", 200)))
             end = math.radians(float(path.get("end_angle", 340)))
-            step = (end - start) / max(1, len(content) - 1)
-            for index, character in enumerate(content):
+            step = (end - start) / max(1, len(styled_characters) - 1)
+            for index, (character, run) in enumerate(styled_characters):
                 angle = start + step * index
                 cx = center_x + math.cos(angle) * radius
                 cy = center_y + math.sin(angle) * radius
-                draw.text((cx, cy), character, font=font, anchor="mm", fill=fill,
+                if shadow_fill:
+                    draw.text((cx + shadow_offset[0], cy + shadow_offset[1]), character,
+                              font=run["font"], anchor="mm", fill=shadow_fill)
+                draw.text((cx, cy), character, font=run["font"], anchor="mm", fill=run["fill"],
                           stroke_width=stroke_width, stroke_fill=stroke_fill)
-        elif letter_spacing and "\n" not in content:
-            widths = [draw.textlength(character, font=font) for character in content]
-            total = sum(widths) + letter_spacing * max(0, len(content) - 1)
-            cursor = x1 if item["align"] == "left" else x2-total if item["align"] == "right" else x1+(x2-x1-total)/2
-            for character, char_width in zip(content, widths):
-                draw.text((cursor, y), character, font=font, fill=fill,
-                          stroke_width=stroke_width, stroke_fill=stroke_fill)
-                cursor += char_width + letter_spacing
         else:
-            draw.multiline_text((x, y), content, font=font, fill=fill,
-                                spacing=max(1, int(font_size * float(item.get("line_height", 1.2)))),
-                                align=item.get("align", "center"), stroke_width=stroke_width,
-                                stroke_fill=stroke_fill)
+            line_top = y1 + (available_height - measured_height) / 2
+            for line in lines:
+                align = item.get("align", "center")
+                cursor = (x1 if align == "left" else x2 - line["width"] if align == "right"
+                          else x1 + (available_width - line["width"]) / 2)
+                for run in line["runs"]:
+                    run_y = line_top + (line["height"] - run["height"]) / 2 - run["bbox"][1]
+                    if letter_spacing:
+                        for character, advance in zip(str(run["content"]), run["advances"]):
+                            if shadow_fill:
+                                draw.text((cursor + shadow_offset[0], run_y + shadow_offset[1]),
+                                          character, font=run["font"], fill=shadow_fill)
+                            draw.text((cursor, run_y), character, font=run["font"], fill=run["fill"],
+                                      stroke_width=stroke_width, stroke_fill=stroke_fill)
+                            cursor += advance + letter_spacing
+                    else:
+                        if shadow_fill:
+                            draw.text((cursor + shadow_offset[0], run_y + shadow_offset[1]),
+                                      run["content"], font=run["font"], fill=shadow_fill)
+                        draw.text((cursor, run_y), run["content"], font=run["font"], fill=run["fill"],
+                                  stroke_width=stroke_width, stroke_fill=stroke_fill)
+                        cursor += run["width"]
+                line_top += line["height"] + line_gap
 
     def render(self, profile_id: str, production_paths, *, instruction: str = "",
                visible_copy: str = "", edit_state: dict | None = None,
@@ -1210,11 +1334,15 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                backend: str = "auto", seed: int = 42, preview_only: bool = False,
                scene_plan: dict | None = None, guidance_paths=None,
                memory_context: str = "", edit_baseline: dict | None = None,
-               edit_instruction: str = "") -> dict:
+               edit_instruction: str = "", preview_effects: list[dict] | None = None) -> dict:
         """Render exclusively from a model-authored scene plan, never a named template."""
         profile = self.load_profile(profile_id); paths = self._validate_images(production_paths)
+        source_hashes = [self._sha256(path) for path in paths]
+        active_instruction = edit_instruction or instruction
+        effects = normalize_preview_effects(preview_effects)
+        scene_instruction = instruction_in_source_coordinates(active_instruction, effects)
         route = route_mockup_request(
-            instruction, backend=backend,
+            active_instruction, backend=backend,
             segmentation_ready=bool(self.subject_runtime.status().get("birefnet_ready", False)),
         )
         team_run = TeamRun("mockup", instruction, {
@@ -1243,9 +1371,15 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         ))
         plan = (self.team_runtime.execute_role(team_run, "design_director", plan_factory)
                 if self.team_runtime else plan_factory(team_run))
-        plan, visible_copy, exact_copy_fields = enforce_exact_user_copy(plan, instruction, visible_copy)
+        # Initial instructions are history, not fresh authority over an edit.
+        # Replaying their copy/span styles here can undo a later approved font
+        # or colour change. The current revision already contains that history.
+        literal_instruction = (active_instruction if edit_baseline is None or
+                               requests_visible_copy_change(active_instruction) else "")
+        plan, visible_copy, exact_copy_fields = enforce_exact_user_copy(plan, literal_instruction, visible_copy)
         if exact_copy_fields:
             plan["exact_copy_fields"] = exact_copy_fields
+        plan, _subject_fields = enforce_subject_background_constraints(plan, active_instruction)
         # IP-Adapter can reproduce people/text from reference sheets. Automatic
         # mode therefore uses the model-authored vector/raster scene only.
         use_generative = backend in {"generative", "generative_sdxl"}
@@ -1260,33 +1394,57 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             except Exception as exc:
                 if backend in {"generative", "generative_sdxl"}: raise
                 generation_error, use_generative = str(exc), False
-        plan, grounded_fields = self._enforce_detected_subject_visibility(plan, paths, instruction)
+        plan, grounded_fields = self._enforce_detected_subject_visibility(plan, paths, scene_instruction)
         if grounded_fields:
             plan["source_grounded_fields"] = grounded_fields
         if edit_baseline is not None and edit_instruction:
-            plan, _ = preserve_unrequested_scene_fields(edit_baseline, plan, edit_instruction)
-        def render_current(current_plan):
+            plan, _ = preserve_unrequested_scene_fields(edit_baseline, plan, scene_instruction)
+        # Local scene requirements never depend on the VLM being available.
+        # These are the mandatory contracts; aesthetic criticism is advisory.
+        def assert_render_contract(current_plan, image):
+            verification_image = undo_preview_geometry(image, effects)
+            violations = self._scene_contract_violations(current_plan, scene_instruction, visible_copy)
+            violations.extend(self._render_contract_violations(
+                verification_image, current_plan, scene_instruction))
+            if violations:
+                raise ScenePlanError("렌더링 결과가 디자인 계약을 충족하지 못했습니다: " + "; ".join(violations))
+
+        segmentation_evidence = []
+
+        def render_prepared(current_plan, render_paths):
             graph = scene_plan_to_layer_graph(current_plan)
             validate_layer_graph(graph, asset_count=len(paths))
             # A generated pixel background cannot be represented as a reusable
             # source layer yet, so that explicit backend keeps the compatibility renderer.
             if background is not None:
-                return self._render_scene_plan(current_plan, paths, background=background), graph, "pillow-generative-composite-v1", ""
+                return self._render_scene_plan(current_plan, render_paths, background=background), graph, "pillow-generative-composite-v1", ""
             ratio = float(current_plan["canvas"]["aspect_ratio"])
             svg_width, svg_height = ((1600, max(900, int(1600 / ratio))) if ratio >= 1 else
                                      (max(900, int(1600 * ratio)), 1600))
-            svg = layer_graph_to_svg(graph, paths, svg_width, svg_height)
+            svg = layer_graph_to_svg(graph, render_paths, svg_width, svg_height)
             try:
                 return render_svg_with_qt(svg, svg_width, svg_height), graph, "qt-svg-layer-graph-v1", svg
             except Exception:
-                return self._render_scene_plan(current_plan, paths), graph, "pillow-layer-graph-fallback-v1", svg
+                return self._render_scene_plan(current_plan, render_paths), graph, "pillow-layer-graph-fallback-v1", ""
+
+        def render_current(current_plan):
+            nonlocal segmentation_evidence
+            with prepared_subject_sources(current_plan, paths, self.subject_runtime) as (render_paths, evidence):
+                segmentation_evidence = evidence
+                if evidence and self.team_runtime:
+                    self.team_runtime.execute_role(team_run, "subject_specialist", lambda _run: evidence)
+                image, graph, engine, svg = render_prepared(current_plan, render_paths)
+                if effects:
+                    # The editable scene stays source-linked. A stale SVG must
+                    # not be exported as if it included whole-preview edits.
+                    image = apply_preview_effects(image, effects)
+                    svg = ""
+                return image, graph, engine, svg
 
         rendered = (self.team_runtime.execute_role(team_run, "renderer", lambda _run: render_current(plan))
                     if self.team_runtime else render_current(plan))
         canvas, layer_graph, renderer_name, editable_svg = rendered
-        pixel_violations = self._render_contract_violations(canvas, plan, instruction)
-        if pixel_violations:
-            raise ScenePlanError("렌더링 결과가 디자인 계약을 충족하지 못했습니다: " + "; ".join(pixel_violations))
+        assert_render_contract(plan, canvas)
         quality_verdict = {"passed": True, "score": 1.0, "violations": [], "skipped": True}
         correction_history = []
         if self.enable_visual_review:
@@ -1296,7 +1454,7 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 review_path = review_root / f"review_{uuid.uuid4().hex}.png"
                 canvas.convert("RGB").save(review_path, "PNG")
                 quality_verdict = self._review_rendered_image(
-                    review_path, profile, instruction, visible_copy, plan
+                    review_path, profile, active_instruction, visible_copy, plan
                 )
                 if self.team_runtime and correction_index == 0:
                     team_run.artifacts["rendered_image"] = str(review_path)
@@ -1311,20 +1469,28 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 try:
                     revised, _copy, fields = self._request_scene_edit_patch(
                         profile, paths, plan, visible_copy, correction,
-                        memory_context="시각 품질 검수 자동 교정",
+                        memory_context="시각 품질 검수 자동 교정", preview_effects=effects,
                     )
                     if not scene_changed(plan, revised):
                         break
                     plan = revised
                     if edit_baseline is not None and edit_instruction:
                         plan, _ = preserve_unrequested_scene_fields(
-                            edit_baseline, plan, edit_instruction
+                            edit_baseline, plan, scene_instruction
                         )
+                    # The critic supplies advice, not new user authority. Keep
+                    # literal copy and re-apply the user's exact constraints,
+                    # e.g. a requested 64px must not become the critic's 144px.
+                    plan, _ = enforce_explicit_user_constraints(
+                        plan, instruction_in_source_coordinates(correction, effects))
+                    if edit_baseline is not None and edit_instruction:
+                        plan, _ = preserve_unrequested_scene_fields(edit_baseline, plan, scene_instruction)
                     correction_history.append({"instruction": correction, "fields": fields})
                     if self.team_runtime:
                         team_run.artifacts["layer_graph"] = scene_plan_to_layer_graph(plan)
                         self.team_runtime.execute_role(team_run, "corrector", lambda _run: team_run.artifacts["layer_graph"])
                     canvas, layer_graph, renderer_name, editable_svg = render_current(plan)
+                    assert_render_contract(plan, canvas)
                 except Exception as exc:
                     correction_history.append({"instruction": correction, "error": str(exc)})
                     break
@@ -1341,28 +1507,56 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 "렌더링 결과가 시각 품질 검수를 통과하지 못해 미리보기를 제공하지 않았습니다: "
                 + "; ".join(quality_verdict.get("violations", []))
             )
+        # A failing correction must never become an unverified-but-published
+        # bitmap merely because the next VLM call fails or is disabled.
+        output_mode = "RGBA" if plan.get("canvas", {}).get("background") == "transparent" else "RGB"
+        canvas = canvas.convert(output_mode)
+        assert_render_contract(plan, canvas)
+        if edit_baseline is not None and edit_instruction and scene_changed(edit_baseline, plan):
+            validate_patch_against_instruction(
+                scene_instruction, scene_diff_fields(edit_baseline, plan), before=edit_baseline, after=plan,
+            )
+        # Bind provenance to the inputs that began the transaction. Re-hashing
+        # only for metadata would silently certify a competing edit as the
+        # source of pixels that were already embedded from the older file.
+        try:
+            sources_unchanged = source_hashes == [self._sha256(path) for path in paths]
+        except OSError as exc:
+            raise ScenePlanError("렌더링 중 원본 이미지가 변경되거나 사라졌습니다.") from exc
+        if not sources_unchanged:
+            raise ScenePlanError("렌더링 중 원본 이미지가 변경되어 결과를 저장하지 않았습니다.")
         output_root = (Path(tempfile.gettempdir()) / "jarvis_mockup_previews" if preview_only else Path(output_dir).expanduser().resolve())
         output_root.mkdir(parents=True, exist_ok=True)
         safe_name = "".join(c for c in basename if c.isalnum() or c in "-_ ").strip() or "mockup"
         suffix = uuid.uuid4().hex if preview_only else time.strftime('%Y%m%d_%H%M%S')
         output_path = output_root / f"{safe_name}_{suffix}.png"
-        output_mode = "RGBA" if plan.get("canvas", {}).get("background") == "transparent" else "RGB"
-        canvas.convert(output_mode).save(output_path, "PNG", optimize=True)
+        canvas.save(output_path, "PNG", optimize=True)
+        try:
+            with Image.open(output_path) as committed:
+                committed.load()
+                if committed.size != canvas.size:
+                    raise ScenePlanError("저장된 미리보기 크기가 렌더링 결과와 다릅니다.")
+                assert_render_contract(plan, committed)
+        except Exception:
+            output_path.unlink(missing_ok=True)
+            raise
         svg_path = output_path.with_suffix(".svg")
         if editable_svg:
             svg_path.write_text(editable_svg, encoding="utf-8")
+        editable_svg_sha256 = self._sha256(svg_path) if editable_svg else ""
         parent_digest = scene_digest(edit_baseline) if isinstance(edit_baseline, dict) else ""
         previous_revision = int((edit_baseline or {}).get("document", {}).get("revision", -1))
         plan = stamp_scene_document(plan, revision=previous_revision + 1, parent_digest=parent_digest)
         layer_graph["compatibility_scene_plan"] = deepcopy(plan)
         metadata = {
             "output": str(output_path), "profile_id": profile.profile_id, "references": profile.reference_hashes,
-            "production_inputs": [self._sha256(path) for path in paths], "production_sources": [str(path) for path in paths],
+            "production_inputs": source_hashes, "production_sources": [str(path) for path in paths],
             "width": canvas.width, "height": canvas.height, "renderer": "ai-scene-plan-renderer-v3",
             "render_engine": renderer_name,
             "editable_svg": str(svg_path) if editable_svg else "",
-            "generation_backend": "generative" if use_generative else "model_planned_local",
-            "reference_pixels_sent_to_generator": bool(use_generative),
+            "editable_svg_sha256": editable_svg_sha256,
+            "generation_backend": backend if use_generative else "model_planned_local",
+            "reference_pixels_sent_to_generator": bool(use_generative and backend == "generative"),
             "seed": int(seed), "scene_plan": plan, "composition_plan": plan["assets"],
             "instruction": instruction.strip(), "visible_copy": visible_copy.strip(), "preview_only": bool(preview_only),
             "guidance_sources": [str(Path(path).resolve()) for path in (guidance_paths or [])],
@@ -1370,11 +1564,17 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             "layer_graph": layer_graph, "quality_verdict": quality_verdict,
             "automatic_corrections": correction_history,
             "subject_evidence": subject_evidence,
+            "subject_processing_evidence": segmentation_evidence,
             "team_events": team_run.events,
             "pipeline_route": route.as_dict(),
             "scene_digest": scene_digest(plan),
             "revision": int(plan["document"]["revision"]),
+            "output_sha256": self._sha256(output_path),
+            "preview_effects": effects,
+            "adjustment_base": str(output_path), "adjustment_base_effects": deepcopy(effects),
+            "adjustment_base_sha256": self._sha256(output_path), "adjustments": {},
         }
+        metadata = with_preview_state(metadata)
         if not preview_only: output_path.with_suffix(".json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
         return metadata
 
@@ -1387,41 +1587,97 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         target = Path(destination).expanduser().resolve()
         if target.suffix.casefold() != ".png":
             target = target.with_suffix(".png")
+        if target == source:
+            raise ValueError("최종 저장 경로는 임시 미리보기와 달라야 합니다.")
         from core.artifact_validation import validate_local_artifact
         valid_source, source_reason = validate_local_artifact(source)
         if not valid_source:
             raise ValueError(f"손상된 미리보기는 저장할 수 없습니다: {source_reason}")
+        result = deepcopy(metadata or {})
+        assert_preview_state(result)
+        if result.get("output") and Path(result["output"]).expanduser().resolve() != source:
+            raise ValueError("현재 미리보기와 저장할 디자인 문서의 경로가 다릅니다.")
+        source_hash = self._sha256(source)
+        if result.get("output_sha256") and result["output_sha256"] != source_hash:
+            raise ValueError("현재 미리보기 이미지가 검증 후 변경되었습니다. 다시 렌더링해 주세요.")
+        plan = result.get("scene_plan")
+        active_instruction = str(result.get("edit_instruction") or result.get("instruction") or "")
+        if isinstance(plan, dict):
+            if result.get("scene_digest") and result["scene_digest"] != scene_digest(plan):
+                raise ValueError("현재 미리보기와 디자인 문서의 버전이 다릅니다.")
+            with Image.open(source) as image:
+                effects = normalize_preview_effects(result.get("preview_effects"))
+                scene_instruction = instruction_in_source_coordinates(active_instruction, effects)
+                violations = self._scene_contract_violations(plan, scene_instruction, str(result.get("visible_copy", "")))
+                violations.extend(self._render_contract_violations(
+                    undo_preview_geometry(image, effects), plan, scene_instruction))
+            if violations:
+                raise ScenePlanError("미리보기 저장 전 검증 실패: " + "; ".join(violations))
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-        valid_target, target_reason = validate_local_artifact(target)
-        if not valid_target:
-            target.unlink(missing_ok=True)
-            raise ValueError(f"저장된 이미지 검증에 실패했습니다: {target_reason}")
-        result = dict(metadata or {})
         editable_svg = Path(str(result.get("editable_svg", ""))) if result.get("editable_svg") else None
-        if editable_svg and editable_svg.is_file():
-            target_svg = target.with_suffix(".svg")
-            shutil.copy2(editable_svg, target_svg)
-            result["editable_svg"] = str(target_svg)
-        result.update({"output": str(target), "preview_only": False, "saved_from_preview": str(source)})
-        result["artifact_validation"] = {"passed": True, "details": target_reason}
+        result.update({"output": str(target), "preview_only": False, "saved_from_preview": str(source),
+                       "output_sha256": source_hash})
+        from core.artifact_transaction import commit_artifact_bundle
+        # Prepare and validate the complete bundle before replacing ANY user
+        # file. A failure publishing JSON/SVG must not leave a new PNG beside
+        # old metadata or destroy the previous approved output.
+        with tempfile.TemporaryDirectory(prefix=".jarvis-publish-", dir=target.parent) as staging_dir:
+            stage = Path(staging_dir)
+            staged_png = stage / target.name
+            shutil.copy2(source, staged_png)
+            valid_target, target_reason = validate_local_artifact(staged_png)
+            if not valid_target:
+                raise ValueError(f"저장할 이미지 검증에 실패했습니다: {target_reason}")
+            if self._sha256(staged_png) != source_hash or self._sha256(source) != source_hash:
+                raise ValueError("저장할 이미지가 검증한 현재 미리보기와 다릅니다.")
+            bundle = {staged_png: target}
+            if editable_svg:
+                if editable_svg.resolve() != source.with_suffix(".svg") or not editable_svg.is_file():
+                    raise ValueError("현재 미리보기에 연결된 SVG가 없거나 다른 결과의 파일입니다.")
+                expected_svg_hash = str(result.get("editable_svg_sha256", ""))
+                if not expected_svg_hash:
+                    raise ValueError("현재 미리보기 SVG의 검증 해시가 없습니다. 다시 렌더링해 주세요.")
+                if self._sha256(editable_svg) != expected_svg_hash:
+                    raise ValueError("현재 미리보기 SVG가 검증 후 변경되었습니다. 다시 렌더링해 주세요.")
+                valid_svg, svg_reason = validate_local_artifact(editable_svg)
+                if not valid_svg:
+                    raise ValueError(f"저장할 SVG 검증에 실패했습니다: {svg_reason}")
+                staged_svg = stage / target.with_suffix(".svg").name
+                shutil.copy2(editable_svg, staged_svg)
+                if self._sha256(staged_svg) != expected_svg_hash or self._sha256(editable_svg) != expected_svg_hash:
+                    raise ValueError("저장할 SVG가 검증한 현재 미리보기와 다릅니다.")
+                bundle[staged_svg] = target.with_suffix(".svg")
+                result["editable_svg"] = str(target.with_suffix(".svg"))
+            result["artifact_validation"] = {"passed": True, "details": target_reason}
+            staged_json = stage / target.with_suffix(".json").name
+            staged_json.write_text(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+            bundle[staged_json] = target.with_suffix(".json")
+            commit_artifact_bundle(bundle)
         from core.quality_metrics import get_quality_metric_store
-        quality = get_quality_metric_store()
-        quality.record("specialist_artifact_quality", 1.0, success=True, context={
-            "workspace": "mockup", "path": str(target), "validation": target_reason,
-        })
-        quality.record("mockup_visual_approval", 1.0, success=True, context={
-            "workspace": "mockup", "source": "explicit_preview_save",
-            "review_status": str((result.get("quality_verdict") or {}).get("status", "passed")),
-        })
+        # A metrics/index outage after a verified publication is not a failed
+        # image save. Report the secondary failure without prompting a resend.
+        warnings = []
+        try:
+            quality = get_quality_metric_store()
+            quality.record("specialist_artifact_quality", 1.0, success=True, context={
+                "workspace": "mockup", "path": str(target), "validation": target_reason,
+            })
+            quality.record("mockup_visual_approval", 1.0, success=True, context={
+                "workspace": "mockup", "source": "explicit_preview_save",
+                "review_status": str((result.get("quality_verdict") or {}).get("status", "unverified")),
+            })
+        except Exception as exc:
+            warnings.append(f"이미지는 저장됐지만 품질 기록 갱신에 실패했습니다: {type(exc).__name__}")
         profile_id = str(result.get("profile_id", ""))
         if profile_id:
-            self.style_index.add(profile_id, target, kind="approved_result", approved=True,
-                                 metadata={"instruction": result.get("edit_instruction") or result.get("instruction", ""),
-                                           "quality_verdict": result.get("quality_verdict", {})})
-        target.with_suffix(".json").write_text(
-            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+            try:
+                self.style_index.add(profile_id, target, kind="approved_result", approved=True,
+                                     metadata={"instruction": result.get("edit_instruction") or result.get("instruction", ""),
+                                               "quality_verdict": result.get("quality_verdict", {})})
+            except Exception as exc:
+                warnings.append(f"이미지는 저장됐지만 승인 스타일 기억 갱신에 실패했습니다: {type(exc).__name__}")
+        if warnings:
+            result["post_save_warnings"] = warnings
         return result
 
     @staticmethod
@@ -1467,18 +1723,50 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         if not isinstance(previous_plan, dict):
             raise ValueError("이전 결과에 AI 디자인 설계도가 없습니다. 새 파이프라인으로 시안을 다시 생성해 주세요.")
         assert_scene_document(previous_plan, expected_digest=str(metadata.get("scene_digest", "")))
+        assert_preview_state(metadata)
+        if metadata.get("output_sha256") and self._sha256(Path(metadata["output"])) != metadata["output_sha256"]:
+            raise ValueError("현재 미리보기가 검증 후 변경되었습니다. 최신 결과를 다시 선택해 주세요.")
+        effects = normalize_preview_effects(metadata.get("preview_effects"))
+        scene_instruction = instruction_in_source_coordinates(instruction, effects)
+        # Whole-preview colour adjustments are applied after every scene
+        # layer.  They can make an exact text-colour request visually
+        # impossible even when the JSON says it succeeded.  Fail explicitly
+        # instead of reporting a false edit; the user can reset the conflicting
+        # slider while all other approved scene fields remain untouched.
+        text_colour_request = bool(re.search(
+            r"(?:문구|텍스트|글자|카피).{0,24}(?:색|컬러)|(?:색|컬러).{0,24}(?:문구|텍스트|글자|카피)",
+            instruction, re.I,
+        ))
+        exact_hex_request = bool(re.search(r"#[0-9a-fA-F]{6}(?![0-9a-fA-F])", instruction))
+        chromatic_request = bool(re.search(r"빨간|빨강|파란|파랑|초록|노란|보라", instruction))
+        if text_colour_request and (exact_hex_request or chromatic_request):
+            for effect in effects:
+                if effect.get("operation") != "adjust":
+                    continue
+                values = effect.get("values", {})
+                exact_conflict = exact_hex_request and any(
+                    abs(float(values.get(name, 1.0)) - 1.0) > 1e-9
+                    for name in ("brightness", "contrast", "saturation")
+                )
+                hue_conflict = chromatic_request and float(values.get("saturation", 1.0)) <= 1e-9
+                if exact_conflict or hue_conflict:
+                    raise ScenePlanError(
+                        "현재 미리보기의 전체 색상 조정 때문에 요청한 글자 색을 화면에 정확히 표시할 수 없습니다. "
+                        "밝기·대비·채도 조정을 기본값으로 되돌린 뒤 다시 적용해 주세요."
+                    )
         profile = self.load_profile(profile_id)
         paths = self._validate_images(sources)
         # A repeated, measurable request is a successful idempotent operation,
         # not a model failure.  Check it before asking the model to invent a
         # delta; otherwise a correct no-op patch is retried three times and is
         # eventually reported as an error.
-        explicit_plan, explicit_fields = enforce_explicit_user_constraints(previous_plan, instruction)
+        explicit_plan, explicit_fields = enforce_explicit_user_constraints(previous_plan, scene_instruction)
         explicit_plan, grounded_fields = self._enforce_detected_subject_visibility(
-            explicit_plan, paths, instruction
+            explicit_plan, paths, scene_instruction
         )
-        recognized_noop = bool(explicit_fields or grounded_fields or re.search(
-            r"글꼴(?:을|은)?\s*['\"][^'\"]+['\"]|(?:글자\s*)?크기(?:를|는)?\s*\d{1,3}\s*픽셀",
+        recognized_noop = bool(explicit_fields or grounded_fields or subject_background_edits(instruction)
+                               or requested_font_size_pixels(instruction) is not None or re.search(
+            r"글꼴(?:을|은)?\s*['\"][^'\"]+['\"]",
             instruction,
             re.I,
         ))
@@ -1493,11 +1781,32 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 backend="auto", seed=seed, preview_only=True,
                 guidance_paths=guidance_paths, memory_context=memory_context,
                 edit_baseline=previous_plan, edit_instruction=instruction,
+                preview_effects=effects,
             )
             # The extra render exists only to prove the current visual output
             # still satisfies the request. Keep the user's active preview and
             # revision stable instead of silently replacing it with a duplicate.
             verified_output = Path(str(verification.get("output", "")))
+            same_pixels = False
+            try:
+                with Image.open(metadata["output"]) as previous_image, Image.open(verified_output) as checked_image:
+                    previous_pixels, checked_pixels = previous_image.convert("RGBA"), checked_image.convert("RGBA")
+                    same_pixels = previous_pixels.size == checked_pixels.size and all(
+                        channel.getbbox() is None for channel in
+                        ImageChops.difference(previous_pixels, checked_pixels).split()
+                    )
+            except (OSError, KeyError, ValueError):
+                pass
+            if not same_pixels:
+                # The scene may match but an old/corrupted bitmap does not.
+                # Return the verified repair instead of claiming it was already
+                # visible; the caller's ordinary undo stack keeps the old view.
+                verification.update({
+                    "renderer": "verified-preview-repair-v1", "already_satisfied": False,
+                    "edit_instruction": instruction.strip(), "applied_edit_fields": [],
+                    "revision": int(metadata.get("revision", 0)) + 1,
+                })
+                return verification
             for artifact in (
                 verified_output,
                 verified_output.with_suffix(".json"),
@@ -1518,17 +1827,18 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 "scene_digest": scene_digest(previous_plan),
                 "quality_verdict": verification.get("quality_verdict", {}),
             })
-            return result
+            return with_preview_state(result)
         try:
             revised_plan, revised_copy, patch_fields = self._request_scene_edit_patch(
                 profile, paths, previous_plan, str(metadata.get("visible_copy", "")), instruction.strip(),
                 guidance_paths=guidance_paths, memory_context=memory_context,
+                current_preview_path=metadata.get("output"), preview_effects=effects,
             )
             renderer = "ai-scene-patch-v5"
         except ScenePlanError as model_error:
-            revised_plan, patch_fields = enforce_explicit_user_constraints(previous_plan, instruction)
+            revised_plan, patch_fields = enforce_explicit_user_constraints(previous_plan, scene_instruction)
             revised_plan, grounded_fields = self._enforce_detected_subject_visibility(
-                revised_plan, paths, instruction
+                revised_plan, paths, scene_instruction
             )
             patch_fields = list(dict.fromkeys([*patch_fields, *grounded_fields]))
             if not scene_changed(previous_plan, revised_plan):
@@ -1537,12 +1847,12 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
                 revised_copy = str(metadata.get("visible_copy", ""))
                 renderer = "structured-scene-patch-v4"
             validate_patch_against_instruction(
-                instruction, patch_fields, before=previous_plan, after=revised_plan,
+                scene_instruction, patch_fields, before=previous_plan, after=revised_plan,
             )
             revised_copy = str(metadata.get("visible_copy", ""))
             renderer = "structured-scene-patch-v4"
         revised_plan, grounded_fields = self._enforce_detected_subject_visibility(
-            revised_plan, paths, instruction
+            revised_plan, paths, scene_instruction
         )
         patch_fields = list(dict.fromkeys([*patch_fields, *grounded_fields]))
         if requests_visible_copy_change(instruction):
@@ -1556,13 +1866,13 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
         # the user's requested groups once more at the transaction boundary so
         # no later helper can silently rewrite an unrelated layer.
         revised_plan, _ = preserve_unrequested_scene_fields(
-            previous_plan, revised_plan, instruction
+            previous_plan, revised_plan, scene_instruction
         )
         patch_fields = scene_diff_fields(previous_plan, revised_plan)
         if not patch_fields:
             raise ScenePlanError("수정 명령이 현재 미리보기에 실제 시각 변화를 만들지 못했습니다.")
         validate_patch_against_instruction(
-            instruction, patch_fields, before=previous_plan, after=revised_plan,
+            scene_instruction, patch_fields, before=previous_plan, after=revised_plan,
         )
         result = self.render(
             profile_id, sources, instruction=str(metadata.get("instruction", "")),
@@ -1570,11 +1880,12 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             backend="auto", seed=seed, preview_only=True,
             guidance_paths=guidance_paths, memory_context=memory_context,
             edit_baseline=previous_plan, edit_instruction=instruction,
+            preview_effects=effects,
         )
         final_plan = result.get("scene_plan") if isinstance(result.get("scene_plan"), dict) else revised_plan
         patch_fields = scene_diff_fields(previous_plan, final_plan)
         validate_patch_against_instruction(
-            instruction, patch_fields, before=previous_plan, after=final_plan,
+            scene_instruction, patch_fields, before=previous_plan, after=final_plan,
         )
         result.update({"renderer": renderer,
                        "edit_instruction": instruction.strip(), "applied_edit_fields": patch_fields,
@@ -1584,13 +1895,18 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
     def _request_scene_edit_patch(self, profile: MockupStyleProfile, paths: list[Path],
                                   previous_plan: dict, visible_copy: str,
                                   instruction: str, guidance_paths=None,
-                                  memory_context: str = "") -> tuple[dict, str, list[str]]:
+                                  memory_context: str = "", current_preview_path=None,
+                                  preview_effects=None) -> tuple[dict, str, list[str]]:
         """Ask the vision model for a delta and verify that the delta changes the scene."""
         vision = self.vision or VisionRuntime()
         planner = self._get_scene_planner()
         guidance = self._validate_images(guidance_paths or []) if guidance_paths else []
         evidence_paths = [*profile.reference_paths[:8], *[str(path) for path in paths[:4]],
                           *[str(path) for path in guidance[:4]]]
+        current_preview = self._validate_images([current_preview_path]) if current_preview_path else []
+        source_instruction = instruction_in_source_coordinates(instruction, preview_effects)
+        if current_preview:
+            evidence_paths.insert(0, str(current_preview[0]))
         guidance_observation = "첨부 없음"
         if guidance:
             try:
@@ -1602,7 +1918,7 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             finally:
                 release = getattr(vision, "release_model", None)
                 if callable(release): release()
-        allowed_scopes = sorted(infer_edit_scopes(instruction))
+        allowed_scopes = sorted(infer_edit_scopes(source_instruction))
         allowed_scope_text = ", ".join(allowed_scopes) if allowed_scopes else "명령에서 직접 지칭한 대상만"
         last_error = ""
         previous_answer = ""
@@ -1613,8 +1929,12 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
             prompt = f"""당신은 비파괴 이미지 편집 명령 해석기입니다.
 사용자 수정 명령을 기존 전체 설계도가 아니라 최소 변경 패치로 변환하세요.
 사용자 명령: {instruction}
+설계 좌표계로 변환된 위치 명령: {source_instruction}
 현재 표시 문구: {visible_copy or '없음'}
 현재 설계도: {json.dumps(previous_plan, ensure_ascii=False)}
+현재 화면 캡처가 첫 번째 첨부 이미지인가: {bool(current_preview)}
+현재 화면에 누적된 비파괴 후처리: {json.dumps(normalize_preview_effects(preview_effects), ensure_ascii=False)}
+설계 좌표는 후처리 전 좌표계입니다. 화면의 회전·반전을 고려해 이동 방향을 역변환하세요. 후처리는 재렌더링 뒤 그대로 재적용되므로 패치에 중복으로 넣지 마세요.
 학습된 스타일 근거: {json.dumps(profile.style_features, ensure_ascii=False)}
 첨부된 수정 참고 이미지/스케치 수: {len(guidance)}. 스케치는 픽셀 복사가 아니라 위치·화살표·영역 의도로 해석하세요.
 첨부 시각자료 관찰: {guidance_observation}
@@ -1625,6 +1945,9 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
 2. 요청하지 않은 텍스트 크기·위치·색, 사진 배치, 배경, 장식은 패치에 넣지 마세요.
 3. assets와 texts의 index는 현재 설계도의 index입니다. 변경하지 않는 요소는 배열에서 생략하세요.
 4. 문구 내용 변경은 visible_copy에 새 문구를 쓰고, 삭제는 remove_visible_copy=true로 지정하세요.
+4-1. 기존 문구의 특정 구절만 색상·글꼴·크기·굵기를 바꾸면 texts[index].spans에
+     대상 span의 index와 바꿀 속성만 넣으세요. 부모 texts[index]의 같은 속성을 바꾸는 것으로
+     대신하지 말고, span의 content는 수정하지 마세요.
 5. decorations 전체를 바꿀 때만 replace_decorations=true로 지정하세요. 장식 하나를 추가·수정·삭제할 때는 replace_decorations=false이고 decorations 항목에 action(add/update/remove)과 index를 넣으세요. 점선은 dash=true, 점 길이와 간격은 dash_length/gap_length로 지정하세요.
 5-1. '사진/프레임 안쪽' 같은 상대 위치는 해당 asset의 x/y/width/height를 기준으로 여백을 빼서 decoration 좌표를 계산하세요. 참고 이미지나 스케치의 선·박스·화살표는 이 장식 또는 배치 좌표로 변환하세요.
 6. success_criteria에는 결과 이미지에서 확인 가능한 완료 조건을 구체적으로 쓰세요.
@@ -1633,6 +1956,7 @@ x와 y는 중심이 아니라 왼쪽 위 좌표이며 x+width와 y+height는 1 �
 9. 방향·크기·색상 표현은 같은 절에서 가장 가까운 대상 명사에만 연결하세요. 예를 들어 '스티커 오른쪽이 잘림'은 텍스트 오른쪽 이동이 아닙니다.
 10. 사진·인물·피사체 자체의 확대/축소는 assets[index].zoom으로, 사진 내부 초점 이동은 focal_x/focal_y로 표현하세요.
 11. 스티커·프레임·사진 영역 자체의 크기/위치 요청에만 width/height/x/y를 사용하세요. 원형 프레임은 width와 height를 같은 비율로 유지하세요.
+12. 사진 누끼·인물 분리는 해당 assets[index].remove_background=true로 표현합니다. 사진 원본 배경 복원은 false입니다. 문구 배경이나 캔버스 색상과 구분하고, 요청하지 않았으면 기존 값을 보존하세요.
 {correction}
 JSON Schema에 맞는 객체만 반환하세요."""
             try:
@@ -1652,12 +1976,14 @@ JSON Schema에 맞는 객체만 반환하세요."""
                 previous_answer = str(response.get("analysis", ""))
             try:
                 patch = extract_json_object(previous_answer)
-                patch, removed_groups = filter_scene_edit_patch(patch, instruction)
+                patch, removed_groups = filter_scene_edit_patch(
+                    patch, source_instruction, before=previous_plan,
+                )
                 revised, revised_copy, fields = apply_scene_edit_patch(
                     previous_plan, patch, asset_count=len(paths), visible_copy=visible_copy,
                 )
                 validate_patch_against_instruction(
-                    instruction, fields, before=previous_plan, after=revised,
+                    source_instruction, fields, before=previous_plan, after=revised,
                 )
                 verdict_prompt = f"""당신은 이미지 편집 결과 의미 검증기입니다.
 사용자 명령: {instruction}
@@ -1694,49 +2020,83 @@ JSON Schema에 맞는 판정만 반환하세요."""
                 last_error = str(exc)
         raise ScenePlanError(f"AI가 수정 명령을 3회 해석했지만 유효한 변경 패치를 만들지 못했습니다: {last_error}")
 
-    def transform_preview(self, preview_path: str | Path, operation: str, value: float = 1.0) -> dict:
-        """Apply a non-destructive manual operation and return a new temporary draft."""
+    def _manual_preview_source(self, preview_path, metadata):
         source = Path(preview_path).expanduser().resolve()
         if not source.is_file():
             raise ValueError("수정할 미리보기가 없습니다.")
-        from PIL import ImageEnhance
-        with Image.open(source) as opened:
-            image = opened.convert("RGB")
-            if operation == "rotate_left": image = image.rotate(90, expand=True)
-            elif operation == "rotate_right": image = image.rotate(-90, expand=True)
-            elif operation == "flip_horizontal": image = ImageOps.mirror(image)
-            elif operation == "flip_vertical": image = ImageOps.flip(image)
-            elif operation == "brightness": image = ImageEnhance.Brightness(image).enhance(float(value))
-            elif operation == "contrast": image = ImageEnhance.Contrast(image).enhance(float(value))
-            elif operation == "saturation": image = ImageEnhance.Color(image).enhance(float(value))
-            elif operation == "sharpness": image = ImageEnhance.Sharpness(image).enhance(float(value))
-            else: raise ValueError(f"지원하지 않는 편집 작업입니다: {operation}")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValueError("미리보기 메타데이터가 올바르지 않습니다.")
+        state = deepcopy(metadata or {})
+        assert_preview_state(state)
+        source_hash = self._sha256(source)
+        if state.get("output"):
+            if source == Path(state["output"]).expanduser().resolve():
+                expected = state.get("output_sha256")
+            elif state.get("adjustment_base") and source == Path(state["adjustment_base"]).expanduser().resolve():
+                expected = state.get("adjustment_base_sha256")
+            else:
+                raise ValueError("현재 미리보기와 수동 편집 원본이 다릅니다.")
+            if expected and expected != source_hash:
+                raise ValueError("수동 편집 원본이 검증 후 변경되었습니다.")
+        return source, source_hash, state
+
+    def _write_manual_preview(self, image, state, effects, operation, *, renderer):
+        effects = normalize_preview_effects(effects)
         preview_root = Path(tempfile.gettempdir()) / "jarvis_mockup_previews"
         preview_root.mkdir(parents=True, exist_ok=True)
         target = preview_root / f"edited_{uuid.uuid4().hex}.png"
         image.save(target, "PNG", optimize=True)
-        return {"output": str(target), "preview_only": True, "operation": operation,
-                "renderer": "pillow-nondestructive-editor",
-                "width": image.width, "height": image.height}
+        output_hash = self._sha256(target)
+        result = {**state, "output": str(target), "preview_only": True, "operation": operation,
+                  "renderer": renderer, "render_engine": renderer,
+                  "width": image.width, "height": image.height, "output_sha256": output_hash,
+                  "preview_effects": effects, "adjustment_base": str(target),
+                  "adjustment_base_effects": deepcopy(effects), "adjustment_base_sha256": output_hash,
+                  "adjustments": {}, "editable_svg": "", "editable_svg_sha256": "",
+                  "applied_edit_fields": [],
+                  "already_satisfied": False, "revision": int(state.get("revision", 0)) + 1,
+                  "quality_verdict": {"passed": False, "status": "unverified", "skipped": True,
+                                      "reason": "수동 편집 결과는 사용자의 미리보기 확인이 필요합니다."}}
+        return with_preview_state(result)
 
-    def adjust_preview(self, base_path: str | Path, adjustments: dict[str, float]) -> dict:
-        """Apply all four controls once to a stable base, avoiding cumulative degradation."""
-        source = Path(base_path).expanduser().resolve()
-        if not source.is_file():
-            raise ValueError("조정할 미리보기 원본이 없습니다.")
-        from PIL import ImageEnhance
-        values = {name: max(0.0, min(2.0, float(adjustments.get(name, 1.0))))
-                  for name in ("brightness", "contrast", "saturation", "sharpness")}
+    def transform_preview(self, preview_path: str | Path, operation: str, value: float = 1.0,
+                          *, metadata: dict | None = None) -> dict:
+        """Keep alpha and a replayable edit chain for subsequent AI revisions."""
+        source, source_hash, state = self._manual_preview_source(preview_path, metadata)
+        if operation in TRANSFORMS:
+            effect = {"operation": operation}
+        elif operation in ADJUSTMENTS:
+            effect = {"operation": "adjust", "values": normalized_adjustments({operation: value})}
+        else:
+            raise ValueError(f"지원하지 않는 편집 작업입니다: {operation}")
+        effects = [*normalize_preview_effects(state.get("preview_effects")), effect]
         with Image.open(source) as opened:
-            image = opened.convert("RGB")
-            image = ImageEnhance.Brightness(image).enhance(values["brightness"])
-            image = ImageEnhance.Contrast(image).enhance(values["contrast"])
-            image = ImageEnhance.Color(image).enhance(values["saturation"])
-            image = ImageEnhance.Sharpness(image).enhance(values["sharpness"])
-        preview_root = Path(tempfile.gettempdir()) / "jarvis_mockup_previews"
-        preview_root.mkdir(parents=True, exist_ok=True)
-        target = preview_root / f"adjusted_{uuid.uuid4().hex}.png"
-        image.save(target, "PNG", optimize=True)
-        return {"output": str(target), "preview_only": True, "operation": "combined_adjustment",
-                "renderer": "pillow-live-adjustment-v2", "adjustment_base": str(source),
-                "adjustments": values, "width": image.width, "height": image.height}
+            image = apply_preview_effects(opened, [effect])
+        if self._sha256(source) != source_hash:
+            raise ValueError("수동 편집 중 원본 미리보기가 변경되었습니다.")
+        return self._write_manual_preview(image, state, effects, operation,
+                                          renderer="pillow-nondestructive-editor")
+
+    def adjust_preview(self, base_path: str | Path, adjustments: dict[str, float],
+                       *, metadata: dict | None = None) -> dict:
+        """Apply all four controls once to a stable base, avoiding cumulative degradation."""
+        source, source_hash, state = self._manual_preview_source(base_path, metadata)
+        stable_base = state.get("adjustment_base")
+        if stable_base and source != Path(stable_base).expanduser().resolve():
+            raise ValueError(
+                "조정 슬라이더는 현재 미리보기 픽셀이 아니라 검증된 기준 이미지에 적용해야 합니다. "
+                "최신 미리보기를 다시 선택해 주세요."
+            )
+        values = normalized_adjustments(adjustments)
+        base_effects = normalize_preview_effects(
+            state.get("adjustment_base_effects", state.get("preview_effects")))
+        effect = {"operation": "adjust", "values": values}
+        with Image.open(source) as opened:
+            image = apply_preview_effects(opened, [effect])
+        if self._sha256(source) != source_hash:
+            raise ValueError("조정 중 원본 미리보기가 변경되었습니다.")
+        result = self._write_manual_preview(image, state, [*base_effects, effect], "combined_adjustment",
+                                            renderer="pillow-live-adjustment-v2")
+        result.update({"adjustment_base": str(source), "adjustment_base_effects": base_effects,
+                       "adjustment_base_sha256": source_hash, "adjustments": values})
+        return result

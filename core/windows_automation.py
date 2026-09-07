@@ -73,6 +73,30 @@ class WindowsAutomationRuntime:
             raise RuntimeError(f"창 포커스 검증 실패: foreground={foreground}")
         return self.find_window(handle=int(handle))
 
+    def verify_foreground(self, handle: int) -> WindowInfo:
+        """Prove that ``handle`` still owns global keyboard input.
+
+        UIA keyboard focus is local to one accessibility tree.  It is therefore
+        insufficient by itself: another top-level application can become the
+        foreground window while the old UIA element still reports focus.  Every
+        operation that could lead to global keyboard input uses this independent
+        top-level-window proof immediately before dispatch.
+        """
+        expected = int(handle)
+        if expected <= 0:
+            raise LookupError("검증할 창 Handle이 올바르지 않습니다.")
+        if user32 is not None:
+            foreground = int(user32.GetForegroundWindow())
+            if foreground != expected:
+                raise RuntimeError(
+                    f"전역 키보드 입력 직전 창 포커스가 변경되었습니다: "
+                    f"foreground={foreground}, expected={expected}"
+                )
+        window = self.find_window(handle=expected)
+        if not window.visible or not window.enabled or not window.foreground:
+            raise RuntimeError("전역 키보드 입력 직전 대상 창의 활성 상태를 검증하지 못했습니다.")
+        return window
+
     @staticmethod
     def _normal_accessibility_value(value: str) -> str:
         return re.sub(r"\s+", "", str(value or "")).casefold()
@@ -259,12 +283,16 @@ class WindowsAutomationRuntime:
         self, handle: int, *, names=(), automation_id_keywords=(), control_types=(),
         excluded_names=(), exact_name: bool = False, allow_type_only: bool = False,
         require_unique: bool = False, invoke: bool = True,
+        expected_identity: Optional[Dict[str, Any]] = None,
+        require_keyboard_focus: bool = False, require_foreground: bool = False,
     ) -> Dict[str, Any]:
         """Focus and optionally invoke one verified UIA control.
 
         No mouse coordinate or global shortcut fallback is used.  Ambiguous type-only
         matches are rejected so a messaging command cannot activate an unrelated UI.
         """
+        if require_foreground:
+            self.verify_foreground(handle)
         ranked = self._accessibility_candidates(
             handle, names=names, automation_id_keywords=automation_id_keywords,
             control_types=control_types, excluded_names=excluded_names,
@@ -272,12 +300,30 @@ class WindowsAutomationRuntime:
         )
         if not ranked:
             raise LookupError("접근성 트리에서 요청한 Control을 찾지 못했습니다.")
+        expected_token = self._identity_token(expected_identity)
+        if expected_token:
+            ranked = [item for item in ranked if self._identity_token(
+                item[2].get("control_identity") or self._control_identity(handle, item[1], item[2])
+            ) == expected_token]
+            if not ranked:
+                raise LookupError("이전에 검증한 Control과 동일한 UIA 요소를 찾지 못했습니다.")
         if require_unique and len(ranked) != 1:
             raise LookupError(f"접근성 Control 후보가 {len(ranked)}개라 안전하게 선택할 수 없습니다.")
         _score, wrapper, metadata = ranked[0]
+        identity = metadata.get("control_identity") or self._control_identity(handle, wrapper, metadata)
+        metadata = {**metadata, "control_identity": identity}
         method = "focus"
         try:
             wrapper.set_focus()
+            if require_foreground:
+                self.verify_foreground(handle)
+            if require_keyboard_focus:
+                try:
+                    focused = bool(wrapper.has_keyboard_focus())
+                except Exception as exc:
+                    raise RuntimeError(f"접근성 Control 포커스를 확인할 수 없습니다: {exc}") from exc
+                if not focused:
+                    raise RuntimeError("검증한 UIA Control이 키보드 포커스를 얻지 못했습니다.")
             if invoke:
                 if hasattr(wrapper, "invoke"):
                     wrapper.invoke()
@@ -288,6 +334,20 @@ class WindowsAutomationRuntime:
         except Exception as exc:
             raise RuntimeError(f"접근성 Control 활성화 실패: {exc}") from exc
         time.sleep(0.08)
+        if require_foreground:
+            self.verify_foreground(handle)
+        if require_keyboard_focus:
+            # Re-query the tree after focus message pumping.  A wrapper instance
+            # can outlive the underlying UIA element, so its old focus flag alone
+            # must not authorize subsequent keyboard input.
+            _wrapper, verified = self._accessibility_text_control(
+                handle, names=names, automation_id_keywords=automation_id_keywords,
+                control_types=control_types, excluded_names=excluded_names,
+                exact_name=exact_name, allow_type_only=allow_type_only,
+                require_unique=require_unique, expected_identity=identity,
+                require_keyboard_focus=True, require_foreground=require_foreground,
+            )
+            metadata = {**metadata, **verified}
         return {**metadata, "strategy": "uia", "activation": method,
                 "coordinate_fallback_used": False}
 
@@ -295,9 +355,11 @@ class WindowsAutomationRuntime:
         self, handle: int, *, names=(), automation_id_keywords=(), control_types=("Edit",),
         excluded_names=(), exact_name: bool = False, allow_type_only: bool = False,
         require_unique: bool = False, expected_identity: Optional[Dict[str, Any]] = None,
-        require_keyboard_focus: bool = False,
+        require_keyboard_focus: bool = False, require_foreground: bool = False,
     ):
         """Select one editable UIA wrapper without exposing it to callers."""
+        if require_foreground:
+            self.verify_foreground(handle)
         ranked = self._accessibility_candidates(
             handle, names=names, automation_id_keywords=automation_id_keywords,
             control_types=control_types, excluded_names=excluded_names,
@@ -317,6 +379,8 @@ class WindowsAutomationRuntime:
         _score, wrapper, metadata = ranked[0]
         identity = metadata.get("control_identity") or self._control_identity(handle, wrapper, metadata)
         metadata = {**metadata, "control_identity": identity}
+        if require_foreground:
+            self.verify_foreground(handle)
         if require_keyboard_focus:
             try:
                 focused = bool(wrapper.has_keyboard_focus())
@@ -326,6 +390,29 @@ class WindowsAutomationRuntime:
                 raise RuntimeError("이전에 검증한 메시지 입력창이 Enter 직전 키보드 포커스를 잃었습니다.")
             metadata["keyboard_focus_verified"] = True
         return wrapper, metadata
+
+    def verify_accessibility_control(
+        self, handle: int, *, expected_identity: Dict[str, Any], names=(),
+        automation_id_keywords=(), control_types=(), excluded_names=(),
+        exact_name: bool = False, allow_type_only: bool = False,
+        require_unique: bool = False, require_keyboard_focus: bool = True,
+        require_foreground: bool = True,
+    ) -> Dict[str, Any]:
+        """Re-resolve and verify one previously captured UIA element."""
+        if not self._identity_token(expected_identity):
+            raise RuntimeError("검증할 UIA Control identity가 없습니다.")
+        _wrapper, metadata = self._accessibility_text_control(
+            handle, names=names, automation_id_keywords=automation_id_keywords,
+            control_types=control_types, excluded_names=excluded_names,
+            exact_name=exact_name, allow_type_only=allow_type_only,
+            require_unique=require_unique, expected_identity=expected_identity,
+            require_keyboard_focus=require_keyboard_focus,
+            require_foreground=require_foreground,
+        )
+        return {
+            **metadata, "strategy": "uia", "activation": "verify",
+            "coordinate_fallback_used": False,
+        }
 
     @staticmethod
     def _read_wrapper_value(wrapper) -> str:
@@ -343,12 +430,25 @@ class WindowsAutomationRuntime:
             pass
         raise RuntimeError("접근성 입력 Control의 현재 값을 읽을 수 없습니다.")
 
+    @staticmethod
+    def _canonical_edit_value(value: str, class_name: str = "") -> str:
+        """Normalize only line-ending behavior owned by a native RichEdit.
+
+        KakaoTalk's RICHEDIT50W exposes a mandatory trailing carriage return even
+        when the visible composer is empty.  Treat that one terminator as control
+        metadata, while preserving every user-visible character and internal line.
+        """
+        text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+        if str(class_name or "").casefold().startswith("richedit") and text.endswith("\n"):
+            text = text[:-1]
+        return text
+
     def set_accessibility_text(
         self, handle: int, value: str, *, names=(), automation_id_keywords=(),
         control_types=("Edit",), excluded_names=(), exact_name: bool = False,
         allow_type_only: bool = False, require_unique: bool = False,
         expected_identity: Optional[Dict[str, Any]] = None,
-        require_keyboard_focus: bool = False,
+        require_keyboard_focus: bool = False, require_foreground: bool = False,
     ) -> Dict[str, Any]:
         """Set and verify Unicode text in one identified UIA Edit control."""
         wrapper, metadata = self._accessibility_text_control(
@@ -357,9 +457,19 @@ class WindowsAutomationRuntime:
             exact_name=exact_name, allow_type_only=allow_type_only,
             require_unique=require_unique, expected_identity=expected_identity,
             require_keyboard_focus=require_keyboard_focus,
+            require_foreground=require_foreground,
         )
         try:
             wrapper.set_focus()
+            if require_foreground:
+                self.verify_foreground(handle)
+            if require_keyboard_focus:
+                try:
+                    focused = bool(wrapper.has_keyboard_focus())
+                except Exception as exc:
+                    raise RuntimeError(f"접근성 입력 Control 포커스를 확인할 수 없습니다: {exc}") from exc
+                if not focused:
+                    raise RuntimeError("텍스트 입력 직전 UIA Control이 키보드 포커스를 잃었습니다.")
             if hasattr(wrapper, "set_edit_text"):
                 wrapper.set_edit_text(str(value))
                 method = "set_edit_text"
@@ -372,14 +482,31 @@ class WindowsAutomationRuntime:
         except Exception as exc:
             raise RuntimeError(f"접근성 입력 Control 텍스트 설정 실패: {exc}") from exc
         time.sleep(0.08)
+        if require_foreground:
+            self.verify_foreground(handle)
+        if require_keyboard_focus:
+            # Writing can recreate a virtualized Edit.  Re-resolve the captured
+            # identity before accepting the write as belonging to the target.
+            wrapper, verified = self._accessibility_text_control(
+                handle, names=names, automation_id_keywords=automation_id_keywords,
+                control_types=control_types, excluded_names=excluded_names,
+                exact_name=exact_name, allow_type_only=allow_type_only,
+                require_unique=require_unique, expected_identity=metadata["control_identity"],
+                require_keyboard_focus=True, require_foreground=require_foreground,
+            )
+            metadata = {**metadata, **verified}
         actual = self._read_wrapper_value(wrapper)
-        if actual != str(value):
+        actual_canonical = self._canonical_edit_value(actual, metadata.get("class_name", ""))
+        # Requested text has no control-owned sentinel.  Preserve an intentional
+        # final newline; strip one terminator only from the value read from RichEdit.
+        expected_canonical = self._canonical_edit_value(str(value))
+        if actual_canonical != expected_canonical:
             raise RuntimeError(
                 f"접근성 입력 검증 실패: 입력 길이 {len(actual)}/{len(str(value))}"
             )
         return {
             **metadata, "strategy": "uia", "activation": "focus",
-            "text_method": method, "value_verified": True,
+            "text_method": method, "value_verified": True, "value": actual,
             "coordinate_fallback_used": False,
         }
 
@@ -388,7 +515,7 @@ class WindowsAutomationRuntime:
         control_types=("Edit",), excluded_names=(), exact_name: bool = False,
         allow_type_only: bool = False, require_unique: bool = False,
         expected_identity: Optional[Dict[str, Any]] = None,
-        require_keyboard_focus: bool = False,
+        require_keyboard_focus: bool = False, require_foreground: bool = False,
     ) -> Dict[str, Any]:
         """Read one identified UIA Edit value for post-action verification."""
         wrapper, metadata = self._accessibility_text_control(
@@ -397,6 +524,7 @@ class WindowsAutomationRuntime:
             exact_name=exact_name, allow_type_only=allow_type_only,
             require_unique=require_unique, expected_identity=expected_identity,
             require_keyboard_focus=require_keyboard_focus,
+            require_foreground=require_foreground,
         )
         return {**metadata, "value": self._read_wrapper_value(wrapper)}
 
@@ -448,8 +576,10 @@ class WindowsAutomationRuntime:
         existing bubbles before Enter and then prove that a *new* exact-body bubble
         appeared afterwards.
         """
-        target = str(value or "").strip()
-        if not target:
+        # Line-ending conventions are equivalent; whitespace in the body is
+        # not. Trimming would certify a different message as an exact send.
+        target = self._canonical_edit_value(value)
+        if not target.strip():
             return []
         root = self._accessibility_root(handle)
         root_rectangle = self._rectangle_value(getattr(root.element_info, "rectangle", None))
@@ -471,7 +601,8 @@ class WindowsAutomationRuntime:
                     "process_id": int(getattr(info, "process_id", 0) or 0),
                     "rectangle": self._rectangle_value(getattr(info, "rectangle", None)),
                 }
-                if target not in [item.strip() for item in self._wrapper_text_values(wrapper, metadata)]:
+                if target not in [self._canonical_edit_value(item)
+                                  for item in self._wrapper_text_values(wrapper, metadata)]:
                     continue
                 identity = self._control_identity(handle, wrapper, metadata)
                 rectangle = metadata["rectangle"]

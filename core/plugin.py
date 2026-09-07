@@ -7,13 +7,15 @@ import hashlib
 import importlib
 import inspect
 import json
+import math
 import platform
 import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -21,7 +23,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
 from core.runtime.event_bus import Event, get_event_bus
-from core.tool_result import ToolRunResult
+from core.tool_result import Evidence, ToolRunResult
 
 PluginToolOutput = Union[str, Dict[str, Any], List[Any], ToolRunResult]
 
@@ -40,6 +42,7 @@ class ToolSchema:
     max_retries: int = 0
     cancellable: bool = False
     idempotency: str = "auto"
+    execution_isolation: str = "thread"
 
     def __post_init__(self):
         actions = set(self.name.casefold().split("_"))
@@ -94,6 +97,7 @@ class CapabilityContract:
     cancellable: bool
     idempotency: str = "none"
     automatic_retry_allowed: bool = False
+    execution_isolation: str = "thread"
 
 
 @dataclass
@@ -157,8 +161,12 @@ class ToolCancelledError(RuntimeError):
 class CancellationToken:
     def __init__(self):
         self._event = threading.Event()
+        self._publication_lock = threading.RLock()
 
     def cancel(self) -> None:
+        # A cancellation request must never block on native/filesystem work
+        # that already entered publication. Such an in-flight effect remains
+        # uncertain; cancellation is not a rollback or a guaranteed undo.
         self._event.set()
 
     @property
@@ -168,6 +176,18 @@ class CancellationToken:
     def raise_if_cancelled(self) -> None:
         if self.cancelled:
             raise ToolCancelledError("도구 실행이 취소되었습니다.")
+
+    @contextmanager
+    def publication_guard(self):
+        """Check cancellation before entering a short publication phase.
+
+        Preparation/copying and native rendering must occur outside the guard.
+        It is not a rollback; a publish already started before cancellation
+        may complete. Check cancellation before each atomic write as well.
+        """
+        with self._publication_lock:
+            self.raise_if_cancelled()
+            yield
 
 
 @dataclass(frozen=True)
@@ -180,6 +200,8 @@ class ToolExecutionContext:
     attempt: int
     started_at: float
     cancellation_token: CancellationToken = field(compare=False, repr=False)
+    staging_directory: str = ""
+    deadline: float = 0.0
 
     @property
     def cancelled(self) -> bool:
@@ -187,6 +209,14 @@ class ToolExecutionContext:
 
     def raise_if_cancelled(self) -> None:
         self.cancellation_token.raise_if_cancelled()
+        if self.deadline and time.monotonic() >= self.deadline:
+            raise TimeoutError("도구 실행 제한시간을 초과했습니다.")
+
+    @contextmanager
+    def publication_guard(self):
+        with self.cancellation_token.publication_guard():
+            self.raise_if_cancelled()
+            yield
 
 
 @dataclass
@@ -196,6 +226,7 @@ class _ExecutionState:
     token: CancellationToken
     started_at: float
     future: Any = None
+    worker: Any = None
 
 
 @dataclass
@@ -264,6 +295,10 @@ def _state_as_optional_bool(state: str) -> Optional[bool]:
 
 
 class BasePlugin(ABC):
+    # Opt in only for no-argument, importable factories whose isolated tools
+    # do not depend on parent-process objects, UI sessions or mutable state.
+    supports_process_isolation = False
+
     def __init__(self):
         self.name = ""
         self.description = ""
@@ -348,6 +383,23 @@ class BasePlugin(ABC):
         """
         return self.registry.current_execution_context() if self.registry else None
 
+    def prepare_isolated_input(
+        self, tool_name: str, tool_input: Dict[str, Any], staging_directory: str,
+    ) -> Dict[str, Any]:
+        """Parent-side preflight; redirect outputs into the private workspace.
+
+        Hooks must be bounded local validation/publication, never a native
+        call or recursive tool execution. The child receives only JSON data.
+        """
+        return dict(tool_input)
+
+    def finalize_isolated_result(
+        self, tool_name: str, original_input: Dict[str, Any],
+        isolated_input: Dict[str, Any], result: PluginToolOutput,
+    ) -> PluginToolOutput:
+        """Publish staged output only after timely, valid worker completion."""
+        return result
+
     def diagnose(self) -> List[str]:
         issues = []
         if self.supported_os and platform.system().casefold() not in {item.casefold() for item in self.supported_os}:
@@ -400,6 +452,9 @@ class PluginRegistry:
         self._load_failures: Dict[str, Dict[str, Any]] = {}
         self._runtime_by_plugin: Dict[str, Dict[str, Any]] = {}
         self._runtime_by_tool: Dict[str, Dict[str, Any]] = {}
+        self._shutting_down = False
+        self._process_workspace_root: Optional[str] = None
+        self._process_slots = threading.BoundedSemaphore(2)
 
     def register_plugin(self, plugin: BasePlugin):
         if not plugin.name:
@@ -412,7 +467,17 @@ class PluginRegistry:
         intent_collisions = {x for x in intent_names if intent_names.count(x) > 1} | (set(intent_names) & set(self._intents))
         if collisions: raise PluginContractError(f"중복 Tool 이름: {', '.join(sorted(collisions))}")
         if intent_collisions: raise PluginContractError(f"중복 Intent 이름: {', '.join(sorted(intent_collisions))}")
-        for tool in tools: self._validate_schema_definition(tool)
+        for tool in tools:
+            self._validate_schema_definition(tool)
+            if tool.execution_isolation == "process":
+                factory = type(plugin)
+                if (not factory.supports_process_isolation or factory.__module__ == "__main__"
+                        or "<" in factory.__qualname__):
+                    raise PluginContractError(f"{tool.name}: 격리 실행은 import 가능한 stateless Plugin만 지원합니다.")
+                try:
+                    inspect.signature(factory).bind()
+                except TypeError as exc:
+                    raise PluginContractError(f"{tool.name}: 격리 Plugin factory는 인자 없이 생성 가능해야 합니다.") from exc
         plugin.registry = self
         plugin.on_load()
         self.plugins[plugin.name] = plugin
@@ -451,7 +516,7 @@ class PluginRegistry:
                                   tool.side_effect, list(tool.required_permissions), tool.verification_required,
                                   tool.execution_mode, tool.timeout_seconds,
                                   tool.max_retries if retry_allowed else 0, tool.cancellable,
-                                  tool.idempotency, retry_allowed)
+                                  tool.idempotency, retry_allowed, tool.execution_isolation)
 
     def get_capabilities(self) -> List[CapabilityContract]:
         return [contract for name in self._tools if (contract := self.get_capability(name))]
@@ -460,7 +525,12 @@ class PluginRegistry:
     def _validate_schema_definition(tool: ToolSchema) -> None:
         if not tool.name: raise PluginContractError("Tool 이름은 비어 있을 수 없습니다.")
         if tool.execution_mode not in {"sync", "async"}: raise PluginContractError(f"{tool.name}: 잘못된 execution_mode")
-        if tool.timeout_seconds <= 0 or tool.max_retries < 0: raise PluginContractError(f"{tool.name}: timeout/retry 정책이 잘못되었습니다.")
+        if tool.execution_isolation not in {"thread", "process"}:
+            raise PluginContractError(f"{tool.name}: 잘못된 execution_isolation")
+        if (isinstance(tool.timeout_seconds, bool) or not isinstance(tool.timeout_seconds, (int, float))
+                or not math.isfinite(tool.timeout_seconds) or tool.timeout_seconds <= 0
+                or type(tool.max_retries) is not int or tool.max_retries < 0):
+            raise PluginContractError(f"{tool.name}: timeout/retry 정책이 잘못되었습니다.")
         if tool.idempotency not in {"intrinsic", "registry", "none"}:
             raise PluginContractError(f"{tool.name}: 잘못된 idempotency 정책")
         try:
@@ -545,9 +615,14 @@ class PluginRegistry:
 
     def _prune_deduplication_records_locked(self) -> None:
         now = time.monotonic()
+        def finished(record: _DeduplicationRecord) -> bool:
+            # A timeout response is terminal to its caller, not proof that a
+            # noncooperative thread has stopped performing side effects.
+            return (record.done.is_set()
+                    and not (record.execution_ids or {record.execution_id}) & self._executions.keys())
         expired_execution_ids = [
             key for key, record in self._execution_records.items()
-            if record.done.is_set()
+            if finished(record)
             and record.completed_at
             and now - record.completed_at > self._deduplication_ttl_seconds
         ]
@@ -555,7 +630,7 @@ class PluginRegistry:
             self._execution_records.pop(key, None)
         expired_idempotency_keys = [
             key for key, record in self._idempotency_records.items()
-            if record.done.is_set()
+            if finished(record)
             and record.completed_at
             and now - record.completed_at > self._deduplication_ttl_seconds
         ]
@@ -565,7 +640,7 @@ class PluginRegistry:
         # Bound completed history while preserving all active executions.
         completed = sorted(
             {id(record): record for record in self._execution_records.values()
-             if record.done.is_set()}.values(),
+             if finished(record)}.values(),
             key=lambda item: item.completed_at,
         )
         overflow = max(0, len(completed) - self._deduplication_max_records)
@@ -654,6 +729,9 @@ class PluginRegistry:
     ) -> _ExecutionState:
         state = _ExecutionState(execution_id, tool_name, token, started_at)
         with self._state_lock:
+            if self._shutting_down:
+                token.cancel()
+                raise ToolCancelledError("종료 중에는 새 도구를 실행하지 않습니다.")
             self._executions[execution_id] = state
             self._cancellations[execution_id] = token
             self._active_by_tool.setdefault(tool_name, set()).add(execution_id)
@@ -736,6 +814,9 @@ class PluginRegistry:
         idempotency_key: Optional[str] = None,
         cancellation_token: Optional[CancellationToken] = None,
     ) -> PluginToolOutput:
+        with self._state_lock:
+            if self._shutting_down:
+                return self._cancelled_result(tool_name, "종료 중에는 새 도구를 실행하지 않습니다.")
         entry = self._tools.get(tool_name)
         if entry is None or not entry[0].enabled: return ToolRunResult.failed(tool_name=tool_name, error=f"등록되지 않은 도구: {tool_name}")
         plugin, tool = entry
@@ -770,10 +851,11 @@ class PluginRegistry:
 
         token = cancellation_token or CancellationToken()
         started = time.perf_counter()
-        state = self._register_active_execution(run_id, tool_name, token, started)
+        state = None
         result: PluginToolOutput
         lingering_future = None
         try:
+            state = self._register_active_execution(run_id, tool_name, token, started)
             max_retries = tool.max_retries if self._automatic_retry_allowed(tool) else 0
             for attempt in range(max_retries + 1):
                 if attempt:
@@ -787,38 +869,33 @@ class PluginRegistry:
                     attempt=attempt,
                     started_at=started,
                     cancellation_token=token,
+                    deadline=(time.monotonic() + tool.timeout_seconds if tool.execution_isolation == "process" else 0.0),
                 )
-                future = self._executor.submit(
-                    self._invoke, plugin, tool, tool_input, context,
-                )
-                with self._state_lock:
-                    state.future = future
+                future = None
                 try:
-                    deadline = time.monotonic() + tool.timeout_seconds
-                    while True:
-                        token.raise_if_cancelled()
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise FutureTimeoutError()
-                        try:
-                            plugin_result = future.result(timeout=min(0.05, remaining))
-                            break
-                        except FutureTimeoutError:
-                            if future.done():
-                                raise
-                            continue
-                    output = (
-                        plugin_result.to_dict()
-                        if isinstance(plugin_result, ToolRunResult)
-                        else plugin_result
-                    )
-                    if (tool.output_schema.get("required") == ["status", "raw_output", "evidence", "artifacts"]
-                            and not isinstance(plugin_result, ToolRunResult)):
-                        output = {
-                            "status": "unverified", "raw_output": str(plugin_result),
-                            "evidence": [], "artifacts": [],
-                        }
-                    output_errors = self._validate_instance(output, tool.output_schema, "출력")
+                    if tool.execution_isolation == "process":
+                        # No ThreadPool wrapper: a native hang must not leave
+                        # an unjoinable Python thread during application exit.
+                        result = self._invoke_isolated(plugin, tool, tool_input, context, state)
+                        break
+                    else:
+                        future = self._executor.submit(self._invoke, plugin, tool, tool_input, context)
+                        with self._state_lock:
+                            state.future = future
+                        deadline = time.monotonic() + tool.timeout_seconds
+                        while True:
+                            token.raise_if_cancelled()
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise FutureTimeoutError()
+                            try:
+                                plugin_result = future.result(timeout=min(0.05, remaining))
+                                break
+                            except FutureTimeoutError:
+                                if future.done():
+                                    raise
+                                continue
+                    output_errors = self._validate_plugin_output(plugin_result, tool)
                     if output_errors:
                         result = ToolRunResult.failed(tool_name=tool_name, error="; ".join(output_errors), duration_ms=(time.perf_counter()-started)*1000)
                     else:
@@ -829,8 +906,9 @@ class PluginRegistry:
                     # cooperative cancellation and *never* launch a second
                     # attempt after an uncertain timeout.
                     token.cancel()
-                    future.cancel()
-                    lingering_future = future
+                    if future is not None:
+                        future.cancel()
+                        lingering_future = future
                     retry_note = (
                         " 부작용이 있는 도구는 중복 실행 위험으로 "
                         "자동 재시도하지 않았습니다."
@@ -844,8 +922,9 @@ class PluginRegistry:
                     )
                     break
                 except ToolCancelledError as exc:
-                    future.cancel()
-                    lingering_future = future
+                    if future is not None:
+                        future.cancel()
+                        lingering_future = future
                     result = self._cancelled_result(
                         tool_name,
                         str(exc),
@@ -880,8 +959,99 @@ class PluginRegistry:
                 lingering_future.add_done_callback(
                     lambda _future, current_id=run_id: self._cleanup_active_execution(current_id)
                 )
-            else:
+            elif state is None or state.worker is None or not state.worker.running:
                 self._cleanup_active_execution(run_id)
+        return result
+
+    def _validate_plugin_output(self, plugin_result: PluginToolOutput, tool: ToolSchema) -> List[str]:
+        output = plugin_result.to_dict() if isinstance(plugin_result, ToolRunResult) else plugin_result
+        if (tool.output_schema.get("required") == ["status", "raw_output", "evidence", "artifacts"]
+                and not isinstance(plugin_result, ToolRunResult)):
+            output = {"status": "unverified", "raw_output": str(plugin_result), "evidence": [], "artifacts": []}
+        return self._validate_instance(output, tool.output_schema, "출력")
+
+    def _invoke_isolated(
+        self, plugin: BasePlugin, tool: ToolSchema, tool_input: Dict[str, Any],
+        context: ToolExecutionContext, state: _ExecutionState,
+    ) -> PluginToolOutput:
+        from config import Config
+        from core.plugin_worker import ProcessToolWorker
+
+        worker = None
+        acquired = False
+        publication_attempted = False
+        failure: Optional[Exception] = None
+        result: PluginToolOutput = ToolRunResult.failed(tool_name=tool.name, error="격리 작업을 시작하지 못했습니다.")
+        previous_context = self.current_execution_context()
+        try:
+            while not acquired:
+                context.raise_if_cancelled()
+                acquired = self._process_slots.acquire(timeout=min(0.03, max(0.0, context.deadline - time.monotonic())))
+            worker = ProcessToolWorker(context.execution_id, tool.name, root=self._process_workspace_root)
+            with self._state_lock:
+                state.worker = worker
+            context = replace(context, staging_directory=str(worker.workspace))
+            self._execution_local.context = context
+            context.raise_if_cancelled()
+            isolated_input = plugin.prepare_isolated_input(tool.name, dict(tool_input), str(worker.workspace))
+            if not isinstance(isolated_input, dict):
+                raise PluginContractError("격리 입력 준비 결과는 JSON 객체여야 합니다.")
+            context.raise_if_cancelled()
+            worker.start({
+                "module": type(plugin).__module__, "class_name": type(plugin).__qualname__,
+                "input": isolated_input, "deadline": context.deadline,
+                "idempotency_key": context.idempotency_key, "attempt": context.attempt,
+                "started_at": context.started_at,
+                "allowed_paths": list(Config.API_CONFIG.ALLOWED_PATHS or [str(Path(__file__).resolve().parent.parent)]),
+            })
+            plugin_result = worker.wait(context.deadline, context.cancellation_token)
+            context.raise_if_cancelled()
+            output_errors = self._validate_plugin_output(plugin_result, tool)
+            if output_errors:
+                raise PluginContractError("; ".join(output_errors))
+            # A late, corrupt or wrong-run response never reaches publication.
+            publication_attempted = True
+            result = plugin.finalize_isolated_result(tool.name, dict(tool_input), isolated_input, plugin_result)
+            context.raise_if_cancelled()
+            output_errors = self._validate_plugin_output(result, tool)
+            if output_errors:
+                raise PluginContractError("; ".join(output_errors))
+        except Exception as exc:
+            failure = exc
+            if isinstance(exc, (TimeoutError, ToolCancelledError)):
+                context.cancellation_token.cancel()
+        finally:
+            if worker is not None:
+                if failure is not None or worker.running:
+                    worker.stop()
+                worker.cleanup()
+            self._execution_local.context = previous_context
+            if acquired:
+                self._process_slots.release()
+
+        duration = (time.perf_counter() - context.started_at) * 1000
+        if failure is not None:
+            if worker is not None and worker.pid is not None:
+                reason = (f"도구 실행 시간 초과: {tool.timeout_seconds:g}초" if isinstance(failure, TimeoutError)
+                          else str(failure))
+                application_note = ("산출물 저장을 끝까지 확인하지 못했습니다. " if publication_attempted
+                                    else "격리 작업 결과를 적용하지 않았습니다. ")
+                message = (f"{reason}. {application_note}"
+                           "이미 발생한 외부 효과는 되돌려졌다고 확인할 수 없어 자동 재시도하지 않습니다.")
+                result = ToolRunResult.unverified(tool_name=tool.name, raw_output=message, duration_ms=duration)
+                result.error = message
+            elif isinstance(failure, ToolCancelledError):
+                result = self._cancelled_result(tool.name, str(failure), duration)
+            else:
+                result = ToolRunResult.failed(tool_name=tool.name, error=f"격리 작업 준비 오류: {failure}", duration_ms=duration)
+        if isinstance(result, ToolRunResult) and worker is not None:
+            result.duration_ms = max(0.0, duration)
+            details = worker.evidence()
+            details["external_effects_uncertain"] = bool(failure is not None and worker.pid is not None)
+            details["result_applied"] = None if failure is not None and publication_attempted else failure is None
+            result.evidence.append(Evidence(
+                "process_isolation", "전용 worker의 종료와 임시 산출물 정리 상태를 확인했습니다.", details,
+            ))
         return result
 
     def _invoke(
@@ -920,10 +1090,57 @@ class PluginRegistry:
     def cancel_execution(self, execution_id: str) -> bool:
         with self._state_lock:
             token = self._cancellations.get(str(execution_id))
+            state = self._executions.get(str(execution_id))
         if token is None:
             return False
         token.cancel()
+        if state is not None and state.worker is not None:
+            state.worker.request_cancel()
         return True
+
+    def shutdown(self, timeout_seconds: float = 2.0) -> Dict[str, Any]:
+        """Bound shutdown; report legacy native threads instead of faking exit.
+
+        Existing Office/COM servers and unrelated processes are never killed.
+        Only registered per-run Python workers are eligible for termination.
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        with self._state_lock:
+            self._shutting_down = True
+            states = list(self._executions.values())
+        for state in states:
+            state.token.cancel()
+            if state.future is not None:
+                state.future.cancel()
+            if state.worker is not None:
+                state.worker.request_cancel()
+        for state in states:
+            if state.worker is not None:
+                remaining = max(0.0, deadline - time.monotonic())
+                state.worker.stop(grace=0, kill_wait=remaining / 2)
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        while time.monotonic() < deadline:
+            with self._state_lock:
+                active = list(self._executions.values())
+                # Clean a retained worker whose first termination attempt was
+                # unsuccessful, but leave an invocation still publishing alone.
+                for state in active:
+                    record = self._execution_records.get(state.execution_id)
+                    if (state.worker is not None and not state.worker.running
+                            and record is not None and record.done.is_set()):
+                        state.worker.cleanup()
+                        self._cleanup_active_execution(state.execution_id)
+                if not self._executions:
+                    break
+            time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+        with self._state_lock:
+            return {
+                "remaining_execution_ids": sorted(self._executions),
+                "remaining_worker_pids": [state.worker.pid for state in self._executions.values()
+                                          if state.worker is not None and state.worker.running],
+                "inprocess_threads_cannot_be_forcibly_stopped": any(
+                    state.future is not None and not state.future.done() for state in self._executions.values()),
+            }
 
     def cancel_tool(self, tool_name_or_execution_id: str) -> bool:
         """Cancel one execution ID, or all active runs of a legacy tool name."""

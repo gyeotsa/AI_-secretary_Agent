@@ -7,7 +7,9 @@ from typing import Any, Dict, List
 
 from core.plugin import BasePlugin, ToolSchema
 from core.remote_runtime import (OAuthCoordinator, ProviderApi, RemoteActionStore,
-                                 RemoteCatalogStore, RemoteRuntimeError)
+                                 RemoteApplyReceipt, RemoteApplyRejected,
+                                 RemoteApplyUncertain, RemoteCatalogStore,
+                                 RemoteRuntimeError)
 from core.tool_result import Evidence, ToolRunResult
 
 
@@ -90,6 +92,30 @@ class CloudCommunicationPlugin(BasePlugin):
         return ToolRunResult.successful(tool_name=tool, raw_output=raw,
                                         evidence=[Evidence(kind, raw, data)])
 
+    @staticmethod
+    def _uncertain_apply_result(action, message: str) -> ToolRunResult:
+        detail = {
+            "action_id": action.action_id,
+            "operation": action.operation,
+            "status": action.status,
+            "remote_id": action.remote_id,
+            "verified": False,
+            "retry_allowed": False,
+            "error": str(message),
+        }
+        return ToolRunResult.unverified(
+            tool_name="remote_apply_draft",
+            raw_output=(
+                "원격 작업의 최종 결과를 확인하지 못했습니다. 중복 전송을 막기 위해 자동 재시도하지 않습니다. "
+                "제공자 화면에서 결과를 확인한 뒤 새 작업을 명시적으로 만드세요."
+            ),
+            evidence=[Evidence(
+                "remote_apply_uncertain",
+                "원격 부작용 가능성이 있어 같은 작업 ID의 재전송을 차단했습니다.",
+                detail,
+            )],
+        )
+
     def execute_tool(self, tool_name: str, data: Dict[str, Any]):
         try:
             if tool_name == "oauth_begin":
@@ -107,14 +133,60 @@ class CloudCommunicationPlugin(BasePlugin):
                 return self._success(tool_name, "외부 반영 전 승인 대기 초안을 만들었습니다.", "remote_draft", detail)
             if tool_name == "remote_apply_draft":
                 action = self.actions.get(data["action_id"])
+                if action and action.status in {"applying", "uncertain"}:
+                    return self._uncertain_apply_result(
+                        action, action.last_error or "이전 적용 시도의 결과가 확정되지 않았습니다."
+                    )
                 if not action or action.status != "draft":
                     raise RemoteRuntimeError("초안이 없거나 이미 적용된 작업입니다.")
-                remote_id = self.api.apply(action)
-                applied = self.actions.mark_applied(action.action_id, remote_id)
+                claimed = self.actions.claim_for_apply(action.action_id)
+                try:
+                    receipt = self.api.apply(claimed)
+                except RemoteApplyRejected as exc:
+                    rejected = self.actions.release_rejected(claimed.action_id, str(exc))
+                    return ToolRunResult.failed(
+                        tool_name=tool_name,
+                        error=str(exc),
+                        evidence=[Evidence(
+                            "remote_apply_rejected",
+                            "원격 변경 전에 요청이 거절되어 같은 초안을 수정 후 다시 시도할 수 있습니다.",
+                            {"action_id": rejected.action_id, "status": rejected.status,
+                             "verified": False, "retry_allowed": True},
+                        )],
+                    )
+                except RemoteApplyUncertain as exc:
+                    uncertain = self.actions.mark_uncertain(
+                        claimed.action_id, str(exc), exc.remote_id
+                    )
+                    return self._uncertain_apply_result(uncertain, str(exc))
+                except Exception as exc:
+                    uncertain = self.actions.mark_uncertain(claimed.action_id, str(exc))
+                    return self._uncertain_apply_result(uncertain, str(exc))
+                if not isinstance(receipt, RemoteApplyReceipt) or not receipt.verification:
+                    uncertain = self.actions.mark_uncertain(
+                        claimed.action_id,
+                        "Provider API가 의미 검증 증거 없이 원격 ID만 반환했습니다.",
+                        str(receipt or ""),
+                    )
+                    return self._uncertain_apply_result(uncertain, uncertain.last_error)
+                try:
+                    applied = self.actions.mark_applied(claimed.action_id, receipt.remote_id)
+                except Exception as exc:
+                    try:
+                        uncertain = self.actions.mark_uncertain(
+                            claimed.action_id,
+                            f"원격 검증 후 로컬 원장 확정에 실패했습니다: {exc}",
+                            receipt.remote_id,
+                        )
+                    except Exception:
+                        uncertain = self.actions.get(claimed.action_id) or claimed
+                    return self._uncertain_apply_result(uncertain, str(exc))
                 detail = {"action_id": action.action_id, "remote_id": applied.remote_id,
-                          "status": applied.status, "verified": bool(applied.remote_id)}
+                          "status": applied.status, "verified": True,
+                          "retry_allowed": False,
+                          "read_back": dict(receipt.verification)}
                 return self._success(tool_name, "승인된 작업을 외부에 반영하고 원격 ID를 검증했습니다.",
-                                     "remote_id_verification", detail)
+                                     "remote_content_readback", detail)
             if tool_name == "cloud_sync_catalog":
                 items = self.api.sync(data["provider"], data["account"], data)
                 ids = self.catalog.replace(data["provider"], data["account"], items)

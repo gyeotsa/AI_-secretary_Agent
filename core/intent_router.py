@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from core.plugin import BasePlugin, IntentSchema, PluginRegistry
+from core.utterance_scope import analyze_utterance_scope, mask_quoted_payloads
 
 
 @dataclass
@@ -183,7 +184,7 @@ class IntentRouter:
         return any(resolution.slots.get(name) not in (None, "", []) for name in supported)
 
     def _rank(self, text: str) -> List[tuple[float, BasePlugin, IntentSchema, str]]:
-        normalized = self._normalize_routing_text(text)
+        normalized = self._normalize_routing_text(mask_quoted_payloads(text))
         query_terms = self._terms(normalized)
         candidates = []
         for plugin, intent in self.registry.get_all_intents():
@@ -259,16 +260,21 @@ class IntentRouter:
 
     def resolve(self, text: str, intent_name: str = "",
                 current_slots: Optional[Dict[str, Any]] = None) -> IntentResolution:
-        negated = bool(self.NEGATED_ACTION_PATTERN.search(text))
+        scope = analyze_utterance_scope(text)
+        if scope.discussion:
+            return IntentResolution(request_type="conversation", routing_reason=scope.reason)
+        text = scope.action_text
+        visible_text = scope.routing_text
+        negated = scope.negated or bool(self.NEGATED_ACTION_PATTERN.search(visible_text))
         routing_text = self._affirmative_routing_probe(text) if negated else text
         selected = None
         clause_matches: list[tuple[BasePlugin, IntentSchema, float]] = []
-        if not intent_name and self.COMPOUND_CONNECTOR_PATTERN.search(text):
-            clauses = [part.strip(" ,.!?") for part in self.COMPOUND_CONNECTOR_PATTERN.split(text)
+        if not intent_name and self.COMPOUND_CONNECTOR_PATTERN.search(visible_text):
+            clauses = [part.strip(" ,.!?") for part in self.COMPOUND_CONNECTOR_PATTERN.split(visible_text)
                        if part.strip(" ,.!?")]
             for clause in clauses:
                 found = self._find(clause) or self._fresh_information_intent(clause)
-                if found and found[1].name not in {item[1].name for item in clause_matches}:
+                if found:
                     clause_matches.append(found)
         if intent_name:
             selected = next(
@@ -288,7 +294,10 @@ class IntentRouter:
             if not selected:
                 selected = self._fresh_information_intent(text)
         if not selected:
-            return IntentResolution()
+            return IntentResolution(
+                request_type="prohibition" if negated else "conversation",
+                negated=negated, routing_reason=scope.reason,
+            )
 
         plugin, intent, confidence = selected
         ranked = self._rank(text) if not intent_name else []
@@ -324,7 +333,7 @@ class IntentRouter:
                 f"'{ranked[0][2].description}'과 '{ranked[1][2].description}' 중 "
                 "어떤 작업을 원하시는지 말씀해 주세요."
             )
-        normalized = " ".join(text.casefold().split())
+        normalized = self._normalize_routing_text(visible_text)
         has_action_hint = any(hint.casefold() in normalized for hint in intent.execution_hints)
         is_execution = has_action_hint or intent.request_type == "query"
         is_capability = any(hint in normalized for hint in self.CAPABILITY_HINTS)
@@ -340,7 +349,7 @@ class IntentRouter:
         }
         compound = bool(
             not intent_name and (len(clause_matches) >= 2 or len(distinct_ranked_intents) >= 2)
-            and self.COMPOUND_CONNECTOR_PATTERN.search(text)
+            and self.COMPOUND_CONNECTOR_PATTERN.search(visible_text)
         )
         if not intent_name and is_capability and not has_action_hint:
             return self._resolution(
@@ -353,6 +362,14 @@ class IntentRouter:
         slots = plugin.extract_slots(intent.name, text, current_slots or {})
         missing = [slot for slot in intent.slots if slot.required and not slots.get(slot.name)]
         question = ambiguity_question or (missing[0].question if missing else "")
+        if scope.conditional and intent.request_type in {"change", "execute", "external_send"}:
+            # A future/external condition is not proof that it is true now.
+            # Keep the real request, but never flatten it to an immediate tool
+            # call while the Registry contract has no condition observer.
+            question = (
+                f"‘{scope.condition}’ 조건이 충족됐다는 근거가 없어 바로 실행하지 않았습니다. "
+                "조건을 확인한 뒤 실행할 작업을 다시 명확히 요청해 주시겠어요?"
+            )
         return self._resolution(
             intent, slots, confidence, question=question,
             explicit=not bool(intent_name), execution_requested=is_execution,
@@ -387,7 +404,15 @@ class IntentRouter:
         selected_index = -1
         selected = None
         for index in range(len(history) - 1, -1, -1):
-            candidate = self._find(str(history[index].get("content", "")))
+            if history[index].get("role") != "user":
+                continue
+            prior_text = str(history[index].get("content", ""))
+            prior_scope = analyze_utterance_scope(prior_text)
+            if prior_scope.discussion or prior_scope.negated or prior_scope.conditional:
+                # "다시" after a discussion/prohibition must not resurrect an
+                # older command, nor use an assistant's suggestion as authority.
+                return IntentResolution()
+            candidate = self._find(prior_scope.action_text)
             if candidate:
                 selected_index, selected = index, candidate
                 break
@@ -396,7 +421,8 @@ class IntentRouter:
         plugin, intent, _confidence = selected
         slots: Dict[str, Any] = {}
         for message in history[selected_index:]:
-            slots = plugin.extract_slots(intent.name, str(message.get("content", "")), slots)
+            if message.get("role") == "user":
+                slots = plugin.extract_slots(intent.name, str(message.get("content", "")), slots)
         return self.resolve(text, intent.name, slots)
 
     def is_contextual_follow_up(self, text: str, intent_name: str = "") -> bool:

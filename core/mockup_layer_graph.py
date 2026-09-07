@@ -5,11 +5,11 @@ from copy import deepcopy
 import base64
 import html
 import io
-import mimetypes
+import math
 import os
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 
 LAYER_GRAPH_VERSION = 2
@@ -39,7 +39,8 @@ def scene_plan_to_layer_graph(plan: dict) -> dict:
             "blend_mode": asset.get("blend_mode", "normal"), "source_index": asset["index"],
             "frame": {key: asset.get(key) for key in ("x", "y", "width", "height")},
             "transform": {key: asset.get(key) for key in ("zoom", "focal_x", "focal_y", "rotation", "fit")},
-            "mask": {"type": asset.get("shape", "rectangle"), "feather": asset.get("mask_feather", 0)},
+            "mask": {"type": asset.get("shape", "rectangle"), "feather": asset.get("mask_feather", 0),
+                     "subject_background_removed": asset.get("remove_background", False)},
         })
     for index, decoration in enumerate(plan.get("decorations", [])):
         layers.append({
@@ -88,6 +89,53 @@ def validate_layer_graph(graph: dict, *, asset_count: int) -> None:
         raise ValueError("레이어 ID가 비어 있거나 중복되었습니다.")
 
 
+def _transform_number(transform: dict, key: str, default: float) -> float:
+    """Default absent values, never valid zero-valued focal coordinates."""
+    raw = transform.get(key)
+    try:
+        value = float(default if raw is None else raw)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"사진 레이어의 {key} 값이 유효한 숫자가 아닙니다.") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"사진 레이어의 {key} 값이 유효한 숫자가 아닙니다.")
+    return value
+
+
+def _raster_for_frame(path: Path, transform: dict, cell: tuple[int, int]) -> Image.Image:
+    """Apply the same fixed-frame photo transform order as the Pillow renderer.
+
+    Zoom crops the source around its focal point, then contain/cover fits that
+    crop to the frame. Rotation is positive counter-clockwise about the frame's
+    center and never expands/moves the frame. The caller applies its mask last.
+    Source alpha and coordinates are retained, including prepared cutout assets.
+    """
+    zoom = max(1.0, _transform_number(transform, "zoom", 1.0))
+    focal_x = max(0.0, min(1.0, _transform_number(transform, "focal_x", .5)))
+    focal_y = max(0.0, min(1.0, _transform_number(transform, "focal_y", .5)))
+    rotation = _transform_number(transform, "rotation", 0.0)
+    with Image.open(path) as opened:
+        source = opened.convert("RGBA")
+    if zoom > 1:
+        crop_width = max(1, int(source.width / zoom))
+        crop_height = max(1, int(source.height / zoom))
+        center_x, center_y = int(focal_x * source.width), int(focal_y * source.height)
+        left = min(max(0, center_x - crop_width // 2), source.width - crop_width)
+        top = min(max(0, center_y - crop_height // 2), source.height - crop_height)
+        source = source.crop((left, top, left + crop_width, top + crop_height))
+    if transform.get("fit") == "contain":
+        placed = ImageOps.contain(source, cell, Image.Resampling.LANCZOS)
+        raster = Image.new("RGBA", cell, (0, 0, 0, 0))
+        raster.alpha_composite(placed, ((cell[0] - placed.width) // 2,
+                                       (cell[1] - placed.height) // 2))
+    else:
+        # After an explicit zoom crop the focal point has already been applied.
+        centering = (.5, .5) if zoom > 1 else (focal_x, focal_y)
+        raster = ImageOps.fit(source, cell, Image.Resampling.LANCZOS, centering=centering)
+    if rotation:
+        raster = raster.rotate(rotation, Image.Resampling.BICUBIC, expand=False)
+    return raster
+
+
 def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, height: int) -> str:
     """Serialize the editable graph to an SVG master document."""
     background = html.escape(str(graph.get("canvas", {}).get("background", "#ffffff")))
@@ -102,9 +150,6 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
             x, y = frame["x"]*width, frame["y"]*height
             w, h = frame["width"]*width, frame["height"]*height
             path = Path(asset_paths[int(layer["source_index"])]).resolve()
-            mime = mimetypes.guess_type(path.name)[0] or "image/png"
-            with Image.open(path) as source:
-                source_width, source_height = source.size
             clip_id = f"clip-{layer_id}"
             mask_type = layer.get("mask", {}).get("type", "rectangle")
             if mask_type == "ellipse":
@@ -113,33 +158,7 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
                 defs.append(f'<clipPath id="{clip_id}"><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{min(w,h)/12}"/></clipPath>')
             else:
                 defs.append(f'<clipPath id="{clip_id}"><rect x="{x}" y="{y}" width="{w}" height="{h}"/></clipPath>')
-            if transform.get("fit") == "contain":
-                with Image.open(path) as source:
-                    source = source.convert("RGBA")
-                    source.thumbnail((max(1, round(w)), max(1, round(h))), Image.Resampling.LANCZOS)
-                    raster = Image.new("RGBA", (max(1, round(w)), max(1, round(h))), (0, 0, 0, 0))
-                    raster.alpha_composite(source, ((raster.width - source.width) // 2,
-                                                    (raster.height - source.height) // 2))
-            else:
-                zoom = max(1.0, float(transform.get("zoom") or 1.0))
-                focal_x = max(0.0, min(1.0, float(transform.get("focal_x") or .5)))
-                focal_y = max(0.0, min(1.0, float(transform.get("focal_y") or .5)))
-                source_ratio = source_width / max(1, source_height)
-                frame_ratio = w / max(1.0, h)
-                if source_ratio >= frame_ratio:
-                    crop_h, crop_w = 1.0 / zoom, (frame_ratio / source_ratio) / zoom
-                else:
-                    crop_w, crop_h = 1.0 / zoom, (source_ratio / frame_ratio) / zoom
-                crop_x = max(0.0, min(1.0 - crop_w, focal_x - crop_w / 2))
-                crop_y = max(0.0, min(1.0 - crop_h, focal_y - crop_h / 2))
-                crop_box = (
-                    int(crop_x * source_width), int(crop_y * source_height),
-                    max(1, int((crop_x + crop_w) * source_width)),
-                    max(1, int((crop_y + crop_h) * source_height)),
-                )
-                with Image.open(path) as source:
-                    cropped = source.convert("RGBA").crop(crop_box)
-                raster = cropped.resize((max(1, round(w)), max(1, round(h))), Image.Resampling.LANCZOS)
+            raster = _raster_for_frame(path, transform, (max(1, round(w)), max(1, round(h))))
 
             # QtSvg does not consistently honor clipPath on embedded raster
             # images. Bake non-rectangular masks into the PNG alpha channel so
@@ -151,19 +170,17 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
                 if mask_type == "ellipse":
                     painter.ellipse(bounds, fill=255)
                 else:
-                    painter.rounded_rectangle(bounds, radius=max(1, min(raster.size) // 12), fill=255)
+                    painter.rounded_rectangle(bounds, radius=max(8, min(raster.size) // 12), fill=255)
                 raster.putalpha(ImageChops.multiply(raster.getchannel("A"), mask))
 
-            if mask_type in {"ellipse", "rounded"} or transform.get("fit") != "contain":
-                payload = io.BytesIO()
-                raster.save(payload, "PNG")
-                encoded = base64.b64encode(payload.getvalue()).decode("ascii")
-                body.append(f'<image id="{layer_id}" x="{x}" y="{y}" width="{w}" height="{h}" opacity="{opacity}" '
-                            f'preserveAspectRatio="none" href="data:image/png;base64,{encoded}"/>')
-            else:
-                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-                body.append(f'<image id="{layer_id}" x="{x}" y="{y}" width="{w}" height="{h}" opacity="{opacity}" '
-                            f'preserveAspectRatio="xMidYMid meet" href="data:{mime};base64,{encoded}"/>')
+            # Always embed the prepared frame. Re-embedding the original for
+            # rectangular contain would silently discard zoom and rotation, and
+            # delegate scaling to a different Qt path than the masked variants.
+            payload = io.BytesIO()
+            raster.save(payload, "PNG")
+            encoded = base64.b64encode(payload.getvalue()).decode("ascii")
+            body.append(f'<image id="{layer_id}" x="{x}" y="{y}" width="{w}" height="{h}" opacity="{opacity}" '
+                        f'preserveAspectRatio="none" href="data:image/png;base64,{encoded}"/>')
         elif kind == "vector":
             item = layer["geometry"]
             x, y, w, h = item.get("x",0)*width, item.get("y",0)*height, item.get("width",0)*width, item.get("height",0)*height
@@ -201,7 +218,6 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
                 cx, cy = x + w / 2, y + h / 2
                 start_angle = float(text_path.get("start_angle", 200))
                 end_angle = float(text_path.get("end_angle", 340))
-                import math
                 start = math.radians(start_angle)
                 end = math.radians(end_angle)
                 x1, y1 = cx + math.cos(start) * radius, cy + math.sin(start) * radius
@@ -226,21 +242,32 @@ def layer_graph_to_svg(graph: dict, asset_paths: list[str | Path], width: int, h
                 # changed on nested tspan nodes.  Render phrase spans as
                 # independent text nodes so each phrase keeps its own Windows
                 # font while remaining one centred copy line.
-                span_layout = []
+                raw_span_layout = []
                 for index, span in enumerate(spans):
                     separator = " " if index else ""
                     span_content = separator + str(span.get("content", ""))
                     span_units = sum(.35 if ch.isspace() else 1.0 if ord(ch) >= 0x2E80 else .62
                                      for ch in span_content)
-                    span_layout.append((span, span_content, span_units * font_size))
+                    span_font_size = float(span.get("font_size", typo.get("font_size", .065))) * min(width, height)
+                    span_font_size = max(8.0, span_font_size)
+                    raw_span_layout.append((span, span_content, span_units, span_font_size))
+                raw_width = sum(units * size for _span, _content, units, size in raw_span_layout)
+                tallest = max((size for _span, _content, _units, size in raw_span_layout), default=font_size)
+                scale = min(1.0, available_width / max(1.0, raw_width),
+                            available_height * .82 / max(1.0, tallest))
+                span_layout = [(span, span_content, max(8.0, size * scale),
+                                units * max(8.0, size * scale))
+                               for span, span_content, units, size in raw_span_layout]
                 total_width = sum(part[2] for part in span_layout)
+                # Width is the fourth tuple entry after adding per-run size.
+                total_width = sum(part[3] for part in span_layout)
                 cursor = x if anchor == "start" else x + w - total_width if anchor == "end" else x + (w - total_width) / 2
-                for index, (span, span_content, span_width) in enumerate(span_layout):
+                for index, (span, span_content, span_font_size, span_width) in enumerate(span_layout):
                     body.append(
                         f'<text id="{layer_id}-span-{index}" x="{cursor}" y="{y+h/2}" '
                         f'dominant-baseline="middle" text-anchor="start" '
                         f'font-family="{html.escape(_svg_font_family(span.get("font_family", typo.get("font_family", "Malgun Gothic"))))}" '
-                        f'font-size="{font_size}" font-weight="{typo.get("font_weight","bold")}" '
+                        f'font-size="{span_font_size}" font-weight="{span.get("font_weight", typo.get("font_weight","bold"))}" '
                         f'fill="{html.escape(str(span.get("color", typo.get("color", "#111111"))))}" '
                         f'stroke="{typo.get("stroke","none")}" stroke-width="{typo.get("stroke_width",0)*min(width,height)}" '
                         f'opacity="{opacity}" clip-path="url(#{text_clip})">{html.escape(span_content)}</text>'

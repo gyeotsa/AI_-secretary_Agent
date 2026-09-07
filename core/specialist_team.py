@@ -454,7 +454,8 @@ class SpecialistTeamRuntime:
         expected_types = set(contract.get("artifact_types") or ())
         artifacts = [item for item in payload.get("artifacts", [])
                      if isinstance(item, dict)
-                     and item.get("kind") in expected_types and item.get("uri")]
+                     and item.get("kind") in expected_types and item.get("uri")
+                     and (item.get("metadata") or {}).get("role") != "input"]
         valid_artifacts = [item for item in artifacts if SpecialistTeamRuntime._artifact_exists(item)]
         if expected_types and not valid_artifacts:
             failures.append("작업공간 산출물 계약을 충족하는 실제 산출물이 없습니다.")
@@ -473,14 +474,36 @@ class SpecialistTeamRuntime:
         if planning_degraded:
             failures.append("전문가 계획이 구조화 검증을 통과하지 못해 저하 모드로 실행되었습니다.")
 
+        criteria = list(contract.get("acceptance_criteria") or ())
+        verifier_names = list(contract.get("acceptance_verifiers") or ())
+        criteria_results = []
+        if verifier_names:
+            # A generic successful tool/file is not proof that an edit happened.
+            # Contracts bind each criterion to an explicit typed evidence gate.
+            from core.photoshop_runtime import verify_edit_evidence
+            verified_checks = verify_edit_evidence(evidence, valid_artifacts)
+            if len(verifier_names) != len(criteria):
+                failures.append("수락 기준과 검증기 개수가 달라 완료를 확인할 수 없습니다.")
+            for index, criterion in enumerate(criteria):
+                verifier = verifier_names[index] if index < len(verifier_names) else ""
+                check = verified_checks.get(verifier, {"verified": False, "reason": "알 수 없는 수락 기준 검증기입니다."})
+                criteria_results.append({
+                    "criterion": criterion, "verified": bool(check.get("verified")),
+                    "verification": verifier or "not_verified", "reason": check.get("reason", ""),
+                    "evidence": [item["summary"] for item in evidence],
+                    "artifacts": [item["uri"] for item in valid_artifacts],
+                })
+                if not check.get("verified"):
+                    failures.append(f"수락 기준 미충족({criterion}): {check.get('reason', '')}")
+        else:
+            criteria_results = [{
+                "criterion": criterion,
+                "verified": not failures,
+                "verification": "tool_evidence_and_artifact_contract" if not failures else "not_verified",
+                "evidence": [item["summary"] for item in evidence],
+                "artifacts": [item["uri"] for item in valid_artifacts],
+            } for criterion in criteria]
         passed = not failures
-        criteria_results = [{
-            "criterion": criterion,
-            "verified": passed,
-            "verification": "tool_evidence_and_artifact_contract" if passed else "not_verified",
-            "evidence": [item["summary"] for item in evidence],
-            "artifacts": [item["uri"] for item in valid_artifacts],
-        } for criterion in contract.get("acceptance_criteria") or ()]
         return {
             "passed": passed,
             "status": "completed" if passed else "degraded",
@@ -492,7 +515,10 @@ class SpecialistTeamRuntime:
             "criteria_results": criteria_results,
             "readiness_checks": {
                 **dict(contract.get("readiness", {}).get("checks") or {}),
-                "verified_evidence": bool(evidence),
+                "verified_evidence": bool(evidence) and (not verifier_names or (
+                    len(verifier_names) == len(criteria) and bool(criteria_results)
+                    and all(item["verified"] for item in criteria_results)
+                )),
                 "artifact_contract_satisfied": bool(valid_artifacts) or not expected_types,
             },
         }

@@ -38,6 +38,7 @@ from core.task_contracts import (
     get_supervisor_runtime,
 )
 from core.quality_metrics import get_quality_metric_store
+from core.utterance_scope import analyze_utterance_scope, allows_execution_follow_up
 
 
 def _safe_contract_value(value: Any) -> Any:
@@ -227,7 +228,7 @@ class Executor:
                           "completed_steps": outcome.completed_steps,
                           "failed_steps": outcome.failed_steps},
             )
-            self._record_turn_quality(goal, outcome, turn_started)
+            self._record_turn_quality(goal, outcome, turn_started, conversation_history)
             return outcome
         except Exception as exc:
             learning_runtime.event("runtime_exception", {"error": str(exc)}, trajectory_id)
@@ -248,7 +249,8 @@ class Executor:
             raise
 
     def _record_turn_quality(self, goal: str, outcome: ExecutionOutcome,
-                             started_at: float) -> None:
+                             started_at: float,
+                             history: Optional[List[Dict[str, str]]] = None) -> None:
         """Record only observable runtime outcomes; never invent success data."""
         latency = (time.perf_counter() - started_at) * 1000
         succeeded = outcome.status == "completed"
@@ -270,7 +272,7 @@ class Executor:
                 "clarification_quality", 1.0 if specific else 0.0,
                 success=specific, context={"question": question[:500]},
             )
-        execution_request = bool(
+        execution_request = not analyze_utterance_scope(goal, history).discussion and bool(
             self._EXECUTION_REQUEST_PATTERN.search(goal)
             or self._GENERIC_ACTION_REQUEST_PATTERN.search(goal)
         )
@@ -329,6 +331,12 @@ class Executor:
                 response, status, goal, question=pending_question,
             )
 
+        if analyze_utterance_scope(goal, history).discussion:
+            # A question about a command is not the answer to an outstanding
+            # recipient/body slot either.  Keep that task untouched and answer
+            # without granting the Planner the embedded command's authority.
+            return terminal_outcome(self._respond_conversationally(goal, history))
+
         if self.is_control_command(goal):
             return self.handle_control_command(goal, session_key)
 
@@ -382,7 +390,8 @@ class Executor:
                 "요청하신 작업은 실행하지 않겠습니다, 보스.", "cancelled",
             )
         deterministic_follow_up = False
-        if not pending and not direct_resolution.matched:
+        allow_recent_execution = allows_execution_follow_up(history)
+        if not pending and not direct_resolution.matched and allow_recent_execution:
             recent_intent = self.dialogue_state.get_recent_intent(
                 session_key, workspace_scope
             )
@@ -533,6 +542,19 @@ class Executor:
                         legacy_resolution.slots, pending.original_goal,
                     )
             if intent_state:
+                original_scope = analyze_utterance_scope(intent_state["original_request"])
+                if (original_scope.conditional and self.intent_router.resolve(
+                        intent_state["original_request"]
+                ).request_type in {"change", "execute", "external_send"}):
+                    # A short slot answer ("응", a date, or a recipient) is
+                    # not an observation satisfying an outstanding condition.
+                    # A new explicit action is handled above; otherwise keep
+                    # this contract pending instead of dropping its predicate.
+                    return ExecutionOutcome(
+                        f"{pending.question}\n대기 작업 ID: {pending.task_id}",
+                        "awaiting_user", intent_state["original_request"],
+                        pending.question, pending.task_id,
+                    )
                 intent_resolution = self.intent_router.resolve(
                     supplied_answer, intent_state["intent_name"], intent_state["slots"]
                 )
@@ -594,6 +616,7 @@ class Executor:
                 recent_intent = self.dialogue_state.get_recent_intent(session_key, workspace_scope)
                 if (
                     recent_intent
+                    and allow_recent_execution
                     and recent_intent["intent_name"] == intent_resolution.intent_name
                     and self.intent_router.is_contextual_follow_up(
                         goal, intent_resolution.intent_name
@@ -611,7 +634,7 @@ class Executor:
                     "대상은 들었지만 어떤 작업을 할지 명확히 인식하지 못했습니다. "
                     "원하는 동작을 다시 말씀해 주세요, 보스.",
                 )
-            if not intent_resolution.matched:
+            if not intent_resolution.matched and allow_recent_execution:
                 recent_intent = self.dialogue_state.get_recent_intent(session_key, workspace_scope)
                 if (recent_intent and self.intent_router.is_contextual_follow_up(
                         goal, recent_intent["intent_name"]
@@ -1993,6 +2016,10 @@ class Executor:
     ) -> bool:
         """Route broad action requests without forcing ordinary chat into tools."""
         normalized = " ".join(str(goal or "").split())
+        scope = analyze_utterance_scope(normalized)
+        if scope.discussion or scope.negated or scope.conditional:
+            return False
+        normalized = scope.routing_text
         if not normalized or self._SOCIAL_ONLY_PATTERN.fullmatch(normalized):
             return False
         if not (
@@ -2328,9 +2355,10 @@ class Executor:
         self, message: str, history: List[Dict[str, str]]
     ) -> str:
         """Answer ordinary conversation without exposing or invoking tools."""
-        execution_requested = bool(
-            self._EXECUTION_REQUEST_PATTERN.search(message)
-            or self._GENERIC_ACTION_REQUEST_PATTERN.search(message)
+        scope = analyze_utterance_scope(message, history)
+        execution_requested = not scope.discussion and bool(
+            self._EXECUTION_REQUEST_PATTERN.search(scope.routing_text)
+            or self._GENERIC_ACTION_REQUEST_PATTERN.search(scope.routing_text)
         )
         if execution_requested:
             # Reaching this method means no Registry execution path accepted the

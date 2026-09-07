@@ -7,6 +7,7 @@ from typing import Iterable
 
 from core.intent_router import IntentRouter, IntentResolution
 from core.plugin import PluginRegistry
+from core.utterance_scope import analyze_utterance_scope
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,12 @@ class ToolLoadoutSelector:
         workspace or supervisor. ``required_tools`` remains a smaller set pinned
         to the front of the loadout.
         """
+        scope = analyze_utterance_scope(request)
+        if scope.discussion:
+            return ToolLoadout((), "discussion_without_execution", 1.0)
         resolution = resolution or self.router.resolve(request)
+        if resolution.negated:
+            return ToolLoadout((), "prohibited_request", 1.0)
         from core.tools import AUTO_LOOP_EXCLUDED_TOOLS
         runtime_only = set(AUTO_LOOP_EXCLUDED_TOOLS)
         allowed = None if allowed_tools is None else {
@@ -75,7 +81,7 @@ class ToolLoadoutSelector:
                 and in_scope(str(item.get("tool_name") or item.get("tool")))
             )
 
-        query = self._tokens(request)
+        query = self._tokens(scope.routing_text)
         scored = []
         for contract in self.registry.get_capabilities():
             # These tools are invoked by dedicated runtime/UI flows. Offering

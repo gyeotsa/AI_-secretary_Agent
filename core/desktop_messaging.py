@@ -66,6 +66,23 @@ if os.name == "nt":
             wintypes.UINT, ctypes.POINTER(_Input), ctypes.c_int,
         )
         _USER32.SendInput.restype = wintypes.UINT
+        _USER32.SendMessageW.argtypes = (
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        )
+        _USER32.SendMessageW.restype = wintypes.LPARAM
+        _USER32.SendMessageTimeoutW.argtypes = (
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+            wintypes.UINT, wintypes.UINT, ctypes.POINTER(_ULONG_PTR),
+        )
+        _USER32.SendMessageTimeoutW.restype = wintypes.LPARAM
+        _USER32.IsWindow.argtypes = (wintypes.HWND,)
+        _USER32.IsWindow.restype = wintypes.BOOL
+        _USER32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+        _USER32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        _USER32.IsChild.argtypes = (wintypes.HWND, wintypes.HWND)
+        _USER32.IsChild.restype = wintypes.BOOL
+        _USER32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+        _USER32.GetClassNameW.restype = ctypes.c_int
     except (AttributeError, OSError):
         _USER32 = None
 
@@ -96,10 +113,11 @@ class DesktopMessagingRuntime:
     """Provider 설정과 창 제목 검증을 이용해 잘못된 수신자 전송을 차단한다."""
 
     VK = {"CTRL": 0x11, "SHIFT": 0x10, "ALT": 0x12, "ENTER": 0x0D, "ESC": 0x1B,
-          "F": 0x46, "A": 0x41}
+          "BACKSPACE": 0x08, "F": 0x46, "A": 0x41, "V": 0x56}
     KEYEVENTF_KEYUP = 0x0002
     KEYEVENTF_UNICODE = 0x0004
     INPUT_KEYBOARD = 1
+    EM_SETSEL = 0x00B1
 
     def __init__(self, provider_path: str | None = None):
         path = Path(provider_path) if provider_path else (
@@ -221,6 +239,65 @@ class DesktopMessagingRuntime:
             array = (_Input * len(inputs))(*inputs)
             _dispatch_inputs(array)
 
+    @classmethod
+    def _select_native_edit_all(cls, identity: Dict[str, Any]) -> None:
+        """Select every character in the already-verified native RichEdit.
+
+        KakaoTalk's RichEdit accepts real Unicode input but can ignore a synthetic
+        Ctrl+A even while UIA reports keyboard focus.  EM_SETSEL targets the exact
+        native handle captured in the stable UIA identity, so it neither relies on
+        screen coordinates nor risks selecting text in another window.
+        """
+        cls._native_edit_message(identity, cls.EM_SETSEL, 0, -1)
+
+    @classmethod
+    def _native_edit_message(cls, identity: Dict[str, Any], message: int,
+                             wparam: int = 0, lparam: int = 0) -> None:
+        """Bound native composer operations without sending global keystrokes."""
+        handle = int(identity.get("native_handle") or 0)
+        if _USER32 is None or handle <= 0:
+            raise RuntimeError("메시지 입력창의 native handle을 확인할 수 없습니다.")
+        if not int(_USER32.IsWindow(handle)):
+            raise RuntimeError("메시지 입력창의 native handle이 더 이상 유효하지 않습니다.")
+        expected_pid = int(identity.get("process_id") or 0)
+        parent = int(identity.get("window_handle") or 0)
+        expected_class = str(identity.get("class_name") or "").casefold()
+        if not expected_pid or not parent or not expected_class.startswith("richedit"):
+            raise RuntimeError("native 입력창의 프로세스·대화창·클래스 정보를 확인하지 못했습니다.")
+        process_id, parent_pid = wintypes.DWORD(), wintypes.DWORD()
+        _USER32.GetWindowThreadProcessId(handle, ctypes.byref(process_id))
+        _USER32.GetWindowThreadProcessId(parent, ctypes.byref(parent_pid))
+        class_name = ctypes.create_unicode_buffer(256)
+        _USER32.GetClassNameW(handle, class_name, len(class_name))
+        if (process_id.value != expected_pid or parent_pid.value != expected_pid
+                or not _USER32.IsChild(parent, handle)
+                or class_name.value.casefold() != expected_class):
+            raise RuntimeError("native 메시지 입력창의 소유권이 변경되어 전송을 중단했습니다.")
+        result = _ULONG_PTR()
+        if not _USER32.SendMessageTimeoutW(
+            handle, message, wparam, lparam, 0x0003, 2000, ctypes.byref(result),
+        ):
+            raise RuntimeError("메시지 입력창 작업이 시간 내에 완료되지 않았습니다.")
+
+    def _paste_unicode_preserving_clipboard(
+        self, text: str, *, identity: Dict[str, Any], verify_target,
+    ) -> None:
+        """Paste to a verified RichEdit; never rely on a lazy OLE clipboard proxy."""
+        from core.windows_clipboard import paste_text_transaction
+
+        def paste():
+            verify_target()
+            # Replace the approved draft atomically through WM_PASTE.  Do not
+            # clear it before clipboard preparation succeeds, or a snapshot
+            # failure would destroy an existing unsent message.
+            self._select_native_edit_all(identity)
+            verify_target()
+            # WM_PASTE is synchronous and tied to the exact native composer.
+            # The clipboard cannot be restored until the app finishes reading it.
+            self._native_edit_message(identity, 0x0302)
+
+        paste_text_transaction(text, paste)
+
     @staticmethod
     def _normal_title(value: str) -> str:
         text = re.sub(r"\s*[-–—|]\s*(?:카카오톡|kakaotalk).*$", "", value, flags=re.I)
@@ -275,29 +352,36 @@ class DesktopMessagingRuntime:
             pass
         self._close_forbidden_provider_windows(main.process_id, config)
 
-        names = config.get("contact_search_accessibility_names") or [
-            "검색", "친구 검색", "친구검색", "이름 검색", "친구 이름 검색",
-        ]
-        id_keywords = config.get("contact_search_automation_id_keywords") or ["search"]
-        selector = dict(
+        selector = self._contact_search_selector(config)
+        names = selector["names"]
+        id_keywords = selector["automation_id_keywords"]
+        button_selector = dict(
             names=names, automation_id_keywords=id_keywords,
             control_types=["Edit", "Button"], excluded_names=excluded,
             exact_name=False,
         )
         target = self.automation.activate_accessibility_control(
-            main.handle, **selector, invoke=False,
+            main.handle, **button_selector, invoke=False,
+            require_keyboard_focus=False, require_foreground=True,
         )
         if str(target.get("control_type", "")).casefold() == "edit":
-            return target
+            return self.automation.activate_accessibility_control(
+                main.handle, **selector, invoke=False,
+                expected_identity=self._control_identity(target, main.handle),
+                require_keyboard_focus=True, require_foreground=True,
+            )
 
-        self.automation.activate_accessibility_control(main.handle, **selector, invoke=True)
+        button_identity = self._control_identity(target, main.handle)
+        self.automation.activate_accessibility_control(
+            main.handle, **button_selector, invoke=True,
+            expected_identity=button_identity, require_foreground=True,
+        )
         time.sleep(0.2)
         self._close_forbidden_provider_windows(main.process_id, config)
         try:
             return self.automation.activate_accessibility_control(
-                main.handle, names=names, automation_id_keywords=id_keywords,
-                control_types=["Edit"], excluded_names=excluded,
-                exact_name=False, invoke=False,
+                main.handle, **selector, invoke=False,
+                require_keyboard_focus=True, require_foreground=True,
             )
         except LookupError:
             # Some KakaoTalk versions expose the opened search field without a name.
@@ -305,33 +389,114 @@ class DesktopMessagingRuntime:
             return self.automation.activate_accessibility_control(
                 main.handle, control_types=["Edit"], excluded_names=excluded,
                 allow_type_only=True, require_unique=True, invoke=False,
+                require_keyboard_focus=True, require_foreground=True,
             )
 
+    @staticmethod
+    def _contact_search_selector(config: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "names": config.get("contact_search_accessibility_names") or [
+                "검색", "친구 검색", "친구검색", "이름 검색", "친구 이름 검색",
+            ],
+            "automation_id_keywords": (
+                config.get("contact_search_automation_id_keywords") or ["search"]
+            ),
+            "control_types": ["Edit"],
+            "excluded_names": config.get("forbidden_control_names") or [
+                "친구 추가", "ID로 추가", "연락처로 추가",
+            ],
+            "exact_name": False,
+            "require_unique": True,
+        }
+
+    def _verify_provider_foreground(self, main: WindowInfo) -> WindowInfo:
+        expected_title = re.sub(r"\s+", "", str(main.title).casefold())
+        foreground = [
+            item for item in self.automation.list_windows()
+            if item.foreground and item.handle == main.handle
+            and item.process_id == main.process_id
+            and re.sub(r"\s+", "", str(item.title).casefold()) == expected_title
+        ]
+        if len(foreground) != 1:
+            raise RuntimeError("검색 입력 직전 메신저 기본 창 포커스 검증에 실패했습니다.")
+        return foreground[0]
+
+    def _set_and_verify_contact_search(
+        self, main: WindowInfo, config: Dict[str, Any], search_control: Dict[str, Any],
+        value: str,
+    ) -> Dict[str, Any]:
+        """Write one recipient name to the same focused search Edit via UIA only."""
+        selector = self._contact_search_selector(config)
+        identity = self._control_identity(search_control, main.handle)
+        if not identity.get("stable"):
+            raise RuntimeError("친구 검색창의 안정적인 UIA identity를 확인하지 못했습니다.")
+        self._verify_provider_foreground(main)
+        state = self.automation.set_accessibility_text(
+            main.handle, value, expected_identity=identity,
+            require_keyboard_focus=True, require_foreground=True, **selector,
+        )
+        actual_identity = self._control_identity(state, main.handle)
+        if self._identity_token(actual_identity) != self._identity_token(identity):
+            raise RuntimeError("친구 검색 중 입력창이 다른 UIA 요소로 바뀌었습니다.")
+        if not state.get("value_verified"):
+            raise RuntimeError("친구 검색어를 UIA로 입력한 뒤 값을 검증하지 못했습니다.")
+        self._verify_provider_foreground(main)
+        verified = self.automation.read_accessibility_text(
+            main.handle, expected_identity=identity,
+            require_keyboard_focus=True, require_foreground=True, **selector,
+        )
+        verified_identity = self._control_identity(verified, main.handle)
+        if (self._identity_token(verified_identity) != self._identity_token(identity)
+                or str(verified.get("value", "")) != str(value)):
+            raise RuntimeError("수신자 검색 직전 동일 UIA 검색창의 값을 재검증하지 못했습니다.")
+        self._verify_provider_foreground(main)
+        return {**state, **verified, "control_identity": verified_identity}
+
     def _activate_recipient_result(self, main: WindowInfo, recipient: str,
-                                   config: Dict[str, Any]) -> Dict[str, Any]:
+                                   config: Dict[str, Any],
+                                   search_control: Dict[str, Any]) -> Dict[str, Any]:
         excluded = config.get("forbidden_control_names") or ["친구 추가", "ID로 추가", "연락처로 추가"]
-        last_candidate = recipient
         for candidate in self._recipient_name_candidates(recipient):
-            last_candidate = candidate
-            self._hotkey(["CTRL", "A"])
-            self._type_unicode(candidate)
+            self._set_and_verify_contact_search(main, config, search_control, candidate)
             time.sleep(0.8)
             self._close_forbidden_provider_windows(main.process_id, config)
+            self._verify_provider_foreground(main)
             try:
                 result = self.automation.activate_accessibility_control(
                     main.handle, names=[candidate], excluded_names=excluded,
-                    exact_name=True, invoke=True,
+                    exact_name=True, invoke=True, require_foreground=True,
                 )
                 if result.get("activation") != "invoke":
-                    self._press("ENTER")
+                    result_identity = self._control_identity(result, main.handle)
+                    if not result_identity.get("stable"):
+                        raise RuntimeError(
+                            "Enter로 열 수신자 결과의 안정적인 UIA identity가 없습니다."
+                        )
+
+                    def verify_result_target():
+                        self._verify_provider_foreground(main)
+                        self.automation.verify_accessibility_control(
+                            main.handle, names=[candidate], excluded_names=excluded,
+                            exact_name=True, expected_identity=result_identity,
+                            require_keyboard_focus=True, require_foreground=True,
+                        )
+                        self._verify_provider_foreground(main)
+
+                    self._press_after_verification("ENTER", verify_result_target)
                 return {**result, "matched_recipient": candidate}
             except LookupError:
                 continue
-        # The first keyboard-selected result may be opened, but the message is never
-        # typed until a separate exact-title chat window is verified below.
-        self._press("ENTER")
-        return {"strategy": "verified-keyboard-selection", "activation": "enter",
-                "matched_recipient": last_candidate}
+        # Never press Enter on an unverified "first result".  That can open a
+        # different contact when ranking changes or another window steals focus.
+        raise RuntimeError(
+            "수신자 이름과 정확히 일치하는 UIA 검색 결과를 찾지 못해 "
+            "전송을 중단했습니다."
+        )
+
+    def _press_after_verification(self, key: str, verifier) -> None:
+        """Dispatch a global key only after a fail-closed target proof."""
+        verifier()
+        self._press(key)
 
     def _focus_message_input(self, chat: WindowInfo,
                              config: Dict[str, Any]) -> Dict[str, Any]:
@@ -344,19 +509,22 @@ class DesktopMessagingRuntime:
         """
         names = config.get("message_input_accessibility_names") or [
             "메시지 입력", "채팅 입력", "대화 입력", "메시지를 입력하세요",
+            "RichEdit Control",
         ]
         id_keywords = config.get("message_input_automation_id_keywords") or [
-            "message", "chat", "input", "edit",
+            "message", "chat", "input", "edit", "1006",
         ]
         try:
             return self.automation.activate_accessibility_control(
                 chat.handle, names=names, automation_id_keywords=id_keywords,
-                control_types=["Edit"], exact_name=False, invoke=False,
+                control_types=["Edit", "Document"], exact_name=False, invoke=False,
+                require_keyboard_focus=True, require_foreground=True,
             )
         except LookupError:
             return self.automation.activate_accessibility_control(
-                chat.handle, control_types=["Edit"], allow_type_only=True,
+                chat.handle, control_types=["Edit", "Document"], allow_type_only=True,
                 require_unique=True, invoke=False,
+                require_keyboard_focus=True, require_foreground=True,
             )
 
     @staticmethod
@@ -364,11 +532,12 @@ class DesktopMessagingRuntime:
         return {
             "names": config.get("message_input_accessibility_names") or [
                 "메시지 입력", "채팅 입력", "대화 입력", "메시지를 입력하세요",
+                "RichEdit Control",
             ],
             "automation_id_keywords": config.get(
                 "message_input_automation_id_keywords"
-            ) or ["message", "chat", "input", "edit"],
-            "control_types": ["Edit"],
+            ) or ["message", "chat", "input", "edit", "1006"],
+            "control_types": ["Edit", "Document"],
             "exact_name": False,
             # Multiple matching edits (search + composer, hidden legacy control,
             # etc.) are unsafe.  The runtime must prove one unambiguous composer.
@@ -417,16 +586,90 @@ class DesktopMessagingRuntime:
     ) -> Dict[str, Any]:
         """Put text in the verified composer and prove that the value matches."""
         selector = self._message_input_selector(config)
+        # Native KakaoTalk RichEdit controls accept ValuePattern writes but do not
+        # emit the application's text-change event, leaving the Send action
+        # disabled.  Use UIA to identify/focus the exact control, then paste via
+        # its native edit pipeline and read the same RuntimeId back.
+        try:
+            focused = self._focus_message_input(chat, config)
+        except LookupError:
+            focused = {}
+        focused_identity = self._control_identity(focused, chat.handle) if focused else {}
+        is_native_richedit = (
+            str(focused.get("class_name") or focused_identity.get("class_name") or "")
+            .casefold().startswith("richedit")
+        )
+        if is_native_richedit:
+            if not focused_identity.get("stable"):
+                raise RuntimeError(
+                    "메시지 입력창의 안정적인 UIA RuntimeId 또는 native handle을 확인하지 못했습니다."
+                )
+            expected_titles = {self._normal_title(chat.title)}
+
+            def verify_target():
+                self._verify_exact_chat_foreground(chat, expected_titles)
+                current = self._read_same_message_input(
+                    chat, config, focused_identity, require_keyboard_focus=True,
+                )
+                self._verify_exact_chat_foreground(chat, expected_titles)
+                return current
+
+            current = verify_target()
+            draft = self._canonical_composer_value(current)
+            if draft and draft != message:
+                raise RuntimeError("대화창에 작성 중인 다른 초안이 있어 내용을 보존하고 중단했습니다.")
+
+            def verify_unchanged_draft():
+                state = verify_target()
+                if self._canonical_composer_value(state) != draft:
+                    raise RuntimeError("붙여넣기 전에 초안이 변경되어 사용자 내용을 보존하고 중단했습니다.")
+                return state
+
+            self._paste_unicode_preserving_clipboard(
+                message, identity=focused_identity, verify_target=verify_unchanged_draft,
+            )
+            state = self._read_same_message_input(
+                chat, config, focused_identity, require_keyboard_focus=True,
+            )
+            if self._canonical_composer_value(state) != message:
+                raise RuntimeError("붙여넣기 뒤 메시지 본문을 정확히 다시 읽지 못했습니다.")
+            return {
+                **state, "value_verified": True, "text_method": "verified_ole_paste",
+                "control_identity": focused_identity,
+            }
+        # The generic UIA path must preserve unrelated drafts too.  Capture the
+        # exact element BEFORE writing, then bind the setter to that identity.
+        self._verify_exact_chat_foreground(chat, {self._normal_title(chat.title)})
+        try:
+            before = self.automation.read_accessibility_text(
+                chat.handle, require_keyboard_focus=True, require_foreground=True,
+                **selector,
+            )
+        except LookupError:
+            before = self.automation.read_accessibility_text(
+                chat.handle, control_types=["Edit", "Document"],
+                allow_type_only=True, require_unique=True,
+                require_keyboard_focus=True, require_foreground=True,
+            )
+        before_identity = self._control_identity(before, chat.handle)
+        if not before_identity.get("stable"):
+            raise RuntimeError("메시지 입력창의 안정적인 UIA identity를 입력 전에 확인하지 못했습니다.")
+        before_value = self._canonical_composer_value(before)
+        if before_value and before_value != message:
+            raise RuntimeError("대화창에 작성 중인 다른 초안이 있어 내용을 보존하고 중단했습니다.")
+        self._verify_exact_chat_foreground(chat, {self._normal_title(chat.title)})
         try:
             state = self.automation.set_accessibility_text(
-                chat.handle, message, **selector,
+                chat.handle, message, expected_identity=before_identity,
+                require_keyboard_focus=True, require_foreground=True, **selector,
             )
         except LookupError:
             # Some KakaoTalk releases expose an unnamed Edit.  It is safe only when
             # the exact recipient chat has one and only one visible Edit control.
             state = self.automation.set_accessibility_text(
-                chat.handle, message, control_types=["Edit"],
-                allow_type_only=True, require_unique=True,
+                chat.handle, message, control_types=["Edit", "Document"],
+                allow_type_only=True, require_unique=True, expected_identity=before_identity,
+                require_keyboard_focus=True, require_foreground=True,
             )
         identity = self._control_identity(state, chat.handle)
         if not state.get("value_verified"):
@@ -435,6 +678,8 @@ class DesktopMessagingRuntime:
             raise RuntimeError(
                 "메시지 입력창의 안정적인 UIA RuntimeId 또는 native handle을 확인하지 못했습니다."
             )
+        if self._identity_token(identity) != self._identity_token(before_identity):
+            raise RuntimeError("입력 중 메시지 입력창이 다른 UIA 요소로 바뀌어 전송을 중단했습니다.")
         return {**state, "control_identity": identity}
 
     def _read_same_message_input(
@@ -445,17 +690,22 @@ class DesktopMessagingRuntime:
         try:
             state = self.automation.read_accessibility_text(
                 chat.handle, expected_identity=identity,
-                require_keyboard_focus=require_keyboard_focus, **selector,
+                require_keyboard_focus=require_keyboard_focus,
+                require_foreground=require_keyboard_focus, **selector,
             )
         except LookupError:
             state = self.automation.read_accessibility_text(
-                chat.handle, control_types=["Edit"], allow_type_only=True,
+                chat.handle, control_types=["Edit", "Document"], allow_type_only=True,
                 require_unique=True, expected_identity=identity,
                 require_keyboard_focus=require_keyboard_focus,
+                require_foreground=require_keyboard_focus,
             )
         actual_identity = self._control_identity(state, chat.handle)
         if self._identity_token(actual_identity) != self._identity_token(identity):
             raise RuntimeError("메시지 입력 Control이 전송 과정에서 다른 UIA 요소로 바뀌었습니다.")
+        for key in ("native_handle", "process_id", "window_handle", "class_name"):
+            if identity.get(key) and actual_identity.get(key) != identity[key]:
+                raise RuntimeError(f"메시지 입력 Control의 {key}가 변경되어 전송을 중단했습니다.")
         if require_keyboard_focus and not state.get("keyboard_focus_verified"):
             raise RuntimeError("Enter 직전 동일 메시지 입력창의 키보드 포커스를 검증하지 못했습니다.")
         return {**state, "control_identity": actual_identity}
@@ -467,10 +717,16 @@ class DesktopMessagingRuntime:
         deadline = time.monotonic() + max(0.2, float(timeout))
         while time.monotonic() < deadline:
             state = self._read_same_message_input(chat, config, identity)
-            if not str(state.get("value", "")):
+            if not self._canonical_composer_value(state):
                 return True
             time.sleep(0.08)
         return False
+
+    @staticmethod
+    def _canonical_composer_value(state: Dict[str, Any]) -> str:
+        return WindowsAutomationRuntime._canonical_edit_value(
+            str(state.get("value", "") or ""), str(state.get("class_name", "") or ""),
+        )
 
     def _verify_exact_chat_foreground(
         self, chat: WindowInfo, expected_titles: Set[str],
@@ -564,8 +820,9 @@ class DesktopMessagingRuntime:
         if os.name != "nt":
             raise OSError("데스크톱 메신저 전송은 Windows에서만 지원합니다.")
         provider_id, config = self.resolve_provider(provider)
-        recipient, message = recipient.strip(), message.strip()
-        if not recipient or not message:
+        recipient = recipient.strip()
+        message = str(message).replace("\r\n", "\n").replace("\r", "\n")
+        if not recipient or not message.strip() or "\0" in message:
             raise ValueError("수신자와 보낼 내용을 모두 입력해야 합니다.")
 
         windows = self.automation.list_windows()
@@ -584,24 +841,35 @@ class DesktopMessagingRuntime:
         if not main_windows:
             raise RuntimeError(f"{provider_id} 기본 창이 준비되지 않았습니다.")
 
-        main = next((window for window in main_windows if window.foreground), main_windows[0])
-        self._close_forbidden_provider_windows(main.process_id, config)
-        self.automation.focus(main.handle)
-        self._focus_contact_search(main, config)
-        self._close_forbidden_provider_windows(main.process_id, config)
-        self._activate_recipient_result(main, recipient, config)
-        self._close_forbidden_provider_windows(main.process_id, config)
-
         expected_titles = {
             self._normal_title(item) for item in self._recipient_name_candidates(recipient)
         }
-        chat_windows = self._wait_for_windows(
-            lambda item: item.process_id == main.process_id
-            and self._normal_title(item.title) in expected_titles,
-            chat_timeout,
-        )
+        provider_process_ids = {window.process_id for window in main_windows}
+        # Reuse an already-open exact recipient chat before touching provider search.
+        # This is both safer and more compatible with KakaoTalk builds whose main
+        # list/search controls are custom-drawn and absent from the UIA tree.
+        chat_windows = [
+            item for item in windows
+            if item.process_id in provider_process_ids
+            and self._normal_title(item.title) in expected_titles
+        ]
+        if not chat_windows:
+            main = next((window for window in main_windows if window.foreground), main_windows[0])
+            self._close_forbidden_provider_windows(main.process_id, config)
+            main = self.automation.focus(main.handle)
+            self._verify_provider_foreground(main)
+            search_control = self._focus_contact_search(main, config)
+            self._close_forbidden_provider_windows(main.process_id, config)
+            self._activate_recipient_result(
+                main, recipient, config, search_control,
+            )
+            self._close_forbidden_provider_windows(main.process_id, config)
+            chat_windows = self._wait_for_windows(
+                lambda item: item.process_id == main.process_id
+                and self._normal_title(item.title) in expected_titles,
+                chat_timeout,
+            )
         if len(chat_windows) != 1:
-            self._press("ESC")
             raise RuntimeError(
                 "수신자 이름과 정확히 일치하는 대화창을 하나로 검증하지 못해 전송을 중단했습니다."
             )
@@ -621,17 +889,20 @@ class DesktopMessagingRuntime:
         previous_bubbles = {
             self._occurrence_token(item) for item in previous_occurrences
         }
-        # Nothing that can move focus is allowed between these two checks and Enter.
-        self._verify_exact_chat_foreground(chat, expected_titles)
-        composer_state = self._read_same_message_input(
-            chat, config, composer_identity, require_keyboard_focus=True,
-        )
-        if str(composer_state.get("value", "")) != message:
-            raise RuntimeError("Enter 직전 동일 입력창의 본문이 요청한 메시지와 일치하지 않습니다.")
-        # Reading a UIA control can pump messages and another window may steal
-        # foreground focus.  Re-check after the read, immediately before Enter.
-        self._verify_exact_chat_foreground(chat, expected_titles)
-        self._press("ENTER")
+        def verify_send_target():
+            # Reading UIA can pump messages, so prove both the stable composer and
+            # foreground ownership, then re-check the top-level window after read.
+            self._verify_exact_chat_foreground(chat, expected_titles)
+            composer_state = self._read_same_message_input(
+                chat, config, composer_identity, require_keyboard_focus=True,
+            )
+            if self._canonical_composer_value(composer_state) != message:
+                raise RuntimeError(
+                    "Enter 직전 동일 입력창의 본문이 요청한 메시지와 일치하지 않습니다."
+                )
+            self._verify_exact_chat_foreground(chat, expected_titles)
+
+        self._press_after_verification("ENTER", verify_send_target)
         if not self._wait_until_message_input_clears(
             chat, config, composer_identity, send_verify_timeout,
         ):

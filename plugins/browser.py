@@ -143,7 +143,7 @@ class BrowserPlugin(BasePlugin):
                 "사용자가 지정한 공개 웹 주소 열기",
                 "browser_open_url",
                 ["링크 열어", "주소 열어", "웹페이지 열어"],
-                [SlotSchema("url", "열 URL", "열 웹 주소를 알려주세요.")],
+                [SlotSchema("url", "열 URL", "열 웹 주소를 하나만 알려주세요.")],
                 execution_hints=["열어", "접속"],
                 utterance_patterns=[r"https?://\S+.{0,20}(?:열어|접속)",
                                     r"(?:열어|접속).{0,40}https?://\S+"],
@@ -154,7 +154,7 @@ class BrowserPlugin(BasePlugin):
                 "사용자가 제공한 YouTube 영상의 실제 자막을 분석해 설정과 RAG에 반영",
                 "browser_learn_video_preference",
                 ["영상을 보고 학습", "영상으로 학습", "유튜브에서 학습", "영상 분석해서 반영"],
-                [SlotSchema("url", "분석할 YouTube URL", "학습할 YouTube 링크를 알려주세요."),
+                [SlotSchema("url", "분석할 YouTube URL", "학습할 YouTube 링크를 하나만 알려주세요."),
                  SlotSchema("setting", "반영할 설정", "영상에서 무엇을 학습할지 알려주세요."),
                  SlotSchema("subject", "학습할 화자", "영상에서 누구의 말투를 학습할지 알려주세요.")],
                 execution_hints=["학습", "반영", "분석", "보고"],
@@ -206,13 +206,96 @@ class BrowserPlugin(BasePlugin):
             )
         ]
 
+    @staticmethod
+    def _extract_url_literals(text: str) -> List[str]:
+        """Separate prose delimiters from URL data without decoding/re-encoding.
+
+        A matching outer wrapper is authoritative. Otherwise only unmatched
+        prose brackets and sentence punctuation *outside* a query/fragment are
+        removed. Bare query punctuation is inherently ambiguous, so preserve it
+        rather than silently changing a signed URL or search parameter.
+        """
+        source = str(text or "")
+        scheme = re.compile(r"https?://", re.IGNORECASE)
+        pairs = {'"': '"', "'": "'", "“": "”", "‘": "’", "`": "`",
+                 "<": ">", "(": ")", "[": "]", "{": "}",
+                 "（": "）", "「": "」", "〈": "〉"}
+        quote_suffix = re.compile(
+            r"(?:$|\s|[)\]}>,.!?;]*(?:\s|$)|[,;][\"'`<(]*https?://|"
+            r"(?:[은는을를]|으로|에서|라고)(?=\s|$))", re.IGNORECASE,
+        )
+        urls: List[str] = []
+        cursor = 0
+        while match := scheme.search(source, cursor):
+            start = match.start()
+            opener = source[start - 1] if start else ""
+            closer = pairs.get(opener, "")
+            nested = 0
+            end = start
+            wrapped = False
+            has_query_or_fragment = False
+            while end < len(source):
+                char = source[end]
+                if char.isspace():
+                    break
+                if closer and char == closer:
+                    if opener in "([{（「〈" and nested:
+                        nested -= 1
+                    elif closer == "'" and not quote_suffix.match(source[end + 1:]):
+                        # Apostrophe is a legal URL subdelimiter (O'Reilly,
+                        # q='value'&x=1), not necessarily the outer quote.
+                        pass
+                    else:
+                        wrapped = True
+                        break
+                elif closer and opener != closer and char == opener:
+                    nested += 1
+                elif char in '<>"“”‘’`':
+                    break
+                if char in "?#":
+                    has_query_or_fragment = True
+                if (char in ",;" and not has_query_or_fragment
+                        and scheme.match(source, end + 1)):
+                    break
+                end += 1
+            value = source[start:end]
+            if not wrapped and not has_query_or_fragment:
+                previous = ""
+                while value != previous:
+                    previous = value
+                    value = value.rstrip(".,!")
+                    if value and value[-1] in ")]}":
+                        closing = value[-1]
+                        opening = {v: k for k, v in pairs.items()}[closing]
+                        if value.count(closing) > value.count(opening):
+                            value = value[:-1]
+            if value and value not in urls:
+                urls.append(value)
+            cursor = max(end + 1, match.end())
+        return urls
+
+    @staticmethod
+    def _is_youtube_video_url(url: str) -> bool:
+        try:
+            parsed = urlsplit(url)
+            host = (parsed.hostname or "").casefold()
+        except ValueError:
+            return False
+        return ((host == "youtu.be" and bool(parsed.path.strip("/")))
+                or (host in {"youtube.com", "www.youtube.com", "m.youtube.com"}
+                    and parsed.path == "/watch"))
+
     def extract_slots(self, intent_name: str, text: str,
                       current_slots: Dict[str, Any]) -> Dict[str, Any]:
         slots = dict(current_slots)
         if intent_name == "web.open_url":
-            match = re.search(r"https?://\S+", text)
-            if match:
-                slots["url"] = match.group(0).rstrip(".,!?)]}")
+            urls = self._extract_url_literals(text)
+            if urls:
+                # The tool accepts one target. Multiple explicit targets must
+                # not silently choose the first one or reuse a stale URL.
+                slots.pop("url", None)
+                if len(urls) == 1:
+                    slots["url"] = urls[0]
             return slots
         if intent_name in {"web.site_search", "media.play"}:
             provider = self._provider_from_text(text, media=intent_name == "media.play")
@@ -228,9 +311,12 @@ class BrowserPlugin(BasePlugin):
                 slots["query"] = previous
             return slots
         if intent_name == "web.video_learning":
-            url = re.search(r"https?://(?:www\.)?(?:youtube\.com/watch\?[^\s]+|youtu\.be/[^\s]+)", text)
-            if url:
-                slots["url"] = url.group(0).rstrip(".,!?)]}")
+            urls = self._extract_url_literals(text)
+            if urls:
+                slots.pop("url", None)
+                video_urls = [url for url in urls if self._is_youtube_video_url(url)]
+                if len(video_urls) == 1:
+                    slots["url"] = video_urls[0]
             slots["setting"] = "response_style"
             subject = re.search(r"([A-Za-z0-9가-힣]{1,30}?)(?:가|이)?\s*(?:등장하는|나오는)", text)
             if subject:

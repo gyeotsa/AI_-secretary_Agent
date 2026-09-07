@@ -246,3 +246,59 @@ ANIS의 품질 목표는 특정 데모가 동작하는 상태가 아니라, 사�
 - 최종 전체 회귀 `907 passed, 9 skipped, 4 deselected`, 관련 집중 회귀
   `205 passed, 9 skipped`를 통과했다. 실환경 수락 스냅샷은 12건 모두 `not_run`이며,
   실제 사용자·장치·계정 증거 없이 완성으로 표시하지 않는다.
+
+## 2026-09-01 현재 PC 완성 범위 후속 QA
+
+- 사용자는 배포 작업을 제품이 더 완성된 뒤 별도 진행하기로 결정했다. 이번 범위에서는 설치기,
+  릴리스 폴더, 모델 재배포 묶음, 호스팅 파일을 만들지 않는다. 기존 배포 안전 테스트는 유지하지만
+  빈 bootstrap manifest를 완성으로 표시하지 않으며 GAP-03/O04는 향후 배포 마일스톤으로 분리한다.
+- 시안 편집은 최신 visible preview의 scene/effect revision을 기준으로 한다. 회전·반전된 화면의
+  방향 요청을 source 좌표로 변환한 뒤 **축뿐 아니라 이동 부호**를 검사한다. 전체 채도 0 상태에서
+  빨간 글자처럼 화면에 표현할 수 없는 요청, 조정된 output을 stable slider base로 다시 쓰는 누적
+  오류, 승인 뒤 교체된 SVG를 명시적 오류로 차단한다.
+- 저장은 PNG/SVG/JSON을 모두 stage·형식/hash 검증한 뒤 file bundle transaction으로 게시한다.
+  게시 실패 때 이전 파일을 역순 복원하고 외부 writer가 바꾼 파일을 덮어쓰지 않는다. 전원 차단
+  순간의 여러 파일 전체 OS atomicity까지 주장하지 않는다.
+- SDXL 준비 검사는 정식 Turbo scheduler, FP16 단일/샤드 safetensors와 필수 config/tokenizer를
+  구조적으로 검사한다. 파일·패키지 discoverability·CUDA·로드·import·tensor 값·checksum·source
+  revision·실제 추론을 각각 구분한다. 이번 실행은 다운로드나 GPU 추론을 하지 않았으므로
+  `inference_verified=False`를 유지한다.
+- 원격 메일·일정·채널 적용은 원장을 `draft→applying→applied/uncertain`으로 전이한다. 원격 ID만
+  반환한 adapter는 성공하지 않는다. Gmail, Google/Outlook Calendar, Outlook Mail, Slack,
+  Teams의 수신자·제목·본문·시간·채널을 재조회한 receipt만 완료하며, 불확실 결과는 같은 action
+  ID의 자동 재전송을 막는다. 실제 계정, 첨부 hash, provider idempotency/reconciliation은 남았다.
+- 집중 회귀는 `245 passed, 4 skipped`다. skip은 Windows native symlink 권한 제약이다. 합성 이미지,
+  fake HTTP/COM, offscreen Qt 결과를 실제 사용자 미감·실계정 도착·설치 앱·물리 장치 수락으로
+  확대 해석하지 않는다.
+- 새 계약 테스트를 정규 수집 목록에 추가한 중간 전체 회귀는
+  `1869 passed, 17 skipped, 4 deselected`였다. 후속 교정까지 포함한 최종 결과는 아래에 기록한다.
+
+## 2026-09-07 후속 QA 최종 정리
+
+- 문구별 수정 대상을 현재 scene의 실제 문구에서 찾는다. 따옴표 유무와 복합 지시를 처리하고,
+  지정한 문구의 색상·글꼴 변경이 다른 문구·배치·테두리에 새지 않도록 필드별 변경 범위를 검사한다.
+  Pillow 대체 렌더러도 각 span의 글꼴·색상·크기·굵기를 실제 픽셀에 반영한다.
+- 시안 render/adjustment의 잘못된 비동기 응답이 UI를 영구 busy로 남기지 않게 복구하고,
+  현재 활성 요청이 아닌 응답은 미리보기 상태를 바꾸지 않는다.
+- Office PDF와 모든 페이지 미리보기를 하나의 파일 묶음으로 검증·게시한다. 중간 파일 교체 실패와
+  게시 직전 취소는 이전 결과를 보존한다. 파일별 원자 교체·rollback을 검증했으며 전원 차단이나
+  프로세스 강제 종료 순간의 묶음 전체 원자성은 보장하지 않는다.
+- 카카오톡 검색 입력은 UIA 요소의 식별값과 실제 입력값을 재확인한다. 결과 선택·Enter 직전에는
+  대상 창의 foreground·동일 요소·키보드 포커스를 검사한다. 전역 Ctrl+A 입력이나 첫 결과를
+  무조건 여는 Enter에 의존하지 않는다. 모의 UIA 검증은 실제 수신자 도착 증거와 구분한다.
+- 실환경 수락 원장은 원격 ID 같은 임의 문자열을 증거로 인정하지 않는다. 구조화된 검증 결과의
+  상태·방법·공급자·작업·대상·시각·hash 계약을 확인한다. 이는 증거 형식과 무결성 검증이며
+  실제 외부 계정에 새로 접속하거나 메시지를 전송한 결과가 아니다.
+- 최종 교차 검토에서 오래된 원격 영수증의 재등록이 유효기간을 갱신하는 결함을 발견했다.
+  수락 등록 시각과 실제 확인 시각 중 이른 시각부터 만료를 계산하고, 오래된 기록은 보존하되
+  `expired`로 판정한다. 신규 통과 등록에는 유효기간이 지난 영수증을 사용할 수 없다.
+- 루트 레거시 진단 12개를 import 시 부작용 없는 수동 진단과 자동 테스트로 구분했다.
+  기본 수집에는 부작용 없는 2개만 추가했다. 지정 12개 파일의 별도 collect-only도 정확히
+  `2 tests collected`였으며 카메라·오디오·네트워크·사용자 파일을 수집 중 실행하지 않았다.
+- 이 수정 묶음은 1차 전체 회귀 `1902 passed, 17 skipped, 4 deselected`를 통과했고,
+  원격 증거 만료 교정 후 다시 실행한 최종 전체 회귀는
+  **`1907 passed, 17 skipped, 4 deselected in 203.32s`**다.
+  `compileall -q core plugins ui main_qt.py scripts`, `pip check`, `git diff --check`도 통과했다.
+  skipped/deselected는 통과나 제품 완성으로 환산하지 않는다.
+- 강화학습 제외와 배포 보류 결정을 유지한다. 실제 계정/설치 앱/장치 수락, 실제 모델 추론,
+  대화·시안의 사람 평가는 남아 있으며 자동 테스트 수로 Codex 동등성이나 전체 완성을 주장하지 않는다.

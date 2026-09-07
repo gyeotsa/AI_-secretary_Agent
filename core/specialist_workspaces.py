@@ -18,6 +18,7 @@ class SpecialistWorkspaceSpec:
     readiness_checks: tuple[str, ...] = (
         "required_tools_registered", "executor_available", "verified_evidence",
     )
+    acceptance_verifiers: tuple[str, ...] = ()
 
     @property
     def tools(self) -> tuple[str, ...]:
@@ -32,6 +33,7 @@ class SpecialistWorkspaceSpec:
             "acceptance_criteria": list(self.acceptance_criteria),
             "artifact_types": list(self.artifact_types),
             "readiness_checks": list(self.readiness_checks),
+            "acceptance_verifiers": list(self.acceptance_verifiers),
         }
 
 
@@ -62,11 +64,12 @@ class SpecialistWorkspaceRegistry:
                 ("url", "document", "file", "report"),
             ),
             "photoshop": SpecialistWorkspaceSpec(
-                "photoshop", "Photoshop 전문가", "이미지 분석·편집 지시·Photoshop 연동",
-                "image_editing", ("photoshop", "vision"),
+                "photoshop", "Photoshop 전문가", "원본 보존 Photoshop 편집·별도 저장·결과 재검증",
+                "image_editing", ("photoshop", "photoshop_edit_document", "vision"),
                 ("포토샵", "photoshop", "이미지 편집", "사진 편집", "디자인 작업"),
-                ("편집 결과 파일이 존재한다", "요청 전후의 시각 변경 근거가 존재한다"),
+                ("편집 복사본을 별도 저장하고 다시 열어 검증한다", "요청한 타입 작업의 실제 시각 변경을 확인한다", "원본 파일과 열린 원본 문서를 보존한다"),
                 ("image", "file", "image_document", "photoshop_document"),
+                acceptance_verifiers=("photoshop_saved_copy", "photoshop_visual_change", "photoshop_source_preserved"),
             ),
             "mockup": SpecialistWorkspaceSpec(
                 "mockup", "시안 제작 전문가", "학습용 시안 분석과 제작용 사진 기반 이미지 생성",

@@ -1,33 +1,51 @@
-import os
-import sys
+"""Manual filesystem/Excel tool diagnostic with an explicit output target."""
 
-# 프로젝트 루트를 Python 경로에 추가
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from __future__ import annotations
 
-from dotenv import load_dotenv
-from config import Config
-from core.tools import get_tool_executor
+import argparse
+from pathlib import Path
 
-# 환경 변수 로드
-load_dotenv()
 
-print("=== 도구 테스트 시작 ===\n")
+def run_tools_diagnostic(output_dir: str) -> dict[str, object]:
+    """Create diagnostic artifacts only in a new, explicitly named directory."""
+    from dotenv import load_dotenv
 
-# 도구 실행기 초기화
-tool_executor = get_tool_executor()
+    from core.tools import get_tool_executor
 
-# 1. 폴더 생성 테스트
-print("1. 폴더 생성 테스트")
-desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
-test_dir = os.path.join(desktop_path, "자비스 테스트용")
-result = tool_executor.create_directory(test_dir)
-print(result)
+    load_dotenv()
+    target = Path(output_dir).expanduser().resolve()
+    if target.exists():
+        raise FileExistsError(
+            f"기존 사용자 파일 보호를 위해 새 경로만 허용합니다: {target}"
+        )
 
-# 2. 엑셀 파일 생성 테스트
-print("\n2. 엑셀 파일 생성 테스트")
-excel_path = os.path.join(test_dir, "123.xlsx")
-data = [["이름", "나이"], ["철수", 30], ["영희", 25]]
-result = tool_executor.create_excel_file(excel_path, data)
-print(result)
+    tool_executor = get_tool_executor()
+    directory_result = tool_executor.create_directory(str(target))
+    excel_path = target / "123.xlsx"
+    data = [["이름", "나이"], ["철수", 30], ["영희", 25]]
+    excel_result = tool_executor.create_excel_file(str(excel_path), data)
+    print(f"폴더 결과: {directory_result}")
+    print(f"Excel 결과: {excel_result}")
+    return {
+        "directory": directory_result,
+        "excel": excel_result,
+        "output_dir": str(target),
+    }
 
-print("\n=== 테스트 완료 ===")
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="새 격리 경로에 폴더와 Excel 파일을 만드는 수동 진단"
+    )
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="존재하지 않는 전용 진단 폴더 경로",
+    )
+    args = parser.parse_args()
+    run_tools_diagnostic(args.output_dir)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

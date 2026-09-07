@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -51,6 +52,44 @@ class ToolRunResult:
         payload = asdict(self)
         payload["status"] = self.status.value
         return payload
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any], *, expected_tool: str = "") -> "ToolRunResult":
+        """Decode an isolated worker result without coercing malformed evidence."""
+        if not isinstance(payload, dict):
+            raise ValueError("Tool 결과는 JSON 객체여야 합니다.")
+        tool_name = payload.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name or (expected_tool and tool_name != expected_tool):
+            raise ValueError("Tool 결과의 실행 대상이 일치하지 않습니다.")
+        status = ToolRunStatus(payload.get("status"))
+        raw_output = payload.get("raw_output")
+        duration = payload.get("duration_ms", 0.0)
+        error = payload.get("error")
+        if (not isinstance(raw_output, str) or isinstance(duration, bool)
+                or not isinstance(duration, (int, float)) or not math.isfinite(duration)
+                or duration < 0 or (error is not None and not isinstance(error, str))):
+            raise ValueError("Tool 결과 필드 타입이 올바르지 않습니다.")
+        evidence, artifacts = payload.get("evidence", []), payload.get("artifacts", [])
+        if not isinstance(evidence, list) or not isinstance(artifacts, list):
+            raise ValueError("Tool 증거와 산출물은 배열이어야 합니다.")
+        for item in evidence:
+            if (not isinstance(item, dict) or not isinstance(item.get("kind"), str)
+                    or not isinstance(item.get("summary"), str)
+                    or not isinstance(item.get("data", {}), dict)):
+                raise ValueError("Tool 증거 구조가 올바르지 않습니다.")
+        for item in artifacts:
+            if (not isinstance(item, dict) or not isinstance(item.get("kind"), str)
+                    or not isinstance(item.get("uri"), str)
+                    or not isinstance(item.get("metadata", {}), dict)):
+                raise ValueError("Tool 산출물 구조가 올바르지 않습니다.")
+        if status == ToolRunStatus.SUCCEEDED and (not evidence or error):
+            raise ValueError("성공한 Tool 결과에는 검증 증거가 필요하며 오류가 함께 있을 수 없습니다.")
+        return cls(
+            tool_name=tool_name, status=status, raw_output=raw_output,
+            duration_ms=float(duration), error=error,
+            evidence=[Evidence(item["kind"], item["summary"], dict(item.get("data", {}))) for item in evidence],
+            artifacts=[Artifact(item["kind"], item["uri"], dict(item.get("metadata", {}))) for item in artifacts],
+        )
 
     @classmethod
     def from_verification(

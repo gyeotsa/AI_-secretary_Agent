@@ -179,7 +179,9 @@ class OfficeRenderer:
     PROG_IDS = {".docx": "Word.Application", ".xlsx": "Excel.Application", ".pptx": "PowerPoint.Application"}
 
     @classmethod
-    def render_pdf(cls, source: str | Path, output_pdf: str | Path) -> Dict[str, Any]:
+    def render_pdf(
+        cls, source: str | Path, output_pdf: str | Path, *, protect_existing_application: bool = False,
+    ) -> Dict[str, Any]:
         source, output = Path(source).resolve(), Path(output_pdf).resolve()
         if source.suffix.casefold() not in cls.PROG_IDS: raise ValueError("DOCX/XLSX/PPTX 렌더링만 지원합니다.")
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -190,22 +192,30 @@ class OfficeRenderer:
         try:
             suffix = source.suffix.casefold()
             application = win32com.client.DispatchEx(cls.PROG_IDS[suffix])
-            application.Visible = False
+            if not protect_existing_application:
+                application.Visible = False
             if suffix == ".docx":
-                document = application.Documents.Open(str(source), ReadOnly=True)
+                document = application.Documents.Open(str(source), ReadOnly=True, AddToRecentFiles=False, Visible=False)
                 document.ExportAsFixedFormat(str(output), 17)
             elif suffix == ".xlsx":
-                document = application.Workbooks.Open(str(source), ReadOnly=True)
+                document = application.Workbooks.Open(str(source), ReadOnly=True, UpdateLinks=0)
                 document.ExportAsFixedFormat(0, str(output))
             else:
-                document = application.Presentations.Open(str(source), WithWindow=False)
+                document = application.Presentations.Open(str(source), ReadOnly=True, WithWindow=False)
                 document.SaveAs(str(output), 32)
             return cls.verify_pdf(output)
         finally:
             if document is not None:
-                try: document.Close(False)
+                try:
+                    if source.suffix.casefold() == ".pptx":
+                        document.Close()
+                    else:
+                        document.Close(False)
                 except Exception: pass
-            if application is not None:
+            # DispatchEx is not proof of a private server (PowerPoint can
+            # share one). In isolated rendering only our unique snapshot
+            # document may be closed; never quit/hide an existing user app.
+            if application is not None and not protect_existing_application:
                 try: application.Quit()
                 except Exception: pass
             pythoncom.CoUninitialize()

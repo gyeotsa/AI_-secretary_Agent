@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from copy import deepcopy
+import hashlib
 import uuid
 import threading
 
@@ -435,6 +436,7 @@ class MockupWorkspaceWindow(QMainWindow):
     progress_message = pyqtSignal(str)
     operation_failed = pyqtSignal(str)
     adjustment_done = pyqtSignal(object)
+    preview_operation_failed = pyqtSignal(object)
 
     def __init__(self, spec: SpecialistWorkspaceSpec, parent=None, runtime=None, team_runtime=None):
         super().__init__(parent)
@@ -451,6 +453,15 @@ class MockupWorkspaceWindow(QMainWindow):
         self.preview_metadata = {}
         self._adjustment_serial = 0
         self._ai_edit_serial = 0
+        self._render_serial = 0
+        self._ai_edit_in_progress = False
+        self._render_in_progress = False
+        self._adjustment_in_progress = False
+        self._adjustment_coalesce_index = None
+        self._preview_closed = False
+        self._model_status_by_backend = {"generative": {}, "generative_sdxl": {}}
+        self._model_prepare_serials = {"generative": 0, "generative_sdxl": 0}
+        self._model_prepare_in_progress = set()
         self.setWindowTitle("JARVIS · 시안 제작 전문가")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
         self.resize(1320, 820)
@@ -461,6 +472,7 @@ class MockupWorkspaceWindow(QMainWindow):
         self.model_status_done.connect(self._on_model_status)
         self.progress_message.connect(lambda message: self.details.append(f"\n{message}"))
         self.adjustment_done.connect(self._on_adjustment_done)
+        self.preview_operation_failed.connect(self._on_preview_operation_failed)
         self._build()
         self._reload_profiles()
         self._on_model_status(self.runtime.generation_status())
@@ -542,10 +554,11 @@ class MockupWorkspaceWindow(QMainWindow):
             model_row = QHBoxLayout()
             self.model_status = QLabel("생성형 모델 상태 확인 중…")
             self.model_status.setWordWrap(True); self.model_status.setObjectName("muted")
-            prepare = QPushButton("생성형 모델 준비")
-            prepare.clicked.connect(self._prepare_models)
-            model_row.addWidget(self.model_status, 1); model_row.addWidget(prepare)
+            self.prepare_models_button = QPushButton("생성형 모델 준비")
+            self.prepare_models_button.clicked.connect(self._prepare_models)
+            model_row.addWidget(self.model_status, 1); model_row.addWidget(self.prepare_models_button)
             layout.addLayout(model_row)
+            self.backend_selector.currentIndexChanged.connect(self._refresh_model_status_label)
             self.render_button = QPushButton("스타일을 먼저 선택해 주세요")
             self.render_button.setEnabled(False)
             self.render_button.clicked.connect(self._render); layout.addWidget(self.render_button)
@@ -701,7 +714,8 @@ class MockupWorkspaceWindow(QMainWindow):
             "생성 방식: AI 학습 기반 가변 장면 설계\n\n"
             f"구조·Vision 분석\n{profile.vision_analysis}"
         )
-        self.preview.setText("스타일 분석을 완료했습니다. 이제 제작용 사진을 추가해 시안을 만들 수 있습니다.")
+        if self.preview_index < 0:
+            self.preview.setText("스타일 분석을 완료했습니다. 이제 제작용 사진을 추가해 시안을 만들 수 있습니다.")
 
     def _reload_profiles(self, selected_id=""):
         self.profile_list.clear()
@@ -746,87 +760,335 @@ class MockupWorkspaceWindow(QMainWindow):
         if directory: self.output_dir.setText(directory)
 
     def _prepare_models(self):
-        self.details.append("\n생성형 모델 준비를 시작합니다. 최초 실행은 다운로드에 시간이 걸릴 수 있습니다.")
-        threading.Thread(target=self._prepare_models_worker, daemon=True).start()
-
-    def _prepare_models_worker(self):
+        backend = self._selected_generation_backend()
+        if backend in self._model_prepare_in_progress:
+            return
+        self._model_prepare_serials[backend] += 1
+        serial = self._model_prepare_serials[backend]
+        self._model_prepare_in_progress.add(backend)
+        self._refresh_model_status_label()
+        label = self._generation_backend_label(backend)
+        self.details.append(f"\n{label} 모델 준비를 시작합니다. 최초 실행은 다운로드에 시간이 걸릴 수 있습니다.")
         try:
-            status = self.runtime.prepare_generation_models(self.progress_message.emit)
-            self.model_status_done.emit(status)
+            threading.Thread(target=self._prepare_models_worker, args=(backend, serial), daemon=True).start()
         except Exception as exc:
-            self.operation_failed.emit(str(exc))
+            self._on_model_status({"_model_backend": backend, "_model_serial": serial, "error": str(exc)})
+
+    def _prepare_models_worker(self, backend="generative", serial=None):
+        # Read no widgets in a worker: a selection change must not change the
+        # requested download or cause its completion to masquerade as another model.
+        envelope = {"_model_backend": backend, "_model_serial": serial}
+        try:
+            if backend not in {"generative", "generative_sdxl"}:
+                raise ValueError(f"지원하지 않는 생성형 모델입니다: {backend}")
+            prepare = (self.runtime.prepare_sdxl_model if backend == "generative_sdxl"
+                       else self.runtime.prepare_generation_models)
+            label = self._generation_backend_label(backend)
+            status = prepare(lambda message: self.progress_message.emit(f"{label}: {message}"))
+            if not isinstance(status, dict):
+                raise ValueError("모델 준비 상태를 확인할 수 없습니다.")
+            self.model_status_done.emit({**envelope, "status": deepcopy(status)})
+        except Exception as exc:
+            self.model_status_done.emit({**envelope, "error": str(exc)})
 
     def _on_model_status(self, status):
-        if status.get("ready"):
-            self.model_status.setText(f"생성형 준비 완료 · CUDA · VRAM {status.get('vram_mb', 0)}MB")
+        if not isinstance(status, dict):
+            return
+        if "_model_backend" in status:
+            backend, serial = status.get("_model_backend"), status.get("_model_serial")
+            if backend not in self._model_status_by_backend:
+                return
+            if serial is not None:
+                if (not isinstance(serial, int) or isinstance(serial, bool)
+                        or serial != self._model_prepare_serials[backend]):
+                    return
+                self._model_prepare_serials[backend] += 1
+            self._model_prepare_in_progress.discard(backend)
+            if "error" in status:
+                message = str(status["error"])
+                self._model_status_by_backend[backend] = {"ready": False, "error": message}
+                self.details.append(f"\n{self._generation_backend_label(backend)} 준비 실패: {message}")
+            else:
+                result = status.get("status")
+                self._model_status_by_backend[backend] = deepcopy(result) if isinstance(result, dict) else {}
         else:
-            missing = []
-            if not status.get("base_ready"): missing.append("SD1.5")
-            if not status.get("adapter_ready"): missing.append("IP-Adapter")
-            if not status.get("cuda"): missing.append("CUDA")
-            self.model_status.setText("생성형 미준비 · " + ", ".join(missing))
+            # generation_status() retains legacy SD1.5 fields at the root.
+            # In particular, missing SDXL information is never filled from them.
+            self._model_status_by_backend["generative"] = deepcopy({
+                key: value for key, value in status.items() if key != "sdxl"
+            })
+            if "sdxl" in status:
+                sdxl = status.get("sdxl")
+                self._model_status_by_backend["generative_sdxl"] = deepcopy(sdxl) if isinstance(sdxl, dict) else {}
+        self._refresh_model_status_label()
+
+    def _selected_generation_backend(self):
+        return "generative_sdxl" if self.backend_selector.currentData() == "generative_sdxl" else "generative"
+
+    @staticmethod
+    def _generation_backend_label(backend):
+        return "SDXL" if backend == "generative_sdxl" else "SD1.5 + IP-Adapter"
+
+    def _refresh_model_status_label(self, _index=None):
+        backend = self._selected_generation_backend()
+        label = self._generation_backend_label(backend)
+        preparing = backend in self._model_prepare_in_progress
+        self.prepare_models_button.setEnabled(not preparing)
+        self.prepare_models_button.setText(f"{label} 준비 중…" if preparing else f"{label} 모델 준비")
+        status = self._model_status_by_backend.get(backend) or {}
+        if preparing:
+            text = f"{label} 설치 준비 중 · 실제 생성 미검증"
+        elif status.get("error"):
+            text = f"{label} 준비 실패 · {status['error']} · 실제 생성 미검증"
+        elif not status:
+            text = f"{label} 상태 확인 정보 없음 · 실제 생성 미검증"
+        else:
+            model = status.get("model") if backend == "generative_sdxl" else status.get("base_model")
+            model = str(model or "")
+            title = f"{label} · {model}" if model else label
+            cuda = status.get("cuda") is True
+            # A truthy string/list or CUDA-inconsistent result is not readiness.
+            ready = status.get("ready") is True and cuda
+            if ready:
+                text = f"{title} · 설치 준비 완료 · CUDA · VRAM {status.get('vram_mb', 0)}MB"
+            else:
+                missing = []
+                if backend == "generative":
+                    if status.get("base_ready") is not True: missing.append("SD1.5 모델")
+                    if status.get("adapter_ready") is not True: missing.append("IP-Adapter")
+                    if "image_encoder_ready" in status and status.get("image_encoder_ready") is not True:
+                        missing.append("이미지 인코더")
+                else:
+                    missing.append("SDXL 모델·실행 환경")
+                if not cuda: missing.append("CUDA")
+                text = f"{title} · 미준비: {', '.join(missing)} · CUDA {'사용 가능' if cuda else '사용 불가'}"
+            # Neither a status query nor a download proves a single inference.
+            text += " · 실제 생성 미검증"
+        self.model_status.setText(text)
+
+    def _current_preview(self):
+        """Return a detached snapshot of the image actually selected on screen."""
+        if 0 <= self.preview_index < len(self.preview_history):
+            return deepcopy(self.preview_history[self.preview_index])
+        return {}
+
+    def _active_preview_output(self):
+        if 0 <= self.preview_index < len(self.preview_history):
+            return str(self.preview_history[self.preview_index].get("output", ""))
+        return ""
+
+    @staticmethod
+    def _load_preview_pixmap(metadata):
+        """Load the exact bytes whose metadata will become the active snapshot."""
+        output = metadata.get("output")
+        if not output:
+            raise ValueError("미리보기 이미지 경로가 없습니다.")
+        try:
+            payload = Path(output).read_bytes()
+        except (OSError, TypeError, ValueError) as exc:
+            raise ValueError("미리보기 이미지 파일을 읽을 수 없습니다. 현재 결과를 유지합니다.") from exc
+        expected = metadata.get("output_sha256")
+        if expected and hashlib.sha256(payload).hexdigest() != expected:
+            raise ValueError("미리보기 이미지가 생성 이후 변경되었습니다. 현재 결과를 유지합니다.")
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(payload) or pixmap.isNull():
+            raise ValueError("미리보기 이미지가 손상되어 표시할 수 없습니다. 현재 결과를 유지합니다.")
+        return pixmap
+
+    def _update_preview_busy_controls(self):
+        has_preview = 0 <= self.preview_index < len(self.preview_history)
+        busy = self._ai_edit_in_progress or self._render_in_progress or self._adjustment_in_progress
+        self.ai_edit_button.setEnabled(has_preview and not self._ai_edit_in_progress)
+        self.save_preview_button.setEnabled(has_preview and not busy)
+
+    def _invalidate_preview_operations(self, *, end_adjustment_group=True):
+        # A serial also prevents the ABA race: undo then redo to the same file
+        # must not make an old request valid again merely because paths match.
+        self._adjustment_serial += 1
+        self._ai_edit_serial += 1
+        self._render_serial += 1
+        self.adjustment_timer.stop()
+        self._ai_edit_in_progress = False
+        self._render_in_progress = False
+        self._adjustment_in_progress = False
+        if end_adjustment_group:
+            self._adjustment_coalesce_index = None
+        self._update_preview_busy_controls()
+
+    def _sync_adjustment_controls(self, metadata):
+        adjustments = metadata.get("adjustments")
+        if not isinstance(adjustments, dict):
+            adjustments = {}
+        for name, slider in self.adjustment_sliders.items():
+            try:
+                value = round(float(adjustments.get(name, 1.0)) * 50)
+            except (TypeError, ValueError, OverflowError):
+                value = 50
+            value = min(slider.maximum(), max(slider.minimum(), value))
+            blocked = slider.blockSignals(True)
+            try:
+                slider.setValue(value)
+            finally:
+                slider.blockSignals(blocked)
+            self.adjustment_labels[name].setText(f"{value}%")
+
+    def _preview_serial_matches(self, kind, serial):
+        if self._preview_closed or kind not in {"ai_edit", "render", "adjustment"}:
+            return False
+        return (isinstance(serial, int) and not isinstance(serial, bool)
+                and serial == getattr(self, f"_{kind}_serial"))
+
+    def _finish_preview_operation(self, kind):
+        setattr(self, f"_{kind}_in_progress", False)
+        self._update_preview_busy_controls()
+
+    def _on_preview_operation_failed(self, failure):
+        if not isinstance(failure, dict):
+            return
+        kind, serial = failure.get("kind"), failure.get("serial")
+        if not self._preview_serial_matches(kind, serial):
+            return
+        # Failures need the same binding as successful results. An obsolete
+        # failure must not dismiss a newer busy indicator or open a dialog.
+        if failure.get("base_output") is None or str(failure["base_output"]) != self._active_preview_output():
+            return
+        self._finish_preview_operation(kind)
+        setattr(self, f"_{kind}_serial", getattr(self, f"_{kind}_serial") + 1)
+        if kind == "adjustment":
+            self._sync_adjustment_controls(self._current_preview())
+        if kind == "ai_edit":
+            self.details.append("\n수정에 실패해 이전 미리보기를 그대로 유지했습니다. 저장하면 수정 전 결과가 저장됩니다.")
+        self._on_failed(str(failure.get("message", "미리보기 작업에 실패했습니다.")))
+
+    def _emit_preview_failure(self, kind, serial, base_output, exc):
+        if not self._preview_closed:
+            self.preview_operation_failed.emit({
+                "kind": kind, "serial": serial, "base_output": base_output, "message": str(exc),
+            })
+
+    def _fail_active_preview_contract(self, kinds, message):
+        """Turn an unbound/malformed callback into the normal failure path.
+
+        Worker callbacks normally carry a serial and base revision. If a signal
+        violates that contract there is no safe result to publish; invalidate
+        every matching active operation instead of leaving the UI permanently
+        busy. Inactive operations are ignored so a stray callback cannot create
+        a false failure after the request already finished.
+        """
+        for kind in kinds:
+            if getattr(self, f"_{kind}_in_progress", False):
+                self._on_preview_operation_failed({
+                    "kind": kind,
+                    "serial": getattr(self, f"_{kind}_serial"),
+                    "base_output": self._active_preview_output(),
+                    "message": message,
+                })
 
     def _render(self):
         if not self.active_profile_id:
             QMessageBox.information(self, "시안 제작", "먼저 학습된 스타일을 선택해 주세요."); return
         if not self.production_paths:
             QMessageBox.information(self, "시안 제작", "제작용 사진을 먼저 추가해 주세요."); return
+        self._invalidate_preview_operations()
+        self._sync_adjustment_controls(self._current_preview())
+        serial, base_output = self._render_serial, self._active_preview_output()
+        self._render_in_progress = True
+        self._update_preview_busy_controls()
         self.details.append("\n시안을 렌더링하고 있습니다…")
-        sketch = self.sketch_canvas.save_guidance() if self.sketch_canvas.has_ink() else ""
-        memory_context = self.team_runtime.recall("mockup", self.instruction.toPlainText()).as_prompt() if self.team_runtime else ""
-        args = (
-            self.active_profile_id, list(self.production_paths),
-            self.instruction.toPlainText(), self.visible_copy.text(),
-            self.output_dir.text(), self.backend_selector.currentData(), [sketch] if sketch else [], memory_context,
-        )
-        threading.Thread(target=self._render_worker, args=args, daemon=True).start()
+        try:
+            sketch = self.sketch_canvas.save_guidance() if self.sketch_canvas.has_ink() else ""
+            memory_context = self.team_runtime.recall("mockup", self.instruction.toPlainText()).as_prompt() if self.team_runtime else ""
+            args = (
+                self.active_profile_id, list(self.production_paths),
+                self.instruction.toPlainText(), self.visible_copy.text(),
+                self.output_dir.text(), self.backend_selector.currentData(), [sketch] if sketch else [], memory_context,
+                serial, base_output,
+            )
+            threading.Thread(target=self._render_worker, args=args, daemon=True).start()
+        except Exception as exc:
+            self._emit_preview_failure("render", serial, base_output, exc)
 
     def _render_worker(self, profile_id, production_paths, instruction, visible_copy, output_dir, backend,
-                       guidance_paths, memory_context):
+                       guidance_paths, memory_context, serial=None, base_output=None):
         try:
             result = self.runtime.render(
                 profile_id, production_paths, instruction=instruction, output_dir=output_dir,
                 visible_copy=visible_copy, backend=backend, preview_only=True,
                 guidance_paths=guidance_paths, memory_context=memory_context,
             )
-            self.render_done.emit(result)
-        except Exception as exc: self.operation_failed.emit(str(exc))
+            result = deepcopy(result)
+            if serial is not None:
+                result["_render_serial"] = serial
+                result["_render_base_output"] = base_output
+            if not self._preview_closed:
+                self.render_done.emit(result)
+        except Exception as exc:
+            if serial is None:
+                if not self._preview_closed: self.operation_failed.emit(str(exc))
+            else:
+                self._emit_preview_failure("render", serial, base_output, exc)
 
     def _on_render_done(self, result):
-        edit_serial = result.pop("_ai_edit_serial", None)
-        if edit_serial is not None and int(edit_serial) != self._ai_edit_serial:
+        if self._preview_closed:
             return
-        edit_base_output = result.pop("_ai_edit_base_output", None)
-        if edit_base_output is not None:
-            active = (self.preview_history[self.preview_index]
-                      if 0 <= self.preview_index < len(self.preview_history) else {})
-            if str(active.get("output", "")) != str(edit_base_output):
-                self._ai_edit_in_progress = False
-                self.ai_edit_button.setEnabled(True)
-                self.save_preview_button.setEnabled(self.preview_index >= 0)
-                self.details.append("\n현재 미리보기가 바뀌어 이전 화면을 기준으로 끝난 AI 수정 결과를 폐기했습니다.")
+        if not isinstance(result, dict):
+            self._fail_active_preview_contract(
+                ("ai_edit", "render"),
+                "미리보기 작업이 올바른 결과 메타데이터를 반환하지 않았습니다.",
+            )
+            return
+        result = deepcopy(result)
+        kind = ("ai_edit" if "_ai_edit_serial" in result else
+                "render" if "_render_serial" in result else None)
+        if kind:
+            serial = result.pop(f"_{kind}_serial")
+            base_output = result.pop(f"_{kind}_base_output", None)
+            if not self._preview_serial_matches(kind, serial):
                 return
-        self._ai_edit_in_progress = False
-        if hasattr(self, "ai_edit_button"): self.ai_edit_button.setEnabled(True)
+            if base_output is None or str(base_output) != self._active_preview_output():
+                return
+            self._finish_preview_operation(kind)
         if result.get("already_satisfied"):
-            self.preview_metadata = dict(result)
+            if str(result.get("output", "")) != self._active_preview_output() or self.preview_index < 0:
+                self._on_failed("이미 적용된 요청이라는 결과가 현재 미리보기와 일치하지 않습니다.")
+                return
+            try:
+                pixmap = self._load_preview_pixmap(result)
+                # Same path is not necessarily the image still on screen. A
+                # rewritten file cannot be accepted as an unchanged preview.
+                if pixmap.toImage() != self.preview._source.toImage():
+                    raise ValueError("이미 적용된 요청이라는 결과의 이미지가 현재 표시된 미리보기와 다릅니다.")
+            except ValueError as exc:
+                self._on_failed(str(exc))
+                return
+            self._invalidate_preview_operations()
+            self.preview_metadata = deepcopy(result)
             if 0 <= self.preview_index < len(self.preview_history):
-                self.preview_history[self.preview_index] = dict(result)
+                self.preview_history[self.preview_index] = deepcopy(result)
+            self._sync_adjustment_controls(result)
             self.details.append(
                 "\n요청한 수정 사항은 현재 미리보기에 이미 적용되어 있습니다. "
                 "이미지를 중복 생성하지 않고 현재 결과를 유지했습니다."
             )
-            self.save_preview_button.setEnabled(True)
+            self._update_preview_busy_controls()
+            self._update_history_buttons()
             return
         self._push_preview(result)
 
     def _push_preview(self, result):
-        self.preview_history = self.preview_history[:self.preview_index + 1]
-        self.preview_history.append(dict(result)); self.preview_index = len(self.preview_history) - 1
-        self.preview_metadata = dict(result)
-        pixmap = QPixmap(result["output"])
-        if not pixmap.isNull():
-            self.preview.set_preview(pixmap)
+        self._invalidate_preview_operations()
+        result = deepcopy(result)
+        try:
+            pixmap = self._load_preview_pixmap(result)
+        except ValueError as exc:
+            self._sync_adjustment_controls(self._current_preview())
+            self._on_failed(str(exc))
+            return
+        self.preview_history = deepcopy(self.preview_history[:self.preview_index + 1])
+        self.preview_history.append(deepcopy(result)); self.preview_index = len(self.preview_history) - 1
+        self.preview_metadata = deepcopy(result)
+        self._sync_adjustment_controls(result)
+        self.preview.set_preview(pixmap)
         fallback = (f"생성형 자동 대체 사유: {result['generation_fallback_reason']}\n"
                     if result.get("generation_fallback_reason") else "")
         applied = result.get("applied_edit_fields") or []
@@ -834,104 +1096,160 @@ class MockupWorkspaceWindow(QMainWindow):
                      if result.get("renderer") == "ai-scene-patch-v5" else
                      (f"적용된 수정 항목: {', '.join(applied)}\n" if applied else ""))
         self.details.append(
-            f"\n임시 미리보기 생성 완료\n{result['width']}×{result['height']}\n"
-            f"렌더러: {result.get('render_engine') or result['renderer']}\n{fallback}{edit_note}"
+            f"\n임시 미리보기 생성 완료\n{pixmap.width()}×{pixmap.height()}\n"
+            f"렌더러: {result.get('render_engine') or result.get('renderer') or '확인 불가'}\n{fallback}{edit_note}"
             "아직 최종 폴더에 저장되지 않았습니다. 결과를 확인한 뒤 저장 버튼을 눌러 주세요."
         )
-        self.save_preview_button.setEnabled(True)
+        self._update_preview_busy_controls()
         self._update_history_buttons()
-        if hasattr(self, "adjustment_sliders") and any(slider.value() != 50 for slider in self.adjustment_sliders.values()):
-            self._adjustment_serial += 1; self.adjustment_timer.start()
 
     def _edit_with_ai(self):
         if self.preview_index < 0: QMessageBox.information(self, "AI 수정", "먼저 시안 미리보기를 만들어 주세요."); return
         instruction = self.edit_instruction.text().strip()
         if not instruction: QMessageBox.information(self, "AI 수정", "수정 지시를 입력해 주세요."); return
+        self._invalidate_preview_operations()
         self._ai_edit_in_progress = True
-        self._ai_edit_serial += 1
         serial = self._ai_edit_serial
-        base = deepcopy(self.preview_history[self.preview_index])
+        base = self._current_preview()
+        self._sync_adjustment_controls(base)
         base_output = str(base.get("output", ""))
         self.ai_edit_button.setEnabled(False)
         self.save_preview_button.setEnabled(False)
         self.details.append("\nAI가 현재 미리보기를 수정하고 있습니다…")
-        sketch = self.sketch_canvas.save_guidance() if self.sketch_canvas.has_ink() else ""
-        guidance = [*self.edit_attachment_paths, *([sketch] if sketch else [])]
-        memory_context = self.team_runtime.recall("mockup", instruction).as_prompt() if self.team_runtime else ""
-        threading.Thread(target=self._ai_edit_worker,
-                         args=(base, instruction, serial, base_output, guidance, memory_context),
-                         daemon=True).start()
+        try:
+            sketch = self.sketch_canvas.save_guidance() if self.sketch_canvas.has_ink() else ""
+            guidance = [*self.edit_attachment_paths, *([sketch] if sketch else [])]
+            memory_context = self.team_runtime.recall("mockup", instruction).as_prompt() if self.team_runtime else ""
+            threading.Thread(target=self._ai_edit_worker,
+                             args=(base, instruction, serial, base_output, guidance, memory_context),
+                             daemon=True).start()
+        except Exception as exc:
+            self._emit_preview_failure("ai_edit", serial, base_output, exc)
 
     def _ai_edit_worker(self, metadata, instruction, serial, base_output, guidance_paths, memory_context):
         try:
-            result = self.runtime.edit_preview(metadata, instruction, guidance_paths=guidance_paths,
-                                               memory_context=memory_context)
+            result = deepcopy(self.runtime.edit_preview(deepcopy(metadata), instruction,
+                                                        guidance_paths=guidance_paths,
+                                                        memory_context=memory_context))
             result["_ai_edit_serial"] = serial
             result["_ai_edit_base_output"] = base_output
-            self.render_done.emit(result)
-        except Exception as exc: self.operation_failed.emit(str(exc))
+            if not self._preview_closed:
+                self.render_done.emit(result)
+        except Exception as exc:
+            self._emit_preview_failure("ai_edit", serial, base_output, exc)
 
     def _manual_edit(self, operation, value=1.0):
         if self.preview_index < 0: return
+        self._invalidate_preview_operations()
+        self._sync_adjustment_controls(self._current_preview())
         try:
-            current = dict(self.preview_history[self.preview_index])
-            result = self.runtime.transform_preview(current["output"], operation, value)
-            result = {**current, **result, "adjustment_base": result["output"], "adjustments": {}}
+            current = self._current_preview()
+            result = self.runtime.transform_preview(current["output"], operation, value,
+                                                    metadata=deepcopy(current))
+            result = {**current, **deepcopy(result)}
             self._push_preview(result)
         except Exception as exc: self._on_failed(str(exc))
 
     def _schedule_live_adjustment(self, operation, value):
         self.adjustment_labels[operation].setText(f"{value}%")
         if self.preview_index >= 0:
-            self._adjustment_serial += 1
+            self._invalidate_preview_operations(end_adjustment_group=False)
+            self._adjustment_in_progress = True
+            self._update_preview_busy_controls()
             self.adjustment_timer.start()
 
     def _adjustment_values(self):
         return {name: slider.value() / 50.0 for name, slider in self.adjustment_sliders.items()}
 
     def _apply_live_adjustments(self):
-        if self.preview_index < 0: return
-        current = dict(self.preview_history[self.preview_index])
+        if self._preview_closed or self.preview_index < 0: return
+        current = self._current_preview()
         base = current.get("adjustment_base") or current["output"]
+        self._adjustment_serial += 1
+        self._adjustment_in_progress = True
+        self._update_preview_busy_controls()
         serial, values = self._adjustment_serial, self._adjustment_values()
-        threading.Thread(target=self._adjustment_worker,
-                         args=(base, values, current, serial), daemon=True).start()
-
-    def _adjustment_worker(self, base, values, metadata, serial):
         try:
-            adjusted = self.runtime.adjust_preview(base, values)
-            self.adjustment_done.emit({**metadata, **adjusted, "_serial": serial})
-        except Exception as exc: self.operation_failed.emit(str(exc))
+            threading.Thread(target=self._adjustment_worker,
+                             args=(base, values, current, serial, str(current["output"])), daemon=True).start()
+        except Exception as exc:
+            self._emit_preview_failure("adjustment", serial, str(current["output"]), exc)
+
+    def _adjustment_worker(self, base, values, metadata, serial, base_output=None):
+        if base_output is None:
+            base_output = str(metadata.get("output", ""))
+        try:
+            adjusted = self.runtime.adjust_preview(base, deepcopy(values), metadata=deepcopy(metadata))
+            if not self._preview_closed:
+                self.adjustment_done.emit({**deepcopy(metadata), **deepcopy(adjusted),
+                                           "_serial": serial, "_base_output": base_output})
+        except Exception as exc:
+            self._emit_preview_failure("adjustment", serial, base_output, exc)
 
     def _on_adjustment_done(self, result):
-        if int(result.pop("_serial", -1)) != self._adjustment_serial: return
-        current = self.preview_history[self.preview_index] if self.preview_index >= 0 else {}
-        same_adjustment = (current.get("renderer") == "pillow-live-adjustment-v2"
+        if not isinstance(result, dict):
+            self._fail_active_preview_contract(
+                ("adjustment",),
+                "미리보기 조정 작업이 올바른 결과 메타데이터를 반환하지 않았습니다.",
+            )
+            return
+        result = deepcopy(result)
+        serial = result.pop("_serial", None)
+        if not self._preview_serial_matches("adjustment", serial):
+            return
+        base_output = result.pop("_base_output", None)
+        if base_output is None or str(base_output) != self._active_preview_output():
+            return
+        current = self._current_preview()
+        if not current:
+            return
+        try:
+            pixmap = self._load_preview_pixmap(result)
+        except ValueError as exc:
+            self._emit_preview_failure("adjustment", serial, base_output, exc)
+            return
+        self._finish_preview_operation("adjustment")
+        self._adjustment_serial += 1
+        same_adjustment = (self.preview_index == self._adjustment_coalesce_index
+                           and current.get("renderer") == "pillow-live-adjustment-v2"
                            and current.get("adjustment_base") == result.get("adjustment_base"))
+        self.preview_history = deepcopy(self.preview_history[:self.preview_index + 1])
         if same_adjustment:
-            self.preview_history[self.preview_index] = dict(result)
+            self.preview_history[self.preview_index] = deepcopy(result)
         else:
-            self.preview_history = self.preview_history[:self.preview_index + 1]
-            self.preview_history.append(dict(result)); self.preview_index = len(self.preview_history) - 1
-        self.preview_metadata = dict(result)
-        pixmap = QPixmap(result["output"])
-        if not pixmap.isNull():
-            self.preview.set_preview(pixmap)
-        self.save_preview_button.setEnabled(True); self._update_history_buttons()
+            self.preview_history.append(deepcopy(result)); self.preview_index = len(self.preview_history) - 1
+        self._adjustment_coalesce_index = self.preview_index
+        self.preview_metadata = deepcopy(result)
+        self._sync_adjustment_controls(result)
+        self.preview.set_preview(pixmap)
+        self._update_preview_busy_controls(); self._update_history_buttons()
 
     def _undo_preview(self):
         if self.preview_index > 0:
-            self.preview_index -= 1; self._show_history_preview()
+            self._show_history_preview(self.preview_index - 1)
 
     def _redo_preview(self):
         if self.preview_index + 1 < len(self.preview_history):
-            self.preview_index += 1; self._show_history_preview()
+            self._show_history_preview(self.preview_index + 1)
 
-    def _show_history_preview(self):
-        result = self.preview_history[self.preview_index]; self.preview_metadata = dict(result)
-        pixmap = QPixmap(result["output"])
+    def _show_history_preview(self, index=None):
+        index = self.preview_index if index is None else index
+        if not 0 <= index < len(self.preview_history):
+            return
+        self._invalidate_preview_operations()
+        result = deepcopy(self.preview_history[index])
+        try:
+            pixmap = self._load_preview_pixmap(result)
+        except ValueError as exc:
+            self._sync_adjustment_controls(self._current_preview())
+            self._on_failed(str(exc))
+            return
+        self.preview_index = index
+        self.preview_metadata = deepcopy(result)
+        self._sync_adjustment_controls(result)
         self.preview.set_preview(pixmap)
         self._update_history_buttons()
+        self._update_preview_busy_controls()
 
     def _update_history_buttons(self):
         self.undo_button.setEnabled(self.preview_index > 0)
@@ -939,27 +1257,48 @@ class MockupWorkspaceWindow(QMainWindow):
 
     def _save_preview(self):
         if self.preview_index < 0: return
-        default_dir = Path(self.output_dir.text()).expanduser()
-        default_dir.mkdir(parents=True, exist_ok=True)
-        filename, _ = QFileDialog.getSaveFileName(self, "시안 저장", str(default_dir / "mockup.png"), "PNG 이미지 (*.png)")
-        if not filename: return
         try:
-            current = dict(self.preview_history[self.preview_index])
-            result = self.runtime.save_preview(current["output"], filename, current)
-            self.details.append(f"\n최종 저장 완료: {result['output']}")
-            if self.team_runtime:
+            default_dir = Path(self.output_dir.text()).expanduser()
+            default_dir.mkdir(parents=True, exist_ok=True)
+            filename, _ = QFileDialog.getSaveFileName(self, "시안 저장", str(default_dir / "mockup.png"), "PNG 이미지 (*.png)")
+            if not filename: return
+            current = self._current_preview()
+            result = self.runtime.save_preview(current["output"], filename, deepcopy(current))
+        except Exception as exc:
+            self._on_failed(str(exc))
+            return
+
+        # Publication is already committed. Secondary memory/index failures
+        # must not tell the user their saved image was lost or needs saving again.
+        self.details.append(f"\n최종 저장 완료: {result['output']}")
+        warnings = result.get("post_save_warnings") or []
+        warnings = [str(item) for item in warnings] if isinstance(warnings, (list, tuple)) else [str(warnings)]
+        if self.team_runtime:
+            try:
                 instruction = str(current.get("edit_instruction") or current.get("instruction") or "")
-                self.team_runtime.remember_success("mockup", instruction=instruction, result=result, approved=True)
-        except Exception as exc: self._on_failed(str(exc))
+                self.team_runtime.remember_success("mockup", instruction=instruction, result=deepcopy(result), approved=True)
+            except Exception as exc:
+                warnings.append(f"이미지는 저장됐지만 작업공간 기억 기록에 실패했습니다: {type(exc).__name__}")
+        if warnings:
+            for warning in warnings:
+                self.details.append(f"\n저장 후 작업 경고: {warning}")
+            QMessageBox.warning(self, "시안 저장 후 알림", "이미지는 정상 저장되었습니다.\n\n" + "\n".join(warnings))
 
     def _on_failed(self, message: str):
-        if getattr(self, "_ai_edit_in_progress", False):
-            self._ai_edit_in_progress = False
-            if hasattr(self, "ai_edit_button"): self.ai_edit_button.setEnabled(True)
-            self.details.append("\n수정에 실패해 이전 미리보기를 그대로 유지했습니다. 저장하면 수정 전 결과가 저장됩니다.")
-        self.save_preview_button.setEnabled(self.preview_index >= 0)
+        self._update_preview_busy_controls()
         self.details.append(f"\n오류: {message}")
         QMessageBox.warning(self, "시안 제작", message)
+
+    def closeEvent(self, event):
+        self._preview_closed = True
+        self._invalidate_preview_operations()
+        super().closeEvent(event)
+
+    def showEvent(self, event):
+        # MainWindow caches specialist windows and reuses them after close().
+        # Closing invalidates old jobs; showing allows only newly-issued jobs.
+        self._preview_closed = False
+        super().showEvent(event)
 
     def show_result(self, text: str):
         self.details.append(f"\n아니스 > {text}")

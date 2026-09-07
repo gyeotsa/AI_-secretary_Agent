@@ -1,21 +1,29 @@
+"""Manual live TTS integration diagnostic; import is silent."""
 
-import sys
-import os
+from __future__ import annotations
 
-# 프로젝트 루트 경로 추가
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import argparse
 
-from core.tools import get_tool_executor
 
-print("통합 TTS 테스트 시작...")
+def run_tts_integration_diagnostic(text: str) -> object:
+    from core.tools import get_tool_executor
 
-tool_executor = get_tool_executor()
+    print(f"테스트 텍스트: {text}")
+    result = get_tool_executor().speak_text(text)
+    print(f"결과: {result}")
+    return result
 
-test_text = "일상적으로는 맑음으로 예보되는군요, 보스."
-print(f"테스트 텍스트: {test_text}")
 
-result = tool_executor.speak_text(test_text)
-print(f"결과: {result}")
+def main() -> int:
+    parser = argparse.ArgumentParser(description="실제 ToolExecutor TTS 수동 진단")
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--text", default="일상적으로는 맑음으로 예보되는군요, 보스.")
+    args = parser.parse_args()
+    if not args.live:
+        parser.error("실제 음성 재생에는 --live를 명시해야 합니다.")
+    run_tts_integration_diagnostic(args.text)
+    return 0
 
-print("테스트 완료!")
 
+if __name__ == "__main__":
+    raise SystemExit(main())
