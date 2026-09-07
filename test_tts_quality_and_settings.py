@@ -5,8 +5,29 @@ from scipy.io import wavfile
 
 import core.audio_processor as audio_module
 import core.tts_settings as settings_module
+import core.tools as tools_module
 from core.audio_processor import AudioProcessor
 from core.tts_settings import TTSSettingsManager
+from core.tools import ToolExecutor
+
+
+def test_disabled_voice_skips_synthesis_and_model_preload(monkeypatch):
+    executor = ToolExecutor.__new__(ToolExecutor)
+    executor._tts_lock = __import__("threading").Lock()
+    executor._tts_state_lock = __import__("threading").Lock()
+    executor._tts_generation = 0
+    executor._active_tts_engine = None
+    executor._active_tts_process = None
+    executor._custom_tts_clients = {}
+    executor.tts_settings = SimpleNamespace(selected_custom_voice="sample")
+    monkeypatch.setattr(
+        tools_module, "get_assistant_settings",
+        lambda: SimpleNamespace(tts_enabled=False),
+    )
+
+    assert executor.speak_text("재생 금지").startswith("TTS 취소됨:")
+    assert executor.prepare_selected_tts()["state"] == "disabled"
+    assert executor._custom_tts_clients == {}
 
 
 class FakeEngine:

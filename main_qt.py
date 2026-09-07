@@ -314,6 +314,7 @@ class JarvisApp:
         # "last request" because control turns and queued work can overlap.
         
         self._is_processing_ai = False
+        self._speech_generation = 0
         self._queued_dispatch_inflight = set()
         self._queued_specialist_payloads = {}
         
@@ -342,6 +343,7 @@ class JarvisApp:
         self.window.session_reset.connect(self._reset_session)
         self.window.task_control_requested.connect(self._on_task_control_requested)
         self.window.specialist_prompt_submitted.connect(self._on_specialist_prompt_submitted)
+        self.window.voice_output_toggled.connect(self._on_voice_output_toggled)
         self._active_specialist_key = ""
         
         self.heartbeat_timer = QTimer()
@@ -357,7 +359,9 @@ class JarvisApp:
         self.memory_maintenance_timer.start(60000)
         
         self._init_ui()
-        threading.Thread(target=self.tool_executor.prepare_selected_tts, daemon=True).start()
+        self.window.set_voice_output_enabled(self.assistant_settings.tts_enabled)
+        if self.assistant_settings.tts_enabled:
+            threading.Thread(target=self.tool_executor.prepare_selected_tts, daemon=True).start()
         QTimer.singleShot(0, self._run_next_queued_task)
         if (os.getenv("JARVIS_SKIP_FIRST_RUN_WIZARD") != "1"
                 and FirstRunWizard.should_show()):
@@ -504,6 +508,16 @@ class JarvisApp:
     def _on_user_input(self, text: str, existing_task_id=None, specialist_payload=None):
         self._last_user_activity = time.time()
         print("[DEBUG] _on_user_input called with:", text)
+        explicit_queue = text.strip().lower().startswith(("새 작업:", "새 작업："))
+        if existing_task_id is None and not explicit_queue:
+            self._cancel_speech_only()
+            is_control = (
+                getattr(self, "_is_processing_ai", False)
+                and hasattr(getattr(self, "executor", None), "is_control_command")
+                and self.executor.is_control_command(text)
+            )
+            if not is_control:
+                self._cancel_pending_work()
         self.window.show_user_text(text)
         self.state_machine.start_listening()
 
@@ -554,14 +568,9 @@ class JarvisApp:
                     f"현재 작업 다음에 새 작업 {task.task_id}을 이어서 진행하겠습니다, 보스."
                 )
                 return
-            task = self.executor.enqueue_goal(text.strip(), self.session_id)
-            if specialist_payload:
-                self._queued_specialist_payloads[task.task_id] = dict(specialist_payload)
-            self.window.show_assistant_text(
-                f"현재 작업이 끝나면 이어서 처리하겠습니다, 보스. 대기 작업 ID: {task.task_id}"
-            )
-            print(f"[DEBUG] AI busy, request queued: {task.task_id}")
-            return
+            # A normal new turn supersedes the running turn.  Its worker may finish,
+            # but the immutable turn id prevents that stale result from reaching UI/TTS.
+            self._is_processing_ai = False
         
         self._is_processing_ai = True
         self.state_machine.start_processing()
@@ -581,6 +590,7 @@ class JarvisApp:
                 or "global"
             ),
         )
+        self._active_turn_id = turn.turn_id
         self.messages.append({"role": "user", "content": text})
         thread = threading.Thread(
             target=self._process_ai,
@@ -777,6 +787,10 @@ class JarvisApp:
             )
             response_text = str(result or "")
             turn_status = "completed"
+        active_turn_id = getattr(self, "_active_turn_id", "")
+        if active_turn_id and turn.turn_id != active_turn_id:
+            print(f"[Turn] superseded response ignored: {turn.turn_id}")
+            return
         if hasattr(self.window, "set_assistant_identity"):
             self.window.set_assistant_identity(get_assistant_settings().assistant_name)
         channels = present_channels(response_text, turn.user_text)
@@ -843,9 +857,73 @@ class JarvisApp:
         # 자동으로 음성 응답 (RESPONDING 상태로)
         print(f"[DEBUG] TTS 스레드 시작 전, self.last_response: {self.last_response}")
         self.state_machine.start_responding()  # RESPONDING 상태로 변경
-        thread = threading.Thread(target=lambda: self._speak_with_check(self.last_response), daemon=True)
-        thread.start()
-        print("[DEBUG] TTS 스레드 시작됨")
+        spoken_text = self.last_response
+        if self._tts_enabled():
+            speech_generation = getattr(self, "_speech_generation", 0)
+            thread = threading.Thread(
+                target=lambda: self._speak_with_check(spoken_text, speech_generation), daemon=True
+            )
+            thread.start()
+            print("[DEBUG] TTS 스레드 시작됨")
+        else:
+            self._reset_all()
+
+    def _tts_enabled(self) -> bool:
+        settings = getattr(self, "assistant_settings", None) or get_assistant_settings()
+        enabled = getattr(settings, "tts_enabled", None)
+        if enabled is None and hasattr(settings, "get"):
+            enabled = str(settings.get("tts_enabled")).casefold() == "true"
+        return True if enabled is None else bool(enabled)
+
+    def _interrupt_for_new_input(self):
+        """Barge in: stop speech and cancel old queued work before the newest turn."""
+        self._cancel_speech_only()
+        self._cancel_pending_work()
+
+    def _cancel_pending_work(self):
+        """Ask the active executor turn to stop and discard superseded queued turns."""
+        executor = getattr(self, "executor", None)
+        active_task_id = str(getattr(executor, "current_agent_task_id", "") or "")
+        if active_task_id and hasattr(executor, "handle_control_command"):
+            try:
+                executor.handle_control_command(
+                    f"{active_task_id} 취소", getattr(self, "session_id", "")
+                )
+            except Exception as exc:
+                print(f"[Turn] 실행 중 작업 취소 요청 실패: {exc}")
+        state = getattr(executor, "dialogue_state", None)
+        if state is not None:
+            try:
+                for task in state.list_tasks(
+                    self.session_id, include_finished=False,
+                    workspace_path=executor._workspace_scope(),
+                ):
+                    if task.status == "queued":
+                        state.transition_task(task.task_id, "cancelled", result="새 사용자 입력으로 대체됨")
+            except Exception as exc:
+                print(f"[Queue] 이전 대기 작업 취소 실패: {exc}")
+        getattr(self, "_queued_specialist_payloads", {}).clear()
+        getattr(self, "_queued_dispatch_inflight", set()).clear()
+
+    def _cancel_speech_only(self):
+        self._speech_generation = getattr(self, "_speech_generation", 0) + 1
+        tool_executor = getattr(self, "tool_executor", None)
+        if tool_executor is not None and hasattr(tool_executor, "cancel_tts"):
+            tool_executor.cancel_tts()
+        audio = getattr(self, "audio_processor", None)
+        if audio is not None and hasattr(audio, "cancel_playback"):
+            audio.cancel_playback()
+
+    def _on_voice_output_toggled(self, enabled: bool):
+        self.assistant_settings.set_tts_enabled(enabled)
+        self.window.set_voice_output_enabled(enabled)
+        if not enabled:
+            self._cancel_speech_only()
+            threading.Thread(target=self.tool_executor.shutdown_tts, daemon=True).start()
+            self.window.show_assistant_text("답변 음성을 껐습니다. 이제 음성 생성 대기 없이 텍스트로 바로 응답합니다.")
+        else:
+            self.window.show_assistant_text("답변 음성을 켰습니다.")
+            threading.Thread(target=self.tool_executor.prepare_selected_tts, daemon=True).start()
 
     def _consolidate_memory_async(
         self,
@@ -1012,7 +1090,11 @@ class JarvisApp:
         # 하드웨어 worker에서 Qt GUI thread로 안전하게 전달
         self.signals.voice_text_detected.emit(text)
     
-    def _speak_with_check(self, text: str):
+    def _speak_with_check(self, text: str, speech_generation=None):
+        if not self._tts_enabled():
+            return
+        if speech_generation is None:
+            speech_generation = getattr(self, "_speech_generation", 0)
         print(f"[DEBUG] _speak_with_check 호출됨: {text}")
         hardware = getattr(self, "hardware_manager", None)
         if hardware is not None:
@@ -1033,7 +1115,8 @@ class JarvisApp:
             if hardware is not None:
                 hardware.set_output_active(False)
             # TTS가 끝나면 IDLE 상태로 돌아가고 사운드바 리셋
-            self.signals.tts_finished.emit()
+            if speech_generation == getattr(self, "_speech_generation", 0):
+                self.signals.tts_finished.emit()
     
     def _reset_all(self):
         # 모든 상태를 초기화하고 IDLE로 돌아가기

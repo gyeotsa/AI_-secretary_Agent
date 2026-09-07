@@ -19,6 +19,7 @@ from core.plugin import get_plugin_registry
 from core.tts_settings import get_tts_settings_manager
 from core.custom_tts import GPTSoVITSClient, load_custom_voice_profiles, split_tts_text
 from core.tts_normalizer import normalize_for_tts
+from core.assistant_settings import get_assistant_settings
 from core.tool_result import Artifact, Evidence, ToolRunResult
 from core.verifier import ToolVerifier
 
@@ -68,6 +69,10 @@ class ToolExecutor:
         # TTS engine
         self._tts_engine = None
         self._tts_lock = threading.Lock()
+        self._tts_state_lock = threading.Lock()
+        self._tts_generation = 0
+        self._active_tts_engine = None
+        self._active_tts_process = None
         self.tts_settings = get_tts_settings_manager()
         self._custom_tts_clients = {}
 
@@ -1085,8 +1090,50 @@ class ToolExecutor:
 
     def speak_text(self, text: str, audio_processor=None) -> str:
         print(f"[DEBUG] ToolExecutor.speak_text 호출됨: {text}")
+        self._ensure_tts_state()
+        if not get_assistant_settings().tts_enabled:
+            return "TTS 취소됨: 답변 음성이 꺼져 있습니다."
+        with self._tts_state_lock:
+            generation = self._tts_generation
         with self._tts_lock:
-            return self._speak_text_locked(text, audio_processor)
+            if not self._tts_request_current(generation):
+                return "TTS 취소됨: 새 사용자 입력으로 이전 음성 요청을 중단했습니다."
+            return self._speak_text_locked(text, audio_processor, generation)
+
+    def _tts_request_current(self, generation: int) -> bool:
+        self._ensure_tts_state()
+        with self._tts_state_lock:
+            current = generation == self._tts_generation
+        return current and get_assistant_settings().tts_enabled
+
+    def cancel_tts(self):
+        """Invalidate active/waiting speech; safe to call for every new user turn."""
+        self._ensure_tts_state()
+        with self._tts_state_lock:
+            self._tts_generation += 1
+            engine = self._active_tts_engine
+            process = self._active_tts_process
+        if engine is not None:
+            try:
+                engine.stop()
+            except Exception:
+                pass
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+
+    def _ensure_tts_state(self):
+        """Keep direct diagnostic construction via ``__new__`` backward-compatible."""
+        if not hasattr(self, "_tts_state_lock"):
+            self._tts_state_lock = threading.Lock()
+        if not hasattr(self, "_tts_generation"):
+            self._tts_generation = 0
+        if not hasattr(self, "_active_tts_engine"):
+            self._active_tts_engine = None
+        if not hasattr(self, "_active_tts_process"):
+            self._active_tts_process = None
 
     def speak_text_result(self, text: str, audio_processor=None):
         """GUI 문자열 API를 보존하면서 Tool Runtime에는 typed 재생 결과를 제공한다."""
@@ -1122,21 +1169,27 @@ class ToolExecutor:
             })],
         )
 
-    def _speak_text_locked(self, text: str, audio_processor=None) -> str:
+    def _speak_text_locked(self, text: str, audio_processor=None, generation=None) -> str:
+        self._ensure_tts_state()
+        if generation is None:
+            with self._tts_state_lock:
+                generation = self._tts_generation
+        if not self._tts_request_current(generation):
+            return "TTS 취소됨: 답변 음성이 꺼졌거나 새 입력이 도착했습니다."
         text = normalize_for_tts(text)
         print(f"[TTS] 발음 정규화: {text}")
         if self.tts_settings.selected_custom_voice:
-            custom_result = self._speak_with_custom_tts(text, audio_processor)
+            custom_result = self._speak_with_custom_tts(text, audio_processor, generation)
             # 사용자가 명시적으로 고른 커스텀 음성을 다른 사람의 목소리로
             # 조용히 대체하지 않는다. 실패 원인을 그대로 알려 다시 선택할 수 있게 한다.
             return custom_result
         if self.tts_settings.selected_edge_voice:
-            edge_result = self._speak_with_edge_tts(text, audio_processor)
+            edge_result = self._speak_with_edge_tts(text, audio_processor, generation)
             if not edge_result.startswith("TTS 오류:"):
                 return edge_result
             print(f"[TTS] Edge 음성 실패, Windows 음성으로 대체: {edge_result}")
         if pyttsx3 is None:
-            return self._speak_with_windows_speech(text, audio_processor)
+            return self._speak_with_windows_speech(text, audio_processor, generation)
 
         # 빈 문자열이나 공백만 있을 때 처리
         if not text or text.strip() == "":
@@ -1148,6 +1201,8 @@ class ToolExecutor:
             # 매번 새로운 TTS engine 생성 (상태 꼬임 방지)
             print("[DEBUG] pyttsx3.init() 호출 전")
             engine = pyttsx3.init()
+            with self._tts_state_lock:
+                self._active_tts_engine = engine
             print("[DEBUG] pyttsx3.init() 호출 성공")
 
             # 한국어 음성 설정 (가능한 경우)
@@ -1164,6 +1219,9 @@ class ToolExecutor:
             engine.save_to_file(text, temp_wav_path)
             engine.runAndWait()
 
+            if not self._tts_request_current(generation):
+                return "TTS 취소됨: 새 사용자 입력으로 음성 재생을 중단했습니다."
+
             # 2. AudioProcessor로 WAV 파일 재생 + 분석
             if audio_processor:
                 audio_processor.play_and_analyze_tts(temp_wav_path)
@@ -1177,7 +1235,7 @@ class ToolExecutor:
         except Exception as e:
             print(f"[DEBUG] TTS 오류 발생: {e}")
             if os.name == "nt":
-                return self._speak_with_windows_speech(text, audio_processor)
+                return self._speak_with_windows_speech(text, audio_processor, generation)
             return f"TTS 오류: {str(e)}"
         finally:
             # engine 정리
@@ -1186,6 +1244,9 @@ class ToolExecutor:
                     engine.stop()
                 except Exception:
                     pass
+            with self._tts_state_lock:
+                if self._active_tts_engine is engine:
+                    self._active_tts_engine = None
 
             # 임시 WAV 파일 삭제
             if temp_wav_path and os.path.exists(temp_wav_path):
@@ -1194,7 +1255,7 @@ class ToolExecutor:
                 except Exception:
                     pass
 
-    def _speak_with_custom_tts(self, text: str, audio_processor=None) -> str:
+    def _speak_with_custom_tts(self, text: str, audio_processor=None, generation=None) -> str:
         voice_id = self.tts_settings.selected_custom_voice
         profile = next(
             (item for item in load_custom_voice_profiles() if str(item.get("id")) == voice_id),
@@ -1207,6 +1268,8 @@ class ToolExecutor:
             if audio_processor is None:
                 return "TTS 오류: 커스텀 음성을 재생할 오디오 처리기가 없습니다."
             client = self._get_custom_tts_client(voice_id, profile)
+            if generation is not None and not self._tts_request_current(generation):
+                return "TTS 취소됨: 새 사용자 입력으로 음성 합성을 중단했습니다."
             if profile.get("streaming_mode") and hasattr(audio_processor, "play_streaming_tts"):
                 completed = audio_processor.play_streaming_tts(
                     client.stream_pcm(text or f"네, {self.tts_settings.selected_address}."),
@@ -1219,7 +1282,9 @@ class ToolExecutor:
                 text or f"네, {self.tts_settings.selected_address}.",
                 int(profile.get("chunk_chars", 90)),
             )
-            audio_queue: queue.Queue = queue.Queue(maxsize=2)
+            # Unbounded queue keeps a cancelled consumer from leaving the daemon
+            # producer blocked forever on a full queue.
+            audio_queue: queue.Queue = queue.Queue()
             finished = object()
 
             def produce_audio():
@@ -1239,6 +1304,8 @@ class ToolExecutor:
                     break
                 if kind == "error":
                     raise value
+                if generation is not None and not self._tts_request_current(generation):
+                    return "TTS 취소됨: 새 사용자 입력으로 음성 재생을 중단했습니다."
                 media_paths.append(value)
                 # The producer synthesizes the next sentence while this one plays.
                 completed = audio_processor.play_and_analyze_tts(value, raise_on_error=True)
@@ -1264,6 +1331,8 @@ class ToolExecutor:
 
     def prepare_selected_tts(self, requested_voice_id: str = ""):
         """Load the selected custom voice before the first assistant response."""
+        if not get_assistant_settings().tts_enabled:
+            return {"state": "disabled", "ready": False, "detail": "답변 음성이 꺼져 있습니다."}
         voice_id = str(requested_voice_id or self.tts_settings.selected_custom_voice).strip()
         if voice_id.startswith("gpt-sovits:"):
             voice_id = voice_id.split(":", 1)[1]
@@ -1301,7 +1370,7 @@ class ToolExecutor:
             except Exception as exc:
                 print(f"[TTS] 커스텀 음성 종료 실패: {exc}")
 
-    def _speak_with_edge_tts(self, text: str, audio_processor=None) -> str:
+    def _speak_with_edge_tts(self, text: str, audio_processor=None, generation=None) -> str:
         if edge_tts is None:
             return "TTS 오류: edge-tts가 설치되지 않았습니다."
         media_path = None
@@ -1312,6 +1381,8 @@ class ToolExecutor:
                 text or "네, 보스.", self.tts_settings.selected_edge_voice
             )
             asyncio.run(communicate.save(media_path))
+            if generation is not None and not self._tts_request_current(generation):
+                return "TTS 취소됨: 새 사용자 입력으로 음성 재생을 중단했습니다."
             if audio_processor is None:
                 return "TTS 오류: 온라인 음성을 재생할 오디오 처리기가 없습니다."
             audio_processor.play_and_analyze_tts(media_path)
@@ -1325,7 +1396,7 @@ class ToolExecutor:
                 except OSError:
                     pass
 
-    def _speak_with_windows_speech(self, text: str, audio_processor=None) -> str:
+    def _speak_with_windows_speech(self, text: str, audio_processor=None, generation=None) -> str:
         """pyttsx3/SAPI COM 실패 시 .NET System.Speech로 대체한다."""
         if os.name != "nt":
             return "TTS 오류: Windows System.Speech는 Windows에서만 사용할 수 있습니다."
@@ -1349,14 +1420,21 @@ class ToolExecutor:
                 "$s.Speak($env:JARVIS_TTS_TEXT) "
                 "} finally { $s.Dispose() }"
             )
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=60,
                 env=env,
-                check=False,
             )
+            with self._tts_state_lock:
+                self._active_tts_process = process
+            stdout, stderr = process.communicate(timeout=60)
+            completed = type("Completed", (), {
+                "returncode": process.returncode, "stdout": stdout, "stderr": stderr
+            })()
+            if generation is not None and not self._tts_request_current(generation):
+                return "TTS 취소됨: 새 사용자 입력으로 음성 재생을 중단했습니다."
             if completed.returncode != 0:
                 detail = completed.stderr.strip() or f"exit code {completed.returncode}"
                 return f"TTS 오류: Windows System.Speech 실행 실패: {detail}"
@@ -1366,6 +1444,9 @@ class ToolExecutor:
         except Exception as e:
             return f"TTS 오류: Windows System.Speech 실행 실패: {e}"
         finally:
+            with self._tts_state_lock:
+                if self._active_tts_process is locals().get("process"):
+                    self._active_tts_process = None
             if wav_path and os.path.exists(wav_path):
                 try:
                     os.unlink(wav_path)

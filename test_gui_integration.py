@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import QApplication
 
 from core.permission import PermissionManager
 from main_qt import AppSignals, JarvisApp
-from ui.main_window import PermissionRequestDialog
+from ui.main_window import JarvisMainWindow, PermissionRequestDialog
 
 
 _QT_APP = None
@@ -107,6 +107,9 @@ class _Memory:
 class _SpeechTools:
     def speak_text(self, text, _audio_processor):
         return f"spoken: {text}"
+
+    def cancel_tts(self):
+        self.cancelled = True
 
 
 class _Hardware:
@@ -281,7 +284,7 @@ def test_new_request_is_queued_while_current_task_is_processing():
     assert "feedbeef" in jarvis.window.assistants[-1]
 
 
-def test_normal_request_is_queued_instead_of_rejected_while_busy():
+def test_normal_request_supersedes_running_turn_instead_of_queueing(monkeypatch):
     _app()
     jarvis = JarvisApp.__new__(JarvisApp)
     jarvis.window = _Window()
@@ -291,12 +294,20 @@ def test_normal_request_is_queued_instead_of_rejected_while_busy():
     jarvis.messages = []
     jarvis.session_id = "queue-normal-session"
     jarvis._is_processing_ai = True
+    jarvis._active_turn_id = "old-turn"
     _ControllableExecutor.queued = []
+    started = []
+    monkeypatch.setattr(
+        jarvis, "_process_ai",
+        lambda turn, *_args: started.append(turn),
+    )
 
     jarvis._on_user_input("디코 꺼줘")
 
-    assert _ControllableExecutor.queued == [("디코 꺼줘", 0)]
-    assert "대기 작업 ID" in jarvis.window.assistants[-1]
+    assert _ControllableExecutor.queued == []
+    assert _pump_until(lambda: bool(started))
+    assert started[0].user_text == "디코 꺼줘"
+    assert jarvis._active_turn_id == started[0].turn_id
 
 
 def test_tts_suspends_microphone_until_output_finishes():
@@ -309,6 +320,58 @@ def test_tts_suspends_microphone_until_output_finishes():
     jarvis._speak_with_check("테스트 응답")
 
     assert jarvis.hardware_manager.output_states == [True, False]
+
+
+def test_tts_off_skips_speech_without_waiting():
+    jarvis = JarvisApp.__new__(JarvisApp)
+    speaker = _SpeechTools()
+    jarvis.tool_executor = speaker
+    jarvis.audio_processor = None
+    jarvis.hardware_manager = _Hardware()
+    jarvis.signals = AppSignals()
+    jarvis.assistant_settings = SimpleNamespace(tts_enabled=False)
+
+    jarvis._speak_with_check("읽으면 안 되는 응답")
+
+    assert jarvis.hardware_manager.output_states == []
+    assert not hasattr(speaker, "cancelled")
+
+
+def test_voice_output_toggle_updates_label_and_emits_state():
+    _app()
+    window = JarvisMainWindow()
+    emitted = []
+    window.voice_output_toggled.connect(emitted.append)
+
+    window.set_voice_output_enabled(False)
+    assert window.voice_output_btn.text() == "음성 OFF"
+    assert window.voice_output_btn.isChecked() is False
+    window.voice_output_btn.click()
+
+    assert emitted == [True]
+    assert window.voice_output_btn.text() == "음성 ON"
+    window.close()
+
+
+def test_superseded_turn_result_never_reaches_ui_or_tts():
+    _app()
+    jarvis = JarvisApp.__new__(JarvisApp)
+    jarvis.window = _Window()
+    jarvis.session_id = "new-session"
+    jarvis._active_turn_id = "new-turn"
+    jarvis.last_response = ""
+    result = __import__("main_qt").TurnResult(
+        turn=__import__("main_qt").TurnEnvelope(
+            turn_id="old-turn", session_id="new-session", user_text="옛 요청",
+            conversation_history=tuple(),
+        ),
+        response_text="옛 응답",
+    )
+
+    jarvis._on_ai_response(result)
+
+    assert jarvis.window.assistants == []
+    assert jarvis.last_response == ""
 
 
 def test_standalone_wake_word_does_not_reach_planner():

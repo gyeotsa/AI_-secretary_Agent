@@ -31,6 +31,16 @@ def test_assistant_name_persists_and_updates_wake_word():
     ]) == "아니스 메모장 켜줘"
 
 
+def test_tts_enabled_setting_is_persistent_and_boolean():
+    profile = MemoryProfile()
+    settings = AssistantSettings(profile)
+    assert settings.tts_enabled is True
+    assert settings.set_tts_enabled(False) is False
+    assert profile.values["tts_enabled"] == "false"
+    assert AssistantSettings(profile).tts_enabled is False
+    assert settings.set_tts_enabled(True) is True
+
+
 def test_preference_intent_extracts_name_without_phrase_specific_execution(monkeypatch):
     plugin = PreferencesPlugin()
     registry = PluginRegistry()

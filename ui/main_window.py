@@ -953,6 +953,7 @@ class JarvisMainWindow(QWidget):
     specialist_prompt_submitted = pyqtSignal(object)
     gesture_camera_requested = pyqtSignal(bool)
     gesture_settings_requested = pyqtSignal(object)
+    voice_output_toggled = pyqtSignal(bool)
     
     def __init__(self, audio_processor=None):
         super().__init__()
@@ -1048,6 +1049,15 @@ class JarvisMainWindow(QWidget):
         self.voice_btn.setToolTip("TTS 목소리 및 호칭 설정")
         self.voice_btn.clicked.connect(self.show_tts_voice_settings)
         tab_layout.addWidget(self.voice_btn)
+
+        self.voice_output_btn = QPushButton("음성 ON")
+        self.voice_output_btn.setObjectName("voiceOutputToggle")
+        self.voice_output_btn.setCheckable(True)
+        self.voice_output_btn.setChecked(True)
+        self.voice_output_btn.setFixedSize(72, 35)
+        self.voice_output_btn.setToolTip("아니스 답변 음성 켜기/끄기")
+        self.voice_output_btn.toggled.connect(self._on_voice_output_toggled)
+        tab_layout.addWidget(self.voice_output_btn)
 
         self.session_btn = QPushButton("C")
         self.session_btn.setObjectName("toolbarButton")
@@ -1749,6 +1759,21 @@ class JarvisMainWindow(QWidget):
     def set_tts_settings_manager(self, settings_manager, prepare_callback=None):
         self.tts_settings_manager = settings_manager
         self.tts_prepare_callback = prepare_callback
+
+    def set_voice_output_enabled(self, enabled: bool):
+        button = self.voice_output_btn
+        button.blockSignals(True)
+        button.setChecked(bool(enabled))
+        button.setText("음성 ON" if enabled else "음성 OFF")
+        button.setToolTip(
+            "답변 음성이 켜져 있습니다. 클릭하면 즉시 끕니다."
+            if enabled else "답변 음성이 꺼져 있습니다. 클릭하면 켭니다."
+        )
+        button.blockSignals(False)
+
+    def _on_voice_output_toggled(self, enabled: bool):
+        self.set_voice_output_enabled(enabled)
+        self.voice_output_toggled.emit(bool(enabled))
 
     def show_tts_voice_settings(self):
         if self.tts_settings_manager is None:

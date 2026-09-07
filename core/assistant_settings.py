@@ -21,6 +21,7 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     "user_address": SettingDefinition("user_address", "사용자 호칭", "", 30),
     "response_style": SettingDefinition("response_style", "응답 스타일", "", 200),
     "response_language": SettingDefinition("response_language", "응답 언어", "한국어", 30),
+    "tts_enabled": SettingDefinition("tts_enabled", "답변 음성", "true", 5),
     "gesture_camera_enabled": SettingDefinition(
         "gesture_camera_enabled", "손 제스처 카메라 자동 실행", "true", 5
     ),
@@ -73,6 +74,14 @@ class AssistantSettings:
     @property
     def wake_word(self) -> str:
         return self.get("wake_word")
+
+    @property
+    def tts_enabled(self) -> bool:
+        return self.get("tts_enabled").casefold() == "true"
+
+    def set_tts_enabled(self, enabled: bool) -> bool:
+        self.set("tts_enabled", "true" if enabled else "false")
+        return self.tts_enabled
 
 
 _assistant_settings = None
