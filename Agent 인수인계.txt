@@ -1,5 +1,55 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
 
+## 2026-09-07 현재 PC 전 영역 QA·실행 증거·시안 편집 신뢰성 강화
+
+- 사용자 결정: 강화학습은 적용하지 않는다. 현재 PC에서 소스 실행·로컬 기능의 완성도를 먼저
+  높이고, 배포 파일/설치기/모델 재배포 묶음은 나중에 사용자가 별도로 시작한다. 과거 문서의
+  학습 실험·배포 제안은 현재 필수 작업으로 되살리지 않는다.
+- 시안 편집: 화면에 표시된 scene/effect revision과 실행 취소·다시 실행 이력을 기준으로 수정한다.
+  회전/반전 뒤 화면 방향을 원본 좌표로 변환하고 이동 부호까지 검증한다. 문구별 span을 현재
+  scene에서 찾아 따옴표 없는 대상·복합 지시·문구 교체를 처리하며 다른 문구/배치/장식 변경을
+  제한한다. Pillow fallback도 각 span의 글꼴·색상·크기·굵기를 실제로 렌더링한다.
+- 시안 UI: 늦거나 잘못된 render/adjustment 응답으로 미리보기가 바뀌거나 busy 상태에 갇히는
+  경로를 보강했다. 조정 이미지가 다음 슬라이더 조정의 원본으로 누적되지 않게 하고 SVG/PNG/
+  JSON 결과의 무결성을 함께 검증한다. SDXL 준비·패키지·가중치 구조·CUDA·로드·추론 상태는
+  별도 필드이며 설치 확인만으로 추론 검증을 표시하지 않는다.
+- 전문가 실행: Photoshop 타입 편집·복제 저장·재열기 검증과 원본 보존 계약, subject segmentation의
+  타입 결과·자산 무결성, Plugin process worker의 취소·deadline·결과 소유권 검증을 추가했다.
+  Office 렌더링 PDF와 전체 미리보기 PNG를 묶음으로 사전 검증·게시하고 중간 교체 실패는
+  이전 파일로 복구한다. 전원 차단/프로세스 강제 종료 순간의 묶음 전체 원자성은 보장하지 않는다.
+- 대화/명령: 인용된 명령 본문, 설명 요청, 부정·조건부·복합 지시와 실제 실행을 구분한다.
+  과거 작업이나 assistant 제안을 새 실행 권한으로 잘못 상속하지 않게 보강했고 다양한 표현의
+  부정 사례를 추가했다. URL 도구 입력도 실제 URL 계약을 검증한다.
+- 카카오톡/Windows: 검색창의 UIA identity와 입력값을 재확인하고 선택·Enter 직전에 실제
+  foreground·동일 요소·키보드 포커스를 확인한다. 전역 Ctrl+A 입력/무검증 첫 검색 결과
+  Enter에 의존하지 않으며 클립보드의 소유권·복원도 검사한다. 이 회차에는 실제 카카오톡을
+  전송하지 않았다. 시험 수신자는 기존 사용자 승인대로 '형택'이며 다시 물을 필요가 없다.
+- 원격 실행: Gmail/Outlook/Calendar/Slack/Teams 작업의 대상·내용·상태 read-back과
+  draft→applying→applied/uncertain 전이를 검증한다. ID-only 응답을 성공으로 처리하지 않고
+  uncertain 작업의 자동 재전송을 막는다. 실계정 확인·첨부 hash·provider idempotency와
+  crash 뒤 reconciliation까지 끝났다는 의미는 아니다.
+- 수락 원장: 원격 증거는 검증 방법·대상·작업·시각·payload hash를 포함한 구조여야 한다.
+  교차 검토에서 오래된 영수증을 재등록하면 유효기간이 갱신되는 결함을 찾아 수정했다. 등록
+  시각과 실제 확인 시각 중 이른 시각을 기준으로 만료하고, 여러 영수증은 가장 오래된 확인을
+  기준으로 한다. 만료된 과거 기록은 보존하며 `expired`로 표시한다.
+- 테스트 수집: 루트 레거시 진단 12개를 import-safe로 바꾸고 부작용 없는 2개만 기본 자동
+  수집에 추가했다. 실제 카메라·음성·네트워크·사용자 데이터 진단은 명시적 CLI로 분리했다.
+  `QA_TEST_CLASSIFICATION.md`에 실행 방법과 검증 경계를 기록했다.
+- 검증: 원격 증거 만료 집중 회귀 80 passed. 최종 전체 자동 회귀는
+  **1907 passed, 17 skipped, 4 deselected (203.32s)**. `compileall -q core plugins ui main_qt.py scripts`,
+  `pip check`, `git diff --cached --check` 통과. 레거시 12개 collect-only는 2 tests collected였다.
+  실제 계정/모델 추론/장치/사람 품질 수락을 이 자동 통과 수치에 포함하지 않는다.
+- 구현 커밋: `b78bcd9381629b5e8fd28e18502b2cd3938415e0`
+  (`[Fix] 전 영역 실행 증거와 시안 편집 신뢰성 강화`). 코드·테스트·QA 문서 79개 파일.
+  Author/Committer 모두 `gyeotsa <gyeotsa@users.noreply.github.com>`. 원격 push는 하지 않는다.
+- 사용자/런타임 파일인 `data/chroma_db/chroma.sqlite3`, `brain/`, `greeting.pptx`, `tmp/`,
+  `tmpdozr9d5t/`, `.pytest-tmp-*`, `data/qa/`는 커밋에서 제외하고 보존했다.
+- 다음 해야 할 일: `QA_REQUIREMENTS_MATRIX.md`의 GAP-15 클라우드 pagination/증분·본문 RAG
+  연결과 GAP-17 일반 사용자 OAuth 연결 흐름 등 실제 구현 공백을 계속 닫는다. 아직 지원하지
+  않는 생성형 편집/계획 서비스의 실행 경로를 빈 완료 상태로 표시하지 않는다. 실제 설치 앱의
+  산출물 재열기, 형택 카카오톡 중복 여부·도착, 모델 추론·대화·시안 품질과 장치 수락은 해당
+  실행 증거와 연결한다. 전체 완성이나 Codex 동등성을 입증한 상태는 아직 아니다.
+
 ## 2026-08-30 제품 완료 게이트와 실환경 수락 증거
 
 - `core/acceptance_runtime.py`에 제품 완료 원장을 추가했다. 대화·전문가·시안 인간 평가,
