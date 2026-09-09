@@ -20,7 +20,7 @@ from core.tts_settings import get_tts_settings_manager
 from core.custom_tts import GPTSoVITSClient, load_custom_voice_profiles, split_tts_text
 from core.tts_normalizer import normalize_for_tts
 from core.assistant_settings import get_assistant_settings
-from core.tool_result import Artifact, Evidence, ToolRunResult
+from core.tool_result import Artifact, Evidence, ToolRunResult, ToolRunStatus
 from core.verifier import ToolVerifier
 
 try:
@@ -1943,6 +1943,9 @@ class ToolExecutor:
             return False, f"오류: 권한 확인에 실패했습니다: {exc}"
 
     def execute_tool(self, tool_name: str, tool_input: dict):
+        from core.turn_context import current_turn_context, check_turn_cancelled
+        check_turn_cancelled()
+        turn_context = current_turn_context()
         from core.productization import METRICS, TRACE, SafeModeManager, new_correlation_ids, trace_context
         from core.quality_metrics import get_quality_metric_store
         started_at = time.perf_counter()
@@ -1975,11 +1978,26 @@ class ToolExecutor:
             TRACE.emit("tool.permission_denied", tool_name=tool_name, **ids)
             METRICS.increment("tool.permission_denied")
             return denied
+        # Permission dialogs can outlive the request that opened them.
+        check_turn_cancelled()
         try:
             with trace_context(**ids):
-                raw_result = self.plugin_registry.execute_tool(tool_name, tool_input)
+                if turn_context is None:
+                    raw_result = self.plugin_registry.execute_tool(tool_name, tool_input)
+                else:
+                    raw_result = self.plugin_registry.execute_tool(
+                        tool_name, tool_input,
+                        cancellation_token=turn_context.tool_token(),
+                    )
         except Exception as e:
             raw_result = ToolRunResult.failed(tool_name=tool_name, error=f"Plugin Runtime 오류: {e}")
+        # A late interruption stops future actions, not an already observed
+        # effect. Keep typed receipts (including uncertainty) to avoid hiding a
+        # completed/possibly completed external send and inviting duplication.
+        has_observed_result = (isinstance(raw_result, ToolRunResult) and bool(raw_result.evidence)
+                               and raw_result.status in {ToolRunStatus.SUCCEEDED, ToolRunStatus.UNVERIFIED})
+        if not has_observed_result:
+            check_turn_cancelled()
         tool_run = self._adapt_tool_output(
             tool_name, tool_input, raw_result,
             (time.perf_counter() - started_at) * 1000,

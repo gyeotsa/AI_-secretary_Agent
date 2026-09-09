@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass, replace
 from typing import Any, Callable, Iterator
 
 
@@ -123,12 +123,13 @@ class SpecialistTeamRuntime:
     }
 
     def __init__(self, rag=None, *, namespace_provider=None, event_pipeline=None, supervisor=None,
-                 tool_name_provider=None):
+                 tool_name_provider=None, review_client_provider=None):
         self.rag = rag
         self.namespace_provider = namespace_provider or (lambda: "global")
         self.event_pipeline = event_pipeline
         self.supervisor = supervisor
         self.tool_name_provider = tool_name_provider or self._registered_tool_names
+        self.review_client_provider = review_client_provider
         self._rag_lock = threading.RLock()
         self._active_run = threading.local()
         self._runs: dict[str, TeamRun] = {}
@@ -220,15 +221,46 @@ class SpecialistTeamRuntime:
                 run.artifacts[role.output_artifact] = value
             run.record(role, "completed", started)
             if contract is not None:
-                self.supervisor.verify(contract, artifacts=[{
+                contract_artifacts = [{
                     "kind": role.output_artifact, "value_type": type(value).__name__,
-                }] if role.output_artifact else [], evidence=[{
+                }] if role.output_artifact else []
+                contract_evidence = [{
                     "kind": "role_execution", "elapsed_ms": run.events[-1]["elapsed_ms"],
-                }])
+                }]
+                acceptance = value if role.output_artifact == "quality_verdict" and isinstance(value, dict) else {}
+                failure_reason = ""
+                if acceptance:
+                    contract_evidence.append({
+                        "kind": "quality_acceptance", "passed": acceptance.get("passed"),
+                        "status": acceptance.get("status", ""),
+                        "reason": str(acceptance.get("reason", ""))[:2000],
+                    })
+                    # Waiting is a handoff, not a rejected artifact. The owning
+                    # workspace preserves these non-terminal task states.
+                    if (acceptance.get("passed") is False and acceptance.get("status") not in {
+                            "awaiting_user", "awaiting_input", "awaiting_approval"}):
+                        failure_reason = str(acceptance.get("reason") or "전문가 산출물 수락 검수를 통과하지 못했습니다.")
+                if acceptance.get("status") == "cancelled":
+                    # A cancelled execution can reach the reviewer as a valid
+                    # return value. Preserve cancellation rather than converting
+                    # it to a successful review or a generic quality failure.
+                    contract.artifacts = contract_artifacts
+                    contract.evidence = contract_evidence
+                    self.supervisor.transition(contract, "cancelled", failure_reason=failure_reason)
+                    run.status = "cancelled"
+                    run.events[-1]["status"] = "cancelled"
+                else:
+                    # Producing a verdict is successful role execution, but a
+                    # negative verdict is not successful output acceptance.
+                    self.supervisor.verify(contract, artifacts=contract_artifacts,
+                                           evidence=contract_evidence, failure_reason=failure_reason)
             return value
         except Exception as exc:
-            run.record(role, "failed", started, str(exc))
-            if contract is not None and contract.status.value != "cancelled":
+            cancelled = contract is not None and contract.status.value == "cancelled"
+            run.record(role, "cancelled" if cancelled else "failed", started, str(exc))
+            if cancelled:
+                run.status = "cancelled"
+            elif contract is not None:
                 self.supervisor.verify(contract, failure_reason=str(exc))
             raise
         finally:
@@ -256,10 +288,8 @@ class SpecialistTeamRuntime:
     ) -> tuple[Any, TeamRun]:
         """Run one real workspace request through memory, planning, execution and review.
 
-        Planning output is advisory context.  The only stage allowed to claim work
-        completion is the shared Executor, because it owns ToolRunResult evidence and
-        task-state verification.  This prevents a role-playing LLM from being shown as
-        a worker when it did not touch the requested application or file.
+        Executor owns ToolRunResult evidence, while workspace acceptance owns final
+        completion. Successful tool calls cannot bypass an unsuccessful review.
         """
         key = str(workspace_key or "document").casefold()
         roles = self.roles(key)
@@ -344,13 +374,21 @@ class SpecialistTeamRuntime:
 
             executed = self.execute_role(run, execution_role.key, execute)
             reviewer = next(role for role in roles if role.key == "reviewer")
-            verdict = self.execute_role(
-                run, reviewer.key,
-                lambda _run: self._review_execution(
-                    executed, workspace_contract,
-                    planning_degraded=plan.get("planning_status") != "ready",
-                ),
-            )
+            def review(_run: TeamRun):
+                verdict = self._review_execution(executed, workspace_contract,
+                    planning_degraded=plan.get("planning_status") != "ready")
+                if verdict["passed"] and key in {"document", "coding", "research"}:
+                    from core.specialist_acceptance import review_requirement_fulfillment
+                    semantic = review_requirement_fulfillment(executed, workspace_contract, plan,
+                        instruction, client_provider=self.review_client_provider)
+                    verdict["semantic_review"] = semantic
+                    if not semantic["passed"]:
+                        verdict.update(passed=False, status="needs_review", reason=semantic["reason"])
+                    verdict["readiness_checks"]["semantic_requirements_verified"] = semantic["passed"]
+                return verdict
+
+            verdict = self.execute_role(run, reviewer.key, review,
+                release=(lambda: self._release_role("reasoning")) if release_models else None)
             outcome = executed.pop("_outcome")
             run.artifacts["execution_contract_result"] = {
                 "contract": workspace_contract,
@@ -358,7 +396,29 @@ class SpecialistTeamRuntime:
                 "review": verdict,
             }
             if not verdict["passed"] and run.status != "failed":
-                run.status = "degraded"
+                run.status = verdict["status"] if verdict["status"] in {
+                    "awaiting_user", "awaiting_input", "awaiting_approval", "cancelled",
+                } else "degraded"
+                run.events[-1]["status"] = run.status
+                run.events[-1]["detail"] = verdict["reason"][:500]
+            if getattr(outcome, "status", "") == "completed" and not verdict["passed"]:
+                # Preserve verified artifacts and original execution in the audit
+                # record, but do not leak the executor's unqualified completion.
+                response = (
+                    "작업 결과는 생성됐지만 최종 검수를 통과하지 못해 완료로 처리하지 않았습니다.\n"
+                    f"확인할 내용: {verdict['reason']}"
+                )
+                accepted = verdict.get("accepted_artifacts") or []
+                if accepted:
+                    response += "\n검수 대상 결과: " + ", ".join(item["uri"] for item in accepted)
+                updates = {"status": "partial", "response": response, "next_goal": ""}
+                if is_dataclass(outcome):
+                    outcome = replace(outcome, **updates)
+                else:
+                    import copy
+                    outcome = copy.copy(outcome)
+                    for name, value in updates.items():
+                        setattr(outcome, name, value)
             return outcome, run
 
     @staticmethod
@@ -422,6 +482,10 @@ class SpecialistTeamRuntime:
             "tool_names": list(dict.fromkeys(tool_names)),
             "tool_status": aggregate_status,
             "tool_statuses": tool_statuses,
+            "tool_outputs": [{"tool_name": str(getattr(result, "tool_name", "")),
+                              "status": tool_statuses[index],
+                              "raw_output": str(getattr(result, "raw_output", ""))}
+                             for index, result in enumerate(tool_results)],
             "evidence": [SpecialistTeamRuntime._evidence_payload(item) for item in evidence],
             "artifacts": [SpecialistTeamRuntime._artifact_payload(item) for item in artifacts],
             "evidence_count": len(evidence), "artifact_count": len(artifacts),
@@ -433,9 +497,9 @@ class SpecialistTeamRuntime:
         status = payload.get("status")
         # Clarification and approval are valid non-terminal outcomes, but they
         # are not recorded as successful work or approved style memory.
-        if status in {"awaiting_user", "awaiting_input", "awaiting_approval"}:
+        if status in {"awaiting_user", "awaiting_input", "awaiting_approval", "cancelled"}:
             return {"passed": False, "status": status,
-                    "reason": "사용자 입력 또는 승인을 기다리고 있습니다."}
+                    "reason": "작업이 취소되었습니다." if status == "cancelled" else "사용자 입력 또는 승인을 기다리고 있습니다."}
         failures: list[str] = []
         if status != "completed":
             failures.append(f"실행 상태가 완료가 아닙니다: {status}")
@@ -457,6 +521,8 @@ class SpecialistTeamRuntime:
                      and item.get("kind") in expected_types and item.get("uri")
                      and (item.get("metadata") or {}).get("role") != "input"]
         valid_artifacts = [item for item in artifacts if SpecialistTeamRuntime._artifact_exists(item)]
+        if len(valid_artifacts) != len(artifacts):
+            failures.append("일부 최종 산출물이 없거나 손상되어 모든 결과를 검증하지 못했습니다.")
         if expected_types and not valid_artifacts:
             failures.append("작업공간 산출물 계약을 충족하는 실제 산출물이 없습니다.")
 
@@ -480,14 +546,15 @@ class SpecialistTeamRuntime:
         if verifier_names:
             # A generic successful tool/file is not proof that an edit happened.
             # Contracts bind each criterion to an explicit typed evidence gate.
-            from core.photoshop_runtime import verify_edit_evidence
-            verified_checks = verify_edit_evidence(evidence, valid_artifacts)
+            from core.specialist_acceptance import verify_specialist_criteria
+            verified_checks = verify_specialist_criteria(payload, contract, evidence, valid_artifacts)
             if len(verifier_names) != len(criteria):
                 failures.append("수락 기준과 검증기 개수가 달라 완료를 확인할 수 없습니다.")
             for index, criterion in enumerate(criteria):
                 verifier = verifier_names[index] if index < len(verifier_names) else ""
                 check = verified_checks.get(verifier, {"verified": False, "reason": "알 수 없는 수락 기준 검증기입니다."})
                 criteria_results.append({
+                    **check,
                     "criterion": criterion, "verified": bool(check.get("verified")),
                     "verification": verifier or "not_verified", "reason": check.get("reason", ""),
                     "evidence": [item["summary"] for item in evidence],
@@ -496,6 +563,10 @@ class SpecialistTeamRuntime:
                 if not check.get("verified"):
                     failures.append(f"수락 기준 미충족({criterion}): {check.get('reason', '')}")
         else:
+            # Legacy ad-hoc contracts retain their structural check. Every
+            # registered workspace must declare a real criterion verifier.
+            if contract.get("workspace_key") and criteria:
+                failures.append("작업공간 수락 기준에 실행 가능한 검증기가 연결되지 않았습니다.")
             criteria_results = [{
                 "criterion": criterion,
                 "verified": not failures,
@@ -659,7 +730,8 @@ class SpecialistTeamRuntime:
 
     @staticmethod
     def _valid_specialist_plan(value: Any) -> bool:
-        if not isinstance(value, dict) or not str(value.get("goal", "")).strip():
+        if (not isinstance(value, dict) or not isinstance(value.get("goal"), str)
+                or not value["goal"].strip()):
             return False
         acceptance = value.get("acceptance")
         if not isinstance(acceptance, list) or not acceptance or not all(
@@ -691,15 +763,18 @@ class SpecialistTeamRuntime:
             "tools": ("name", "tool", "value", "description"),
         }
         for field, preferences in key_preferences.items():
-            items = normalized.get(field, [])
+            # Normalization must not invent required fields or silently remove
+            # invalid entries: either case could promote an incomplete plan.
+            items = normalized.get(field)
             if not isinstance(items, list):
                 continue
-            converted: list[str] = []
+            converted: list[Any] = []
             for item in items:
                 if isinstance(item, str) and item.strip():
                     converted.append(item.strip())
                     continue
                 if not isinstance(item, dict):
+                    converted.append(item)
                     continue
                 scalar = next(
                     (item.get(key) for key in preferences
@@ -709,7 +784,11 @@ class SpecialistTeamRuntime:
                 )
                 if scalar is not None:
                     converted.append(str(scalar).strip())
-            normalized[field] = list(dict.fromkeys(converted))
+                else:
+                    converted.append(item)
+            normalized[field] = (list(dict.fromkeys(converted))
+                                 if all(isinstance(item, str) for item in converted)
+                                 else converted)
         return normalized
 
     @staticmethod

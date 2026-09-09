@@ -7,6 +7,7 @@ import re
 
 from core.plan_runtime import PlanDAG, PlanStep
 from core.agent_prompt_policy import agent_response_policy
+from core.response_integrity import map_narrative, preserves_sources
 from core.korean_naturalizer import (
     analyze_korean_naturalness, korean_writing_guidance, light_polish_korean,
 )
@@ -61,16 +62,19 @@ class ConversationService:
         naturalness = analyze_korean_naturalness(response)
         needs_repair = needs_repair or (len(response) >= 180 and naturalness.score >= 4)
         if response and needs_repair:
-            response = str(self.llm.chat([
+            draft = response
+            repaired = str(self.llm.chat([
                 {"role": "system", "content": (
                     f"아래 초안을 사용자의 질문에 대한 자연스러운 한국어 답변으로 한 번만 고쳐 써. "
                     f"역할표시·예시·외국어를 넣지 말고, 사용자 호칭은 '{address}'로 최대 한 번만 써. "
                     "실제로 실행하지 않은 외부 작업을 완료했다고 절대 주장하지 마세요. "
-                    "초안에 [근거 ID]가 있으면 삭제하거나 바꾸지 마세요. "
+                    "초안의 코드·인용·메시지 본문·파일 경로·[근거 ID]는 한 글자도 바꾸지 마세요. "
+                    "사용자 말의 긍정/부정, 불편함과 요청 목적을 반대로 해석하지 마세요. "
                     f"적용할 스타일: {style or '간결하고 자연스러운 말투'}"
                 )},
                 {"role": "user", "content": f"질문: {message}\n초안: {response}"},
             ]) or "").strip()
+            response = repaired if repaired and preserves_sources(draft, repaired) else draft
         response = _sanitize_response(response, message)
         response = _apply_requested_style(response, style)
         response = light_polish_korean(response)
@@ -104,6 +108,16 @@ def _has_prompt_leak(text: str) -> bool:
 
 def _sanitize_response(text: str, user_message: str = "") -> str:
     """Remove role/prompt leakage without rewriting legitimate Korean content."""
+    def sanitize(value):
+        if not value.strip():
+            return value
+        leading = value[:len(value)-len(value.lstrip())]
+        trailing = value[len(value.rstrip()):]
+        return leading + _sanitize_narrative(value, user_message) + trailing
+    return map_narrative(str(text or ""), sanitize).strip()
+
+
+def _sanitize_narrative(text: str, user_message: str = "") -> str:
     value = str(text or "").strip()
     if not re.search(r"(?:러시아어|키릴|중국어|일본어|한자|번역|원문)", user_message, re.IGNORECASE):
         value = re.split(
@@ -121,11 +135,22 @@ def _sanitize_response(text: str, user_message: str = "") -> str:
 
 
 def _apply_requested_style(text: str, style: str) -> str:
+    """Apply the shared prose style without touching code, quotations or payloads."""
+    return map_narrative(text, lambda value: _style_narrative(value, style))
+
+
+def _style_narrative(text: str, style: str) -> str:
     """Enforce common Korean sentence endings after a small model ignores style."""
     if "반말" not in str(style or ""):
         return text
     value = str(text or "")
     replacements = (
+        (r"말씀해\s*주세요", "말해 줘"),
+        (r"말씀해\s*줘", "말해 줘"),
+        (r"말씀해주세요", "말해 줘"),
+        (r"도와드릴", "도와줄"),
+        (r"어떠세요(?=[,.!?，\n]|$)", "어때"),
+        (r"싶으신가요(?=[,.!?，\n]|$)", "싶어"),
         (r"말씀해\s*주시면", "말해 주면"),
         (r"알려\s*주시면", "알려 주면"),
         (r"요청하시면", "요청하면"),

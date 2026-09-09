@@ -48,6 +48,7 @@ class SpecialistWorkspaceRegistry:
                 ("문서 작업", "문서 모드", "오피스 작업", "오피스 모드", "문서 전문가"),
                 ("요청한 형식과 내용을 충족한다", "저장된 문서를 다시 읽거나 렌더링해 검증한다"),
                 ("document", "spreadsheet", "presentation", "pdf", "file"),
+                acceptance_verifiers=("document_content", "document_reopened"),
             ),
             "coding": SpecialistWorkspaceSpec(
                 "coding", "개발 전문가", "프로젝트 분석·설계·구현·테스트·코드 리뷰",
@@ -55,6 +56,7 @@ class SpecialistWorkspaceRegistry:
                 ("개발 작업", "코딩 모드", "개발 전문가", "코딩 전문가", "코드 작업"),
                 ("실제 파일 변경이 존재한다", "관련 테스트 또는 정적 검증 근거가 존재한다"),
                 ("file", "directory", "project"),
+                acceptance_verifiers=("coding_changes", "coding_validation"),
             ),
             "research": SpecialistWorkspaceSpec(
                 "research", "리서치 전문가", "실시간 웹 조사·출처 비교·근거 기반 보고서 작성",
@@ -62,6 +64,7 @@ class SpecialistWorkspaceRegistry:
                 ("리서치", "조사 모드", "검색 전문가", "자료 조사", "웹 조사"),
                 ("출처가 식별 가능하다", "주요 결론이 수집 근거와 연결된다"),
                 ("url", "document", "file", "report"),
+                acceptance_verifiers=("research_sources", "research_claims"),
             ),
             "photoshop": SpecialistWorkspaceSpec(
                 "photoshop", "Photoshop 전문가", "원본 보존 Photoshop 편집·별도 저장·결과 재검증",

@@ -13,6 +13,7 @@ from core.productization import METRICS
 
 
 QUALITY_KEYS = (
+    "runtime_completion", "clarification_requested",
     "task_success", "false_completion", "clarification_quality",
     "tool_selection_accuracy", "latency_ms", "rag_used",
     "long_run_recovery", "stt_false_wake", "stt_echo",

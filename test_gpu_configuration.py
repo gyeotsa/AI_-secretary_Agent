@@ -13,6 +13,7 @@ def test_configured_gpu_is_used_by_torch_whisper_and_rag():
     assert "RTX 4060" in torch.cuda.get_device_name(0)
 
     hardware = HardwareManager()
+    hardware.ensure_stt_model()
     assert hardware.device == "cuda"
     assert hardware.whisper_model_name == Config.WHISPER_MODEL
     assert hardware.stt_engine == Config.STT_ENGINE

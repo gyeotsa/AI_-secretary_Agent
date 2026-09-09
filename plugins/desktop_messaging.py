@@ -8,6 +8,7 @@ import re
 from core.desktop_messaging import DesktopMessagingRuntime
 from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema
 from core.tool_result import Evidence, ToolRunResult
+from core.semantic_request import explicit_control, literal_reply
 
 
 class DesktopMessagingPlugin(BasePlugin):
@@ -91,7 +92,11 @@ class DesktopMessagingPlugin(BasePlugin):
         slots = dict(current_slots)
         if intent_name != "messaging.send":
             return slots
-        normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+        # Preserve original whitespace and punctuation inside message content.
+        # Routing may normalize a separate view, but payload extraction cannot.
+        normalized = str(text or "").strip()
+        if explicit_control(normalized):
+            return slots
         if self._PROVIDER_PATTERN.search(normalized):
             slots["provider"] = "kakaotalk"
 
@@ -109,9 +114,11 @@ class DesktopMessagingPlugin(BasePlugin):
             r"\s*(?:메시지\s*)?하나\s*$",
             " ", before_action, flags=re.I,
         )
-        before_action = self._PROVIDER_PATTERN.sub(" ", before_action)
-        before_action = re.sub(r"(?:으로|에서|을|를)\s*", " ", before_action, count=1)
-        before_action = re.sub(r"\s+", " ", before_action).strip(" ,")
+        # Remove particles only when attached to the provider token.  The old
+        # unanchored substitution deleted e.g. '에서' from '학교에서 만나'.
+        provider_boundary = self._PROVIDER_PATTERN.pattern + r"(?:으로|에서|을|를)?"
+        before_action = re.sub(r"^\s*" + provider_boundary + r"\s*", "", before_action, flags=re.I)
+        before_action = re.sub(r"\s*" + provider_boundary + r"\s*$", "", before_action, flags=re.I).strip(" ,")
         match = self._RECIPIENT_PATTERN.search(before_action)
         if match:
             recipient = re.sub(r"^(?:혹시|그러면|그럼|이번에는)\s+", "", match.group("recipient").strip())
@@ -120,6 +127,15 @@ class DesktopMessagingPlugin(BasePlugin):
                 slots["recipient"] = recipient
             if message:
                 slots["message"] = message
+        elif slots.get("recipient") and not slots.get("message") and action:
+            # A supplied body followed by a quotative/send boundary is a reply
+            # to the pending body question, not a second full task requiring a
+            # recipient. Never remove arbitrary suffixes inside the body.
+            body = literal_reply(normalized)
+            if body is None and re.search(r"(?:이라고|라고)\s*$", before_action):
+                body = self._clean_message(before_action)
+            if body:
+                slots["message"] = body
         elif self._is_short_slot_answer(normalized):
             # A pending clarification may contain just a name or just the body.
             # Fill only the first missing slot; never reinterpret a complete sentence.
@@ -133,7 +149,9 @@ class DesktopMessagingPlugin(BasePlugin):
     @staticmethod
     def _clean_message(value: str) -> str:
         message = str(value or "").strip()
-        message = re.sub(r"^(?:메시지|내용)(?:로|은|는)?\s*", "", message)
+        # A label needs an explicit delimiter/particle. A body beginning with
+        # '메시지 확인해줘' is actual content, not a label to erase.
+        message = re.sub(r"^(?:메시지|내용)(?:은|는|[:：])\s*", "", message)
         message = re.sub(r"\s*(?:이라고|라고)\s*$", "", message)
         return message.strip(" \t\r\n\"'“”‘’")
 
@@ -141,6 +159,8 @@ class DesktopMessagingPlugin(BasePlugin):
     def _is_short_slot_answer(text: str) -> bool:
         value = str(text or "").strip()
         if not value or len(value) > 80 or "\n" in value:
+            return False
+        if explicit_control(value):
             return False
         if re.search(r"(?:앞으로|이제부터|기억|잊지|뜻|의미|설정|변경|말하면)", value):
             return False

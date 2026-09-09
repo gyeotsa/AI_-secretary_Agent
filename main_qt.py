@@ -11,7 +11,7 @@ import re
 import uuid
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtCore import QTimer, QObject, pyqtSignal
@@ -30,6 +30,8 @@ from core.workspace import get_workspace_manager
 from core.project_indexer import get_project_indexer
 from core.permission import get_permission_manager
 from core.executor import get_executor
+from core.turn_context import TurnExecutionContext, bind_turn_context
+from core.plugin import ToolCancelledError
 from core.scheduler import get_automation_engine
 from core.proactive import ProactiveNotificationPolicy
 from core.response_presenter import present_channels
@@ -78,6 +80,9 @@ class TurnEnvelope:
     conversation_history: tuple
     specialist_key: str = ""
     memory_namespace: str = "global"
+    workspace_path: str = ""
+    execution: TurnExecutionContext | None = None
+    workflow_context: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -88,6 +93,19 @@ class TurnResult:
     response_text: str
     status: str = "completed"
     error_code: str = ""
+
+
+@dataclass(frozen=True)
+class TurnProgress:
+    turn: TurnEnvelope
+    message: str
+
+
+@dataclass(frozen=True)
+class ControlResult:
+    session_id: str
+    parent_turn_id: str
+    outcome: object
 
 
 def resource_path(relative_path: str) -> Path:
@@ -152,10 +170,11 @@ class AppSignals(QObject):
     permission_request = pyqtSignal(str, str)
     # 권한 응답용 시그널: (result_bool)
     permission_response = pyqtSignal(bool)
-    progress_update = pyqtSignal(str)
+    progress_update = pyqtSignal(object)
     proactive_message = pyqtSignal(str)
     control_response_ready = pyqtSignal(object)
     voice_text_detected = pyqtSignal(str)
+    microphone_status = pyqtSignal(str)
     gesture_action = pyqtSignal(str)
     gesture_motion = pyqtSignal(object)
     gesture_status = pyqtSignal(object)
@@ -326,6 +345,7 @@ class JarvisApp:
         self.signals.proactive_message.connect(self._on_proactive_message)
         self.signals.control_response_ready.connect(self._on_control_response)
         self.signals.voice_text_detected.connect(self._on_user_input)
+        self.signals.microphone_status.connect(self._on_microphone_status)
         self.signals.tts_finished.connect(self._reset_all)
         self.automation_engine.set_result_callback(self._on_automation_result)
         print(f"[Automation] 시작 상태: {self.automation_engine.start()}")
@@ -436,7 +456,7 @@ class JarvisApp:
             print("[마이크] 자동 시작을 진단 설정으로 건너뜁니다.")
         else:
             print("[마이크] 자동으로 음성 감지를 시작합니다...")
-            self._start_continuous_listen()
+            threading.Thread(target=self._start_continuous_listen, daemon=True).start()
         
         print(
             f"\n{self.assistant_settings.assistant_name}가 준비되었습니다! "
@@ -558,7 +578,11 @@ class JarvisApp:
             if hasattr(self.executor, "is_control_command") and self.executor.is_control_command(text):
                 self.messages.append({"role": "user", "content": text})
                 self.memory.save_message(self.session_id, "user", text)
-                thread = threading.Thread(target=self._process_control_command, args=(text,), daemon=True)
+                thread = threading.Thread(
+                    target=self._process_control_command,
+                    args=(text, self.session_id, getattr(self, "_active_turn_id", "")),
+                    daemon=True,
+                )
                 thread.start()
                 return
             if text.strip().lower().startswith(("새 작업:", "새 작업：")):
@@ -579,8 +603,19 @@ class JarvisApp:
         specialist_key = ""
         if isinstance(specialist_payload, dict):
             specialist_key = str(specialist_payload.get("workspace", "")).strip()
+        workspace_manager = getattr(self, "workspace_manager", None)
+        workspace_path = (
+            workspace_manager.get_workspace_path() or "" if workspace_manager is not None else ""
+        )
+        self._turn_generation = getattr(self, "_turn_generation", 0) + 1
+        execution = TurnExecutionContext(
+            uuid.uuid4().hex, self.session_id, workspace_path,
+            str(getattr(getattr(self, "memory", None), "workspace_namespace", "global") or "global"),
+            self._turn_generation,
+        )
+        self._active_turn_context = execution
         turn = TurnEnvelope(
-            turn_id=uuid.uuid4().hex,
+            turn_id=execution.turn_id,
             session_id=self.session_id,
             user_text=text,
             conversation_history=tuple(dict(item) for item in self.messages[-10:]),
@@ -589,6 +624,10 @@ class JarvisApp:
                 getattr(getattr(self, "memory", None), "workspace_namespace", "global")
                 or "global"
             ),
+            workspace_path=workspace_path,
+            execution=execution,
+            workflow_context=tuple(self._command_center_context().items())
+                if getattr(self, "user_profile", None) is not None else (),
         )
         self._active_turn_id = turn.turn_id
         self.messages.append({"role": "user", "content": text})
@@ -599,12 +638,19 @@ class JarvisApp:
         )
         thread.start()
 
-    def _process_control_command(self, text: str):
-        outcome = self.executor.handle_control_command(text, self.session_id)
-        self.signals.control_response_ready.emit(outcome)
+    def _process_control_command(self, text: str, session_id=None, parent_turn_id=""):
+        session_id = session_id or self.session_id
+        outcome = self.executor.handle_control_command(text, session_id)
+        self.signals.control_response_ready.emit(ControlResult(session_id, parent_turn_id, outcome))
 
     def _on_control_response(self, outcome):
         """실행 중 제어 응답은 원래 AI 작업의 processing 상태를 변경하지 않는다."""
+        if isinstance(outcome, ControlResult):
+            if outcome.session_id != self.session_id or (
+                outcome.parent_turn_id and outcome.parent_turn_id != getattr(self, "_active_turn_id", "")
+            ):
+                return
+            outcome = outcome.outcome
         response_text = self._personalize_address(outcome.response)
         self.window.show_assistant_text(response_text)
         if hasattr(self.window, "show_specialist_result"):
@@ -644,6 +690,17 @@ class JarvisApp:
                 ),
             )
         text = envelope.user_text
+        if envelope.execution is None:
+            envelope = replace(envelope, execution=TurnExecutionContext(
+                envelope.turn_id, envelope.session_id, envelope.workspace_path,
+                envelope.memory_namespace,
+            ))
+        execution = envelope.execution
+        if execution.cancelled:
+            return
+        def report_progress(message):
+            if not execution.cancelled:
+                self.signals.progress_update.emit(TurnProgress(envelope, str(message)))
         print("[DEBUG] _process_ai called with:", text)
         
         # RAG로 문서 검색
@@ -664,16 +721,22 @@ class JarvisApp:
         try:
             if specialist_payload:
                 workspace_key = str(specialist_payload.get("workspace", "document"))
-                outcome, team_run = self.specialist_team_runtime.execute_workspace_request(
-                    workspace_key, text,
-                    attachments=list(specialist_payload.get("attachments") or ()),
-                    invoke_executor=lambda request, allowed_tool_names=None,
-                                           execution_context="": self.executor.execute_turn(
-                        request, self.session_id, conversation_history,
-                        self.signals.progress_update.emit, existing_task_id,
-                        allowed_tool_names, execution_context,
-                    ),
-                )
+                with bind_turn_context(execution):
+                    outcome, team_run = self.specialist_team_runtime.execute_workspace_request(
+                        workspace_key, text,
+                        attachments=list(specialist_payload.get("attachments") or ()),
+                        invoke_executor=lambda request, allowed_tool_names=None,
+                                               execution_context="": self.executor.execute_turn(
+                            request, envelope.session_id, conversation_history,
+                            report_progress, existing_task_id,
+                            allowed_tool_names, execution_context,
+                        ),
+                    )
+                    execution.checkpoint()
+                    self.executor.record_acceptance(
+                        outcome, dict(team_run.artifacts.get("quality_verdict") or {}),
+                        session_id=envelope.session_id, workspace_path=envelope.workspace_path,
+                    )
                 response_text = outcome.response
                 print(f"[SpecialistTeam] run={team_run.run_id} status={team_run.status}")
                 self.signals.ai_response_ready.emit(TurnResult(
@@ -685,10 +748,16 @@ class JarvisApp:
             workflow_runtime = getattr(self, "workflow_runtime", None)
             preset_id = workflow_runtime.match_trigger(text) if workflow_runtime else None
             if preset_id:
-                run = workflow_runtime.execute(
-                    preset_id, context=self._command_center_context(),
-                    approve=lambda step: False,
-                )
+                with bind_turn_context(execution):
+                    run = workflow_runtime.execute(
+                        preset_id, context={
+                            **dict(envelope.workflow_context),
+                            "session_id": envelope.session_id,
+                            "workspace_path": envelope.workspace_path,
+                        },
+                        approve=lambda step: False,
+                    )
+                    execution.checkpoint()
                 response_text = workflow_runtime.present_run(run)
                 print("[DEBUG] WorkflowRuntime returned:", response_text)
                 self.signals.ai_response_ready.emit(TurnResult(
@@ -697,21 +766,25 @@ class JarvisApp:
                 return
             # Executor로 목표 실행!
             if hasattr(self.executor, "execute_turn"):
-                outcome = self.executor.execute_turn(
-                    text, self.session_id, conversation_history,
-                    self.signals.progress_update.emit,
-                    existing_task_id,
-                )
+                with bind_turn_context(execution):
+                    outcome = self.executor.execute_turn(
+                        text, envelope.session_id, conversation_history,
+                        report_progress,
+                        existing_task_id,
+                    )
                 response_text = outcome.response
-                if getattr(outcome, "next_goal", ""):
-                    self.executor.enqueue_goal(outcome.next_goal, self.session_id, priority=100)
+                if getattr(outcome, "next_goal", "") and not execution.cancelled:
+                    with bind_turn_context(execution):
+                        self.executor.enqueue_goal(outcome.next_goal, envelope.session_id, priority=100)
             else:
-                response_text = self.executor.execute_goal(text, self.session_id, conversation_history)
+                with bind_turn_context(execution):
+                    response_text = self.executor.execute_goal(text, envelope.session_id, conversation_history)
+            execution.checkpoint()
             print("[DEBUG] Executor.execute_goal returned:", response_text)
 
             if existing_task_id:
                 task = self.executor.dialogue_state.get_task(
-                    self.session_id, existing_task_id, self.executor._workspace_scope()
+                    envelope.session_id, existing_task_id, envelope.workspace_path
                 )
                 if task and task.status != "queued":
                     getattr(self, "_queued_dispatch_inflight", set()).discard(existing_task_id)
@@ -722,6 +795,8 @@ class JarvisApp:
                 response_text,
                 getattr(outcome, "status", "completed") if 'outcome' in locals() else "completed",
             ))
+        except ToolCancelledError:
+            return
         except Exception as e:
             print(f"[Executor] 오류: {e}")
             import traceback
@@ -736,8 +811,15 @@ class JarvisApp:
                 envelope, error_response, "failed", error_code
             ))
 
-    def _on_progress_update(self, message: str):
+    def _on_progress_update(self, message):
         """최종 답변 전의 짧은 작업 진행 상황을 GUI에 표시한다."""
+        if isinstance(message, TurnProgress):
+            turn = message.turn
+            if (turn.turn_id != getattr(self, "_active_turn_id", "")
+                    or turn.session_id != self.session_id
+                    or (turn.execution is not None and turn.execution.cancelled)):
+                return
+            message = message.message
         self.window.show_assistant_text(self._personalize_address(message))
 
     def notify_user(self, message: str):
@@ -791,6 +873,10 @@ class JarvisApp:
         if active_turn_id and turn.turn_id != active_turn_id:
             print(f"[Turn] superseded response ignored: {turn.turn_id}")
             return
+        if (turn.execution is not None and turn.execution.cancelled) or (
+            active_turn_id and turn.session_id != self.session_id
+        ):
+            return
         if hasattr(self.window, "set_assistant_identity"):
             self.window.set_assistant_identity(get_assistant_settings().assistant_name)
         channels = present_channels(response_text, turn.user_text)
@@ -799,10 +885,8 @@ class JarvisApp:
         response_text = self._personalize_address(response_text)
         response_text = light_polish_korean(response_text)
         print("[DEBUG] User-facing response:", response_text)
-        # 이모지는 제거하되 상세정보 요청 시 경로와 PID 문법은 보존한다.
-        import re
-        response_text = re.sub(r'[^\w\s가-힣.,!?:/\\()@+\-]', '', response_text)
-        print("[DEBUG] After emoji filter:", response_text)
+        # Screen output is source data. Never strip code/quotes/operators in an
+        # emoji filter; speech-specific cleanup belongs to the TTS channel.
         
         # 마지막 응답 저장
         self.last_response = response_text
@@ -857,7 +941,9 @@ class JarvisApp:
         # 자동으로 음성 응답 (RESPONDING 상태로)
         print(f"[DEBUG] TTS 스레드 시작 전, self.last_response: {self.last_response}")
         self.state_machine.start_responding()  # RESPONDING 상태로 변경
-        spoken_text = self.last_response
+        spoken_text = self._personalize_address(
+            getattr(channels, "speech_text", self.last_response)
+        )
         if self._tts_enabled():
             speech_generation = getattr(self, "_speech_generation", 0)
             thread = threading.Thread(
@@ -882,6 +968,9 @@ class JarvisApp:
 
     def _cancel_pending_work(self):
         """Ask the active executor turn to stop and discard superseded queued turns."""
+        context = getattr(self, "_active_turn_context", None)
+        if context is not None:
+            context.cancel()
         executor = getattr(self, "executor", None)
         active_task_id = str(getattr(executor, "current_agent_task_id", "") or "")
         if active_task_id and hasattr(executor, "handle_control_command"):
@@ -991,9 +1080,10 @@ class JarvisApp:
         threading.Thread(target=run, daemon=True).start()
 
     def _personalize_address(self, text: str) -> str:
+        from core.response_integrity import map_narrative
         settings = getattr(getattr(self, "tool_executor", None), "tts_settings", None)
         if settings is not None and hasattr(settings, "personalize_address"):
-            text = settings.personalize_address(text)
+            text = map_narrative(text, settings.personalize_address)
         from core.agent_services import _apply_requested_style
         return _apply_requested_style(
             str(text), get_assistant_settings().get("response_style")
@@ -1073,16 +1163,22 @@ class JarvisApp:
         QTimer.singleShot(1000, lambda: self.state_machine.go_idle())
     
     def _start_continuous_listen(self):
+        if getattr(self, "_runtime_shutdown_started", False):
+            return
         # 지속적인 음성 감지 시작
         result = self.hardware_manager.start_continuous_listen(self._on_continuous_text_detected, self.audio_processor)
         print(result)
-        self.window.show_assistant_text(result)
-        self.last_response = result
+        self.signals.microphone_status.emit(result)
     
     def _stop_continuous_listen(self):
         # 지속적인 음성 감지 중지
         result = self.hardware_manager.stop_continuous_listen()
         print(result)
+        self.signals.microphone_status.emit(result)
+
+    def _on_microphone_status(self, result):
+        if getattr(self, "_runtime_shutdown_started", False):
+            return
         self.window.show_assistant_text(result)
         self.last_response = result
     
@@ -1190,6 +1286,14 @@ class JarvisApp:
 
     def _activate_workspace_context(self, initial: bool = False):
         """Apply one project scope to indexing, memory, RAG, and UI."""
+        if not initial:
+            # A worker must never inherit a newly selected project's mutable
+            # memory/tool scope while continuing an older request.
+            context = getattr(self, "_active_turn_context", None)
+            if context is not None and context.workspace_path != (self.workspace_manager.get_workspace_path() or ""):
+                self._cancel_pending_work()
+                self._is_processing_ai = False
+                self.state_machine.go_idle()
         if not self.workspace_manager.is_set():
             return
         info = self.workspace_manager.get_info()
@@ -1350,6 +1454,7 @@ class JarvisApp:
         self._runtime_shutdown_started = True
         self._shutdown_errors = []
         cleanup = (
+            ("hardware_manager", "shutdown"),
             ("gesture_runtime", "stop"),
             ("proactive_policy", "stop"),
             ("runtime_services", "stop"),

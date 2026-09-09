@@ -15,6 +15,7 @@ import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
+from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -879,7 +880,14 @@ class PluginRegistry:
                         result = self._invoke_isolated(plugin, tool, tool_input, context, state)
                         break
                     else:
-                        future = self._executor.submit(self._invoke, plugin, tool, tool_input, context)
+                        # ThreadPoolExecutor does not inherit ContextVars. Capture
+                        # one context per invocation so the immutable turn's
+                        # workspace/identity and cancellation checkpoints survive
+                        # dispatch without leaking into the next pooled task.
+                        worker_context = copy_context()
+                        future = self._executor.submit(
+                            worker_context.run, self._invoke, plugin, tool, tool_input, context,
+                        )
                         with self._state_lock:
                             state.future = future
                         deadline = time.monotonic() + tool.timeout_seconds

@@ -145,6 +145,7 @@ def test_gpt_sovits_http_error_includes_server_detail(tmp_path, monkeypatch):
 
 
 def test_selected_custom_voice_does_not_fall_back_to_windows_voice(monkeypatch):
+    monkeypatch.setattr("core.tools.get_assistant_settings", lambda: SimpleNamespace(tts_enabled=True))
     executor = ToolExecutor.__new__(ToolExecutor)
     executor.tts_settings = type(
         "Settings", (), {"selected_custom_voice": "Anis", "selected_edge_voice": ""}
@@ -238,6 +239,7 @@ def test_gpt_sovits_shutdown_prevents_late_background_start(tmp_path, monkeypatc
 
 
 def test_prepare_custom_tts_publishes_runtime_status(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.tools.get_assistant_settings", lambda: SimpleNamespace(tts_enabled=True))
     manager = TTSSettingsManager(str(tmp_path / "tts.json"))
     executor = ToolExecutor.__new__(ToolExecutor)
     executor.tts_settings = manager

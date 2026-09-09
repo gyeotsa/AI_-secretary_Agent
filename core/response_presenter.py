@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass
+from core.response_integrity import map_narrative, protected_segments
 
 
 _DETAIL_REQUEST_TERMS = (
@@ -64,9 +65,13 @@ def present_response(response_text: str, user_request: str = "") -> str:
 def present_channels(response_text: str, user_request: str = "") -> PresentedResponse:
     """원문 기술 로그와 화면/TTS용 본문을 명시적으로 분리한다."""
     technical = (response_text or "").strip()
-    screen = present_response(technical, user_request)
+    # Source-bearing output is already presentation content, not a technical log.
+    # Do not line-strip code or remove foreign-language text inside quotations.
+    source_output = bool(protected_segments(technical)) and not _PROGRAM_LAUNCH_RESULT.fullmatch(technical)
+    screen = technical if source_output else present_response(technical, user_request)
+    speech = re.sub(r"```[\s\S]*?```|~~~[\s\S]*?~~~", "코드는 화면에서 확인할 수 있어요.", screen)
     return PresentedResponse(
         technical_text=technical,
         screen_text=screen,
-        speech_text=screen,
+        speech_text=speech,
     )

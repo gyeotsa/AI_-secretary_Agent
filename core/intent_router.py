@@ -188,6 +188,9 @@ class IntentRouter:
         query_terms = self._terms(normalized)
         candidates = []
         for plugin, intent in self.registry.get_all_intents():
+            applicable = getattr(plugin, "intent_applicable", None)
+            if applicable is not None and not applicable(intent.name, normalized):
+                continue
             hint_hits = [hint for hint in intent.utterance_hints if hint.casefold() in normalized]
             execution_hits = [hint for hint in intent.execution_hints if hint.casefold() in normalized]
             pattern_hits = [

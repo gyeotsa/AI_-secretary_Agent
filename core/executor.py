@@ -39,6 +39,10 @@ from core.task_contracts import (
 )
 from core.quality_metrics import get_quality_metric_store
 from core.utterance_scope import analyze_utterance_scope, allows_execution_follow_up
+from core.turn_context import (
+    TurnExecutionContext, bind_turn_context, current_turn_context, check_turn_cancelled,
+)
+from core.plugin import ToolCancelledError
 
 
 def _safe_contract_value(value: Any) -> Any:
@@ -136,6 +140,10 @@ class Executor:
         self.terminal_error = None
         self.dialogue_state = get_dialogue_state_store()
         self.intent_router = IntentRouter(self.tool_executor.plugin_registry)
+        from core.semantic_request import SemanticRequestInterpreter
+        self.semantic_interpreter = SemanticRequestInterpreter(
+            self.reasoning_llm, self.tool_executor.plugin_registry
+        )
         self.model_role_router = get_model_role_router()
         self._progress_callback: Optional[Callable[[str], None]] = None
         self.current_agent_task_id = ""
@@ -186,8 +194,10 @@ class Executor:
                      progress_callback: Optional[Callable[[str], None]] = None,
                      existing_task_id: Optional[str] = None,
                      allowed_tool_names: Optional[List[str]] = None,
-                     execution_context: str = "") -> ExecutionOutcome:
+                     execution_context: str = "",
+                     turn_context: Optional[TurnExecutionContext] = None) -> ExecutionOutcome:
         """Execute one turn atomically against this runtime's mutable state."""
+        turn_context = turn_context or current_turn_context()
         turn_lock = getattr(self, "_turn_lock", None)
         if turn_lock is None:
             # A few compatibility tests and integrations construct a lightweight
@@ -195,10 +205,20 @@ class Executor:
             turn_lock = threading.RLock()
             self._turn_lock = turn_lock
         with turn_lock:
-            return self._execute_turn_traced(
-                goal, session_id, conversation_history, progress_callback,
-                existing_task_id, allowed_tool_names, execution_context,
-            )
+            try:
+                with bind_turn_context(turn_context):
+                    check_turn_cancelled()
+                    if turn_context is not None:
+                        session_id = turn_context.session_id
+                    outcome = self._execute_turn_traced(
+                        goal, session_id, conversation_history, progress_callback,
+                        existing_task_id, allowed_tool_names, execution_context,
+                    )
+                    if not (outcome.task_id and outcome.status in {"completed", "partial", "unverified"}):
+                        check_turn_cancelled()
+                    return outcome
+            except ToolCancelledError as exc:
+                return ExecutionOutcome(str(exc), "cancelled", goal)
 
     def _execute_turn_traced(self, goal: str, session_id: Optional[str] = None,
                      conversation_history: Optional[List[Dict[str, str]]] = None,
@@ -230,6 +250,12 @@ class Executor:
             )
             self._record_turn_quality(goal, outcome, turn_started, conversation_history)
             return outcome
+        except ToolCancelledError as exc:
+            learning_runtime.finish(
+                trajectory_id, status="cancelled", response=str(exc),
+                metadata={"cancelled": True},
+            )
+            raise
         except Exception as exc:
             learning_runtime.event("runtime_exception", {"error": str(exc)}, trajectory_id)
             learning_runtime.finish(
@@ -239,7 +265,7 @@ class Executor:
             quality_metrics = getattr(self, "quality_metrics", None) or get_quality_metric_store()
             self.quality_metrics = quality_metrics
             quality_metrics.record(
-                "task_success", 0.0, success=False,
+                "runtime_completion", 0.0, success=False,
                 context={"goal": goal[:300], "exception": type(exc).__name__},
             )
             quality_metrics.record(
@@ -257,7 +283,7 @@ class Executor:
         quality_metrics = getattr(self, "quality_metrics", None) or get_quality_metric_store()
         self.quality_metrics = quality_metrics
         quality_metrics.record(
-            "task_success", 1.0 if succeeded else 0.0, success=succeeded,
+            "runtime_completion", 1.0 if succeeded else 0.0, success=succeeded,
             context={"goal": goal[:300], "status": outcome.status,
                      "task_id": outcome.task_id},
         )
@@ -267,10 +293,9 @@ class Executor:
         )
         if outcome.status in {"awaiting_input", "awaiting_user"}:
             question = str(outcome.question or outcome.response).strip()
-            specific = bool(question and "?" in question and len(question) >= 8)
             quality_metrics.record(
-                "clarification_quality", 1.0 if specific else 0.0,
-                success=specific, context={"question": question[:500]},
+                "clarification_requested", 1.0,
+                success=True, context={"question": question[:500]},
             )
         execution_request = not analyze_utterance_scope(goal, history).discussion and bool(
             self._EXECUTION_REQUEST_PATTERN.search(goal)
@@ -296,6 +321,32 @@ class Executor:
                                            "task_id": outcome.task_id,
                                            "tool_count": len(results)},
             )
+
+    def record_acceptance(self, outcome: ExecutionOutcome, verdict: dict,
+                          *, session_id: str, workspace_path: str) -> bool:
+        """Persist final goal evidence, separately from a tool's completion."""
+        if (not outcome.task_id or not isinstance(verdict, dict)
+                or type(verdict.get("passed")) is not bool
+                or outcome.status not in {"completed", "partial", "unverified"}):
+            return False
+        accepted = self.dialogue_state.record_acceptance(
+            session_id, outcome.task_id, workspace_path,
+            _safe_contract_value(verdict), outcome.response,
+        )
+        if not accepted:
+            return False
+        task = self.dialogue_state.get_task(session_id, outcome.task_id, workspace_path)
+        passed = bool(task and task.status == "completed" and verdict["passed"])
+        if task is not None:
+            outcome.status = task.status
+        metrics = getattr(self, "quality_metrics", None) or get_quality_metric_store()
+        self.quality_metrics = metrics
+        context = {"task_id": outcome.task_id, "status": outcome.status,
+                   "review": _safe_contract_value(verdict)}
+        for key in ("task_success", "specialist_artifact_quality"):
+            metrics.record(key, float(passed), success=passed, context=context)
+        record_runtime_event("goal_acceptance", **context)
+        return True
 
     def _execute_turn_impl(self, goal: str, session_id: Optional[str] = None,
                      conversation_history: Optional[List[Dict[str, str]]] = None,
@@ -331,7 +382,8 @@ class Executor:
                 response, status, goal, question=pending_question,
             )
 
-        if analyze_utterance_scope(goal, history).discussion:
+        utterance_scope = analyze_utterance_scope(goal, history)
+        if utterance_scope.discussion:
             # A question about a command is not the answer to an outstanding
             # recipient/body slot either.  Keep that task untouched and answer
             # without granting the Planner the embedded command's authority.
@@ -339,6 +391,129 @@ class Executor:
 
         if self.is_control_command(goal):
             return self.handle_control_command(goal, session_key)
+
+        if getattr(self, "semantic_interpreter", None) is not None:
+            # Model confidence cannot confer authority denied by the current
+            # utterance. Quoted payloads were masked by the shared scope parser.
+            if utterance_scope.negated:
+                return terminal_outcome("요청하신 작업은 실행하지 않겠습니다.", "cancelled")
+            if utterance_scope.conditional:
+                question = (f"‘{utterance_scope.condition}’ 조건을 아직 확인하지 않았습니다. "
+                            "조건을 먼저 확인할까요, 아니면 지금 실행하라는 뜻인가요?")
+                task = (self.dialogue_state.get_task(session_key, existing_task_id, workspace_scope)
+                        if existing_task_id else None)
+                task = task or self.dialogue_state.create_task(session_key, goal, workspace_path=workspace_scope)
+                self.dialogue_state.delete(session_key, task.task_id)
+                self.dialogue_state.create(session_key, goal, question, history, task.task_id, workspace_scope)
+                return ExecutionOutcome(question, "awaiting_user", goal, question, task.task_id)
+
+        # Production natural-language decisions cross one semantic boundary.
+        # Legacy declarative routing remains available to compatibility callers,
+        # but a lexical match may no longer overrule a semantic read/change intent.
+        semantic = None
+        interpreter = getattr(self, "semantic_interpreter", None)
+        if interpreter is not None:
+            pending_semantic = self.dialogue_state.get(session_key, None, workspace_scope)
+            pending_state = (self.dialogue_state.get_intent_state(pending_semantic.task_id)
+                             if pending_semantic else None) or {}
+            if pending_semantic:
+                pending_state = {**pending_state,
+                    "original_request": pending_semantic.original_goal,
+                    "question": pending_semantic.question,
+                    "task_id": pending_semantic.task_id}
+            else:
+                recent = self.dialogue_state.get_recent_intent(session_key, workspace_scope, completed_only=True)
+                if recent:
+                    # Evidence for referents, not a demand to continue the previous
+                    # task. The interpreter decides new vs. continue explicitly.
+                    pending_state = {"recent_completed": recent}
+            semantic = interpreter.interpret(
+                goal, history=history, pending=pending_state, allowed_tools=tool_scope,
+            )
+            check_turn_cancelled()
+            record_runtime_event("semantic_decision", relation=semantic.relation,
+                                 operation=semantic.operation, intent=semantic.intent_name,
+                                 grounded=semantic.grounded, reason=semantic.reason)
+            if semantic.grounded and semantic.relation == "cancel" and not semantic.needs_clarification:
+                return self._cancel_scoped_tasks(session_key, semantic.control_scope, goal)
+            if semantic.grounded and semantic.relation == "conversation":
+                return terminal_outcome(self._respond_conversationally(goal, history))
+            semantic_resolution = semantic.to_resolution(self.intent_router.registry)
+            if semantic_resolution.matched:
+                continuing = bool(pending_semantic and semantic.relation in {"continue", "correct"})
+                task = (self.dialogue_state.get_task(session_key, pending_semantic.task_id, workspace_scope)
+                        if continuing else None)
+                if (semantic_resolution.ready
+                        and not self.intent_router.resolution_preserves_user_content(goal, semantic_resolution)):
+                    # Schema validity and substring grounding are not enough:
+                    # a truncated quoted body can satisfy both. Apply the same
+                    # literal completeness contract to every direct execution.
+                    # Validate the current utterance so an explicit correction
+                    # is not forced to retain a superseded old literal.
+                    semantic_resolution.question = (
+                        "인용하신 원문이나 본문 일부가 실행 명세에서 누락되어 실행하지 않았습니다. "
+                        "사용할 파일명과 본문을 확인해 주세요."
+                    )
+                if semantic_resolution.question:
+                    task = task or (self.dialogue_state.get_task(session_key, existing_task_id, workspace_scope)
+                                    if existing_task_id else None)
+                    task = task or self.dialogue_state.create_task(session_key, goal, workspace_path=workspace_scope)
+                    original_goal = pending_semantic.original_goal if continuing else goal
+                    self.dialogue_state.delete(session_key, task.task_id)
+                    self.dialogue_state.save_intent_state(task.task_id, session_key,
+                        semantic_resolution.intent_name, semantic_resolution.slots, original_goal)
+                    self.dialogue_state.create(session_key, original_goal, semantic_resolution.question,
+                                               history, task.task_id, workspace_scope)
+                    if task.status == "awaiting_user":
+                        self.dialogue_state.update_task(task.task_id, pending_question=semantic_resolution.question)
+                    else:
+                        self.dialogue_state.transition_task(task.task_id, "awaiting_user")
+                    return ExecutionOutcome(semantic_resolution.question, "awaiting_user", goal,
+                                            semantic_resolution.question, task.task_id)
+                if semantic_resolution.ready:
+                    if continuing:
+                        self.dialogue_state.delete(session_key, task.task_id)
+                    return self._execute_resolved_intent(
+                        semantic_resolution, pending_semantic.original_goal if continuing else goal, session_key,
+                        task.task_id if task else (existing_task_id or ""), progress_callback,
+                    )
+            if semantic.needs_clarification or not semantic.grounded or not semantic.tool_names:
+                if semantic.reason.startswith(("semantic_interpretation_failed", "semantic_model_unavailable")):
+                    if semantic.reason.endswith((":context_saturated", ":truncated_output")):
+                        message = "모델의 입력 또는 출력 길이 한도에 도달해 실행하지 않았습니다. 요청이나 첨부 설명을 나누어 다시 시도해 주세요."
+                    elif semantic.reason.endswith(":connection") or semantic.reason == "semantic_model_unavailable":
+                        message = "요청 해석 모델에 연결하지 못해 작업을 실행하지 않았습니다. 모델 상태를 확인한 뒤 다시 시도해 주세요."
+                    elif semantic.reason.endswith(":timeout"):
+                        message = "요청 해석 모델의 응답 시간이 초과되어 작업을 실행하지 않았습니다."
+                    else:
+                        message = "요청 해석 모델이 유효한 실행 명세를 반환하지 않아 작업을 실행하지 않았습니다."
+                    return terminal_outcome(
+                        message,
+                        "failed",
+                    )
+                question = semantic.clarification_question or (
+                    "요청의 대상과 필요한 작업을 아직 확실히 연결하지 못했어요. "
+                    "어떤 결과를 원하시는지 한 번만 더 설명해 주세요."
+                )
+                continuing = bool(pending_semantic and semantic.relation in {"continue", "correct"})
+                task = (self.dialogue_state.get_task(session_key, pending_semantic.task_id, workspace_scope)
+                        if continuing else None)
+                task = task or (self.dialogue_state.get_task(session_key, existing_task_id, workspace_scope)
+                                if existing_task_id else None)
+                task = task or self.dialogue_state.create_task(session_key, goal, workspace_path=workspace_scope)
+                original_goal = pending_semantic.original_goal if continuing else goal
+                self.dialogue_state.delete(session_key, task.task_id)
+                self.dialogue_state.create(session_key, original_goal, question,
+                                           history, task.task_id, workspace_scope)
+                if task.status != "awaiting_user":
+                    self.dialogue_state.transition_task(task.task_id, "awaiting_user")
+                return ExecutionOutcome(question, "awaiting_user", original_goal, question, task.task_id)
+            # A multi-step/unnamed intent continues through the existing observed
+            # DAG planner. The tool set comes from semantic discovery, not keywords.
+            execution_context += "\n[검증된 요청 의미]\n" + json.dumps({
+                "operation": semantic.operation, "relation": semantic.relation,
+                "slots": semantic.slots, "tools": semantic.tool_names,
+            }, ensure_ascii=False)
 
         if normalized in {"대기 작업", "대기 작업 목록"}:
             items = self.dialogue_state.list(session_key, workspace_scope)
@@ -357,12 +532,15 @@ class Executor:
             None if is_new_request
             else self.dialogue_state.get(session_key, selected_task_id, workspace_scope)
         )
+        if semantic is not None:
+            pending = None
 
         # 먼저 가벼운 Registry 분류로 완결된 독립 명령과 이미 구조화할 수 있는
         # 후속 명령을 판별한다. 이 결과는 아직 실행하지 않는다. 모든 요청을 곧바로
         # LLM 문맥 해석기에 보내면 해석기 한 번의 오판이 메모장 실행·앱 별칭 추가
         # 같은 명확한 명령까지 확인 질문으로 가로채는 단일 실패점이 된다.
-        direct_resolution = self.intent_router.resolve(goal)
+        direct_resolution = (IntentResolution() if semantic is not None
+                             else self.intent_router.resolve(goal))
         if (tool_scope is not None and direct_resolution.matched
                 and direct_resolution.tool_name not in tool_scope):
             # The specialist supervisor has already fixed the capability domain.
@@ -390,7 +568,7 @@ class Executor:
                 "요청하신 작업은 실행하지 않겠습니다, 보스.", "cancelled",
             )
         deterministic_follow_up = False
-        allow_recent_execution = allows_execution_follow_up(history)
+        allow_recent_execution = semantic is None and allows_execution_follow_up(history)
         if not pending and not direct_resolution.matched and allow_recent_execution:
             recent_intent = self.dialogue_state.get_recent_intent(
                 session_key, workspace_scope
@@ -425,6 +603,8 @@ class Executor:
             )
         )
         if (
+            semantic is None
+            and
             not pending
             and not is_new_request
             and not deterministic_follow_up
@@ -692,10 +872,10 @@ class Executor:
         if (not intent_resolution.matched
                 and hasattr(self, "llm")
                 and hasattr(self, "tool_executor")):
-            if not self._should_attempt_registry_execution(goal, tool_scope):
+            if semantic is None and not self._should_attempt_registry_execution(goal, tool_scope):
                 return terminal_outcome(self._respond_conversationally(goal, history))
 
-        unsupported = self._unsupported_capability_message(goal)
+        unsupported = self._unsupported_capability_message(goal) if semantic is None else ""
         if unsupported:
             return terminal_outcome(unsupported)
         if not agent_task_id:
@@ -725,9 +905,15 @@ class Executor:
                 f"{initial_context}\n\n[전문가 작업공간 실행 맥락]\n"
                 f"{str(execution_context).strip()}"
             )
-        allowed_tools = self._allowed_tools_for_goal(goal, tool_scope)
+        allowed_tools = (list(semantic.tool_names) if semantic is not None
+                         else self._allowed_tools_for_goal(goal, tool_scope))
         required_tools: list[str] = []
-        if direct_resolution.compound:
+        if semantic is not None:
+            # These are the validated operations selected by the semantic
+            # interpreter, not the broader discovery shortlist. Every selected
+            # operation must survive planning, including independent branches.
+            required_tools = list(dict.fromkeys(semantic.tool_names))
+        elif direct_resolution.compound:
             required_tools = list(dict.fromkeys(
                 name for name in (
                     [direct_resolution.tool_name]
@@ -748,6 +934,14 @@ class Executor:
             self.current_plan = planning_service.create(
                 goal, initial_context, allowed_tools, required_tools,
             )
+            check_turn_cancelled()
+        except ToolCancelledError as exc:
+            self.dialogue_state.transition_task(agent_task_id, "cancelled", result=str(exc))
+            with self._control_condition:
+                self._task_controls.pop(agent_task_id, None)
+            self.current_agent_task_id = ""
+            self._progress_callback = None
+            return ExecutionOutcome(str(exc), "cancelled", goal, task_id=agent_task_id)
         except Exception as exc:
             # A planning/provider failure is a real failed turn.  Never convert
             # it to a vague tool-free fallback or leave a task stuck in running.
@@ -820,6 +1014,9 @@ class Executor:
                 self.current_plan, allowed_tool_names=allowed_tools,
             )
             return self._finish_plan_run(run, goal=goal, task_id=agent_task_id)
+        except ToolCancelledError as exc:
+            self.dialogue_state.transition_task(agent_task_id, "cancelled", result=str(exc))
+            return ExecutionOutcome(str(exc), "cancelled", goal, task_id=agent_task_id)
         finally:
             with self._control_condition:
                 self._task_controls.pop(agent_task_id, None)
@@ -1075,6 +1272,10 @@ class Executor:
         if outcome.status == "completed":
             response = "\n".join(successful_outputs[-5:]) or "검증된 모든 작업을 완료했습니다."
             status = "completed"
+        elif outcome.status == "cancelled":
+            response = ("이미 완료된 단계의 결과를 보존하고 나머지 실행을 중단했습니다."
+                        if completed else "실행을 취소했습니다.")
+            status = "partial" if completed else "cancelled"
         else:
             errors = []
             for step in steps:
@@ -1148,6 +1349,9 @@ class Executor:
         )
 
     def _workspace_scope(self) -> str:
+        turn_context = current_turn_context()
+        if turn_context is not None:
+            return turn_context.workspace_path
         manager = getattr(self, "workspace_manager", None)
         if manager is None or not manager.is_set():
             return ""
@@ -1220,8 +1424,11 @@ class Executor:
 
     @staticmethod
     def is_control_command(text: str) -> bool:
+        from core.semantic_request import explicit_control
+        if explicit_control(text) is not None:
+            return True
         normalized = text.strip().lower()
-        if normalized in {"작업 목록", "전체 작업 목록"}:
+        if normalized in {"작업 목록", "전체 작업 목록", "대기 작업", "대기 작업 목록"}:
             return True
         if Executor._is_contextual_approval_command(normalized):
             return True
@@ -1421,9 +1628,44 @@ class Executor:
         )
         return plan, resolution
 
+    def _cancel_scoped_tasks(self, session_key: str, scope: str, goal: str) -> ExecutionOutcome:
+        tasks = self.dialogue_state.list_tasks(
+            session_key, include_finished=False, workspace_path=self._workspace_scope()
+        )
+        if scope == "pending":
+            tasks = [t for t in tasks if t.status in {"queued", "awaiting_user", "awaiting_approval"}]
+        elif scope == "current":
+            current = getattr(self, "current_agent_task_id", "")
+            active = [t for t in tasks if t.task_id == current]
+            if active:
+                tasks = active
+            elif len(tasks) > 1:
+                return ExecutionOutcome(
+                    "중단할 작업이 여러 개예요. 작업 번호 또는 ‘모든 작업 취소’를 지정해 주세요.",
+                    "awaiting_user", goal,
+                )
+        results = [self.handle_control_command(f"{t.task_id} 취소", session_key) for t in tasks]
+        cancelled = [r.task_id for r in results if r.status == "cancelled"]
+        failed = [r.task_id for r in results if r.status != "cancelled"]
+        response = (f"작업 {len(cancelled)}개를 취소했습니다." if cancelled
+                    else "현재 취소할 작업이 없습니다.")
+        if failed:
+            response += " 취소하지 못한 작업: " + ", ".join(failed)
+        return ExecutionOutcome(response, "partial" if failed else "cancelled", goal)
+
     def handle_control_command(self, text: str, session_id: Optional[str] = None) -> ExecutionOutcome:
         session_key = session_id or "default"
         normalized = text.strip().lower()
+        from core.semantic_request import explicit_control
+        control = explicit_control(text)
+        if control and control[0] == "cancel":
+            return self._cancel_scoped_tasks(session_key, control[1], text)
+        if normalized in {"대기 작업", "대기 작업 목록"}:
+            items = self.dialogue_state.list(session_key, self._workspace_scope())
+            response = ("답변을 기다리는 작업입니다.\n" + "\n".join(
+                f"- {item.task_id}: {item.original_goal} (질문: {item.question})" for item in items
+            )) if items else "현재 답변을 기다리는 작업이 없습니다."
+            return ExecutionOutcome(response, "completed")
         if normalized in {"작업 목록", "전체 작업 목록"}:
             tasks = self.dialogue_state.list_tasks(
                 session_key, workspace_path=self._workspace_scope()
@@ -1433,7 +1675,7 @@ class Executor:
             lines = [f"- {t.task_id} [{t.status}] 우선순위 {t.priority}: {t.goal[:60]}" for t in tasks[:20]]
             return ExecutionOutcome("작업 목록입니다, 보스.\n" + "\n".join(lines))
 
-        if self._is_contextual_approval_command(normalized):
+        if (control and control[0] == "approve") or self._is_contextual_approval_command(normalized):
             pending = [
                 item for item in self.dialogue_state.list_tasks(
                     session_key, include_finished=False,
@@ -1508,6 +1750,7 @@ class Executor:
                     approval_inflight = set()
                     self._approval_inflight = approval_inflight
                 approval_inflight.add(task_id)
+            outcome = None
             try:
                 plan, approved_resolution = self._canonical_external_send_approval_plan(task)
                 if plan is None:
@@ -1561,7 +1804,16 @@ class Executor:
                 if outcome.status != "awaiting_approval":
                     self.dialogue_state.delete_intent_state(task_id)
                 return outcome
+            except ToolCancelledError as exc:
+                if outcome is not None:
+                    return outcome
+                self.dialogue_state.transition_task(task_id, "cancelled", result=str(exc))
+                return ExecutionOutcome(str(exc), "cancelled", task.goal, task_id=task_id)
             except Exception as exc:
+                if outcome is not None:
+                    # Presentation failures cannot undo an observed external
+                    # effect or authorize the user to retry it blindly.
+                    return outcome
                 self.dialogue_state.update_task(
                     task_id, status="failed", result=f"승인 후 재개 실패: {exc}",
                     verification_status="failed",
@@ -1663,6 +1915,7 @@ class Executor:
         return ExecutionOutcome("지원하지 않는 작업 제어 명령입니다, 보스.", "failed", task_id=task_id)
 
     def _wait_for_task_control(self) -> bool:
+        check_turn_cancelled()
         task_id = self.current_agent_task_id
         if not task_id:
             return True
@@ -1670,6 +1923,7 @@ class Executor:
             control = self._task_controls.get(task_id, {})
             while control.get("pause") and not control.get("cancel"):
                 self._control_condition.wait(timeout=0.5)
+                check_turn_cancelled()
                 control = self._task_controls.get(task_id, {})
             if control.get("cancel"):
                 self.terminal_error = f"작업 {task_id}이 사용자 요청으로 취소되었습니다."
@@ -2109,6 +2363,7 @@ class Executor:
         self.dialogue_state.update_task(
             task_id, plan=plan.to_dict()["steps"], plan_id=plan.plan_id,
         )
+        outcome = None
         try:
             run = self.execute_plan_dag(plan)
             outcome = self._finish_plan_run(run, goal=goal, task_id=task_id)
@@ -2135,6 +2390,12 @@ class Executor:
             if outcome.status != "awaiting_approval":
                 self.dialogue_state.delete_intent_state(task_id)
             return outcome
+        except ToolCancelledError as exc:
+            if outcome is not None:
+                return outcome
+            self.dialogue_state.transition_task(task_id, "cancelled", result=str(exc))
+            self.dialogue_state.delete(session_id, task_id)
+            return ExecutionOutcome(str(exc), "cancelled", goal, task_id=task_id)
         finally:
             self.current_agent_task_id = ""
 

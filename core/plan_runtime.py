@@ -11,12 +11,15 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from contextvars import copy_context
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from core.tool_result import Artifact, ToolRunResult, ToolRunStatus
+from core.tool_result import Artifact, Evidence, ToolRunResult, ToolRunStatus
+from core.plugin import ToolCancelledError
+from core.turn_context import current_turn_context, check_turn_cancelled
 
 
 class StepStatus(str, Enum):
@@ -27,6 +30,7 @@ class StepStatus(str, Enum):
     FAILED = "failed"
     BLOCKED = "blocked"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -252,6 +256,14 @@ class PlanCoordinator:
         replan_count = 0
         self.store.save_plan(plan)
         while True:
+            context = current_turn_context()
+            if (context and context.cancelled) or any(s.status == StepStatus.CANCELLED for s in plan.steps):
+                for step in plan.steps:
+                    if step.status in {StepStatus.PENDING, StepStatus.AWAITING_APPROVAL}:
+                        step.status = StepStatus.CANCELLED
+                status = "completed" if all(s.status == StepStatus.COMPLETED for s in plan.steps) else "cancelled"
+                self.store.save_plan(plan, status)
+                return PlanRunResult(plan, status, results)
             ready = plan.ready_steps()
             if not ready:
                 break
@@ -271,12 +283,13 @@ class PlanCoordinator:
             if not runnable:
                 continue
             with ThreadPoolExecutor(max_workers=min(self.max_parallel, len(runnable))) as pool:
-                futures = {pool.submit(self._run_step, plan, step, execute, verify): step for step in runnable}
+                futures = {pool.submit(copy_context().run, self._run_step, plan, step, execute, verify): step
+                           for step in runnable}
                 for future in as_completed(futures):
                     step = futures[future]
                     result = future.result()
                     results[step.id] = result
-                    if (step.status == StepStatus.FAILED and replan is not None
+                    if (step.status == StepStatus.FAILED and result.status != ToolRunStatus.UNVERIFIED and replan is not None
                             and replan_count < self.max_replans):
                         replacement = replan(plan, step, result)
                         if replacement is not None:
@@ -331,22 +344,45 @@ class PlanCoordinator:
             strategy = strategies[min(attempt, len(strategies) - 1)]
             step.attempts += 1
             try:
+                check_turn_cancelled()
                 candidate = execute(step, strategy)
+            except ToolCancelledError as exc:
+                candidate = ToolRunResult.cancelled(tool_name=step.tool_name or step.id, message=str(exc))
             except Exception as exc:
                 candidate = ToolRunResult.failed(
                     tool_name=step.tool_name or step.id, error=f"{type(exc).__name__}: {exc}"
                 )
             # The exact same verifier is mandatory after first execution and every recovery attempt.
-            last = verify(step, candidate)
+            # Cancellation is not a failed strategy to retry. Preserve typed
+            # cancellation without calling a verifier that may start more work.
+            try:
+                last = candidate if candidate.status == ToolRunStatus.CANCELLED else verify(step, candidate)
+            except Exception as exc:
+                # Execution already returned. Losing that receipt on a verifier
+                # exception could trigger a duplicate send/write on recovery.
+                # Retain observations, but never claim verification succeeded.
+                last = ToolRunResult.unverified(
+                    tool_name=candidate.tool_name, raw_output=candidate.raw_output,
+                    duration_ms=candidate.duration_ms, artifacts=list(candidate.artifacts),
+                    evidence=[*candidate.evidence, Evidence(
+                        "verification_interrupted" if isinstance(exc, ToolCancelledError) else "verification_error",
+                        f"{type(exc).__name__}: {exc}",
+                    )],
+                )
             signature = "" if last.succeeded else ErrorClassifier.signature(step, last)
             self.store.record_attempt(plan.plan_id, step, strategy, last, signature)
             step.observations.append({"attempt": step.attempts, "strategy": strategy,
                                       "status": last.status.value, "signature": signature})
+            if last.status == ToolRunStatus.CANCELLED:
+                step.status = StepStatus.CANCELLED
+                return last
             if last.succeeded and self._artifacts_match(step.expected_artifacts, last.artifacts):
                 step.status = StepStatus.COMPLETED
                 step.last_error_signature = ""
                 return last
             step.last_error_signature = signature
+            if last.status == ToolRunStatus.UNVERIFIED:
+                break
             if signature and self.store.signature_count(plan.plan_id, step.id, signature) >= self.duplicate_failure_limit:
                 break
             if ErrorClassifier.classify(last) == "permission":

@@ -61,7 +61,7 @@ def test_workspace_info_reports_selected_folder(tmp_path):
     assert info.path == str(Path(tmp_path).resolve())
 
 
-def test_write_intent_uses_recent_file_and_saves_generated_content(tmp_path, monkeypatch):
+def test_write_intent_uses_confirmed_file_and_saves_generated_content(tmp_path, monkeypatch):
     workspace = get_workspace_manager()
     workspace.set_workspace(str(tmp_path))
     target = tmp_path / "test.py"
@@ -69,7 +69,8 @@ def test_write_intent_uses_recent_file_and_saves_generated_content(tmp_path, mon
     registry, router = _router()
 
     resolution = router.resolve(
-        '해당 파일에 "hello world"를 출력하는 소스코드를 작성해줘.'
+        '해당 파일에 "hello world"를 출력하는 소스코드를 작성해줘.',
+        "filesystem.write_file", {"filename": "test.py"},
     )
     assert resolution.intent_name == "filesystem.write_file"
     assert resolution.slots["filename"] == "test.py"
@@ -85,6 +86,15 @@ def test_write_intent_uses_recent_file_and_saves_generated_content(tmp_path, mon
     verification = ToolVerifier().verify(resolution.tool_name, resolution.slots, result)
     assert verification.success
     assert target.read_text(encoding="utf-8") == 'print("hello world")\n'
+
+
+def test_write_referent_without_dialogue_does_not_guess_by_disk_mtime(tmp_path):
+    get_workspace_manager().set_workspace(str(tmp_path))
+    (tmp_path / "unrelated.py").write_text("keep = 1", encoding="utf-8")
+    _, router = _router()
+    result = router.resolve('해당 파일에 "hello world"를 출력하는 소스코드를 작성해줘.')
+    assert result.question
+    assert not result.slots.get("filename")
 
 
 def test_create_file_never_overwrites_existing_file(tmp_path):

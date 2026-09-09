@@ -1169,6 +1169,7 @@ class JarvisMainWindow(QWidget):
         self.workspace_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.user_text_label = QLabel("")
+        self.user_text_label.setTextFormat(Qt.TextFormat.PlainText)
         self.user_text_label.setObjectName("userMessage")
         user_font = QFont("Consolas", 10)
         self.user_text_label.setFont(user_font)
@@ -1176,6 +1177,7 @@ class JarvisMainWindow(QWidget):
         self.user_text_label.setWordWrap(True)
         
         self.assistant_text_label = QLabel("")
+        self.assistant_text_label.setTextFormat(Qt.TextFormat.PlainText)
         self.assistant_text_label.setObjectName("assistantMessage")
         assistant_font = QFont("Consolas", 10)
         self.assistant_text_label.setFont(assistant_font)

@@ -73,6 +73,7 @@ def _bare_hardware_manager():
     manager.microphone_device = None
     manager.microphone_info = None
     manager.running = False
+    manager._listener_start_lock = threading.Lock()
     manager.continuous_listen_thread = None
     manager._stream_ready = threading.Event()
     manager._stream_error = ""

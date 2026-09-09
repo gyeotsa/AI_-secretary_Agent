@@ -94,27 +94,61 @@ class HardwareManager:
         self.duplex = get_voice_duplex_controller()
         self._manual_stop = False
         self._recovery_attempts = 0
-        
-        if SOUND_AVAILABLE:
-            # GPU 사용 가능 여부 확인
-            requested_device = Config.WHISPER_DEVICE
-            if requested_device == "auto":
-                requested_device = "cuda" if _cuda_device_count() > 0 else "cpu"
-            if requested_device == "cuda" and _cuda_device_count() > 0:
-                self.device = "cuda"
-                print("[GPU] CUDA를 사용합니다! (faster-whisper/CTranslate2)")
-            else:
-                self.device = "cpu"
-                print("[CPU] GPU를 사용할 수 없어 CPU를 사용합니다.")
-            
+        self.stt_engine = Config.STT_ENGINE
+        self.whisper_model_name = Config.WHISPER_MODEL
+        self.whisper_model = None
+        self.stt_state = "not_loaded" if SOUND_AVAILABLE else "unavailable"
+        self.stt_error = ""
+        self._stt_load_lock = threading.Lock()
+        self._stt_load_attempt = 0
+        self._listener_start_lock = threading.Lock()
+        self._closed = False
+
+    def ensure_stt_model(self, *, retry: bool = False):
+        """Load only on voice use; concurrent callers share one loading attempt.
+
+        Failure is cached until an explicit retry (e.g. turning the microphone
+        on again), so a capture loop cannot repeatedly load a broken model.
+        This never opens or records from a microphone.
+        """
+        if getattr(self, "_closed", False):
+            raise RuntimeError("음성 런타임이 종료되어 모델을 시작하지 않습니다.")
+        if getattr(self, "whisper_model", None) is not None:
+            return self.whisper_model
+        if not SOUND_AVAILABLE:
+            raise RuntimeError("음성 인식 라이브러리를 사용할 수 없습니다.")
+        previous_attempt = self._stt_load_attempt
+        with self._stt_load_lock:
+            if self.whisper_model is not None:
+                return self.whisper_model
+            if self.stt_state == "failed" and (not retry or previous_attempt != self._stt_load_attempt):
+                raise RuntimeError(self.stt_error)
+            self._stt_load_attempt += 1
+            self.stt_state = "loading"
+            self.stt_error = ""
             self.stt_engine = Config.STT_ENGINE
             self.whisper_model_name = Config.WHISPER_MODEL
             try:
-                self.whisper_model = self._load_stt_model()
+                if self._closed:
+                    raise RuntimeError("음성 런타임이 종료되었습니다.")
+                requested_device = Config.WHISPER_DEVICE
+                self.device = ("cuda" if requested_device in {"auto", "cuda"}
+                               and _cuda_device_count() > 0 else "cpu")
+                from core.gpu_scheduler import get_gpu_resource_queue
+                requested = (3072 if self.whisper_model_name.startswith("large") else 1536) if self.device == "cuda" else 0
+                with get_gpu_resource_queue().reserve("stt", requested, priority=1):
+                    model = self._load_stt_model()
+                if model is None:
+                    raise RuntimeError("음성 인식 모델 로더가 모델을 반환하지 않았습니다.")
+                if self._closed:
+                    raise RuntimeError("음성 런타임이 종료되어 모델 준비를 취소했습니다.")
+                self.whisper_model = model
+                self.stt_state = "ready"
+                return model
             except Exception as exc:
-                self.whisper_model = None
-                self.stt_engine = "unavailable"
-                print(f"[STT] 초기화를 건너뜁니다. 텍스트 기능은 계속 사용할 수 있습니다: {exc}")
+                self.stt_state = "failed"
+                self.stt_error = f"STT 모델을 초기화하지 못했습니다: {exc}"
+                raise RuntimeError(self.stt_error) from exc
 
     def _load_stt_model(self):
         if self.stt_engine == "faster-whisper":
@@ -329,6 +363,7 @@ class HardwareManager:
         return audio[:min(len(audio), active_end + int(sample_rate * 0.2))]
 
     def _transcribe_audio_unqueued(self, audio: np.ndarray) -> dict:
+        self.ensure_stt_model()
         normalized = self._normalize_audio(audio)
         if self.stt_engine == "faster-whisper":
             hotwords = self._whisper_hotwords()
@@ -379,6 +414,7 @@ class HardwareManager:
 
     def _transcribe_audio(self, audio: np.ndarray) -> dict:
         from core.gpu_scheduler import get_gpu_resource_queue
+        self.ensure_stt_model()
         model_name = str(getattr(self, "whisper_model_name", ""))
         requested = (3072 if model_name.startswith("large") else 1536) if getattr(self, "device", "cpu") == "cuda" else 0
         with get_gpu_resource_queue().reserve("stt", requested, priority=1):
@@ -457,16 +493,22 @@ class HardwareManager:
 
     def start_continuous_listen(self, on_text_callback, audio_processor=None) -> str:
         """호출어로 시작하는 음성 명령을 지속적으로 감지합니다."""
+        with self._listener_start_lock:
+            return self._start_continuous_listen_locked(on_text_callback, audio_processor)
+
+    def _start_continuous_listen_locked(self, on_text_callback, audio_processor=None) -> str:
         if not SOUND_AVAILABLE:
             return "오류: sounddevice, whisper가 설치되지 않았습니다."
-        if getattr(self, "whisper_model", None) is None:
-            return "오류: STT 모델을 초기화하지 못했습니다. 텍스트 입력은 계속 사용할 수 있습니다."
-        
         if self.running:
             return "이미 음성 감지가 실행 중입니다."
-        
-        self.running = True
         self._manual_stop = False
+        try:
+            self.ensure_stt_model(retry=True)
+        except RuntimeError as exc:
+            return f"오류: {exc} 텍스트 입력은 계속 사용할 수 있습니다."
+        if self._manual_stop:
+            return "음성 감지 시작을 취소했습니다."
+        self.running = True
         self._recovery_attempts = getattr(self, "_recovery_attempts", 0)
         if not hasattr(self, "duplex"):
             from core.voice_runtime import get_voice_duplex_controller
@@ -672,6 +714,8 @@ class HardwareManager:
                 f"(장치 {self.microphone_device}). '{wake_word}'라고 불러주세요.")
 
     def stop_continuous_listen(self) -> str:
+        # Also cancel a start that is still loading, before any stream exists.
+        self._manual_stop = True
         if not self.running:
             return "음성 감지가 실행 중이지 않습니다."
         
@@ -683,14 +727,21 @@ class HardwareManager:
         return "[성공] 음성 감지가 중지되었습니다."
 
     def start_wakeword_detection(self) -> str:
+        with self._listener_start_lock:
+            return self._start_wakeword_detection_locked()
+
+    def _start_wakeword_detection_locked(self) -> str:
         if not SOUND_AVAILABLE:
             return "오류: sounddevice, whisper가 설치되지 않았습니다."
-        if getattr(self, "whisper_model", None) is None:
-            return "오류: STT 모델을 초기화하지 못했습니다."
-        
         if self.running:
             return "웨이크워드 감지가 이미 실행 중입니다."
-        
+        self._manual_stop = False
+        try:
+            self.ensure_stt_model(retry=True)
+        except RuntimeError as exc:
+            return f"오류: {exc}"
+        if self._manual_stop:
+            return "웨이크워드 감지 시작을 취소했습니다."
         self.running = True
         
         def detect_wakeword():
@@ -725,6 +776,7 @@ class HardwareManager:
         print(f"[{get_assistant_settings().assistant_name}] 네? 어떤 도움이 필요하신가요?")
 
     def stop_wakeword_detection(self) -> str:
+        self._manual_stop = True
         if not self.running:
             return "웨이크워드 감지가 실행 중이지 않습니다."
         
@@ -735,6 +787,8 @@ class HardwareManager:
         return "[성공] 웨이크워드 감지가 중지되었습니다."
 
     def start_clap_detection(self) -> str:
+        if getattr(self, "_closed", False):
+            return "오류: 음성 런타임이 종료되었습니다."
         if not SOUND_AVAILABLE:
             return "오류: sounddevice, librosa가 설치되지 않았습니다."
         
@@ -792,6 +846,15 @@ class HardwareManager:
             self.clap_thread.join(timeout=2)
         
         return "✅ 박수 감지가 중지되었습니다."
+
+    def shutdown(self) -> None:
+        """Do not let a late model loader reopen input after the app closes."""
+        self._closed = True
+        self._manual_stop = True
+        self.running = False
+        for worker in (self.continuous_listen_thread, self.wakeword_thread, self.clap_thread):
+            if worker is not None and worker is not threading.current_thread():
+                worker.join(timeout=2)
 
 
 # Singleton instance

@@ -9,6 +9,7 @@ from typing import Iterable
 from core.agent_services import _apply_requested_style, _sanitize_response
 from core.agent_prompt_policy import agent_response_policy
 from core.korean_naturalizer import korean_writing_guidance, light_polish_korean
+from core.response_integrity import preserves_sources, protected_segments
 
 
 _EMAIL = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
@@ -62,6 +63,10 @@ class ResponseRealizer:
         fallback = str(canonical or "").strip()
         if not fallback or tool_name in self.EXCLUDED_TOOLS or self.llm is None:
             return fallback
+        # Exact source retrieval and substantial reports should not be regenerated
+        # merely to sound friendly: this adds latency and risks dropping content.
+        if tool_name in {"read_file", "filesystem_read_file"} or "```" in fallback or len(fallback) > 1200:
+            return _apply_requested_style(fallback, style)
 
         facts = list(dict.fromkeys([*protected_facts(fallback), *required_facts]))
         payload = {
@@ -72,7 +77,8 @@ class ResponseRealizer:
         }
         system = (
             f"당신은 {assistant_name}의 응답 표현기입니다. 도구 실행이나 판단을 다시 하지 말고, "
-            "검증 완료된 결과를 자연스러운 한국어 1~2문장으로만 표현하세요. "
+            "검증 완료된 결과를 자연스러운 한국어로 표현하세요. 짧은 결과는 짧게, "
+            "분석·설명은 요청을 충족하는 만큼 충분히 답하고 중요한 근거를 생략하지 마세요. "
             "매번 같은 고정 문장을 반복하지 말되 성공/실패 상태와 의미를 바꾸지 마세요. "
             "must_preserve_exactly의 값은 철자와 숫자를 그대로 포함하고 새 사실을 만들지 마세요. "
             "사용자가 상세 경로나 PID를 요구하지 않았다면 긴 절대 경로와 내부 식별자는 생략하세요. "
@@ -91,7 +97,10 @@ class ResponseRealizer:
             candidate = light_polish_korean(candidate)
         except Exception:
             return fallback
-        return candidate if self._valid(candidate, fallback, facts) else fallback
+        # Absolute artifact locations may be abbreviated to their already
+        # protected basename; source payloads/quotes themselves may not.
+        source_check = _PATH.sub(lambda m: PurePath(m.group(0).replace('\\', '/')).name, fallback)
+        return candidate if self._valid(candidate, fallback, facts) and preserves_sources(source_check, candidate) else fallback
 
     @staticmethod
     def _valid(candidate: str, canonical: str, facts: Iterable[str]) -> bool:

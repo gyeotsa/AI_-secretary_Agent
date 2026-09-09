@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+from core.response_integrity import map_narrative
 
 
 _PROTECTED = re.compile(
@@ -86,15 +87,19 @@ def analyze_korean_naturalness(text: str) -> NaturalnessReport:
 
 def light_polish_korean(text: str) -> str:
     """Apply only meaning-neutral cleanup; never rewrite facts or code."""
+    return map_narrative(str(text or ""), _polish_narrative)
+
+
+def _polish_narrative(text: str) -> str:
     original = str(text or "")
     value, protected = _mask_protected(original)
     value = re.sub(r"[ \t]+([,.!?])", r"\1", value)
     value = re.sub(r"([!?])\1{2,}", r"\1\1", value)
     value = re.sub(r"(?m)^(또한|그리고|따라서),?\s+\1,?\s+", r"\1, ", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
-    value = _restore_protected(value, protected).strip()
+    value = _restore_protected(value, protected)
     # A formatting pass must never silently erase substantive content.
-    return value if len(value) >= max(1, int(len(original.strip()) * .8)) else original.strip()
+    return value if len(value) >= int(len(original) * .8) else original
 
 
 def korean_writing_guidance(style: str = "") -> str:

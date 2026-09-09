@@ -267,6 +267,9 @@ class OllamaClient(BaseLLMClient):
             )
             response.raise_for_status()
             result = response.json()
+            if result.get("done_reason") == "length" or result.get("done") is False:
+                raise ModelCallError("ollama", self.model, "truncated_output",
+                                     "모델 출력이 완료되기 전에 잘렸습니다.", retryable=False)
             from core.productization import METRICS
             METRICS.increment(f"model.{self.model}.success")
             METRICS.observe(f"model.{self.model}.latency", (time.perf_counter() - metric_started) * 1000)
@@ -358,7 +361,8 @@ class OllamaClient(BaseLLMClient):
         except Exception:
             return False
 
-    def chat_structured(self, messages: List[Dict], json_schema: Optional[Dict] = None) -> str:
+    def chat_structured(self, messages: List[Dict], json_schema: Optional[Dict] = None,
+                        *, context_window: Optional[int] = None) -> str:
         metric_started = time.perf_counter()
         try:
             # 역할을 하나의 문자열로 평탄화하면 작은 로컬 모델이 최근 사용자
@@ -389,6 +393,13 @@ class OllamaClient(BaseLLMClient):
                     "num_predict": self.profile.max_tokens
                 }
             }
+            if context_window is not None:
+                if (isinstance(context_window, bool) or not isinstance(context_window, int)
+                        or not 2048 <= context_window <= 32768):
+                    raise ValueError("context_window must be an integer between 2048 and 32768")
+                # Ollama's server default may be only 2048. A caller providing
+                # a bounded catalogue must explicitly reserve its context.
+                payload["options"]["num_ctx"] = context_window
             if json_schema:
                 payload["format"] = json_schema
 
@@ -399,17 +410,25 @@ class OllamaClient(BaseLLMClient):
             )
             response.raise_for_status()
             result = response.json()
+            if result.get("done_reason") == "length" or result.get("done") is False:
+                raise ModelCallError("ollama", self.model, "truncated_output",
+                                     "구조화 출력이 완료되기 전에 잘렸습니다.", retryable=False)
+            evaluated = result.get("prompt_eval_count")
+            if (context_window and isinstance(evaluated, int)
+                    and evaluated >= context_window - 64):
+                # A saturated context cannot prove the beginning of the request
+                # survived server truncation. Never execute from that response.
+                raise ModelCallError("ollama", self.model, "context_saturated",
+                                     "요청이 모델 문맥 한도에 도달했습니다. 입력을 나누어야 합니다.", retryable=False)
             from core.productization import METRICS
             METRICS.increment(f"model.{self.model}.success")
             METRICS.observe(f"model.{self.model}.latency", (time.perf_counter() - metric_started) * 1000)
 
             if isinstance(result.get("message"), dict):
-                # 이모지 필터링 (Windows cp949 문제 해결)
-                text = str(result["message"].get("content", ""))
-                # 간단한 이모지 제거: 이모지 범위의 문자 제거
-                import re
-                text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
-                return text
+                # Transport data is not UI prose. Removing Unicode here can
+                # corrupt message bodies, filenames and structured tool inputs.
+                # Console encoding is handled by the console, not by data loss.
+                return str(result["message"].get("content", ""))
 
             return ""
         except requests.exceptions.ConnectionError as exc:

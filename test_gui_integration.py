@@ -313,6 +313,7 @@ def test_normal_request_supersedes_running_turn_instead_of_queueing(monkeypatch)
 def test_tts_suspends_microphone_until_output_finishes():
     jarvis = JarvisApp.__new__(JarvisApp)
     jarvis.tool_executor = _SpeechTools()
+    jarvis.assistant_settings = SimpleNamespace(tts_enabled=True)
     jarvis.audio_processor = None
     jarvis.hardware_manager = _Hardware()
     jarvis.signals = AppSignals()

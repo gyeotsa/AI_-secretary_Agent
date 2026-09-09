@@ -302,6 +302,38 @@ class DialogueStateStore:
             return False
         return self.update_task(task_id, status=status, **changes)
 
+    def record_acceptance(self, session_id: str, task_id: str, workspace_path: str,
+                          verdict: Dict[str, Any], result: str = "") -> bool:
+        """Reconcile a completed execution with its later content review.
+
+        This is not a normal task transition: review can downgrade a terminal
+        execution, never restart it or turn a failed/cancelled task into success.
+        The scoped read/compare/write and deduplication happen in one transaction.
+        """
+        if type(verdict.get("passed")) is not bool:
+            return False
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT status, evidence FROM agent_tasks WHERE session_id=? AND task_id=? AND workspace_path=?",
+                (session_id, task_id, workspace_path),
+            ).fetchone()
+            if not row or row[0] not in {"completed", "partial", "unverified"}:
+                return False
+            evidence = json.loads(row[1] or "[]")
+            if any(item.get("kind") == "goal_acceptance" for item in evidence if isinstance(item, dict)):
+                return False
+            status = "partial" if row[0] == "completed" and not verdict["passed"] else row[0]
+            evidence.append({"kind": "goal_acceptance", "verdict": verdict})
+            conn.execute(
+                "UPDATE agent_tasks SET status=?, verification_status=?, result=CASE WHEN ?='' THEN result ELSE ? END, "
+                "evidence=?, updated_at=? WHERE session_id=? AND task_id=? AND workspace_path=?",
+                (status, "passed" if verdict["passed"] and status == "completed" else "failed",
+                 result, result, json.dumps(evidence, ensure_ascii=False),
+                 datetime.now(timezone.utc).isoformat(), session_id, task_id, workspace_path),
+            )
+        return True
+
     def delete_task(self, session_id: str, task_id: str,
                     workspace_path: Optional[str] = None) -> bool:
         """Delete only terminal task history within its session/workspace scope."""
@@ -455,14 +487,16 @@ class DialogueStateStore:
                 )
 
     def get_recent_intent(self, session_id: str,
-                          workspace_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                          workspace_path: Optional[str] = None, *,
+                          completed_only: bool = False) -> Optional[Dict[str, Any]]:
         workspace_clause = "" if workspace_path is None else " AND workspace_path = ?"
+        status_clause = " AND status = 'completed'" if completed_only else ""
         params = (session_id,) if workspace_path is None else (session_id, workspace_path)
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 "SELECT intent_name, slots, goal, task_id FROM agent_tasks "
                 "WHERE session_id = ? AND intent_name != ''"
-                f"{workspace_clause} ORDER BY updated_at DESC LIMIT 1",
+                f"{workspace_clause}{status_clause} ORDER BY updated_at DESC LIMIT 1",
                 params,
             ).fetchone()
         if row:
@@ -472,7 +506,7 @@ class DialogueStateStore:
                 "original_request": row[2],
                 "task_id": row[3],
             }
-        if workspace_path not in (None, ""):
+        if completed_only or workspace_path not in (None, ""):
             return None
         with self._lock, self._connect() as conn:
             row = conn.execute(

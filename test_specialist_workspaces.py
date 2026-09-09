@@ -1,4 +1,5 @@
 import os
+import json
 import zipfile
 from pathlib import Path
 
@@ -31,6 +32,22 @@ def _write_test_docx(path):
 def _write_test_pdf(path):
     # Minimal envelope used when the optional pypdf parser is not installed.
     path.write_bytes(b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n")
+
+
+class _DocumentReviewClient:
+    """Offline transport fixture; assertions exercise the actual review input."""
+    def chat_structured(self, messages, json_schema=None):
+        request = json.loads(messages[-1]["content"])
+        assert request["request"] == "보고서를 작성해줘"
+        assert request["workspace"] == "document"
+        assert request["artifacts"][0]["content"] == "verified"
+        assert request["artifacts"][0]["sha256"]
+        assert [item["index"] for item in request["criteria"]] == [0, 1]
+        assert json_schema["required"] == ["criteria"]
+        return {"criteria": [{"index": item["index"], "passed": True,
+            "reason": "테스트 문서 본문을 재열기한 입력을 확인했습니다.",
+            "evidence": [{"artifact_id": request["artifacts"][0]["id"], "quote": "verified"}]}
+            for item in request["criteria"]]}
 
 
 def test_natural_commands_route_to_declared_specialist_workspace():
@@ -493,7 +510,8 @@ def test_team_run_completes_only_when_plan_and_contract_evidence_pass(tmp_path, 
         "word_create_document", "excel_create_workbook", "hwpx_create_document",
         "powerpoint_create_presentation", "pdf_create_document",
     )
-    team = SpecialistTeamRuntime(tool_name_provider=lambda: available)
+    team = SpecialistTeamRuntime(tool_name_provider=lambda: available,
+                                 review_client_provider=_DocumentReviewClient)
     monkeypatch.setattr(team, "_build_specialist_plan", lambda *args, **kwargs: {
         "goal": "보고서 작성", "inputs": [], "constraints": [],
         "acceptance": ["저장 후 검증"], "tools": ["word_create_document"],
@@ -512,13 +530,14 @@ def test_team_run_completes_only_when_plan_and_contract_evidence_pass(tmp_path, 
         )
 
     _, run = team.execute_workspace_request(
-        "document", "보고서를 작성해줘", invoke_executor=invoke,
+        "document", "보고서를 작성해줘", invoke_executor=invoke, release_models=False,
     )
     review = run.artifacts["execution_contract_result"]["review"]
     assert run.status == "completed"
     assert review["passed"] is True
     assert all(item["verified"] for item in review["criteria_results"])
     assert review["readiness_checks"]["verified_evidence"] is True
+    assert all(item["grounded"] for item in review["semantic_review"]["criteria_results"])
 
 
 def test_specialist_team_passes_resolved_tool_scope_to_executor(tmp_path, monkeypatch):
@@ -527,7 +546,8 @@ def test_specialist_team_passes_resolved_tool_scope_to_executor(tmp_path, monkey
         "word_create_document", "excel_create_workbook", "hwpx_create_document",
         "powerpoint_create_presentation", "pdf_create_document",
     )
-    team = SpecialistTeamRuntime(tool_name_provider=lambda: available)
+    team = SpecialistTeamRuntime(tool_name_provider=lambda: available,
+                                 review_client_provider=_DocumentReviewClient)
     monkeypatch.setattr(team, "_build_specialist_plan", lambda *args, **kwargs: {
         "goal": "보고서 작성", "inputs": [], "constraints": [],
         "acceptance": ["저장 후 검증"], "tools": ["word_create_document"],
@@ -550,7 +570,7 @@ def test_specialist_team_passes_resolved_tool_scope_to_executor(tmp_path, monkey
         )
 
     _, run = team.execute_workspace_request(
-        "document", "보고서를 작성해줘", invoke_executor=invoke,
+        "document", "보고서를 작성해줘", invoke_executor=invoke, release_models=False,
     )
     assert set(captured["allowed_tool_names"]) == set(available)
     assert captured["prompt"] == "보고서를 작성해줘"
