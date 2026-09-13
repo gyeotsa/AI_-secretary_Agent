@@ -50,6 +50,11 @@
   대기 작업 저장/UI 집중 78 passed(16.06초). 서로 겹치는 검사 수를 합산하지 않는다.
 - 사용자/런타임 data/chroma_db/chroma.sqlite3, brain/, data/qa/, greeting.pptx, tmp/,
   tmpdozr9d5t/, .pytest-tmp-* 및 scheduler journal은 보존하고 커밋에서 제외한다.
+- 구현·테스트·QA 기록 커밋: `00928103daaa4c137048b6b132a881c91ceb427f`
+  (`[Fix] 공통 대화 무결성과 모델 취소 및 장문 표시 안정화`, 27개 파일).
+  직전 승인 처리 사용량 제한으로 실행되지 않았던 커밋을 사용자 재개 요청 뒤 동일한 승인 경로로
+  재시도해 완료했다. Author/Committer 모두 gyeotsa <gyeotsa@users.noreply.github.com>을
+  확인했다. 사용자 DB·임시 산출물은 제외했으며 원격 push와 배포 파일 생성은 하지 않았다.
 - 다음 해야 할 일: 위 코드/설명 정확도·근거 없는 진행 상태 주장·장문 지연을 공통 수락 계약으로
   개선한다. 특정 재귀 함수만 보정하는 예외 처리로 대체하지 않는다. 실모델 부분 응답 안내, 실제 음성/
   외부 계정/전문 앱 수락은 각각 별도 증거가 필요하다.

@@ -188,6 +188,8 @@ Codex와의 동등성을 의미하지 않는다. 실제 외부 전송과 장치 
 
 ## 커밋
 
+- 9월 13일 후속 안정화 코드·테스트·QA 기록 27개 파일:
+  `00928103daaa4c137048b6b132a881c91ceb427f` — `[Fix] 공통 대화 무결성과 모델 취소 및 장문 표시 안정화`.
 - 코드·테스트·격리 QA 실행기 41개 파일:
   `de7c10107f732b3b572f7dd762eb002185e0476f` — `[Fix] 공통 요청 해석과 실행 수락 계약 강화`.
 - Author/Committer: `gyeotsa <gyeotsa@users.noreply.github.com>`.
