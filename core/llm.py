@@ -7,6 +7,9 @@ from typing import Tuple, List, Dict, Any, Optional
 from config import Config
 from core.tools import get_tools_schema, AUTO_LOOP_EXCLUDED_TOOLS
 from core.model_registry import get_model_registry
+from core.plugin import ToolCancelledError
+from core.turn_context import check_turn_cancelled
+from core.model_transport import post_json
 
 
 class ModelCallError(RuntimeError):
@@ -38,6 +41,42 @@ class ModelCallError(RuntimeError):
         return "AI 모델 호출에 실패했습니다. 진단 로그에서 상세 원인을 확인해 주세요."
 
 
+PROSE_TRUNCATION_NOTICE = (
+    "[응답이 완료되기 전에 중단되어 일부 내용만 표시합니다. "
+    "완전한 답변이 아니며, 원하시면 이어서 설명해 달라고 요청해 주세요.]"
+)
+
+
+class ProseResponse(str):
+    """Human-facing text, with explicit per-response completion metadata.
+
+    The notice precedes the content so even an unfinished code fence cannot
+    hide it. ``content`` retains the generated text without that UI notice.
+    This type is never a substitute for strict JSON/code/tool output.
+    """
+
+    def __new__(cls, text: str, *, truncated: bool = False,
+                finish_reason: str = "", provider: str = "", model: str = ""):
+        content = str(text or "")
+        if truncated and content.startswith(PROSE_TRUNCATION_NOTICE):
+            content = content[len(PROSE_TRUNCATION_NOTICE):].removeprefix("\n\n")
+        rendered = content
+        if truncated:
+            rendered = PROSE_TRUNCATION_NOTICE + ("\n\n" + content if content else "")
+        result = super().__new__(cls, rendered)
+        result.content = content
+        result.truncated = bool(truncated)
+        result.finish_reason = str(finish_reason or "")
+        result.provider = str(provider or "")
+        result.model = str(model or "")
+        return result
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {key: getattr(self, key) for key in
+                ("truncated", "finish_reason", "provider", "model")}
+
+
 def has_configured_anthropic_key() -> bool:
     key = (Config.ANTHROPIC_API_KEY or "").strip()
     if not key:
@@ -66,6 +105,13 @@ class BaseLLMClient:
     def chat(self, messages: List[Dict]) -> str:
         raise NotImplementedError
 
+    def chat_prose(self, messages: List[Dict]) -> ProseResponse:
+        """Opt in to human-readable partial output; never continue implicitly."""
+        check_turn_cancelled()
+        result = self.chat(messages)
+        check_turn_cancelled()
+        return result if isinstance(result, ProseResponse) else ProseResponse(result)
+
 
 class AnthropicClient(BaseLLMClient):
     def __init__(self):
@@ -88,8 +134,10 @@ class AnthropicClient(BaseLLMClient):
 
     def chat_with_tools(self, messages: List[Dict], allowed_tool_names=None) -> Tuple[str, List[Dict]]:
         metric_started = time.perf_counter()
+        check_turn_cancelled()
         try:
             system_prompt, api_messages = self._prepare_messages(messages)
+            check_turn_cancelled()
             response = self.client.messages.create(
                 model=Config.ANTHROPIC_MODEL,
                 max_tokens=Config.MAX_TOKENS,
@@ -98,7 +146,11 @@ class AnthropicClient(BaseLLMClient):
                 temperature=Config.TEMPERATURE,
                 tools=[tool for tool in self.tools if allowed_tool_names is None or tool["name"] in allowed_tool_names],
             )
+            check_turn_cancelled()
 
+            if getattr(response, "stop_reason", None) == "max_tokens":
+                raise ModelCallError("anthropic", Config.ANTHROPIC_MODEL, "truncated_output",
+                                     "모델 출력이 완료되기 전에 잘렸습니다.", retryable=False)
             tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
 
             if tool_use_blocks:
@@ -109,14 +161,28 @@ class AnthropicClient(BaseLLMClient):
                 return text_blocks[0].text, []
 
             return "", []
+        except ToolCancelledError:
+            raise
+        except ModelCallError:
+            check_turn_cancelled()
+            raise
         except Exception as e:
+            check_turn_cancelled()
             raise ModelCallError(
                 "anthropic", Config.ANTHROPIC_MODEL, "provider", str(e), retryable=True
             ) from e
 
     def chat(self, messages: List[Dict]) -> str:
+        return self._chat(messages)
+
+    def chat_prose(self, messages: List[Dict]) -> ProseResponse:
+        return self._chat(messages, prose=True)
+
+    def _chat(self, messages: List[Dict], *, prose: bool = False) -> str:
+        check_turn_cancelled()
         try:
             system_prompt, api_messages = self._prepare_messages(messages)
+            check_turn_cancelled()
             response = self.client.messages.create(
                 model=Config.ANTHROPIC_MODEL,
                 max_tokens=Config.MAX_TOKENS,
@@ -124,8 +190,25 @@ class AnthropicClient(BaseLLMClient):
                 messages=api_messages,
                 temperature=Config.TEMPERATURE,
             )
+            check_turn_cancelled()
+            finish_reason = getattr(response, "stop_reason", "") or ""
+            truncated = finish_reason == "max_tokens"
+            if truncated and not prose:
+                raise ModelCallError("anthropic", Config.ANTHROPIC_MODEL, "truncated_output",
+                                     "모델 출력이 완료되기 전에 잘렸습니다.", retryable=False)
+            if prose:
+                text = "\n".join(block.text for block in response.content
+                                 if getattr(block, "type", None) == "text")
+                return ProseResponse(text, truncated=truncated, finish_reason=finish_reason,
+                                     provider="anthropic", model=Config.ANTHROPIC_MODEL)
             return response.content[0].text
+        except ToolCancelledError:
+            raise
+        except ModelCallError:
+            check_turn_cancelled()
+            raise
         except Exception as e:
+            check_turn_cancelled()
             raise ModelCallError(
                 "anthropic", Config.ANTHROPIC_MODEL, "provider", str(e), retryable=True
             ) from e
@@ -260,13 +343,16 @@ class OllamaClient(BaseLLMClient):
 
             print(f"[LLM] Ollama tool 호출: model={self.model}, tools={len(ollama_tools)}")
 
-            response = requests.post(
+            check_turn_cancelled()
+            response = post_json(
                 f"{self.base_url}/api/chat",
                 json=payload,
                 timeout=120
             )
+            check_turn_cancelled()
             response.raise_for_status()
             result = response.json()
+            check_turn_cancelled()
             if result.get("done_reason") == "length" or result.get("done") is False:
                 raise ModelCallError("ollama", self.model, "truncated_output",
                                      "모델 출력이 완료되기 전에 잘렸습니다.", retryable=False)
@@ -304,13 +390,17 @@ class OllamaClient(BaseLLMClient):
                     return text, []
 
             return "", []
+        except ToolCancelledError:
+            raise
         except requests.exceptions.ConnectionError as exc:
+            check_turn_cancelled()
             from core.productization import METRICS
             METRICS.increment(f"model.{self.model}.failure")
             raise ModelCallError(
                 "ollama", self.model, "connection", str(exc), retryable=True
             ) from exc
         except requests.exceptions.Timeout as exc:
+            check_turn_cancelled()
             from core.productization import METRICS
             METRICS.increment(f"model.{self.model}.failure")
             raise ModelCallError(
@@ -320,6 +410,7 @@ class OllamaClient(BaseLLMClient):
             # tool calling 미지원 모델일 경우 fallback으로 chat 메서드 사용
             try:
                 error_detail = e.response.json()
+                check_turn_cancelled()
                 if "does not support tools" in str(error_detail):
                     # tool calling 미지원시 일반 chat으로 fallback
                     text = self.chat(messages)
@@ -328,9 +419,13 @@ class OllamaClient(BaseLLMClient):
                     "ollama", self.model, f"http_{e.response.status_code}",
                     str(error_detail), retryable=e.response.status_code >= 500,
                 ) from e
+            except ToolCancelledError:
+                raise
             except ModelCallError:
+                check_turn_cancelled()
                 raise
             except Exception:
+                check_turn_cancelled()
                 # tool calling 미지원일 가능성 있으면 fallback
                 if e.response.status_code == 400:
                     text = self.chat(messages)
@@ -340,14 +435,19 @@ class OllamaClient(BaseLLMClient):
                     str(e), retryable=e.response.status_code >= 500,
                 ) from e
         except ModelCallError:
+            check_turn_cancelled()
             raise
         except Exception as e:
+            check_turn_cancelled()
             raise ModelCallError(
                 "ollama", self.model, "protocol", str(e), retryable=False
             ) from e
 
     def chat(self, messages: List[Dict]) -> str:
         return self.chat_structured(messages)
+
+    def chat_prose(self, messages: List[Dict]) -> ProseResponse:
+        return self._chat(messages, prose=True)
 
     def release(self) -> bool:
         """Unload this role's model so another local specialist can use VRAM/RAM."""
@@ -363,7 +463,12 @@ class OllamaClient(BaseLLMClient):
 
     def chat_structured(self, messages: List[Dict], json_schema: Optional[Dict] = None,
                         *, context_window: Optional[int] = None) -> str:
+        return self._chat(messages, json_schema, context_window=context_window)
+
+    def _chat(self, messages: List[Dict], json_schema: Optional[Dict] = None,
+              *, context_window: Optional[int] = None, prose: bool = False) -> str:
         metric_started = time.perf_counter()
+        check_turn_cancelled()
         try:
             # 역할을 하나의 문자열로 평탄화하면 작은 로컬 모델이 최근 사용자
             # 발화와 과거 assistant 응답을 혼동하기 쉽다. Ollama의 chat
@@ -403,14 +508,21 @@ class OllamaClient(BaseLLMClient):
             if json_schema:
                 payload["format"] = json_schema
 
-            response = requests.post(
+            check_turn_cancelled()
+            response = post_json(
                 f"{self.base_url}/api/chat",
                 json=payload,
                 timeout=120
             )
+            # Transport aborts active turn requests on cancellation. Retain the
+            # checkpoint for a cancellation concurrent with successful return.
+            check_turn_cancelled()
             response.raise_for_status()
             result = response.json()
-            if result.get("done_reason") == "length" or result.get("done") is False:
+            check_turn_cancelled()
+            finish_reason = str(result.get("done_reason") or "")
+            truncated = finish_reason == "length" or result.get("done") is False
+            if truncated and not prose:
                 raise ModelCallError("ollama", self.model, "truncated_output",
                                      "구조화 출력이 완료되기 전에 잘렸습니다.", retryable=False)
             evaluated = result.get("prompt_eval_count")
@@ -421,29 +533,43 @@ class OllamaClient(BaseLLMClient):
                 raise ModelCallError("ollama", self.model, "context_saturated",
                                      "요청이 모델 문맥 한도에 도달했습니다. 입력을 나누어야 합니다.", retryable=False)
             from core.productization import METRICS
-            METRICS.increment(f"model.{self.model}.success")
+            METRICS.increment(f"model.{self.model}.{'partial' if truncated else 'success'}")
             METRICS.observe(f"model.{self.model}.latency", (time.perf_counter() - metric_started) * 1000)
 
             if isinstance(result.get("message"), dict):
                 # Transport data is not UI prose. Removing Unicode here can
                 # corrupt message bodies, filenames and structured tool inputs.
                 # Console encoding is handled by the console, not by data loss.
-                return str(result["message"].get("content", ""))
+                text = str(result["message"].get("content", ""))
+                if prose:
+                    return ProseResponse(text, truncated=truncated,
+                                         finish_reason=finish_reason or ("incomplete" if truncated else ""),
+                                         provider="ollama", model=self.model)
+                return text
 
+            if prose:
+                return ProseResponse("", truncated=truncated,
+                                     finish_reason=finish_reason or ("incomplete" if truncated else ""),
+                                     provider="ollama", model=self.model)
             return ""
+        except ToolCancelledError:
+            raise
         except requests.exceptions.ConnectionError as exc:
+            check_turn_cancelled()
             from core.productization import METRICS
             METRICS.increment(f"model.{self.model}.failure")
             raise ModelCallError(
                 "ollama", self.model, "connection", str(exc), retryable=True
             ) from exc
         except requests.exceptions.Timeout as exc:
+            check_turn_cancelled()
             from core.productization import METRICS
             METRICS.increment(f"model.{self.model}.failure")
             raise ModelCallError(
                 "ollama", self.model, "timeout", str(exc), retryable=True
             ) from exc
         except requests.exceptions.HTTPError as e:
+            check_turn_cancelled()
             # 오류 응답 자세히 보기
             try:
                 error_detail = e.response.json()
@@ -454,8 +580,10 @@ class OllamaClient(BaseLLMClient):
                 str(error_detail), retryable=e.response.status_code >= 500,
             ) from e
         except ModelCallError:
+            check_turn_cancelled()
             raise
         except Exception as e:
+            check_turn_cancelled()
             raise ModelCallError(
                 "ollama", self.model, "protocol", str(e), retryable=False
             ) from e
@@ -486,6 +614,7 @@ class HybridLLMClient(BaseLLMClient):
         self.last_latency_ms = 0.0
         self.routing_stats = {
             "anthropic_success": 0,
+            "anthropic_partial": 0,
             "anthropic_failure": 0,
             "ollama_fallback": 0,
         }
@@ -505,47 +634,74 @@ class HybridLLMClient(BaseLLMClient):
 
     def chat_with_tools(self, messages: List[Dict], allowed_tool_names=None) -> Tuple[str, List[Dict]]:
         started = time.perf_counter()
+        check_turn_cancelled()
         if self.primary is not None:
             try:
                 try:
                     text, tools = self.primary.chat_with_tools(messages, allowed_tool_names)
                 except TypeError:
+                    check_turn_cancelled()
                     text, tools = self.primary.chat_with_tools(messages)
+                check_turn_cancelled()
                 if tools or (text and not self._is_error_text(text)):
                     self.last_provider = "anthropic"
                     self.routing_stats["anthropic_success"] += 1
                     self.last_latency_ms = (time.perf_counter() - started) * 1000
                     return text, tools
                 self.primary_unavailable_reason = text
+            except ToolCancelledError:
+                raise
             except Exception as exc:
+                check_turn_cancelled()
                 self.primary_unavailable_reason = str(exc)
             self.routing_stats["anthropic_failure"] += 1
+        check_turn_cancelled()
         self.last_provider = "ollama"
         self.routing_stats["ollama_fallback"] += 1
         try:
             result = self.fallback.chat_with_tools(messages, allowed_tool_names)
         except TypeError:
+            check_turn_cancelled()
             result = self.fallback.chat_with_tools(messages)
+        check_turn_cancelled()
         self.last_latency_ms = (time.perf_counter() - started) * 1000
         return result
 
     def chat(self, messages: List[Dict]) -> str:
+        return self._chat(messages)
+
+    def chat_prose(self, messages: List[Dict]) -> ProseResponse:
+        result = self._chat(messages, prose=True)
+        return result if isinstance(result, ProseResponse) else ProseResponse(result)
+
+    def _chat(self, messages: List[Dict], *, prose: bool = False) -> str:
         started = time.perf_counter()
+        check_turn_cancelled()
         if self.primary is not None:
             try:
-                text = self.primary.chat(messages)
+                chat = (getattr(self.primary, "chat_prose", None) or self.primary.chat) if prose else self.primary.chat
+                text = chat(messages)
+                check_turn_cancelled()
                 if text and not self._is_error_text(text):
                     self.last_provider = "anthropic"
-                    self.routing_stats["anthropic_success"] += 1
+                    stat = ("anthropic_partial" if isinstance(text, ProseResponse)
+                            and text.truncated else "anthropic_success")
+                    self.routing_stats[stat] += 1
                     self.last_latency_ms = (time.perf_counter() - started) * 1000
                     return text
                 self.primary_unavailable_reason = text
+            except ToolCancelledError:
+                raise
             except Exception as exc:
+                check_turn_cancelled()
                 self.primary_unavailable_reason = str(exc)
             self.routing_stats["anthropic_failure"] += 1
+        check_turn_cancelled()
         self.last_provider = "ollama"
         self.routing_stats["ollama_fallback"] += 1
-        result = self.fallback.chat(messages)
+        chat = (getattr(self.fallback, "chat_prose", None) or self.fallback.chat) if prose else self.fallback.chat
+        result = chat(messages)
+        check_turn_cancelled()
         self.last_latency_ms = (time.perf_counter() - started) * 1000
         return result
 

@@ -322,14 +322,8 @@ __TOOLS_TEXT__
     @staticmethod
     def _quoted_literals(text: str) -> List[str]:
         """Return concrete values explicitly quoted by the user."""
-        source = str(text or "")
-        values: List[str] = []
-        for pattern in (
-            r'"([^"\r\n]+)"', r"'([^'\r\n]+)'",
-            r"“([^”\r\n]+)”", r"‘([^’\r\n]+)’",
-        ):
-            values.extend(match.strip() for match in re.findall(pattern, source) if match.strip())
-        return list(dict.fromkeys(values))
+        from core.utterance_scope import required_quoted_literals
+        return required_quoted_literals(text)
 
     @staticmethod
     def _validate_goal_grounding(tasks: List[DecomposedTask], original_goal: str) -> None:
@@ -341,11 +335,10 @@ __TOOLS_TEXT__
         goal = str(original_goal or "").strip()
         if not goal:
             return
-        serialized_inputs = json.dumps(
-            [task.tool_input for task in tasks], ensure_ascii=False, default=str,
-        )
+        from core.utterance_scope import scalar_content_values
+        input_values = scalar_content_values([task.tool_input for task in tasks])
         missing = [value for value in Planner._quoted_literals(goal)
-                   if value not in serialized_inputs]
+                   if not any(value in actual for actual in input_values)]
         if missing:
             raise PlanningError(
                 "사용자가 지정한 원문이 tool_input에서 누락되었습니다: "

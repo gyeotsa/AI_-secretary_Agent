@@ -5,9 +5,9 @@ import threading
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, 
                              QFrame, QHBoxLayout, QLineEdit, QPushButton, 
                              QFileDialog, QDialog, QMessageBox, QScrollArea,
-                             QCheckBox, QListWidget, QListWidgetItem)
+                             QCheckBox, QListWidget, QListWidgetItem, QSizePolicy, QLayout)
 from PyQt6.QtWidgets import QTextEdit, QInputDialog
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect, QRectF
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect, QRectF, QEvent
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush, QPainterPath
 from .visualizer import AudioVisualizer
 from core.state_machine import State
@@ -46,6 +46,7 @@ QLabel#status { color: #6de8ff; font-size: 11px; font-weight: 700; letter-spacin
 QLabel#workspace { color: #718ba4; font-size: 11px; padding: 4px; }
 QLabel#userMessage { color: #9cb8ce; font-size: 14px; padding: 12px 20px; }
 QLabel#assistantMessage { color: #edf7ff; font-size: 15px; font-weight: 500; padding: 12px 20px; }
+QScrollArea#chatMessages { background: transparent; border: 0; }
 QLineEdit#commandInput {
     color: #eef8ff; background: rgba(13, 25, 42, 242); border: 1px solid #29445f;
     border-radius: 12px; padding: 13px 16px; font-size: 13px; selection-background-color: #217d9b;
@@ -1214,8 +1215,36 @@ class JarvisMainWindow(QWidget):
         chat_layout.addSpacing(4)
         chat_layout.addWidget(self.sound_bar, 0, Qt.AlignmentFlag.AlignHCenter)
         chat_layout.addSpacing(8)
-        chat_layout.addWidget(self.user_text_label)
-        chat_layout.addWidget(self.assistant_text_label)
+        # A wrapped QLabel propagates the entire reply height to the window's
+        # minimum size. Keep message content scrollable so long code/prose can
+        # never push the input or window controls beyond the desktop.
+        self.message_scroll = QScrollArea(self.chat_panel)
+        self.message_scroll.setObjectName("chatMessages")
+        self.message_scroll.setWidgetResizable(True)
+        self.message_scroll.setMinimumHeight(60)
+        self.message_scroll.setMaximumHeight(260)
+        self.message_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        message_content = QWidget()
+        message_layout = QVBoxLayout(message_content)
+        message_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
+        message_layout.setContentsMargins(0, 0, 0, 0)
+        message_layout.addWidget(self.user_text_label)
+        message_layout.addWidget(self.assistant_text_label)
+        message_layout.addStretch()
+        self.message_scroll.setWidget(message_content)
+        # QScrollArea.setWidget enables autoFillBackground on its child.
+        # Disable it after attaching to preserve the dark translucent theme.
+        message_content.setAutoFillBackground(False)
+        self.message_scroll.viewport().setAutoFillBackground(False)
+        self._reply_scroll_timer = QTimer(self)
+        self._reply_scroll_timer.setSingleShot(True)
+        self._reply_scroll_timer.timeout.connect(self._reveal_assistant_reply)
+        self._follow_reply = False
+        self.assistant_text_label.installEventFilter(self)
+        self.message_scroll.viewport().installEventFilter(self)
+        self.message_scroll.verticalScrollBar().sliderPressed.connect(self._stop_reply_follow)
+        self.message_scroll.verticalScrollBar().actionTriggered.connect(self._stop_reply_follow)
+        chat_layout.addWidget(self.message_scroll)
         chat_layout.addWidget(self.text_input)
 
         self.center_layout.addWidget(self.brain_orbit, 1)
@@ -1661,10 +1690,35 @@ class JarvisMainWindow(QWidget):
         self.set_chat_collapsed(not self.chat_collapsed)
     
     def show_user_text(self, text: str):
+        self._stop_reply_follow()
         self.user_text_label.setText(f"> {text}")
+        self.message_scroll.verticalScrollBar().setValue(0)
     
     def show_assistant_text(self, text: str):
+        self._follow_reply = True
         self.assistant_text_label.setText(text)
+        # Wait for wrapping/layout to settle. A long prompt may be taller than
+        # the viewport, so resetting to content top would hide the new reply.
+        self._reply_scroll_timer.start(0)
+
+    def _reveal_assistant_reply(self):
+        self.message_scroll.widget().layout().activate()
+        self.message_scroll.verticalScrollBar().setValue(self.assistant_text_label.y())
+
+    def _stop_reply_follow(self, *_args):
+        self._follow_reply = False
+        self._reply_scroll_timer.stop()
+
+    def eventFilter(self, watched, event):
+        # Wrapped-label geometry can settle after the first queued callback.
+        # Follow actual geometry events, not an assumed number of event ticks.
+        if watched is self.assistant_text_label:
+            if event.type() in (QEvent.Type.Move, QEvent.Type.Resize) and self._follow_reply:
+                self._reply_scroll_timer.start(0)
+        elif watched is self.message_scroll.viewport():
+            if event.type() in (QEvent.Type.Wheel, QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress):
+                self._stop_reply_follow()
+        return super().eventFilter(watched, event)
     
     def set_soundbar_speaking(self, speaking):
         self.is_speaking = speaking

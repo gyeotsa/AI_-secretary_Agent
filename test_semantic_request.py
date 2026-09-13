@@ -260,6 +260,71 @@ def test_final_pass_cannot_select_tool_outside_discovered_scope(registry):
     assert not decision.grounded and decision.reason == "unknown_or_out_of_scope_tool"
 
 
+def test_explicit_conversation_discovery_skips_redundant_model_call(registry):
+    model = _DiscoveryModel({"request_kind": "conversation", "tool_names": [],
+                             "confidence": .99}, None)
+    interpreter = SemanticRequestInterpreter(model, registry)
+    interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    result = interpreter.interpret("안녕?", pending={"task_id": "pending-send"})
+    assert result.grounded and result.relation == "conversation"
+    assert result.tool_names == () and result.slots == {}
+    assert len(model.calls) == 1
+
+
+def test_cancelled_discovery_cannot_dispatch_followup_model_call(registry):
+    from core.plugin import ToolCancelledError
+    from core.turn_context import TurnExecutionContext, bind_turn_context
+    context = TurnExecutionContext("old", "session")
+    calls = []
+    class CancellingModel:
+        def chat_structured(self, messages, schema, **kwargs):
+            calls.append(messages)
+            context.cancel()
+            return json.dumps({"request_kind": "action", "tool_names": ["read_note"], "confidence": .99})
+    interpreter = SemanticRequestInterpreter(CancellingModel(), registry)
+    interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    with bind_turn_context(context), pytest.raises(ToolCancelledError):
+        interpreter.interpret("Agent 인수인계.txt 읽어줘")
+    assert len(calls) == 1
+
+
+def test_unsupported_action_is_not_conversation(registry):
+    model = _DiscoveryModel({"request_kind": "unsupported", "tool_names": [],
+                             "confidence": .95}, None)
+    interpreter = SemanticRequestInterpreter(model, registry)
+    interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    result = interpreter.interpret("실제 우주선을 조종해줘")
+    assert result.relation == "new" and result.needs_clarification
+    assert result.reason == "no_supported_tool" and not result.tool_names
+    assert len(model.calls) == 1
+
+
+@pytest.mark.parametrize("kind,tools,confidence", [
+    ("conversation", ["write_note"], .99), ("unsupported", ["read_note"], .99),
+    ("action", [], .99), ("invented", [], .99), ("conversation", [], True),
+])
+def test_discovery_disposition_cannot_hide_actions(registry, kind, tools, confidence):
+    model = _DiscoveryModel({"request_kind": kind, "tool_names": tools,
+                             "confidence": confidence}, None)
+    interpreter = SemanticRequestInterpreter(model, registry)
+    interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    result = interpreter.interpret("파일을 작성해줘")
+    assert not result.grounded and result.reason == "semantic_discovery_invalid"
+    assert len(model.calls) == 1
+
+
+@pytest.mark.parametrize("kind,confidence", [("unknown", .95), ("conversation", .75)])
+def test_ambiguous_empty_tools_still_require_interpretation(registry, kind, confidence):
+    model = _DiscoveryModel({"request_kind": kind, "tool_names": [], "confidence": confidence},
+                            _data(relation="conversation", operation="conversation",
+                                  tool_names=[], intent_name="", slots={}))
+    interpreter = SemanticRequestInterpreter(model, registry)
+    interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    result = interpreter.interpret("생각을 정리하고 싶어")
+    assert result.grounded and result.relation == "conversation"
+    assert len(model.calls) == 2
+
+
 def test_production_catalog_is_complete_without_tool_execution(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")

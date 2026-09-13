@@ -6,11 +6,99 @@ from typing import List, Optional
 import re
 
 from core.plan_runtime import PlanDAG, PlanStep
+from core.llm import ProseResponse
 from core.agent_prompt_policy import agent_response_policy
-from core.response_integrity import map_narrative, preserves_sources
+from core.response_integrity import PROTECTED, map_narrative, preserves_sources
+from core.utterance_scope import mask_quoted_payloads
 from core.korean_naturalizer import (
     analyze_korean_naturalness, korean_writing_guidance, light_polish_korean,
 )
+
+
+_ROLE_LINE = re.compile(r"^\s*(?:user|assistant|system)(?:\s*:|\s|$)", re.I | re.M)
+
+
+class ConversationResponse(ProseResponse):
+    """String-compatible reply carrying a failed evidence check to its owner.
+
+    Do not store guard state on the shared service: simultaneous callers own
+    independent responses. Classification confidence is never tool evidence.
+    """
+
+    def __new__(cls, text: str, *, unverified_completion: bool = False, **metadata):
+        result = super().__new__(cls, text, **metadata)
+        result.unverified_completion = unverified_completion
+        return result
+
+
+_UNVERIFIED_CONVERSATION_COMPLETION = (
+    "아직 실제 작업을 실행하지 않았습니다. 도구 실행 증거가 없으므로 "
+    "완료로 보고하지 않겠습니다."
+)
+# Speech-act detection is separate from the evidence decision below. The
+# nominal verbs share tense grammar; irregular Korean predicates need a small
+# lexical table. Creative acts (e.g. making up a story) additionally require an
+# external target, whereas sending/installing/saving intrinsically change it.
+_STATE_ACTIONS = (
+    "삭제", "저장", "전송", "전달", "발송", "실행", "설치", "등록", "예약",
+    "다운로드", "업로드", "재생", "이동", "복사",
+)
+_CONTENT_ACTIONS = ("생성", "작성", "수정", "변경", "편집", "변환")
+_IRREGULAR_STATE_PAST = ("켰", "껐", "보냈", "지웠", "옮겼", "틀었")
+_IRREGULAR_CONTENT_PAST = ("열었", "닫았", "만들었", "고쳤", "바꿨", "읽었", "썼")
+_EXTERNAL_TARGET = re.compile(
+    r"파일|폴더|디렉[터토]리|프로그램|메모장|브라우저|앱(?:을|이|은|에서|\s|$)|"
+    r"이메일|메일|카카오톡|카톡|문자|알람|일정|설정|데이터베이스|서버|"
+    r"문서|스프레드시트|프레젠테이션|워크북|"
+    r"https?://|[A-Za-z]:[\\/]|\.[A-Za-z0-9]{1,8}(?=[\s\"'`]|$)", re.I,
+)
+_PAST_ENDING = r"(?:어(?:요)?|습니다|다|네(?:요)?|지(?:요)?|고|는데)"
+_ASSERTION_END = r"(?=$|[\s,.!?，。！？])"
+_ACTION_ASSERTION = re.compile(
+    r"(?P<negative>(?:안|못)\s+)?(?:"
+    r"(?P<nominal>" + "|".join((*_STATE_ACTIONS, *_CONTENT_ACTIONS)) + r")"
+    r"(?:을|를|이|가|은|는)?\s*(?:"
+    r"(?:했|하였|됐|되었)" + _PAST_ENDING + r"|"
+    r"(?:완료|성공)(?:(?:했|됐|하였|되었)" + _PAST_ENDING + r")?)|"
+    r"(?P<irregular>" + "|".join((*_IRREGULAR_STATE_PAST, *_IRREGULAR_CONTENT_PAST)) + r")"
+    + _PAST_ENDING + r"|"
+    r"(?P<bare>완료했|끝냈|마쳤)" + _PAST_ENDING + r")" + _ASSERTION_END,
+    re.I,
+)
+_NON_ASSERTIVE_TAIL = re.compile(
+    r"^\s*(?:예정|계획|전(?:에|이|$)|후(?:에|라면)|상태가\s*아니|"
+    r"(?:이라고|라고|고)\s*(?:가정|말하|말했|표현|설명|쓰|적|표시)|"
+    r"(?:하지|하진|되지|되진)\s*(?:않|못)|아니)", re.I,
+)
+
+
+def guard_conversation_response(response: str, user_message: str = "") -> ConversationResponse:
+    """Reject affirmative external completion in this evidence-free channel.
+
+    Source text and non-assertive grammar are not our execution claims. This
+    check never grants execution authority and never trusts model confidence.
+    Actual tool-backed output is rendered through ResponseRealizer instead.
+    """
+    if isinstance(response, ConversationResponse) and response.unverified_completion:
+        return response
+    metadata = response.metadata if isinstance(response, ProseResponse) else {}
+    text = str(response or "")
+    visible = mask_quoted_payloads(text)
+    external_context = bool(_EXTERNAL_TARGET.search(str(user_message or "")))
+    for match in _ACTION_ASSERTION.finditer(visible):
+        # A direct question is not an assertion by the assistant.
+        if visible[match.end():].lstrip().startswith(("?", "？")):
+            continue
+        if match.group("negative") or _NON_ASSERTIVE_TAIL.match(visible[match.end():]):
+            continue
+        nominal, irregular = match.group("nominal"), match.group("irregular")
+        intrinsic = nominal in _STATE_ACTIONS or irregular in _IRREGULAR_STATE_PAST
+        if intrinsic or external_context or _EXTERNAL_TARGET.search(visible[:match.start()]):
+            return ConversationResponse(
+                _UNVERIFIED_CONVERSATION_COMPLETION, unverified_completion=True,
+                **metadata,
+            )
+    return ConversationResponse(text, **metadata)
 
 
 class ConversationService:
@@ -52,57 +140,91 @@ class ConversationService:
         prompt += "\n" + agent_response_policy() + "\n" + korean_writing_guidance(style)
         messages = [{"role": "system", "content": prompt}, *recent,
                     {"role": "user", "content": message}]
-        response = str(self.llm.chat(messages) or "").strip()
+        chat_prose = getattr(self.llm, "chat_prose", None) or self.llm.chat
+        model_response = chat_prose(messages)
+        metadata = model_response.metadata if isinstance(model_response, ProseResponse) else {}
+        response = str(model_response.content if isinstance(model_response, ProseResponse)
+                       else model_response or "").strip()
+        original_response = response
+        # Fix supported sentence endings without another model pass. Check
+        # prose only: a quoted greeting or a code example is not our voice.
+        response = _apply_requested_style(response, style)
+        narrative = _response_narrative(response)
+        original_narrative = _response_narrative(original_response)
         needs_repair = (
-            _normalized(response) == _normalized(message)
-            or _has_prompt_leak(response)
-            or ("반말" in style and re.search(r"(?:습니다|세요|해요|까요|입니다)", response))
-            or (re.search(r"(?:해|어|아|여|워)\s*봐[.!?]*$", message.strip()) and "세요" in response)
+            _normalized(original_response) == _normalized(message)
+            or _has_prompt_leak(response, message)
+            or ("반말" in style and re.search(r"(?:습니다|세요|해요|까요|입니다)", narrative))
+            # Preserve the semantic guard even if styling changes the ending:
+            # "웃어 봐" -> "웃어보세요" asks the user to act instead.
+            or (re.search(r"(?:해|어|아|여|워)\s*봐[.!?]*$", message.strip())
+                and "세요" in original_narrative)
         )
-        naturalness = analyze_korean_naturalness(response)
-        needs_repair = needs_repair or (len(response) >= 180 and naturalness.score >= 4)
-        if response and needs_repair:
+        naturalness = analyze_korean_naturalness(narrative)
+        needs_repair = needs_repair or (len(narrative) >= 180 and naturalness.score >= 4)
+        # A partial draft is useful as-is. Rewriting it cannot establish that
+        # the requested answer was completed and may erase the truncation flag.
+        if response and needs_repair and not metadata.get("truncated"):
             draft = response
-            repaired = str(self.llm.chat([
-                {"role": "system", "content": (
-                    f"아래 초안을 사용자의 질문에 대한 자연스러운 한국어 답변으로 한 번만 고쳐 써. "
-                    f"역할표시·예시·외국어를 넣지 말고, 사용자 호칭은 '{address}'로 최대 한 번만 써. "
-                    "실제로 실행하지 않은 외부 작업을 완료했다고 절대 주장하지 마세요. "
-                    "초안의 코드·인용·메시지 본문·파일 경로·[근거 ID]는 한 글자도 바꾸지 마세요. "
-                    "사용자 말의 긍정/부정, 불편함과 요청 목적을 반대로 해석하지 마세요. "
-                    f"적용할 스타일: {style or '간결하고 자연스러운 말투'}"
-                )},
-                {"role": "user", "content": f"질문: {message}\n초안: {response}"},
-            ]) or "").strip()
+            try:
+                repair_result = self.llm.chat([
+                    {"role": "system", "content": (
+                        f"아래 초안을 사용자의 질문에 대한 자연스러운 한국어 답변으로 한 번만 고쳐 써. "
+                        f"역할표시·예시·요청하지 않은 외국어를 넣지 말고, 사용자 호칭은 '{address}'로 최대 한 번만 써. "
+                        "실제로 실행하지 않은 외부 작업을 완료했다고 절대 주장하지 마세요. "
+                        "초안의 코드·인용·메시지 본문·파일 경로·[근거 ID]는 한 글자도 바꾸지 마세요. "
+                        "사용자 말의 긍정/부정, 불편함과 요청 목적을 반대로 해석하지 마세요. "
+                        f"적용할 스타일: {style or '간결하고 자연스러운 말투'}"
+                    )},
+                    {"role": "user", "content": f"질문: {message}\n초안: {response}"},
+                ])
+                # Strict clients raise on truncation, but compatibility clients
+                # can return tagged text. Never replace a complete draft with it.
+                repaired = ("" if isinstance(repair_result, ProseResponse)
+                            and repair_result.truncated else str(repair_result or "").strip())
+            except Exception as exc:
+                # Optional presentation repair must not discard an available
+                # draft on provider failure. Cancellation is not such a failure.
+                from core.plugin import ToolCancelledError
+                from core.turn_context import check_turn_cancelled
+                if isinstance(exc, ToolCancelledError):
+                    raise
+                check_turn_cancelled()
+                repaired = ""
             response = repaired if repaired and preserves_sources(draft, repaired) else draft
         response = _sanitize_response(response, message)
         response = _apply_requested_style(response, style)
         response = light_polish_korean(response)
-        execution_request = re.search(
-            r"(?:생성|작성|수정|변경|삭제|저장|전송|발송|실행|설치|등록|예약|열기|닫기|만들|고쳐|지워|보내).{0,24}(?:해\s*줘|해주세요|줄래|줘|주세요)",
-            message, re.I | re.S,
+        return guard_conversation_response(
+            ConversationResponse(
+                response if response or metadata.get("truncated") else
+                f"응, 듣고 있어. 무슨 이야기부터 해볼까, {address}?", **metadata,
+            ), message,
         )
-        completion_claim = re.search(
-            r"(?:생성|작성|수정|변경|삭제|저장|전송|발송|실행|설치|등록|예약)"
-            r"(?:을|를|이|가|은|는)?\s*(?:완료|성공|했어|했습니다|됐어|되었습니다)",
-            response, re.I,
-        )
-        if execution_request and completion_claim:
-            return (
-                "아직 실제 작업을 실행하지 않았습니다. 이 요청은 현재 실행 가능한 도구 계약으로 "
-                "연결되지 않았으므로 완료로 보고하지 않겠습니다."
-            )
-        return response or f"응, 듣고 있어. 무슨 이야기부터 해볼까, {address}?"
 
 
 def _normalized(text: str) -> str:
     return re.sub(r"\W+", "", str(text or "")).casefold()
 
 
-def _has_prompt_leak(text: str) -> bool:
+def _response_narrative(text: str) -> str:
+    """Keep source spans out of quality heuristics without joining words."""
+    return PROTECTED.sub("\n", str(text or ""))
+
+
+def _allows_foreign_text(user_message: str) -> bool:
+    return bool(re.search(
+        r"(?:러시아어|키릴|중국어|일본어|한자|번역|원문)",
+        str(user_message or ""), re.IGNORECASE,
+    ))
+
+
+def _has_prompt_leak(text: str, user_message: str = "") -> bool:
+    narrative = _response_narrative(text)
     return bool(
-        re.search(r"(?im)^\s*(?:user|assistant|system)\s*:?", str(text or ""))
-        or re.search(r"[\u0400-\u04ff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", str(text or ""))
+        _ROLE_LINE.search(narrative)
+        or (not _allows_foreign_text(user_message)
+            and re.search(r"[\u0400-\u04ff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", narrative))
     )
 
 
@@ -119,14 +241,14 @@ def _sanitize_response(text: str, user_message: str = "") -> str:
 
 def _sanitize_narrative(text: str, user_message: str = "") -> str:
     value = str(text or "").strip()
-    if not re.search(r"(?:러시아어|키릴|중국어|일본어|한자|번역|원문)", user_message, re.IGNORECASE):
+    if not _allows_foreign_text(user_message):
         value = re.split(
             r"[\u0400-\u04ff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]",
             value, maxsplit=1,
         )[0].rstrip(" :\n")
     kept = []
     for line in value.splitlines():
-        if re.match(r"^\s*(?:user|assistant|system)\s*:?(?:\s|$)", line, re.IGNORECASE):
+        if _ROLE_LINE.match(line):
             break
         kept.append(line)
     value = "\n".join(kept).strip()

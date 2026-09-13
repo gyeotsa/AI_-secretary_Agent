@@ -59,8 +59,10 @@ def test_chat_panel_collapses_and_restores_while_brain_expands(app):
 
     assert window.chat_collapsed is False
     assert not window.chat_panel.isHidden()
-    assert window.user_text_label.parentWidget() is window.chat_panel
-    assert window.assistant_text_label.parentWidget() is window.chat_panel
+    assert window.chat_panel.isAncestorOf(window.user_text_label)
+    assert window.chat_panel.isAncestorOf(window.assistant_text_label)
+    assert window.user_text_label.parentWidget() is window.message_scroll.widget()
+    assert window.assistant_text_label.parentWidget() is window.message_scroll.widget()
     assert window.text_input.parentWidget() is window.chat_panel
 
     window.toggle_chat_panel()

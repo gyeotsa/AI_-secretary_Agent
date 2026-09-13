@@ -166,7 +166,7 @@ def make_executor(tmp_path, monkeypatch):
         executor.conversation_calls = []
         executor.test_surface = surface
 
-        def conversation(goal, history):
+        def conversation(goal, history, **_kwargs):
             executor.conversation_calls.append((goal, deepcopy(history)))
             return "테스트 대화 응답입니다. 작업은 실행하지 않았습니다."
 

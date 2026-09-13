@@ -6,12 +6,200 @@ this diagnostic process only. --gui exposes the actual window for manual QA.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import itertools
 import json
+import math
 import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
+
+
+def _model_trace_labels() -> dict:
+    """Read only fixed labels from the immediate LLM caller, never its input.
+
+    Turn context has no model role. Inspecting this one known call site avoids
+    patching production client methods or guessing a role from the model name.
+    Do not retain the frame (and its prompt) across the HTTP request.
+    """
+    labels = {"role": "unknown", "call_kind": "unknown"}
+    frame = sys._getframe(2)
+    try:
+        if frame.f_globals.get("__name__") != "core.llm":
+            return labels
+        name = frame.f_code.co_name
+        if name not in {"_chat", "chat_with_tools"}:
+            return labels
+        profile = getattr(frame.f_locals.get("self"), "profile", None)
+        role = getattr(profile, "role", None)
+        if role in {"conversation", "planning", "reasoning", "tool_selection",
+                    "code", "document", "vision", "image_editing", "mockup_design",
+                    "style_vision", "visual_critic", "design_planning",
+                    "subject_analysis", "rendering"}:
+            labels["role"] = role
+        labels["call_kind"] = ("tools" if name == "chat_with_tools" else
+                               "prose" if frame.f_locals.get("prose") is True else "structured")
+        return labels
+    finally:
+        del frame
+
+
+@contextmanager
+def trace_model_calls(enabled: bool = False):
+    """Opt-in, bounded metadata-only tracing for this disposable QA process.
+
+    Each call emits one start and one end record. Never log prompts, generated
+    text, schemas, tools, headers, URLs, exception messages, or turn identities.
+    The original response/exception and request arguments remain untouched.
+    """
+    if not enabled:
+        yield
+        return
+    from core import llm
+    from core.turn_context import current_turn_context
+
+    original = llm.post_json
+    sequence = itertools.count(1)
+    output_lock = threading.Lock()
+
+    def emit(record):
+        try:
+            with output_lock:
+                print(json.dumps(record, ensure_ascii=False, allow_nan=False), flush=True)
+        except Exception:
+            # Diagnostics must not turn a successful/cancelled call into a
+            # different failure when stdout is unavailable.
+            pass
+
+    def number(value):
+        return value if (type(value) in {int, float} and 0 <= value <= 10**18
+                         and math.isfinite(value)) else None
+
+    def traced_post(*args, **kwargs):
+        payload = kwargs.get("json")
+        payload = payload if isinstance(payload, dict) else {}
+        options = payload.get("options")
+        options = options if isinstance(options, dict) else {}
+        model = payload.get("model")
+        record = {
+            "event": "model_trace", "call_id": next(sequence),
+            "model": model[:128] if isinstance(model, str) else "unknown",
+            **_model_trace_labels(),
+            "thread_id": threading.get_ident(),
+            "turn_bound": current_turn_context() is not None,
+            "schema_present": "format" in payload,
+            "num_ctx": number(options.get("num_ctx")),
+            "num_predict": number(options.get("num_predict")),
+        }
+        emit({**record, "phase": "start"})
+        started = time.monotonic()
+        try:
+            response = original(*args, **kwargs)
+        except BaseException as exc:
+            emit({**record, "phase": "end", "outcome": "error",
+                  "elapsed_seconds": round(time.monotonic() - started, 3),
+                  "error_type": type(exc).__name__[:80]})
+            raise
+        finished = {**record, "phase": "end", "outcome": "response",
+                    "elapsed_seconds": round(time.monotonic() - started, 3),
+                    "http_status": number(getattr(response, "status_code", None))}
+        try:
+            result = response.json()
+            if isinstance(result, dict):
+                for key in ("prompt_eval_count", "prompt_eval_duration", "eval_count",
+                            "eval_duration", "total_duration", "load_duration"):
+                    finished[key] = number(result.get(key))
+                reason = result.get("done_reason")
+                finished["done_reason"] = reason if reason in {"stop", "length", "load", "unload"} else None
+                finished["done"] = result.get("done") if type(result.get("done")) is bool else None
+                finished["provider_error_present"] = "error" in result
+        except Exception as exc:
+            finished["metadata_error_type"] = type(exc).__name__[:80]
+        emit(finished)
+        return response
+
+    llm.post_json = traced_post
+    try:
+        yield
+    finally:
+        llm.post_json = original
+
+
+def check_local_model_cancellation() -> int:
+    """Measure cancellation after the real local HTTP request body was sent."""
+    import threading
+    from urllib.parse import urlsplit
+    import httpx
+    from core.llm import OllamaClient, get_llm_client
+    from core.plugin import ToolCancelledError
+    from core.turn_context import TurnExecutionContext, bind_turn_context
+
+    client = get_llm_client("conversation")
+    if not isinstance(client, OllamaClient) or urlsplit(client.base_url).hostname not in {
+            "127.0.0.1", "localhost", "::1"}:
+        raise RuntimeError("Cancellation QA requires local Ollama")
+    dispatched = threading.Event()
+    ended = threading.Event()
+    errors = []
+    context = TurnExecutionContext("qa-model-cancel", "qa-local")
+    original_stream = httpx.AsyncClient.stream
+
+    async def trace(event, _info):
+        if event == "http11.send_request_body.complete":
+            dispatched.set()
+
+    def traced_stream(self, *args, **kwargs):
+        kwargs["extensions"] = {**kwargs.get("extensions", {}), "trace": trace}
+        return original_stream(self, *args, **kwargs)
+
+    def generate():
+        try:
+            with bind_turn_context(context):
+                client.chat_structured([{"role": "user", "content":
+                    "재귀 함수의 동작을 서로 다른 예제 100개와 상세한 해설로 길게 설명해줘."}])
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            ended.set()
+
+    # Instrument only this isolated diagnostic process, restoring it even if
+    # the server fails. HTTP core's trace confirms bytes were actually sent.
+    httpx.AsyncClient.stream = traced_stream
+    worker = threading.Thread(target=generate, name="qa-real-model-cancel")
+    worker.start()
+    try:
+        sent = dispatched.wait(20)
+        finished_before_cancel = ended.wait(1) if sent else ended.is_set()
+        started = time.monotonic()
+        context.cancel()
+        worker.join(5)
+        seconds = time.monotonic() - started
+        passed = (sent and not finished_before_cancel and not worker.is_alive()
+                  and len(errors) == 1 and isinstance(errors[0], ToolCancelledError)
+                  and seconds < 1)
+        print(json.dumps({"event": "model_cancel", "passed": passed,
+                          "request_body_sent": sent,
+                          "finished_before_cancel": finished_before_cancel,
+                          "cancel_seconds": round(seconds, 3),
+                          "worker_alive": worker.is_alive(),
+                          "errors": [type(exc).__name__ for exc in errors]},
+                         ensure_ascii=False), flush=True)
+    finally:
+        context.cancel()
+        worker.join(125)
+        httpx.AsyncClient.stream = original_stream
+    if not passed:
+        return 1
+    started = time.monotonic()
+    with bind_turn_context(TurnExecutionContext("qa-model-next", "qa-local")):
+        answer = client.chat_structured([{"role": "user", "content": "짧게 인사만 해줘."}])
+    print(json.dumps({"event": "model_after_cancel", "response": answer,
+                      "seconds": round(time.monotonic() - started, 2)},
+                     ensure_ascii=False), flush=True)
+    return 0 if answer.strip() else 1
 
 
 def main() -> int:
@@ -19,6 +207,12 @@ def main() -> int:
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--conversation", action="store_true")
+    parser.add_argument("--model-cancel", action="store_true",
+                        help="Cancel a real local model HTTP call, then request a new greeting")
+    parser.add_argument("--model-trace", action="store_true",
+                        help="Log bounded model transport timings/options, never request or response text")
+    parser.add_argument("--semantic-matrix", action="store_true",
+                        help="Interpret synthetic requests against all real tools; never execute them")
     parser.add_argument("--runtime-read", action="store_true",
                         help="Call the real executor/model/read plugin on a synthetic file, without UI automation")
     parser.add_argument("--stt-prepare", action="store_true",
@@ -47,6 +241,13 @@ def main() -> int:
     settings.set("response_style", "자연스러운 반말로 대답해")
     settings.set_tts_enabled(False)
     print(json.dumps({"event": "qa_workspace", "path": str(sandbox)}, ensure_ascii=False), flush=True)
+    with trace_model_calls(args.model_trace):
+        return _run_qa(args, root, sandbox, settings)
+
+
+def _run_qa(args, root: Path, sandbox: Path, settings) -> int:
+    if args.model_cancel:
+        return check_local_model_cancellation()
     if args.stt_prepare:
         os.environ["HF_HUB_OFFLINE"] = "1"
         from core.hardware import HardwareManager
@@ -78,8 +279,64 @@ def main() -> int:
     from core.workspace import get_workspace_manager
     fixture_workspace = sandbox / "workspace"
     fixture_workspace.mkdir()
+    (sandbox / "workspace-second").mkdir()
     (fixture_workspace / "QA 기록.txt").write_bytes("x = [1, 2] 🙂\r\n두 번째 줄\r\n".encode("utf-8"))
     get_workspace_manager().set_workspace(str(fixture_workspace))
+    if args.semantic_matrix:
+        from core.executor import Executor
+        from core.llm import OllamaClient
+        from urllib.parse import urlsplit
+        executor = Executor()
+        client = executor.reasoning_llm
+        if not isinstance(client, OllamaClient) or urlsplit(client.base_url).hostname not in {
+                "127.0.0.1", "localhost", "::1"}:
+            raise RuntimeError("Semantic QA requires local Ollama")
+        cases = [
+            ("안녕?", "conversation"),
+            ("오늘 좀 지쳤어. 잠깐 이야기하자.", "conversation"),
+            ("실행하지 말고 재귀 함수가 뭔지 설명해줘.", "conversation"),
+            ("그 설명은 취소하고 지금은 짧게 인사만 해줘.", "conversation"),
+            ("QA 기록.txt 파일의 첫 번째 줄만 그대로 알려줘", "read"),
+            ("실제 우주선을 조종해서 화성에 착륙시켜줘", "unsupported"),
+        ]
+        original = client.chat_structured
+        calls = []
+        def measured(messages, schema, **kwargs):
+            started = time.monotonic()
+            response = original(messages, schema, **kwargs)
+            calls.append({"seconds": round(time.monotonic() - started, 2),
+                          "response": response})
+            return response
+        client.chat_structured = measured
+        passed = 0
+        try:
+            for request, expected in cases:
+                calls.clear()
+                started = time.monotonic()
+                decision = executor.semantic_interpreter.interpret(request)
+                ok = (decision.grounded and decision.relation == "conversation"
+                      and not decision.tool_names) if expected == "conversation" else (
+                    decision.grounded and decision.operation == "read"
+                    and decision.tool_names == ("filesystem_read_file",)
+                    and decision.slots.get("start_line") == decision.slots.get("end_line") == 1
+                    if expected == "read" else
+                    decision.relation != "conversation" and not decision.tool_names)
+                passed += bool(ok)
+                print(json.dumps({"event": "semantic_matrix", "request": request,
+                                  "expected": expected, "passed": bool(ok),
+                                  "decision": decision.__dict__, "calls": calls,
+                                  "seconds": round(time.monotonic()-started, 2)},
+                                 ensure_ascii=False), flush=True)
+                if decision.reason.endswith((":timeout", ":connection")):
+                    print(json.dumps({"event": "semantic_matrix_aborted",
+                                      "reason": decision.reason,
+                                      "note": "Remaining cases were not run; this is not a quality pass."}), flush=True)
+                    return 1
+            print(json.dumps({"event": "semantic_summary", "passed": passed,
+                              "total": len(cases)}), flush=True)
+            return 0 if passed == len(cases) else 1
+        finally:
+            executor.tool_executor.plugin_registry.shutdown()
     if args.runtime_read:
         from core.executor import Executor
         from core.llm import OllamaClient

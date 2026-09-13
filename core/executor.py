@@ -23,7 +23,9 @@ from core.custom_tts import load_custom_voice_profiles
 from core.model_registry import get_model_role_router
 from core.tool_result import ToolRunResult, ToolRunStatus
 from core.plan_runtime import PlanCoordinator, PlanDAG, PlanRunResult, PlanStep
-from core.agent_services import ConversationService, PlanningService, ResponseComposer
+from core.agent_services import (
+    ConversationService, PlanningService, ResponseComposer, guard_conversation_response,
+)
 from core.assistant_settings import get_assistant_settings
 from core.response_realizer import ResponseRealizer
 from core.learning_runtime import get_learning_runtime, record_runtime_event
@@ -73,6 +75,9 @@ class ExecutionOutcome:
     retry_count: int = 0
     completed_steps: int = 0
     failed_steps: int = 0
+    grounded_conversation: bool = False
+    unverified_completion_claim: bool = False
+    response_truncated: bool = False
 
 
 class Executor:
@@ -279,7 +284,7 @@ class Executor:
                              history: Optional[List[Dict[str, str]]] = None) -> None:
         """Record only observable runtime outcomes; never invent success data."""
         latency = (time.perf_counter() - started_at) * 1000
-        succeeded = outcome.status == "completed"
+        succeeded = outcome.status == "completed" and not outcome.unverified_completion_claim
         quality_metrics = getattr(self, "quality_metrics", None) or get_quality_metric_store()
         self.quality_metrics = quality_metrics
         quality_metrics.record(
@@ -297,11 +302,17 @@ class Executor:
                 "clarification_requested", 1.0,
                 success=True, context={"question": question[:500]},
             )
-        execution_request = not analyze_utterance_scope(goal, history).discussion and bool(
+        execution_request = not outcome.grounded_conversation and not analyze_utterance_scope(goal, history).discussion and bool(
             self._EXECUTION_REQUEST_PATTERN.search(goal)
             or self._GENERIC_ACTION_REQUEST_PATTERN.search(goal)
         )
-        if execution_request and outcome.status == "completed":
+        if outcome.unverified_completion_claim:
+            quality_metrics.record(
+                "false_completion", 1.0, success=False,
+                context={"goal": goal[:300], "task_id": outcome.task_id,
+                         "tool_count": 0, "blocked": True},
+            )
+        elif execution_request and outcome.status == "completed":
             results = list(outcome.tool_results or ())
             if outcome.tool_result is not None and all(
                 item is not outcome.tool_result for item in results
@@ -364,6 +375,13 @@ class Executor:
         def terminal_outcome(response: str, status: str = "completed",
                              pending_question: str = "") -> ExecutionOutcome:
             """Close a persisted queued task even when no Tool/Planner path is needed."""
+            blocked_claim = bool(getattr(response, "unverified_completion", False))
+            truncated = bool(getattr(response, "truncated", False))
+            if blocked_claim:
+                status = "failed"
+            elif truncated:
+                status = "partial"
+            response = str(response)
             if existing_task_id:
                 task = self.dialogue_state.get_task(
                     session_key, existing_task_id, workspace_scope
@@ -377,9 +395,13 @@ class Executor:
                 return ExecutionOutcome(
                     response, status, goal, question=pending_question,
                     task_id=existing_task_id,
+                    unverified_completion_claim=blocked_claim,
+                    response_truncated=truncated,
                 )
             return ExecutionOutcome(
                 response, status, goal, question=pending_question,
+                unverified_completion_claim=blocked_claim,
+                response_truncated=truncated,
             )
 
         utterance_scope = analyze_utterance_scope(goal, history)
@@ -436,8 +458,12 @@ class Executor:
                                  grounded=semantic.grounded, reason=semantic.reason)
             if semantic.grounded and semantic.relation == "cancel" and not semantic.needs_clarification:
                 return self._cancel_scoped_tasks(session_key, semantic.control_scope, goal)
-            if semantic.grounded and semantic.relation == "conversation":
-                return terminal_outcome(self._respond_conversationally(goal, history))
+            if semantic.is_grounded_conversation:
+                outcome = terminal_outcome(self._respond_conversationally(
+                    goal, history, semantic_decision=semantic,
+                ))
+                outcome.grounded_conversation = True
+                return outcome
             semantic_resolution = semantic.to_resolution(self.intent_router.registry)
             if semantic_resolution.matched:
                 continuing = bool(pending_semantic and semantic.relation in {"continue", "correct"})
@@ -2613,11 +2639,19 @@ class Executor:
         return self.generate_response()
 
     def _respond_conversationally(
-        self, message: str, history: List[Dict[str, str]]
+        self, message: str, history: List[Dict[str, str]], *, semantic_decision=None,
     ) -> str:
         """Answer ordinary conversation without exposing or invoking tools."""
         scope = analyze_utterance_scope(message, history)
-        execution_requested = not scope.discussion and bool(
+        # Preserve the validated semantic decision across the presentation
+        # boundary. Korean imperatives also request conversation ("인사해줘");
+        # lexical fallback must not override a grounded no-tool classification.
+        grounded_conversation = bool(
+            semantic_decision is not None
+            and semantic_decision.raw_text == message
+            and semantic_decision.is_grounded_conversation
+        )
+        execution_requested = not grounded_conversation and not scope.discussion and bool(
             self._EXECUTION_REQUEST_PATTERN.search(scope.routing_text)
             or self._GENERIC_ACTION_REQUEST_PATTERN.search(scope.routing_text)
         )
@@ -2660,6 +2694,10 @@ class Executor:
             message, history, assistant_name=assistant_name, voice_name=custom_voice,
             address=address, style=conversation_style, memory_context=grounded_context,
         )
+        # The conversation classification selects a channel; it is not proof
+        # that an external action happened. Also guard compatible/custom
+        # services here, before recording the reply as memory usage.
+        response = guard_conversation_response(response, message)
         if context_manager is not None:
             context_manager.mark_response_usage(response)
         return response

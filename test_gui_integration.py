@@ -354,6 +354,70 @@ def test_voice_output_toggle_updates_label_and_emits_state():
     window.close()
 
 
+def test_long_chat_is_scrollable_without_growing_window_or_hiding_input():
+    from PyQt6.QtCore import QPoint
+    app = _app()
+    window = JarvisMainWindow()
+    try:
+        window.resize(800, 800)
+        window.show()
+        app.processEvents()
+        initial = window.size()
+        assert not window.message_scroll.widget().autoFillBackground()
+        assert not window.message_scroll.viewport().autoFillBackground()
+        samples = [
+            "안녕!", "매우 긴 설명입니다. " * 1000,
+            "```python\n" + "print('원문 <tag> 🙂')\n" * 200 + "```",
+            "X" * 10000, "짧은 답변으로 돌아왔어.",
+        ]
+        for sample in samples:
+            window.show_user_text(sample)
+            window.show_assistant_text(sample)
+            app.processEvents()
+            app.processEvents()
+            assert window.size() == initial
+            assert window.assistant_text_label.text() == sample
+            assert window.user_text_label.text() == "> " + sample
+            assert window.rect().contains(window.text_input.mapTo(
+                window, QPoint(window.text_input.width()-1, window.text_input.height()-1)))
+            if "매우 긴" in sample or "```" in sample:
+                assert window.message_scroll.verticalScrollBar().maximum() > 0
+        window.set_chat_collapsed(True)
+        app.processEvents()
+        assert not window.message_scroll.isVisible()
+        window.set_chat_collapsed(False)
+        app.processEvents()
+        assert window.text_input.isVisible()
+        assert window.size() == initial
+        window.show_user_text("긴 질문입니다. " * 1000)
+        window.show_assistant_text("짧은 답변도 바로 보여야 해.")
+        for _ in range(3):
+            app.processEvents()
+        reply_top = window.assistant_text_label.mapTo(
+            window.message_scroll.viewport(), QPoint(0, 0)).y()
+        assert 0 <= reply_top < window.message_scroll.viewport().height()
+        assert window.message_scroll.verticalScrollBar().value() > 0
+        from PyQt6.QtWidgets import QAbstractSlider
+        bar = window.message_scroll.verticalScrollBar()
+        bar.triggerAction(QAbstractSlider.SliderAction.SliderPageStepSub)
+        manual_position = bar.value()
+        assert not window._follow_reply
+        window.resize(800, 850)
+        for _ in range(3):
+            app.processEvents()
+        assert bar.value() == manual_position
+        window.show_assistant_text("곧바로 새 질문에 대체될 답변")
+        window.show_user_text("새 질문 " * 1000)
+        for _ in range(3):
+            app.processEvents()
+        assert window.message_scroll.verticalScrollBar().value() == 0
+    finally:
+        window._allow_close = True
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
 def test_superseded_turn_result_never_reaches_ui_or_tts():
     _app()
     jarvis = JarvisApp.__new__(JarvisApp)

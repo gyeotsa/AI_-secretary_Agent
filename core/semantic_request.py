@@ -14,6 +14,9 @@ import math
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
+from core.plugin import ToolCancelledError
+from core.turn_context import check_turn_cancelled
+
 
 @dataclass(frozen=True)
 class SemanticDecision:
@@ -30,6 +33,13 @@ class SemanticDecision:
     grounded: bool = False
     source: str = "unresolved"
     reason: str = ""
+
+    @property
+    def is_grounded_conversation(self) -> bool:
+        """Validated no-tool conversation, not just a model's empty tool list."""
+        return (self.grounded and self.relation == "conversation"
+                and self.operation == "conversation" and not self.tool_names
+                and not self.needs_clarification)
 
     def to_resolution(self, registry):
         """Build a router-compatible value only after semantic validation."""
@@ -98,15 +108,17 @@ def explicit_control(text: str) -> tuple[str, str] | None:
 
 def literal_reply(text: str) -> str | None:
     """Extract an explicitly delimited body without changing its contents."""
+    from core.utterance_scope import _LITERAL
+
     value = str(text or "").strip()
-    pairs = [('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")]
-    for left, right in pairs:
-        if value.startswith(left):
-            end = value.rfind(right)
-            if end > 0 and re.fullmatch(
-                r"\s*(?:(?:이?라고|으?로)\s*)?(?:(?:보내|전달|전송)(?:해)?\s*"
-                r"(?:줘|주세요|줄래|해줘|해주세요))?[.!?\s]*", value[end + 1:]):
-                return value[1:end]
+    match = _LITERAL.match(value)
+    # The first delimited value must be the entire body. rfind() would consume
+    # '"old"가 아니라 "new"에게 "body"라고 보내줘' as one reply and silently
+    # preserve the old recipient without even asking the semantic model.
+    if match and not value.startswith(("```", "~~~", "`")) and re.fullmatch(
+            r"\s*(?:(?:이?라고|으?로)\s*)?(?:(?:보내|전달|전송)(?:해)?\s*"
+            r"(?:줘|주세요|줄래|해줘|해주세요))?[.!?\s]*", value[match.end():]):
+        return value[1:match.end() - 1]
     return None
 
 
@@ -222,7 +234,20 @@ class SemanticRequestInterpreter:
                 discovered = self._discover_tools(prompt, catalogue, allowed)
                 if discovered is None:
                     return SemanticDecision(raw_text, reason="semantic_discovery_invalid")
-                allowed = set(discovered)
+                names, kind, confidence = discovered
+                # An empty tool list alone is ambiguous (conversation OR an
+                # unsupported action). Only an explicit, high-confidence
+                # conversation classification can skip action interpretation.
+                if kind == "conversation" and confidence >= .85:
+                    return SemanticDecision(raw_text, relation="conversation",
+                                            operation="conversation", confidence=confidence,
+                                            grounded=True, source="semantic_discovery")
+                if kind == "unsupported":
+                    return SemanticDecision(raw_text, relation="new", confidence=confidence,
+                                            needs_clarification=True, grounded=True,
+                                            clarification_question="이 요청을 수행할 수 있는 도구가 현재 연결되어 있지 않습니다. 가능한 대안이나 연결할 기능을 함께 확인할까요?",
+                                            source="semantic_discovery", reason="no_supported_tool")
+                allowed = set(names)
                 prompt["available_tools"] = [entry for entry in catalogue if entry["tool"] in allowed]
             messages = [{"role": "system", "content": system},
                         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False, separators=(",", ":"))}]
@@ -235,20 +260,27 @@ class SemanticRequestInterpreter:
                 schema["properties"]["relation"]["enum"] = sorted(self.RELATIONS - {"continue", "correct"})
             response = self._model_call(messages, schema)
             return self._validate(raw_text, transcript, pending, str(response), allowed, file_candidates)
+        except ToolCancelledError:
+            raise
         except Exception as exc:
             code = str(getattr(exc, "code", ""))
             return SemanticDecision(raw_text, reason=f"semantic_interpretation_failed:{type(exc).__name__}:{code}")
 
     def _model_call(self, messages, schema):
+        check_turn_cancelled()
         structured = getattr(self.llm, "chat_structured", None)
         if not callable(structured):
-            return self.llm.chat(messages)
+            result = self.llm.chat(messages)
+            check_turn_cancelled()
+            return result
         # Older providers and test doubles retain the two-argument contract.
         parameters = inspect.signature(structured).parameters.values()
         supports_context = any(p.name == "context_window" or p.kind == inspect.Parameter.VAR_KEYWORD
                                for p in parameters)
-        return (structured(messages, schema, context_window=self.CONTEXT_WINDOW)
-                if supports_context else structured(messages, schema))
+        result = (structured(messages, schema, context_window=self.CONTEXT_WINDOW)
+                  if supports_context else structured(messages, schema))
+        check_turn_cancelled()
+        return result
 
     def _discover_tools(self, prompt, catalogue, allowed):
         """Exhaustive semantic discovery before exposing selected full schemas.
@@ -259,33 +291,44 @@ class SemanticRequestInterpreter:
         same registry/literal validators remain mandatory.
         """
         compact = [{"tool": entry["tool"], "description": entry["description"][:120],
-                    "operation": entry["operation"]} for entry in catalogue]
+                    "operation": entry["operation"], "fields": list(entry["parameters"])}
+                   for entry in catalogue]
         discovery_prompt = {**prompt, "available_tools": compact}
         messages = [{"role": "system", "content": (
             "전체 도구 목록에서 현재 사용자 요청을 처리할 최소 도구를 선택하세요. 실행하지 않습니다. "
             "새 요청은 이전 작업과 분리하고, 후속 답변/정정이면 pending 또는 recent_completed의 작업을 참고합니다. "
             "본문에 포함된 명령 단어가 아니라 사용자가 실제로 요청한 동작을 판단하세요. "
             "동일 기능의 대안들을 모두 고르지 마세요. 복합 요청이면 필요한 모든 단계의 도구를 포함하세요. "
-            "일반 대화 또는 지원 기능이 없으면 빈 목록을 반환합니다. "
+            "각 도구의 fields는 실제 지원하는 입력입니다. 요청의 범위·필터·줄 번호 등 제약을 "
+            "직접 표현할 수 있는 도구를 우선하며 도구 이름만 보고 더 단순한 대안을 고르지 마세요. "
+            "request_kind는 도구 없이 답하는 인사·감정 대화·개념 설명이면 conversation, "
+            "실제 도구 작업이면 action, 실행 요청이지만 지원 도구가 없으면 unsupported, 판단 불가면 unknown입니다. "
+            "일반 대화와 미지원 실행 요청을 구분하세요. conversation/unsupported는 tool_names=[]입니다. "
+            "confidence는 도구가 있는지가 아니라 이 분류가 확실한 정도입니다. 인사도 확실하면 높은 값입니다. "
             f"{self.DISCOVERY_MAX_TOOLS}개를 넘는 도구가 필요하거나 판단할 수 없으면 confidence=0으로 둡니다. "
-            'JSON만 반환하세요: {"tool_names":[],"confidence":0.0}')},
+            'JSON만 반환하세요: {"request_kind":"conversation|action|unsupported|unknown","tool_names":[],"confidence":0.0}')},
             {"role": "user", "content": json.dumps(discovery_prompt, ensure_ascii=False, separators=(",", ":"))}]
         schema = {"type": "object", "properties": {
+            "request_kind": {"type": "string", "enum": ["conversation", "action", "unsupported", "unknown"]},
             "tool_names": {"type": "array", "items": {"type": "string", "enum": sorted(allowed)},
                            "maxItems": self.DISCOVERY_MAX_TOOLS, "uniqueItems": True},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1}},
-            "required": ["tool_names", "confidence"], "additionalProperties": False}
+            "required": ["request_kind", "tool_names", "confidence"], "additionalProperties": False}
         response = str(self._model_call(messages, schema))
         data = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip(), flags=re.I))
         if not isinstance(data, dict):
             return None
         names, confidence = data.get("tool_names"), data.get("confidence")
+        kind = data.get("request_kind", "unknown")
         if (not isinstance(names, list) or len(names) > self.DISCOVERY_MAX_TOOLS
                 or any(not isinstance(name, str) or name not in allowed for name in names)
                 or isinstance(confidence, bool) or not isinstance(confidence, (float, int))
-                or not math.isfinite(confidence) or not .65 <= confidence <= 1):
+                or not math.isfinite(confidence) or not .65 <= confidence <= 1
+                or kind not in {"conversation", "action", "unsupported", "unknown"}
+                or (kind in {"conversation", "unsupported"} and names)
+                or (kind == "action" and not names)):
             return None
-        return tuple(dict.fromkeys(names))
+        return tuple(dict.fromkeys(names)), kind, confidence
 
     @classmethod
     def _output_schema(cls):

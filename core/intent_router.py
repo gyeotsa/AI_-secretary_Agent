@@ -4,7 +4,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from core.plugin import BasePlugin, IntentSchema, PluginRegistry
-from core.utterance_scope import analyze_utterance_scope, mask_quoted_payloads
+from core.utterance_scope import (
+    analyze_utterance_scope, mask_quoted_payloads,
+    required_quoted_literals, scalar_content_values,
+)
 
 
 @dataclass
@@ -129,35 +132,11 @@ class IntentRouter:
 
     @staticmethod
     def _quoted_literals(text: str) -> list[str]:
-        values: list[str] = []
-        for pattern in (
-            r'"([^"\r\n]+)"', r"'([^'\r\n]+)'",
-            r"“([^”\r\n]+)”", r"‘([^’\r\n]+)’",
-        ):
-            values.extend(
-                match.strip() for match in re.findall(pattern, str(text or ""))
-                if match.strip()
-            )
-        return list(dict.fromkeys(values))
+        return required_quoted_literals(text)
 
     @staticmethod
     def _scalar_slot_values(value: Any) -> list[str]:
-        if isinstance(value, dict):
-            return [
-                scalar
-                for nested in value.values()
-                for scalar in IntentRouter._scalar_slot_values(nested)
-            ]
-        if isinstance(value, (list, tuple, set, frozenset)):
-            return [
-                scalar
-                for nested in value
-                for scalar in IntentRouter._scalar_slot_values(nested)
-            ]
-        if isinstance(value, (str, int, float, bool)):
-            text = str(value).strip()
-            return [text] if text else []
-        return []
+        return scalar_content_values(value)
 
     def resolution_preserves_user_content(
         self, text: str, resolution: IntentResolution,
@@ -169,8 +148,8 @@ class IntentRouter:
         cannot disappear between the utterance and Registry tool input.
         """
         slot_values = self._scalar_slot_values(resolution.slots)
-        joined = "\n".join(slot_values)
-        if any(literal not in joined for literal in self._quoted_literals(text)):
+        if any(not any(literal in value for value in slot_values)
+               for literal in self._quoted_literals(text)):
             return False
         if not self.CONTENT_REQUEST_PATTERN.search(str(text or "")):
             return True

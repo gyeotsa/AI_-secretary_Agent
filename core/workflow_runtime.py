@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 import json
 import os
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -200,12 +201,16 @@ class WorkflowStepResult:
 class WorkflowRuntime:
     """Executes checked-in workflow recipes through real runtime adapters."""
 
-    def __init__(self, config_path: str = "config/workflows.json", *, tool_executor=None,
+    def __init__(self, config_path: str | None = None, *, tool_executor=None,
                  brief_service: MorningBriefService | None = None, diagnostics=None,
                  memory_maintenance: Callable[[], Any] | None = None,
                  context_provider: Callable[[], dict[str, Any]] | None = None,
                  db_path: str = "data/workflow_runs.db"):
-        self.config_path = Path(config_path)
+        # Recipes belong to the application, not the selected user workspace.
+        # Explicit overrides remain caller-relative for tests/custom recipes.
+        bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+        self.config_path = (Path(config_path) if config_path is not None
+                            else bundle_root / "config" / "workflows.json")
         self.tool_executor = tool_executor
         self.brief_service = brief_service
         self.diagnostics = diagnostics

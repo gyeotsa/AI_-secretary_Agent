@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+from typing import Any
 
 
 _LITERAL = re.compile(
@@ -83,6 +84,49 @@ def mask_quoted_payloads(text: str) -> str:
         return value[0] + "".join("\n" if char == "\n" else " " for char in inner) + value[-1]
 
     return _LITERAL.sub(replace, str(text or ""))
+
+
+def required_quoted_literals(text: str) -> list[str]:
+    """Extract executable user data, preserving whitespace and escape bytes.
+
+    The shared quote grammar includes multiline text and fenced code. Only an
+    explicit outside-quote correction (``"old"가 아니라 "new"``) removes an old
+    referent from the preservation obligation. Replacement/search requests
+    still require both their old and new values.
+    """
+    source = analyze_utterance_scope(str(text or "")).action_text
+    values = []
+    for match in _LITERAL.finditer(source):
+        if re.match(r"\s*(?:(?:이|가)\s*아니라|아니라|말고)(?=\s|[\"'“‘])",
+                    source[match.end():]):
+            continue
+        quoted = match.group(0)
+        if quoted.startswith(("```", "~~~")):
+            value = quoted[3:-3]
+            # Standard line-oriented Markdown fence headers are syntax, not
+            # file content. Inline fences keep every byte between delimiters.
+            line_start = source.rfind("\n", 0, match.start()) + 1
+            if not source[line_start:match.start()].strip():
+                header = re.match(r"[A-Za-z0-9_+.#-]*[ \t]*\r?\n", value)
+                if header:
+                    value = value[header.end():]
+                    value = re.sub(r"\r?\n[ \t]*$", "", value)
+        else:
+            value = quoted[1:-1]
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
+def scalar_content_values(value: Any) -> list[str]:
+    """Actual scalar values, not JSON escapes or concatenated unrelated fields."""
+    if isinstance(value, dict):
+        return [scalar for nested in value.values() for scalar in scalar_content_values(nested)]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [scalar for nested in value for scalar in scalar_content_values(nested)]
+    if isinstance(value, (str, int, float, bool)):
+        return [str(value)] if str(value) else []
+    return []
 
 
 @dataclass(frozen=True)
