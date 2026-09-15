@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from scipy.io import wavfile
 
 import core.audio_processor as audio_module
@@ -9,6 +10,13 @@ import core.tools as tools_module
 from core.audio_processor import AudioProcessor
 from core.tts_settings import TTSSettingsManager
 from core.tools import ToolExecutor
+
+
+@pytest.fixture(autouse=True)
+def isolate_optional_online_voice_catalog(monkeypatch):
+    # Unit tests must not depend on whether Edge's live voice service happens
+    # to respond. The merge-specific test injects its own online catalog.
+    monkeypatch.setattr(TTSSettingsManager, "_list_edge_voices", staticmethod(lambda: []))
 
 
 def test_disabled_voice_skips_synthesis_and_model_preload(monkeypatch):

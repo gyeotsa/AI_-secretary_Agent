@@ -85,8 +85,34 @@ class ApplicationEvaluator:
             return False, "완료 표현에 대응하는 실행 증거가 없습니다."
         return True, "실행 상태·증거 계약 통과"
 
+    @classmethod
+    def check_answer_contract(cls, actual: Any, expected: Dict[str, Any]) -> tuple[bool, str]:
+        """A tool-free explanation has answer evidence, never fake tool receipts."""
+        payload = cls._mapping(actual)
+        if payload is None:
+            return False, "구조화 답변 결과가 아닙니다."
+        review = payload.get("answer_review")
+        if not isinstance(review, dict):
+            return False, "답변 검수 기록이 없습니다."
+        if review.get("code_executed") is not False:
+            return False, "설명 전용 검수가 코드 실행 여부를 정확히 기록하지 않았습니다."
+        allowed = expected.get("statuses", ["passed"])
+        if review.get("status") not in allowed:
+            return False, "답변 요구사항 검수가 완료되지 않았습니다."
+        if payload.get("unverified_completion_claim") or payload.get("unsupported_activity_claim"):
+            return False, "근거 없는 작업 상태 주장이 차단되었습니다."
+        if expected.get("requested_count") is not None:
+            count = expected["requested_count"]
+            if review.get("requested_count") != count or review.get("observed_count") != count:
+                return False, "요청한 답변 항목 수와 관측한 항목 수가 다릅니다."
+        return True, "답변 요구사항·정적 검수 계약 통과(실행 검증 아님)"
+
     @staticmethod
     def check(actual: Any, expected: Dict[str, Any]) -> tuple[bool, str]:
+        if "answer_contract" in expected:
+            passed, details = ApplicationEvaluator.check_answer_contract(actual, expected["answer_contract"])
+            if not passed:
+                return passed, details
         if any(key in expected for key in (
                 "required_paths", "path_equals", "path_in",
                 "evidence_required_when_succeeded")):

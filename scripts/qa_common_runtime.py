@@ -207,6 +207,8 @@ def main() -> int:
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--conversation", action="store_true")
+    parser.add_argument("--answer-review", action="store_true",
+                        help="Exercise tool-free answer acceptance through the real local Executor")
     parser.add_argument("--model-cancel", action="store_true",
                         help="Cancel a real local model HTTP call, then request a new greeting")
     parser.add_argument("--model-trace", action="store_true",
@@ -282,6 +284,39 @@ def _run_qa(args, root: Path, sandbox: Path, settings) -> int:
     (sandbox / "workspace-second").mkdir()
     (fixture_workspace / "QA 기록.txt").write_bytes("x = [1, 2] 🙂\r\n두 번째 줄\r\n".encode("utf-8"))
     get_workspace_manager().set_workspace(str(fixture_workspace))
+    if args.answer_review:
+        from core.executor import Executor
+        from core.llm import OllamaClient
+        from core.turn_context import TurnExecutionContext
+        from urllib.parse import urlsplit
+        executor = Executor()
+        if not isinstance(executor.llm, OllamaClient) or urlsplit(executor.llm.base_url).hostname not in {
+                "127.0.0.1", "localhost", "::1"}:
+            raise RuntimeError("Answer QA requires local Ollama")
+        before = {str(path.relative_to(fixture_workspace)): path.read_bytes()
+                  for path in fixture_workspace.rglob("*") if path.is_file()}
+        request = ("파이썬 재귀 함수 예제 3개를 각각 코드와 해설로 보여줘. "
+                   "빈 입력과 종료 조건도 설명해줘. 파일을 만들거나 코드를 실행하지 말고 채팅에서만 설명해줘.")
+        started = time.monotonic()
+        try:
+            outcome = executor.execute_turn(
+                request, "qa-answer", allowed_tool_names=[],
+                turn_context=TurnExecutionContext("qa-answer", "qa-answer", str(fixture_workspace)),
+            )
+            after = {str(path.relative_to(fixture_workspace)): path.read_bytes()
+                     for path in fixture_workspace.rglob("*") if path.is_file()}
+            safe = before == after and not outcome.tool_results and outcome.tool_result is None
+            record = {"event": "answer_review", "status": outcome.status,
+                      "answer_review": outcome.answer_review, "response": outcome.response,
+                      "response_truncated": outcome.response_truncated,
+                      "unsupported_activity_claim": outcome.unsupported_activity_claim,
+                      "no_tools_or_workspace_changes": safe,
+                      "elapsed_seconds": round(time.monotonic() - started, 2)}
+            print(json.dumps(record, ensure_ascii=False), flush=True)
+            # A model-static pass is NOT independent semantic correctness proof.
+            return 0 if safe and outcome.status == "completed" else 1
+        finally:
+            executor.tool_executor.plugin_registry.shutdown()
     if args.semantic_matrix:
         from core.executor import Executor
         from core.llm import OllamaClient

@@ -1,6 +1,7 @@
 """Bound presentation-repair calls without treating source material as our voice."""
 
 import pytest
+from types import SimpleNamespace
 
 from core.agent_services import ConversationService
 from core.plugin import ToolCancelledError
@@ -47,7 +48,9 @@ def test_protected_sources_do_not_trigger_model_repair(payload):
     draft = "예시는 아래와 같아.\n" + payload
     llm = SequenceLLM(draft)
 
-    result = ConversationService(llm).respond("예시를 설명해 줘", [], style="반말")
+    # Presentation-only fixture; semantic review has independent test coverage.
+    verifier = SimpleNamespace(verify=lambda contract, draft, **kwargs: (draft, None))
+    result = ConversationService(llm, answer_verifier=verifier).respond("예시를 설명해 줘", [], style="반말")
 
     assert result == draft
     assert len(llm.calls) == 1
@@ -72,6 +75,9 @@ def test_long_unnatural_source_does_not_trigger_naturalness_repair(wrapper):
     ("비트박스는 못해요. 대신 영상을 찾아드릴게요.", "비트박스는 못해. 대신 영상을 찾아줄게."),
     ('확인했습니다.\n"학교에서 만나 주세요."', '확인했어.\n"학교에서 만나 주세요."'),
     ("검토하겠습니다. 이 방법이 좋겠어요.", "검토할게. 이 방법이 좋겠어."),
+    ("안녕! 어떻게 도와드릴까요?", "안녕! 어떻게 도와줄까?"),
+    ("다음으로 넘어갈까요?", "다음으로 넘어갈까?"),
+    ('어떤 게 좋을까요?\n"어떻게 할까요?"', '어떤 게 좋을까?\n"어떻게 할까요?"'),
 ])
 def test_supported_informal_style_is_deterministic_and_single_call(draft, expected):
     llm = SequenceLLM(draft)
@@ -252,7 +258,8 @@ def test_quoted_completion_is_not_a_claim_of_execution(source):
     draft = "아직 저장하지 않았어. 안내 문구 예시는 아래와 같아.\n" + source
     llm = SequenceLLM(draft)
 
-    assert ConversationService(llm).respond("파일 저장해 줘", []) == draft
+    verifier = SimpleNamespace(verify=lambda contract, draft, **kwargs: (draft, None))
+    assert ConversationService(llm, answer_verifier=verifier).respond("파일 저장해 줘", []) == draft
     assert len(llm.calls) == 1
 
 

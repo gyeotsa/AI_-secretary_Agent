@@ -1,11 +1,12 @@
 from typing import List, Optional, Dict, Any, Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 import re
 import threading
 import time
 
-from core.llm import get_llm_client
+from core.llm import get_llm_client, OllamaClient
+from core.answer_verification import AnswerVerificationService
 from core.scratchpad import Scratchpad, Task
 from core.planner import Planner, PlanningError
 from core.tools import get_tool_executor, get_tools_description_text, get_tool_names
@@ -58,6 +59,14 @@ def _safe_contract_value(value: Any) -> Any:
     return {"type": type(value).__name__}
 
 
+def _local_answer_draft_client(contract):
+    client = OllamaClient("code" if contract.requires_code else "document")
+    # Release this request's model after the phase; never unload arbitrary
+    # models belonging to another app/session in order to make room.
+    client.profile = replace(client.profile, keep_alive="0")
+    return client
+
+
 @dataclass
 class ExecutionOutcome:
     response: str
@@ -78,6 +87,8 @@ class ExecutionOutcome:
     grounded_conversation: bool = False
     unverified_completion_claim: bool = False
     response_truncated: bool = False
+    unsupported_activity_claim: bool = False
+    answer_review: Optional[Dict[str, Any]] = None
 
 
 class Executor:
@@ -161,7 +172,10 @@ class Executor:
         self.plan_coordinator = PlanCoordinator()
         self.planning_service = PlanningService(self.planner)
         self.response_composer = ResponseComposer()
-        self.conversation_service = ConversationService(self.llm)
+        self.conversation_service = ConversationService(
+            self.llm, answer_verifier=AnswerVerificationService(),
+            generation_client_factory=_local_answer_draft_client,
+        )
         self.current_plan: Optional[PlanDAG] = None
         self.learning_runtime = get_learning_runtime()
         seed_core_evaluation_cases(self.learning_runtime)
@@ -251,7 +265,9 @@ class Executor:
                 trajectory_id, status=outcome.status, response=outcome.response,
                 metadata={"task_id": outcome.task_id, "retry_count": outcome.retry_count,
                           "completed_steps": outcome.completed_steps,
-                          "failed_steps": outcome.failed_steps},
+                          "failed_steps": outcome.failed_steps,
+                          "answer_review": _safe_contract_value(outcome.answer_review),
+                          "unsupported_activity_claim": outcome.unsupported_activity_claim},
             )
             self._record_turn_quality(goal, outcome, turn_started, conversation_history)
             return outcome
@@ -296,6 +312,18 @@ class Executor:
             "latency_ms", latency, success=succeeded,
             context={"goal": goal[:300], "status": outcome.status},
         )
+        if outcome.answer_review and outcome.answer_review.get("status") != "not_required":
+            review_passed = outcome.answer_review.get("status") == "passed"
+            quality_metrics.record(
+                "answer_review", float(review_passed), success=review_passed,
+                context={"review": _safe_contract_value(outcome.answer_review),
+                         "status": outcome.status},
+            )
+        if outcome.unsupported_activity_claim:
+            quality_metrics.record(
+                "unsupported_activity_claim", 1.0, success=False,
+                context={"status": outcome.status, "blocked": True, "tool_count": 0},
+            )
         if outcome.status in {"awaiting_input", "awaiting_user"}:
             question = str(outcome.question or outcome.response).strip()
             quality_metrics.record(
@@ -376,11 +404,18 @@ class Executor:
                              pending_question: str = "") -> ExecutionOutcome:
             """Close a persisted queued task even when no Tool/Planner path is needed."""
             blocked_claim = bool(getattr(response, "unverified_completion", False))
+            unsupported_activity = bool(getattr(response, "unsupported_activity", False))
             truncated = bool(getattr(response, "truncated", False))
-            if blocked_claim:
+            answer_review = getattr(response, "answer_review", None)
+            review_data = answer_review.to_dict() if answer_review is not None else None
+            if blocked_claim or unsupported_activity:
                 status = "failed"
             elif truncated:
                 status = "partial"
+            elif review_data and review_data.get("status") == "incomplete":
+                status = "partial"
+            elif review_data and review_data.get("status") in {"failed", "unverified"}:
+                status = "unverified"
             response = str(response)
             if existing_task_id:
                 task = self.dialogue_state.get_task(
@@ -397,11 +432,15 @@ class Executor:
                     task_id=existing_task_id,
                     unverified_completion_claim=blocked_claim,
                     response_truncated=truncated,
+                    unsupported_activity_claim=unsupported_activity,
+                    answer_review=review_data,
                 )
             return ExecutionOutcome(
                 response, status, goal, question=pending_question,
                 unverified_completion_claim=blocked_claim,
                 response_truncated=truncated,
+                unsupported_activity_claim=unsupported_activity,
+                answer_review=review_data,
             )
 
         utterance_scope = analyze_utterance_scope(goal, history)
@@ -2662,8 +2701,7 @@ class Executor:
             return (
                 "실제 작업을 실행하지 않았습니다. 도구 실행 증거가 없습니다. "
                 "따라서 완료로 보고하지 않겠습니다. 완료했다고 안내하지 않겠습니다. "
-                "지원되는 실행 경로와 "
-                "필요한 연결 상태를 다시 확인하겠습니다."
+                "지원되는 실행 경로와 필요한 연결 상태 확인이 필요합니다."
             )
         custom_voice, address, conversation_style = self._selected_voice_preferences()
         selected_profile = next(

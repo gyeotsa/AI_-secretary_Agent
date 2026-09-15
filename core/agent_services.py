@@ -6,10 +6,13 @@ from typing import List, Optional
 import re
 
 from core.plan_runtime import PlanDAG, PlanStep
-from core.llm import ProseResponse
+from core.llm import ProseResponse, OllamaClient
 from core.agent_prompt_policy import agent_response_policy
 from core.response_integrity import PROTECTED, map_narrative, preserves_sources
 from core.utterance_scope import mask_quoted_payloads
+from core.answer_verification import (
+    AnswerVerificationService, build_answer_contract, requires_answer_review,
+)
 from core.korean_naturalizer import (
     analyze_korean_naturalness, korean_writing_guidance, light_polish_korean,
 )
@@ -25,9 +28,12 @@ class ConversationResponse(ProseResponse):
     independent responses. Classification confidence is never tool evidence.
     """
 
-    def __new__(cls, text: str, *, unverified_completion: bool = False, **metadata):
+    def __new__(cls, text: str, *, unverified_completion: bool = False,
+                unsupported_activity: bool = False, answer_review=None, **metadata):
         result = super().__new__(cls, text, **metadata)
         result.unverified_completion = unverified_completion
+        result.unsupported_activity = unsupported_activity
+        result.answer_review = answer_review
         return result
 
 
@@ -71,6 +77,44 @@ _NON_ASSERTIVE_TAIL = re.compile(
     r"(?:하지|하진|되지|되진)\s*(?:않|못)|아니)", re.I,
 )
 
+# This channel has no running tools. A terminal reply must not imply a search,
+# test or investigation is continuing in the background. Quoted source content
+# and third-party state descriptions are deliberately not assistant activity.
+_ONGOING_ACTION = re.compile(
+    r"(?P<negative>(?:안|못)\s+)?(?:검색|조회|확인|조사|테스트|검사|점검|분석|"
+    r"다운로드|업로드|전송|설치|실행|수정|저장)(?:을|를)?\s*"
+    r"(?:중(?=\s|[이입에,.;!?]|$)|(?:하|되)고\s*있)", re.I,
+)
+_ONGOING_ENGLISH = re.compile(
+    r"\bI(?:\s+am|'m)\s+(?:currently\s+)?(?:checking|searching|investigating|"
+    r"testing|downloading|uploading|sending|installing|running)\b", re.I,
+)
+_THIRD_PARTY_SUBJECT = re.compile(
+    r"(?:사용자|사람|그|그녀|친구|동료|서버|프로그램|앱|모델|브라우저|작업자|프로세스)"
+    r"(?:가|이|는|은)\s",
+)
+_ACTIVITY_LIMITATION = (
+    "아직 실제 조사나 도구 실행을 시작하지 않았습니다. "
+    "확인 중이라고 안내한 내용은 근거가 없으며, 원인도 아직 확인되지 않았습니다."
+)
+
+
+def has_unsupported_activity_claim(text: str) -> bool:
+    visible = mask_quoted_payloads(str(text or ""))
+    for match in (*_ONGOING_ACTION.finditer(visible), *_ONGOING_ENGLISH.finditer(visible)):
+        start = max(visible.rfind(char, 0, match.start()) for char in ".!?\n") + 1
+        end = re.search(r"[.!?\n]", visible[match.end():])
+        tail = visible[match.end():match.end() + end.start() if end else len(visible)]
+        prefix = visible[start:match.start()]
+        if (match.groupdict().get("negative") or _THIRD_PARTY_SUBJECT.search(prefix)
+                or re.search(r"\b(?:예를\s*들어|가령)\b", prefix)
+                or re.match(r"\s*(?:이(?:라면|라고|라는)|인(?:지|\s*것은)|인지|"
+                            r"이지\s*않|지는\s*않|지\s*않|(?:이\s*)?아니)", tail)
+                or (end and visible[match.end() + end.start()] == "?")):
+            continue
+        return True
+    return False
+
 
 def guard_conversation_response(response: str, user_message: str = "") -> ConversationResponse:
     """Reject affirmative external completion in this evidence-free channel.
@@ -79,9 +123,11 @@ def guard_conversation_response(response: str, user_message: str = "") -> Conver
     check never grants execution authority and never trusts model confidence.
     Actual tool-backed output is rendered through ResponseRealizer instead.
     """
-    if isinstance(response, ConversationResponse) and response.unverified_completion:
+    if isinstance(response, ConversationResponse) and (
+            response.unverified_completion or response.unsupported_activity):
         return response
     metadata = response.metadata if isinstance(response, ProseResponse) else {}
+    review = getattr(response, "answer_review", None)
     text = str(response or "")
     visible = mask_quoted_payloads(text)
     external_context = bool(_EXTERNAL_TARGET.search(str(user_message or "")))
@@ -96,22 +142,32 @@ def guard_conversation_response(response: str, user_message: str = "") -> Conver
         if intrinsic or external_context or _EXTERNAL_TARGET.search(visible[:match.start()]):
             return ConversationResponse(
                 _UNVERIFIED_CONVERSATION_COMPLETION, unverified_completion=True,
-                **metadata,
+                answer_review=review, **metadata,
             )
-    return ConversationResponse(text, **metadata)
+    if has_unsupported_activity_claim(text):
+        return ConversationResponse(_ACTIVITY_LIMITATION, unsupported_activity=True,
+                                    answer_review=review, **metadata)
+    return ConversationResponse(text, answer_review=review, **metadata)
 
 
 class ConversationService:
     """Generates ordinary dialogue without exposing the Tool runtime."""
 
-    def __init__(self, llm):
+    def __init__(self, llm, *, answer_verifier=None, generation_client_factory=None):
         self.llm = llm
+        # An injected client must not secretly cause calls to a different
+        # provider. The real Executor explicitly supplies local role factories.
+        self.answer_verifier = answer_verifier or AnswerVerificationService(
+            reviewer_factory=lambda: self.llm, repairer_factory=lambda: self.llm,
+        )
+        self.generation_client_factory = generation_client_factory
 
     def respond(self, message: str, history, *, assistant_name: str = "",
                 voice_name: str = "", address: str = "보스", style: str = "",
                 memory_context: str = "") -> str:
         if assistant_name and message.strip().casefold() == assistant_name.casefold():
             return f"응, 듣고 있어. {address}."
+        contract = build_answer_contract(message, history)
         recent = [
             {"role": item.get("role", "user"), "content": str(item.get("content", ""))}
             for item in list(history)[-6:]
@@ -129,6 +185,9 @@ class ConversationService:
             f"당신은 로컬 개인 비서 '{assistant_name or '자비스'}'입니다. 지금 요청은 도구 실행이 아닌 일반 대화입니다. "
             "도구를 찾거나 실행했다고 주장하지 마세요. URL이나 영상을 실제로 열지 않았다면 봤거나 학습했다고 말하지 마세요. "
             "실제로 실행하지 않은 외부 작업을 완료했다고 절대 주장하지 마세요. "
+            "이 대화 채널에는 실행 중인 도구가 없습니다. 확인 중·조사 중·검색 중이라고 "
+            "말하거나 답변 뒤에도 작업을 계속할 것처럼 약속하지 마세요. 미확인은 미확인, "
+            "추정은 추정이라고 구분하고 제공된 내용만으로 설명하세요. "
             "사용자가 웃기·인사하기처럼 직접 수행할 수 있는 표현을 요청하면 명령을 되돌리지 말고 짧게 직접 반응하세요. "
             "최근 발화의 맥락과 감정을 먼저 반영하고 "
             "자연스럽고 간결한 한국어로 답하세요. 최신 정보가 필요하면 확인이 필요하다고 말하세요. "
@@ -138,10 +197,15 @@ class ConversationService:
             f"사용자 호칭은 반드시 '{address}'로 사용하고 답변에서 최대 한 번만 사용하세요. {persona}{memory_prompt}"
         )
         prompt += "\n" + agent_response_policy() + "\n" + korean_writing_guidance(style)
+        prompt += "\n" + contract.generation_guidance
         messages = [{"role": "system", "content": prompt}, *recent,
                     {"role": "user", "content": message}]
-        chat_prose = getattr(self.llm, "chat_prose", None) or self.llm.chat
-        model_response = chat_prose(messages)
+        draft_client = (self.generation_client_factory(contract)
+                        if self.generation_client_factory and contract.requires_review else self.llm)
+        chat_prose = getattr(draft_client, "chat_prose", None) or draft_client.chat
+        model_response = (chat_prose(messages, context_window=8192)
+                          if contract.requires_review and isinstance(draft_client, OllamaClient)
+                          else chat_prose(messages))
         metadata = model_response.metadata if isinstance(model_response, ProseResponse) else {}
         response = str(model_response.content if isinstance(model_response, ProseResponse)
                        else model_response or "").strip()
@@ -152,8 +216,9 @@ class ConversationService:
         narrative = _response_narrative(response)
         original_narrative = _response_narrative(original_response)
         needs_repair = (
-            _normalized(original_response) == _normalized(message)
+            _is_unanswered_echo(original_response, message)
             or _has_prompt_leak(response, message)
+            or has_unsupported_activity_claim(response)
             or ("반말" in style and re.search(r"(?:습니다|세요|해요|까요|입니다)", narrative))
             # Preserve the semantic guard even if styling changes the ending:
             # "웃어 봐" -> "웃어보세요" asks the user to act instead.
@@ -162,9 +227,10 @@ class ConversationService:
         )
         naturalness = analyze_korean_naturalness(narrative)
         needs_repair = needs_repair or (len(narrative) >= 180 and naturalness.score >= 4)
+        substantive_review = requires_answer_review(contract, response)
         # A partial draft is useful as-is. Rewriting it cannot establish that
         # the requested answer was completed and may erase the truncation flag.
-        if response and needs_repair and not metadata.get("truncated"):
+        if response and needs_repair and not substantive_review and not metadata.get("truncated"):
             draft = response
             try:
                 repair_result = self.llm.chat([
@@ -172,6 +238,8 @@ class ConversationService:
                         f"아래 초안을 사용자의 질문에 대한 자연스러운 한국어 답변으로 한 번만 고쳐 써. "
                         f"역할표시·예시·요청하지 않은 외국어를 넣지 말고, 사용자 호칭은 '{address}'로 최대 한 번만 써. "
                         "실제로 실행하지 않은 외부 작업을 완료했다고 절대 주장하지 마세요. "
+                        "실행 증거가 없으므로 확인 중·검색 중·테스트 중이라는 진행 주장을 지우고 "
+                        "아직 확인하지 않았다는 사실과 추정 여부를 분명히 말하세요. "
                         "초안의 코드·인용·메시지 본문·파일 경로·[근거 ID]는 한 글자도 바꾸지 마세요. "
                         "사용자 말의 긍정/부정, 불편함과 요청 목적을 반대로 해석하지 마세요. "
                         f"적용할 스타일: {style or '간결하고 자연스러운 말투'}"
@@ -192,19 +260,50 @@ class ConversationService:
                 check_turn_cancelled()
                 repaired = ""
             response = repaired if repaired and preserves_sources(draft, repaired) else draft
-        response = _sanitize_response(response, message)
+        # Content requiring substantive review must reach the reviewer intact.
+        # Cutting at the first foreign glyph can silently erase a heading and
+        # the explanation that follows it. Request repair instead of deletion.
+        if not substantive_review:
+            response = _sanitize_response(response, message)
         response = _apply_requested_style(response, style)
         response = light_polish_korean(response)
+        review = None
+        if not metadata.get("truncated"):
+            response, review = self.answer_verifier.verify(
+                contract, response, style=style,
+                repair_hint=("말투·질문 의도·근거 없는 진행 주장을 함께 교정하세요."
+                             if needs_repair else ""),
+            )
         return guard_conversation_response(
             ConversationResponse(
                 response if response or metadata.get("truncated") else
-                f"응, 듣고 있어. 무슨 이야기부터 해볼까, {address}?", **metadata,
+                f"응, 듣고 있어. 무슨 이야기부터 해볼까, {address}?",
+                answer_review=review, **metadata,
             ), message,
         )
 
 
 def _normalized(text: str) -> str:
     return re.sub(r"\W+", "", str(text or "")).casefold()
+
+
+def _is_unanswered_echo(response: str, message: str) -> bool:
+    """Reciprocal greetings/acknowledgments are not unanswered questions.
+
+    This only gates an optional rewrite, never intent routing or execution.
+    Keep the exception anchored to the entire utterance so a question or
+    command containing a greeting still requires an actual answer.
+    """
+    value = _normalized(message)
+    if value != _normalized(response):
+        return False
+    reciprocal = {
+        "안녕", "안녕하세요", "안녕하십니까", "반가워", "반가워요", "반갑습니다",
+        "좋은아침", "좋은아침이에요", "좋은아침입니다", "잘자", "잘자요",
+        "고마워", "고마워요", "감사합니다", "응", "네", "그래", "알겠어", "알겠어요",
+        "hi", "hello", "goodmorning", "goodnight", "thanks", "thankyou", "ok", "okay",
+    }
+    return value not in reciprocal
 
 
 def _response_narrative(text: str) -> str:
@@ -300,6 +399,7 @@ def _style_narrative(text: str, style: str) -> str:
         (r"할게요(?=[,.!?，\n]|$)", "할게"),
         (r"입니다(?=[,.!?，\n]|$)", "이야"),
         (r"거예요(?=[,.!?，\n]|$)", "거야"),
+        (r"까요(?=[,.!?，\n]|$)", "까"),
         (r"예요(?=[,.!?，\n]|$)", "야"),
         (r"좋겠어요(?=[,.!?，\n]|$)", "좋겠어"),
         (r"해요(?=[,.!?，\n]|$)", "해"),

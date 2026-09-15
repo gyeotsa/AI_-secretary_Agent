@@ -170,6 +170,9 @@ def test_legacy_pytest_workspace_is_not_restored(tmp_path, monkeypatch):
 
 def test_system_pytest_basetemp_is_pruned_from_real_catalog(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    # This fixture represents an OS temp root even when pytest --basetemp is
+    # explicitly located in a workspace with different filesystem permissions.
+    monkeypatch.setattr("core.workspace.tempfile.gettempdir", lambda: str(tmp_path))
     state = Path("data/workspaces.json")
     state.parent.mkdir()
     transient = tmp_path / "pytest-of-user" / "pytest-9" / "test_workspace0"
@@ -191,3 +194,18 @@ def test_system_pytest_basetemp_is_pruned_from_real_catalog(tmp_path, monkeypatc
     assert manager.current_workspace is None
     assert manager._state["last_workspace"] == ""
     assert key not in manager._state["workspaces"]
+
+
+def test_pytest_named_real_workspace_outside_system_temp_is_preserved(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("core.workspace.tempfile.gettempdir", lambda: str(tmp_path / "os-temp"))
+    state = Path("data/workspaces.json")
+    state.parent.mkdir()
+    real = tmp_path / "pytest-project" / "source"
+    real.mkdir(parents=True)
+    key = str(real.resolve())
+    state.write_text(json.dumps({"version": 1, "last_workspace": key,
+                                 "workspaces": {key: {"path": key}}}), encoding="utf-8")
+    manager = WorkspaceManager(str(state), restore=True)
+    assert manager.current_workspace == key
+    assert key in manager._state["workspaces"]

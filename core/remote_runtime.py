@@ -18,8 +18,8 @@ from email.message import Message
 from email.parser import BytesParser
 from email.utils import getaddresses
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlencode, urlsplit
 
 import requests
 
@@ -54,40 +54,135 @@ class RemoteApplyReceipt(str):
         return instance
 
 
+class CatalogSyncResult(list):
+    """List-compatible metadata batch; pagination is not snapshot completeness.
+
+    A continuation contains only the pages fetched by that call. Without a
+    persisted full-scan accumulator, even its terminal page is merge-only.
+    """
+
+    def __init__(self, provider: str, account: str, *, query: str = "", resumed: bool = False):
+        super().__init__()
+        self.provider, self.account = provider, account
+        self.query, self.resumed = query, resumed
+        self.complete = False
+        self.pages_fetched = 0
+        self.next_cursor = ""
+        self.error = ""
+        self.cancelled = False
+        self.incomplete_search = False
+        self.deleted_ids: set[str] = set()
+
+    @property
+    def full_snapshot(self) -> bool:
+        return (self.complete and not self.resumed and not self.query
+                and not self.error and not self.cancelled and not self.incomplete_search)
+
+    def metadata(self) -> Dict[str, Any]:
+        return {
+            "provider": self.provider, "account": self.account,
+            "scope": "filtered_metadata" if self.query else "accessible_metadata",
+            "pagination_complete": self.complete, "snapshot_complete": self.full_snapshot,
+            "resumed": self.resumed, "pages_fetched": self.pages_fetched,
+            "next_cursor": self.next_cursor, "error": self.error,
+            "cancelled": self.cancelled, "incomplete_search": self.incomplete_search,
+            "observed_deleted_count": len(self.deleted_ids),
+            "content_synced": False,
+        }
+
+
 class SecureTokenVault:
-    """User-bound Windows DPAPI token storage; OAuth tokens are never stored as plain text."""
+    """DPAPI tokens bound to exact provider/account labels in a v2 envelope.
+
+    Legacy filenames lost punctuation, case and long suffixes, and their token
+    payloads contain no trusted owner binding. They are never loaded, migrated
+    or deleted implicitly: reconnect the intended account to create a v2 token.
+    """
+
+    FORMAT = "anis.oauth.v2"
 
     def __init__(self, directory: Optional[str] = None):
         self.directory = Path(directory or Path(Config.DB_PATH).with_name("oauth_tokens"))
         self.directory.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def _name(provider: str, account: str) -> str:
+    def _scope(provider: str, account: str) -> tuple[str, str]:
+        # Labels are exact. Do not casefold/normalize user aliases or guess that
+        # two spellings identify the same remote account.
+        for value in (provider, account):
+            if (not isinstance(value, str) or not value or value != value.strip()
+                    or len(value) > 16384 or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+                raise RemoteRuntimeError("자격증명 제공자와 계정 이름 형식이 올바르지 않습니다.")
+        return provider, account
+
+    @classmethod
+    def _name(cls, provider: str, account: str) -> str:
+        scope = cls._scope(provider, account)
+        # JSON array boundaries distinguish e.g. ("a_b", "c") and ("a", "b_c").
+        encoded = json.dumps(scope, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+        return "v2-" + hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _legacy_name(provider: str, account: str) -> str:
         raw = f"{provider.casefold()}_{account.casefold()}"
         return "".join(c if c.isalnum() or c in "_-" else "_" for c in raw)[:100]
 
+    def _require_no_legacy(self, provider: str, account: str) -> None:
+        # Check only the caller's computed legacy path, never enumerate or
+        # decrypt other accounts to try to infer ownership.
+        legacy = self.directory / f"{self._legacy_name(provider, account)}.dpapi"
+        if legacy.exists():
+            raise RemoteRuntimeError(
+                "기존 자격증명은 계정 소유자를 안전하게 구분할 수 없어 사용하지 않았습니다. "
+                "기존 파일은 보존했으니 해당 계정을 다시 연결하세요."
+            )
+
     def save(self, provider: str, account: str, token: Dict[str, Any]) -> None:
+        path = self.directory / f"{self._name(provider, account)}.dpapi"
+        if not isinstance(token, dict):
+            raise RemoteRuntimeError("저장할 자격증명은 객체여야 합니다.")
         import win32crypt
-        data = json.dumps(token, ensure_ascii=False).encode("utf-8")
+        envelope = {"format": self.FORMAT, "provider": provider, "account": account, "token": token}
+        data = json.dumps(envelope, ensure_ascii=True, allow_nan=False).encode("ascii")
         protected = win32crypt.CryptProtectData(data, "Jarvis OAuth", None, None, None, 0)
         encrypted = protected[1] if isinstance(protected, tuple) else protected
-        path = self.directory / f"{self._name(provider, account)}.dpapi"
-        temporary = path.with_suffix(".tmp")
-        temporary.write_bytes(encrypted)
-        os.replace(temporary, path)
+        temporary = path.with_name(f".{path.stem}.{uuid.uuid4().hex}.tmp")
+        created = False
+        try:
+            with temporary.open("xb") as handle:
+                created = True
+                handle.write(encrypted)
+            os.replace(temporary, path)
+        finally:
+            if created:
+                temporary.unlink(missing_ok=True)
 
     def load(self, provider: str, account: str) -> Optional[Dict[str, Any]]:
-        import win32crypt
         path = self.directory / f"{self._name(provider, account)}.dpapi"
         if not path.is_file():
+            self._require_no_legacy(provider, account)
             return None
-        unprotected = win32crypt.CryptUnprotectData(path.read_bytes(), None, None, None, 0)
-        data = unprotected[1] if isinstance(unprotected, tuple) else unprotected
-        return json.loads(data.decode("utf-8"))
+        import win32crypt
+        try:
+            unprotected = win32crypt.CryptUnprotectData(path.read_bytes(), None, None, None, 0)
+            data = unprotected[1] if isinstance(unprotected, tuple) else unprotected
+            envelope = json.loads(data.decode("utf-8"))
+            if (not isinstance(envelope, dict)
+                    or set(envelope) != {"format", "provider", "account", "token"}
+                    or envelope["format"] != self.FORMAT
+                    or envelope["provider"] != provider or envelope["account"] != account
+                    or not isinstance(envelope["token"], dict)):
+                raise ValueError("credential scope mismatch")
+            return envelope["token"]
+        except Exception:
+            # Neither decrypted payloads nor cryptographic exception details
+            # belong in a user-facing error or log.
+            raise RemoteRuntimeError("저장된 자격증명의 무결성 또는 계정 소유자를 확인하지 못했습니다.") from None
 
     def delete(self, provider: str, account: str) -> bool:
         path = self.directory / f"{self._name(provider, account)}.dpapi"
         if not path.exists():
+            self._require_no_legacy(provider, account)
             return False
         path.unlink()
         return True
@@ -309,6 +404,9 @@ class RemoteCatalogStore:
             conn.execute("""CREATE TABLE IF NOT EXISTS remote_catalog(
                 provider TEXT, account TEXT, item_id TEXT, payload TEXT, synced_at REAL,
                 PRIMARY KEY(provider, account, item_id))""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS remote_catalog_revisions(
+                provider TEXT, account TEXT, revision INTEGER NOT NULL,
+                PRIMARY KEY(provider, account))""")
 
     @contextmanager
     def _session(self):
@@ -321,15 +419,76 @@ class RemoteCatalogStore:
             conn.close()
 
     def replace(self, provider: str, account: str, items: List[Dict[str, Any]]) -> List[str]:
-        ids = [str(item.get("id") or item.get("remote_id") or "") for item in items]
-        if any(not item_id for item_id in ids):
-            raise RemoteRuntimeError("동기화 항목에 원격 ID가 없습니다.")
+        # Kept for explicit callers with an already complete local snapshot.
+        # The cloud plugin must use apply_sync(), never this unchecked boundary.
+        return self._write(provider, account, items, replace=True)
+
+    @staticmethod
+    def _serialized_items(items: List[Dict[str, Any]]) -> Dict[str, str]:
+        rows = {}
+        for item in items:
+            if not isinstance(item, dict):
+                raise RemoteRuntimeError("카탈로그 항목은 객체여야 합니다.")
+            item_id = item.get("id") or item.get("remote_id")
+            if not isinstance(item_id, str) or not item_id.strip():
+                raise RemoteRuntimeError("동기화 항목에 원격 ID가 없습니다.")
+            rows[item_id] = json.dumps(item, ensure_ascii=False, allow_nan=False)
+        return rows
+
+    def revision(self, provider: str, account: str) -> int:
         with self._session() as conn:
-            conn.execute("DELETE FROM remote_catalog WHERE provider=? AND account=?", (provider, account))
-            conn.executemany("INSERT INTO remote_catalog VALUES(?,?,?,?,?)",
-                             [(provider, account, item_id, json.dumps(item, ensure_ascii=False), time.time())
-                              for item_id, item in zip(ids, items)])
-        return ids
+            row = conn.execute(
+                "SELECT revision FROM remote_catalog_revisions WHERE provider=? AND account=?",
+                (provider, account),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def apply_sync(self, provider: str, account: str, result: CatalogSyncResult, *,
+                   expected_revision: int,
+                   check_cancelled: Optional[Callable[[], None]] = None) -> List[str]:
+        if (not isinstance(result, CatalogSyncResult) or result.provider != provider
+                or result.account != account):
+            raise RemoteRuntimeError("조회 범위와 카탈로그 저장 대상이 일치하지 않습니다.")
+        if result.cancelled:
+            return []
+        return self._write(provider, account, result, replace=result.full_snapshot,
+                           expected_revision=expected_revision, check_cancelled=check_cancelled)
+
+    def _write(self, provider: str, account: str, items: List[Dict[str, Any]], *, replace: bool,
+               expected_revision: Optional[int] = None,
+               check_cancelled: Optional[Callable[[], None]] = None) -> List[str]:
+        # Validate/serialize every item before DELETE. A malformed tail cannot
+        # destroy the previous complete catalog, even with an empty new page.
+        rows = self._serialized_items(items)
+        checkpoint = check_cancelled or (lambda: None)
+        checkpoint()
+        with self._session() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT revision FROM remote_catalog_revisions WHERE provider=? AND account=?",
+                (provider, account),
+            ).fetchone()
+            revision = int(row[0]) if row else 0
+            if expected_revision is not None and expected_revision != revision:
+                raise RemoteRuntimeError("조회 중 카탈로그가 변경되어 오래된 결과를 저장하지 않았습니다.")
+            checkpoint()
+            if replace:
+                conn.execute("DELETE FROM remote_catalog WHERE provider=? AND account=?", (provider, account))
+            conn.executemany(
+                "INSERT INTO remote_catalog VALUES(?,?,?,?,?) "
+                "ON CONFLICT(provider,account,item_id) DO UPDATE SET "
+                "payload=excluded.payload,synced_at=excluded.synced_at",
+                [(provider, account, item_id, payload, time.time()) for item_id, payload in rows.items()],
+            )
+            if rows or replace:
+                conn.execute(
+                    "INSERT INTO remote_catalog_revisions VALUES(?,?,?) "
+                    "ON CONFLICT(provider,account) DO UPDATE SET revision=excluded.revision",
+                    (provider, account, revision + 1),
+                )
+            # Cancellation during local publication rolls back this transaction.
+            checkpoint()
+        return list(rows)
 
     def list(self, provider: str, account: str) -> List[Dict[str, Any]]:
         with self._session() as conn:
@@ -694,25 +853,234 @@ class ProviderApi:
                 self._uncertain(operation, stage, exc, remote_id)
         raise RemoteApplyRejected(f"지원하지 않는 원격 작업: {operation}")
 
-    def sync(self, provider: str, account: str, options: Dict[str, Any]) -> List[Dict[str, Any]]:
-        limit = int(options.get("limit", 50))
+    CATALOG_URLS = {
+        "google_drive": "https://www.googleapis.com/drive/v3/files",
+        "onedrive": "https://graph.microsoft.com/v1.0/me/drive/root/delta",
+        "notion": "https://api.notion.com/v1/search",
+    }
+
+    @staticmethod
+    def _catalog_token(value: Any) -> str:
+        if (not isinstance(value, str) or not value or len(value.encode("utf-8")) > 16384
+                or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+            raise RemoteRuntimeError("카탈로그 페이지 커서 형식이 올바르지 않습니다.")
+        return value
+
+    @classmethod
+    def _catalog_next_url(cls, value: Any) -> str:
+        value = cls._catalog_token(value)
+        try:
+            parsed = urlsplit(value)
+            # Graph documents both root/delta?$skiptoken=... and the OData
+            # /me/drive/delta(token=...) form. Keep both on this delegated drive.
+            base_path = re.fullmatch(r"/v1\.0/me/drive/(?:root/)?delta", parsed.path)
+            token_path = re.fullmatch(
+                r"/v1\.0/me/drive/(?:root/)?delta\(token=(?:'[A-Za-z0-9._~%+=-]+'|[A-Za-z0-9._~%+=-]+)\)",
+                parsed.path,
+            )
+            allowed = (value == value.strip() and "\\" not in value
+                       and parsed.scheme == "https" and parsed.hostname == "graph.microsoft.com"
+                       and parsed.port in {None, 443} and not parsed.username and not parsed.password
+                       and ((base_path and bool(parsed.query)) or token_path) and not parsed.fragment)
+        except ValueError:
+            allowed = False
+        if not allowed:
+            # Never include the untrusted URL or bearer credentials in errors.
+            raise RemoteRuntimeError("허용되지 않은 OneDrive 페이지 URL입니다.")
+        return value
+
+    @classmethod
+    def _catalog_cursor(cls, provider: str, account: str, query: str, page: str) -> str:
+        payload = {"v": 1, "provider": provider,
+                   "account_hash": hashlib.sha256(account.encode("utf-8")).hexdigest(),
+                   "query": query, "page": cls._catalog_token(page)}
+        return base64.urlsafe_b64encode(json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).decode("ascii").rstrip("=")
+
+    @classmethod
+    def _read_catalog_cursor(cls, cursor: Any, provider: str, account: str, query: str) -> str:
+        if not isinstance(cursor, str) or not cursor or len(cursor) > 65536:
+            raise RemoteRuntimeError("카탈로그 재개 커서 형식이 올바르지 않습니다.")
+        try:
+            payload = json.loads(base64.b64decode(
+                cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True,
+            ).decode("utf-8"))
+            if (not isinstance(payload, dict)
+                    or set(payload) != {"v", "provider", "account_hash", "query", "page"}
+                    or type(payload["v"]) is not int or payload["v"] != 1
+                    or payload["provider"] != provider or payload["query"] != query
+                    or payload["account_hash"] != hashlib.sha256(account.encode("utf-8")).hexdigest()):
+                raise ValueError("scope mismatch")
+            page = cls._catalog_token(payload["page"])
+        except (ValueError, TypeError, UnicodeError, KeyError) as exc:
+            raise RemoteRuntimeError("재개 커서가 손상되었거나 제공자·계정·조회 범위가 다릅니다.") from exc
+        return cls._catalog_next_url(page) if provider == "onedrive" else page
+
+    def _catalog_page(self, provider: str, account: str, *, page: str, query: str,
+                      limit: int, timeout: float) -> Dict[str, Any]:
+        # Redirects are disabled for *all* pages. Checking only the first URL
+        # would still allow a nextLink/302 to leak a Notion or OAuth bearer token.
+        url = self.CATALOG_URLS[provider]
+        kwargs: Dict[str, Any] = {"timeout": timeout, "allow_redirects": False}
         if provider == "google_drive":
-            return self._request("google", account, "GET", "https://www.googleapis.com/drive/v3/files",
-                                 params={"pageSize": limit,
-                                         "fields": "files(id,name,mimeType,modifiedTime,md5Checksum)"}).json().get("files", [])
-        if provider == "onedrive":
-            return self._request("microsoft", account, "GET",
-                                 "https://graph.microsoft.com/v1.0/me/drive/root/delta").json().get("value", [])
+            kwargs["params"] = {
+                "pageSize": limit,
+                "fields": "nextPageToken,incompleteSearch,files(id,name,mimeType,modifiedTime,md5Checksum,trashed)",
+                "q": query or "trashed = false",
+            }
+            if page:
+                kwargs["params"]["pageToken"] = page
+        elif provider == "onedrive":
+            if page:
+                url = self._catalog_next_url(page)
+            else:
+                kwargs["params"] = {"$top": limit}
+        else:
+            kwargs["json"] = {"page_size": limit}
+            if query:
+                kwargs["json"]["query"] = query
+            if page:
+                kwargs["json"]["start_cursor"] = page
         if provider == "notion":
             token = os.getenv("NOTION_API_TOKEN", "")
             if not token:
                 raise RemoteRuntimeError("NOTION_API_TOKEN 설정이 필요합니다.")
-            response = self.session.post("https://api.notion.com/v1/search",
-                                         headers={"Authorization": f"Bearer {token}", "Notion-Version": "2022-06-28"},
-                                         json={"page_size": limit}, timeout=30)
-            OAuthCoordinator._raise(response)
-            return response.json().get("results", [])
-        raise RemoteRuntimeError(f"지원하지 않는 동기화 Provider: {provider}")
+            kwargs["headers"] = {"Authorization": f"Bearer {token}", "Notion-Version": "2022-06-28"}
+            response = self.session.post(url, **kwargs)
+        else:
+            oauth_provider = "google" if provider == "google_drive" else "microsoft"
+            kwargs["headers"] = {"Authorization": f"Bearer {self.oauth.access_token(oauth_provider, account)}"}
+            response = self.session.request("GET", url, **kwargs)
+        try:
+            if not 200 <= response.status_code < 300:
+                raise RemoteRuntimeError(f"카탈로그 페이지 HTTP 상태: {response.status_code}")
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise RemoteRuntimeError("카탈로그 페이지가 객체가 아닙니다.")
+            return payload
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+
+    @classmethod
+    def _catalog_next_page(cls, provider: str, payload: Dict[str, Any]) -> str:
+        if provider == "google_drive":
+            if "incompleteSearch" in payload and type(payload["incompleteSearch"]) is not bool:
+                raise RemoteRuntimeError("Drive incompleteSearch 형식이 올바르지 않습니다.")
+            token = payload.get("nextPageToken")
+            return "" if token is None else cls._catalog_token(token)
+        if provider == "notion":
+            if type(payload.get("has_more")) is not bool:
+                raise RemoteRuntimeError("Notion has_more 상태가 없습니다.")
+            token = payload.get("next_cursor")
+            if payload["has_more"]:
+                return cls._catalog_token(token)
+            if token is not None:
+                raise RemoteRuntimeError("Notion 마지막 페이지와 커서가 모순됩니다.")
+            return ""
+        next_url, delta_url = payload.get("@odata.nextLink"), payload.get("@odata.deltaLink")
+        if next_url is not None and delta_url is not None:
+            raise RemoteRuntimeError("OneDrive 페이지와 종료 링크가 동시에 존재합니다.")
+        if next_url is not None:
+            return cls._catalog_next_url(next_url)
+        # A bare value array is not proof that a delta enumeration finished.
+        cls._catalog_next_url(delta_url)
+        return ""
+
+    def sync(self, provider: str, account: str, options: Dict[str, Any], *,
+             check_cancelled: Optional[Callable[[], None]] = None) -> CatalogSyncResult:
+        """Bounded metadata enumeration, with explicit merge-only continuations.
+
+        No body download/RAG or incremental delta replay is performed. Graph's
+        deltaLink proves the end of a fresh enumeration; it is not followed as a
+        new full snapshot. Cancellation is checked around each bounded HTTP call.
+        """
+        from core.plugin import ToolCancelledError
+        from core.turn_context import check_turn_cancelled
+
+        if provider not in self.CATALOG_URLS or not isinstance(account, str) or not account.strip():
+            raise RemoteRuntimeError("지원하는 제공자와 비어 있지 않은 계정이 필요합니다.")
+        allowed_options = {"provider", "account", "limit", "max_pages", "cursor", "query"}
+        if not isinstance(options, dict) or set(options) - allowed_options:
+            raise RemoteRuntimeError("지원하지 않는 카탈로그 조회 옵션입니다.")
+        if options.get("provider", provider) != provider or options.get("account", account) != account:
+            raise RemoteRuntimeError("카탈로그 조회 대상이 일치하지 않습니다.")
+        limit, max_pages = options.get("limit", 50), options.get("max_pages", 5)
+        if (type(limit) is not int or not 1 <= limit <= 100
+                or type(max_pages) is not int or not 1 <= max_pages <= 10):
+            raise RemoteRuntimeError("페이지 크기는 1~100, 페이지 예산은 1~10이어야 합니다.")
+        query, cursor = options.get("query", ""), options.get("cursor", "")
+        if (not isinstance(query, str) or len(query) > 4096 or query != query.strip()
+                or (provider == "onedrive" and query)):
+            raise RemoteRuntimeError("조회 필터는 Drive/Notion에서만 지원하며 앞뒤 공백을 허용하지 않습니다.")
+        if not isinstance(cursor, str):
+            raise RemoteRuntimeError("재개 커서는 문자열이어야 합니다.")
+        page = self._read_catalog_cursor(cursor, provider, account, query) if cursor else ""
+        result = CatalogSyncResult(provider, account, query=query, resumed=bool(cursor))
+        result.next_cursor = cursor
+        deadline = time.monotonic() + 60
+        seen = set()
+        items: Dict[str, Dict[str, Any]] = {}
+
+        def checkpoint():
+            check_turn_cancelled()
+            if check_cancelled is not None:
+                check_cancelled()
+            if time.monotonic() >= deadline:
+                raise TimeoutError("카탈로그 조회 시간 예산을 초과했습니다.")
+
+        try:
+            for _ in range(max_pages):
+                checkpoint()
+                if page in seen:
+                    raise RemoteRuntimeError("카탈로그 커서가 반복되어 조회를 중단했습니다.")
+                seen.add(page)
+                payload = self._catalog_page(provider, account, page=page, query=query, limit=limit,
+                                             timeout=max(0.1, min(15.0, deadline - time.monotonic())))
+                checkpoint()
+                field = {"google_drive": "files", "onedrive": "value", "notion": "results"}[provider]
+                page_items = payload.get(field)
+                if not isinstance(page_items, list) or len(page_items) > 1000:
+                    raise RemoteRuntimeError("카탈로그 페이지 항목이 없거나 허용 크기를 초과했습니다.")
+                # Reject the whole malformed page, not just its bad tail.
+                RemoteCatalogStore._serialized_items(page_items)
+                if provider == "onedrive" and any(
+                        "deleted" in item and not isinstance(item["deleted"], dict)
+                        for item in page_items):
+                    raise RemoteRuntimeError("OneDrive 삭제 항목 형식이 올바르지 않습니다.")
+                for item in page_items:
+                    item_id = item.get("id") or item.get("remote_id")
+                    if provider == "onedrive" and "deleted" in item:
+                        items.pop(item_id, None)
+                        result.deleted_ids.add(item_id)
+                    else:
+                        items[item_id] = item
+                        result.deleted_ids.discard(item_id)
+                result.pages_fetched += 1
+                next_page = self._catalog_next_page(provider, payload)
+                result.incomplete_search |= payload.get("incompleteSearch") is True
+                if not next_page:
+                    result.complete = True
+                    result.next_cursor = ""
+                    break
+                if next_page in seen:
+                    raise RemoteRuntimeError("카탈로그 커서가 반복되어 조회를 중단했습니다.")
+                page = next_page
+                result.next_cursor = self._catalog_cursor(provider, account, query, page)
+            checkpoint()
+        except ToolCancelledError:
+            result.cancelled, result.error, result.complete = True, "cancelled", False
+        except (TimeoutError, requests.Timeout):
+            result.error, result.complete = "page_timeout", False
+        except Exception as exc:
+            # Do not expose provider error bodies, URLs or bearer secrets. The
+            # navigation cursor encodes its query/page, is NOT encryption or an
+            # authenticated credential, and still names the unconsumed page.
+            result.error, result.complete = f"page_error:{type(exc).__name__}", False
+        result.extend(items.values())
+        return result
 
     def read_messages(self, provider: str, account: str, options: Dict[str, Any]) -> List[Dict[str, Any]]:
         if provider == "slack":

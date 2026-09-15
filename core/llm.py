@@ -446,8 +446,8 @@ class OllamaClient(BaseLLMClient):
     def chat(self, messages: List[Dict]) -> str:
         return self.chat_structured(messages)
 
-    def chat_prose(self, messages: List[Dict]) -> ProseResponse:
-        return self._chat(messages, prose=True)
+    def chat_prose(self, messages: List[Dict], *, context_window: Optional[int] = None) -> ProseResponse:
+        return self._chat(messages, prose=True, context_window=context_window)
 
     def release(self) -> bool:
         """Unload this role's model so another local specialist can use VRAM/RAM."""

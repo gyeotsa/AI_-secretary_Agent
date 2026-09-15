@@ -5,12 +5,12 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from core.plugin import BasePlugin, ToolSchema
-from core.remote_runtime import (OAuthCoordinator, ProviderApi, RemoteActionStore,
+from core.plugin import BasePlugin, PluginStateProbe, ToolCancelledError, ToolSchema
+from core.remote_runtime import (CatalogSyncResult, OAuthCoordinator, ProviderApi, RemoteActionStore,
                                  RemoteApplyReceipt, RemoteApplyRejected,
                                  RemoteApplyUncertain, RemoteCatalogStore,
                                  RemoteRuntimeError)
-from core.tool_result import Evidence, ToolRunResult
+from core.tool_result import Evidence, ToolRunResult, ToolRunStatus
 
 
 class CloudCommunicationPlugin(BasePlugin):
@@ -21,10 +21,18 @@ class CloudCommunicationPlugin(BasePlugin):
         super().__init__()
         self.name = "cloud_communication"
         self.description = "OAuth, cloud catalog synchronization, and approved external messaging"
+        self.auth_required = True
+        self.auth_type = "provider-specific OAuth/API token"
         self.oauth = OAuthCoordinator()
         self.actions = RemoteActionStore()
         self.catalog = RemoteCatalogStore()
         self.api = ProviderApi(self.oauth)
+
+    def probe_connection(self) -> PluginStateProbe:
+        return PluginStateProbe("unchecked", "클라우드 제공자와 계정을 선택한 실제 연결 검증이 필요합니다.")
+
+    def probe_authentication(self) -> PluginStateProbe:
+        return PluginStateProbe("unchecked", "제공자·계정별 인증이 필요합니다. 토큰 저장 여부만으로 실제 인증을 보장하지 않습니다.")
 
     def diagnose(self) -> List[str]:
         issues = super().diagnose()
@@ -64,12 +72,19 @@ class CloudCommunicationPlugin(BasePlugin):
                 "type": "object", "properties": {"action_id": {"type": "string", "minLength": 1}},
                 "required": ["action_id"], "additionalProperties": False,
             }, ["external_send"], side_effect="external_send"),
-            ToolSchema("cloud_sync_catalog", "Drive, OneDrive 또는 Notion 메타데이터를 로컬 카탈로그에 동기화합니다.", {
+            ToolSchema("cloud_sync_catalog", "Drive/OneDrive/Notion 메타데이터를 제한된 페이지 수로 조회합니다. 부분/재개/필터 조회는 기존 항목을 보존하며 본문이나 RAG를 동기화하지 않습니다.", {
                 "type": "object", "properties": {**provider_account,
                     "provider": {"enum": ["google_drive", "onedrive", "notion"]},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100,
+                              "description": "페이지 크기(기본 50). 전체 항목 제한이 아닙니다."},
+                    "max_pages": {"type": "integer", "minimum": 1, "maximum": 10,
+                                  "description": "한 호출의 페이지 예산(기본 5)."},
+                    "cursor": {"type": "string", "maxLength": 65536,
+                               "description": "이전 결과의 next_cursor를 그대로 전달합니다. 제공자/계정/query를 바꾸지 않습니다."},
+                    "query": {"type": "string", "maxLength": 4096,
+                              "description": "선택적 Drive q 표현식 또는 Notion 제목 검색. OneDrive는 지원하지 않습니다."}},
                 "required": ["provider", "account"], "additionalProperties": False,
-            }, ["cloud_read"], side_effect="change"),
+            }, ["cloud_read"], side_effect="change", timeout_seconds=90, cancellable=True, max_retries=0),
             ToolSchema("communication_read_summary", "Slack 또는 Teams 메시지를 조회하고 간결한 근거 요약을 만듭니다.", {
                 "type": "object", "properties": {**provider_account,
                     "provider": {"enum": ["slack", "teams"]}, "channel": {"type": "string"},
@@ -114,6 +129,62 @@ class CloudCommunicationPlugin(BasePlugin):
                 "원격 부작용 가능성이 있어 같은 작업 ID의 재전송을 차단했습니다.",
                 detail,
             )],
+        )
+
+    def _sync_catalog(self, data: Dict[str, Any]) -> ToolRunResult:
+        from core.turn_context import check_turn_cancelled
+
+        context = self.get_execution_context()
+
+        def checkpoint():
+            check_turn_cancelled()
+            if context is not None:
+                context.raise_if_cancelled()
+
+        provider, account = data["provider"], data["account"]
+        revision = self.catalog.revision(provider, account)
+        result = self.api.sync(provider, account, data, check_cancelled=checkpoint)
+        if not isinstance(result, CatalogSyncResult):
+            raise RemoteRuntimeError("페이지 완료 증거가 없는 목록은 전체 동기화 결과로 저장하지 않습니다.")
+        detail = result.metadata()
+        detail.update({"count": 0, "remote_ids": [], "catalog_mode": "unchanged"})
+        try:
+            checkpoint()
+            if result.cancelled:
+                raise ToolCancelledError("카탈로그 조회가 취소되었습니다.")
+            ids = self.catalog.apply_sync(provider, account, result,
+                                          expected_revision=revision, check_cancelled=checkpoint)
+        except ToolCancelledError:
+            return ToolRunResult.cancelled(
+                tool_name="cloud_sync_catalog", message="카탈로그 조회를 취소했습니다. 기존 목록은 변경하지 않았습니다.",
+                evidence=[Evidence("cloud_catalog_partial", "취소로 저장하지 않은 조회 결과입니다.", detail)],
+            )
+        except Exception as exc:
+            # In-flight scans cannot overwrite a newer catalog, and failed
+            # transactions retain the complete old catalog.
+            detail["store_error"] = type(exc).__name__
+            return ToolRunResult.failed(
+                tool_name="cloud_sync_catalog", error="카탈로그 저장을 확정하지 못해 기존 목록을 보존했습니다.",
+                evidence=[Evidence("cloud_catalog_partial", "조회 결과를 저장하지 않았습니다.", detail)],
+            )
+        detail.update({"count": len(ids), "remote_ids": ids,
+                       "catalog_mode": "replaced" if result.full_snapshot else "merged",
+                       "deletions_deferred": bool(result.deleted_ids) and not result.full_snapshot})
+        if result.full_snapshot:
+            return self._success("cloud_sync_catalog",
+                                 f"접근 가능한 메타데이터 {len(ids)}개를 끝 페이지까지 조회해 카탈로그를 갱신했습니다. 본문/RAG는 포함하지 않습니다.",
+                                 "cloud_catalog", detail)
+        raw = (f"부분 조회 결과 {len(ids)}개를 병합하고 기존 항목은 보존했습니다. "
+               "전체 카탈로그 동기화 완료는 아닙니다. 본문/RAG는 포함하지 않습니다.")
+        if result.next_cursor:
+            raw += " 같은 제공자·계정·query와 next_cursor로 다음 페이지를 조회할 수 있습니다."
+        if result.resumed and result.complete:
+            raw += " 재개 조회의 끝에 도달했지만 이전 페이지를 합친 전체 스냅샷은 검증하지 않았습니다."
+        return ToolRunResult(
+            tool_name="cloud_sync_catalog",
+            status=ToolRunStatus.FAILED if result.error and not ids else ToolRunStatus.PARTIAL,
+            raw_output=raw, error=result.error or None,
+            evidence=[Evidence("cloud_catalog_partial", raw, detail)],
         )
 
     def execute_tool(self, tool_name: str, data: Dict[str, Any]):
@@ -188,10 +259,7 @@ class CloudCommunicationPlugin(BasePlugin):
                 return self._success(tool_name, "승인된 작업을 외부에 반영하고 원격 ID를 검증했습니다.",
                                      "remote_content_readback", detail)
             if tool_name == "cloud_sync_catalog":
-                items = self.api.sync(data["provider"], data["account"], data)
-                ids = self.catalog.replace(data["provider"], data["account"], items)
-                detail = {"provider": data["provider"], "count": len(ids), "remote_ids": ids}
-                return self._success(tool_name, f"원격 항목 {len(ids)}개를 동기화했습니다.", "cloud_catalog", detail)
+                return self._sync_catalog(data)
             if tool_name == "communication_read_summary":
                 messages = self.api.read_messages(data["provider"], data["account"], data)
                 normalized = []
