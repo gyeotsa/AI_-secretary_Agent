@@ -32,6 +32,9 @@
   120초 검수 timeout 전체는 아직 확정하지 않았다. 사용자 .env를 임의 변경하지 않았다.
 - compileall/pip check/git diff --check 통과. 구현·검사·문서 변경만 커밋하고 사용자 DB/볼트/
   임시 테스트·XML 산출물은 제외한다.
+- 구현 커밋: `0bf646448ecfd7bfc185ebf6ca9115961b1859da`
+  (`[Feat] 네이버 메일 암호화 계정 UI와 안전한 실행 연결`, 15개 파일).
+  Author/Committer 모두 gyeotsa <gyeotsa@users.noreply.github.com> 확인. 원격 push/배포는 하지 않았다.
 
 
 ## 2026-09-14 답변 수락·클라우드/계정 보안·네이버 메일
