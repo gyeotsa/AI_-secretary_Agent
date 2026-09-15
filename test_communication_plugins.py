@@ -2,6 +2,12 @@ from plugins.calendar import CalendarPlugin
 from plugins.mail import MailPlugin
 from core.verifier import ToolVerifier
 from core.tool_result import ToolRunResult
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_account_store(monkeypatch, tmp_path):
+    monkeypatch.setattr("config.Config.DB_PATH", str(tmp_path / "isolated.db"))
 
 
 def test_calendar_creates_standard_ics(tmp_path, monkeypatch):

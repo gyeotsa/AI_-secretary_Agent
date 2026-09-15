@@ -7,7 +7,8 @@ from plugins.mail import MailPlugin
 
 
 @pytest.fixture(autouse=True)
-def clean_mail_environment(monkeypatch):
+def clean_mail_environment(monkeypatch, tmp_path):
+    monkeypatch.setattr("config.Config.DB_PATH", str(tmp_path / "isolated.db"))
     for key in ("MAIL_PROVIDER", "MAIL_FROM", "MAIL_SMTP_HOST", "MAIL_SMTP_PORT",
                 "MAIL_SMTP_USERNAME", "MAIL_SMTP_PASSWORD", "MAIL_SMTP_SECURITY",
                 "MAIL_IMAP_HOST", "MAIL_IMAP_PORT", "MAIL_IMAP_USERNAME", "MAIL_IMAP_PASSWORD"):

@@ -873,13 +873,28 @@ class PluginDiagnosticsDialog(QDialog):
         layout.addWidget(self.details, 1)
         buttons = QHBoxLayout()
         refresh = QPushButton("새로 진단")
+        self.mail_account_button = QPushButton("네이버 메일 연결")
+        self.mail_account_button.setAutoDefault(False)
+        self.mail_account_button.clicked.connect(self._open_mail_account)
         close = QPushButton("닫기")
         refresh.clicked.connect(self.refresh)
         close.clicked.connect(self.accept)
         buttons.addStretch()
+        buttons.addWidget(self.mail_account_button)
         buttons.addWidget(refresh)
         buttons.addWidget(close)
         layout.addLayout(buttons)
+        self.refresh()
+
+    def _open_mail_account(self):
+        from ui.mail_account_dialog import MailAccountDialog
+        plugin = self.plugin_registry.get_plugin("mail")
+        if plugin is None or not hasattr(plugin, "get_account_service"):
+            QMessageBox.warning(self, "네이버 메일 연결", "메일 플러그인이 등록되지 않았습니다. 플러그인 설정을 확인하세요.")
+            return
+        dialog = MailAccountDialog(plugin.get_account_service(), self)
+        dialog.settings_changed.connect(self.refresh)
+        dialog.exec()
         self.refresh()
 
     @staticmethod

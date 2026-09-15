@@ -12,12 +12,13 @@ from typing import Any, Dict, List
 from core.harness import SafetyLayer
 from core.plugin import BasePlugin, ToolSchema, ToolCancelledError
 from core.mail_runtime import ImapReader, ImapSettings, MailReadError
+from core.mail_accounts import MailAccountService
 from core.turn_context import check_turn_cancelled
 from core.tool_result import Artifact, Evidence, ToolRunResult
 
 
 class MailPlugin(BasePlugin):
-    def __init__(self):
+    def __init__(self, account_service=None):
         super().__init__()
         self.name = "mail"
         self.description = "IMAP 받은편지함/본문 읽기, 승인된 SMTP 전송과 로컬 메일 초안 저장. MAIL_PROVIDER=naver 지원"
@@ -25,16 +26,37 @@ class MailPlugin(BasePlugin):
         self.auth_type = "IMAP/SMTP 계정 설정(각 프로토콜의 실제 인증은 별도)"
         self._smtp_connected = False
         self._smtp_authenticated = False
+        self._account_service = account_service
+
+    def get_account_service(self):
+        if self._account_service is None:
+            self._account_service = MailAccountService()
+        return self._account_service
+
+    def _local_configuration(self):
+        try:
+            status = self.get_account_service().status()
+            if status["configured"]:
+                return True
+            return None if status["reason"] == "not_configured" else False
+        except Exception:
+            # Corrupt/unreadable saved credentials must never select a different
+            # environment account as a silent recovery strategy.
+            return False
 
     def is_connected(self):
         # Each operation opens/closes its own session. Past SMTP success does
         # not prove a current IMAP connection or a changed account's readiness.
-        configured = any(os.getenv(name) for name in ("MAIL_SMTP_HOST", "MAIL_IMAP_HOST", "MAIL_PROVIDER"))
+        local = self._local_configuration()
+        configured = (local if local is not None else
+                      any(os.getenv(name) for name in ("MAIL_SMTP_HOST", "MAIL_IMAP_HOST", "MAIL_PROVIDER")))
         return None if configured else False
 
     def is_authenticated(self):
-        configured = any(all(os.getenv(f"MAIL_{protocol}_{name}") for name in ("USERNAME", "PASSWORD"))
-                         for protocol in ("SMTP", "IMAP"))
+        local = self._local_configuration()
+        configured = (local if local is not None else
+                      any(all(os.getenv(f"MAIL_{protocol}_{name}") for name in ("USERNAME", "PASSWORD"))
+                          for protocol in ("SMTP", "IMAP")))
         # Credentials being present is configuration readiness, not proof that
         # the SMTP server accepted them.
         return None if configured else False
@@ -70,8 +92,8 @@ class MailPlugin(BasePlugin):
         ]
 
     @staticmethod
-    def _message(data: Dict[str, Any], require_sender: bool = False) -> EmailMessage:
-        sender = os.getenv("MAIL_FROM") or os.getenv("MAIL_SMTP_USERNAME")
+    def _message(data: Dict[str, Any], require_sender: bool = False, *, sender=None) -> EmailMessage:
+        sender = sender if sender is not None else (os.getenv("MAIL_FROM") or os.getenv("MAIL_SMTP_USERNAME"))
         if require_sender and not sender:
             raise ValueError("MAIL_FROM 또는 MAIL_SMTP_USERNAME 설정이 필요합니다.")
         message = EmailMessage()
@@ -85,14 +107,24 @@ class MailPlugin(BasePlugin):
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
         send_started = False
         try:
+            account_checked = False
+            credentials = None
             def checkpoint():
                 check_turn_cancelled()
                 context = self.get_execution_context()
                 if context is not None:
                     context.raise_if_cancelled()
+                if account_checked:
+                    self.get_account_service().check_revision(credentials)
+
+            if tool_name in {"mail_list_inbox", "mail_read_message", "mail_send_smtp"}:
+                checkpoint()
+                credentials = self.get_account_service().credentials()
+                account_checked = True
 
             if tool_name in {"mail_list_inbox", "mail_read_message"}:
-                reader = ImapReader(ImapSettings.from_environment(), checkpoint=checkpoint)
+                settings = credentials.imap_settings() if credentials else ImapSettings.from_environment()
+                reader = ImapReader(settings, checkpoint=checkpoint)
                 detail = (reader.list_inbox(**tool_input) if tool_name == "mail_list_inbox"
                           else reader.read_message(**tool_input))
                 return ToolRunResult.successful(tool_name=tool_name,
@@ -100,7 +132,12 @@ class MailPlugin(BasePlugin):
                     evidence=[Evidence("imap_read_only", "IMAP EXAMINE/BODY.PEEK로 받은편지함을 변경 없이 조회했습니다.",
                         {key: value for key, value in detail.items() if key not in {"body", "headers", "items"}})])
             if tool_name == "mail_create_draft":
-                message = self._message(tool_input)
+                local = self.get_account_service().status()
+                if local["configured"]:
+                    sender = self.get_account_service().credentials().sender
+                else:
+                    sender = None if local["reason"] == "not_configured" else ""
+                message = self._message(tool_input, sender=sender)
                 path = Path(str(tool_input["path"])).expanduser().resolve()
                 ok, error = SafetyLayer.validate_path(str(path))
                 if not ok:
@@ -130,19 +167,20 @@ class MailPlugin(BasePlugin):
             if tool_name == "mail_send_smtp":
                 self._smtp_connected = self._smtp_authenticated = False
                 checkpoint()
-                message = self._message(tool_input, require_sender=True)
-                naver = os.getenv("MAIL_PROVIDER", "").strip().lower() == "naver"
-                host = os.getenv("MAIL_SMTP_HOST") or ("smtp.naver.com" if naver else "")
-                username = os.getenv("MAIL_SMTP_USERNAME")
-                password = os.getenv("MAIL_SMTP_PASSWORD")
+                message = self._message(tool_input, require_sender=True,
+                                        sender=credentials.sender if credentials else None)
+                naver = bool(credentials) or os.getenv("MAIL_PROVIDER", "").strip().lower() == "naver"
+                host = "smtp.naver.com" if credentials else (os.getenv("MAIL_SMTP_HOST") or ("smtp.naver.com" if naver else ""))
+                username = credentials.username if credentials else os.getenv("MAIL_SMTP_USERNAME")
+                password = credentials.password if credentials else os.getenv("MAIL_SMTP_PASSWORD")
                 if not all((host, username, password)):
                     raise MailReadError("MAIL_SMTP_HOST/USERNAME/PASSWORD 설정이 필요합니다.")
-                mode = os.getenv("MAIL_SMTP_SECURITY") or ("starttls" if naver else "ssl")
+                mode = "starttls" if credentials else (os.getenv("MAIL_SMTP_SECURITY") or ("starttls" if naver else "ssl"))
                 mode = mode.strip().lower()
                 if mode not in {"ssl", "starttls"}:
                     raise MailReadError("MAIL_SMTP_SECURITY는 ssl 또는 starttls여야 합니다. 평문 전송은 지원하지 않습니다.")
                 try:
-                    port = int(os.getenv("MAIL_SMTP_PORT") or ("587" if mode == "starttls" else "465"))
+                    port = 587 if credentials else int(os.getenv("MAIL_SMTP_PORT") or ("587" if mode == "starttls" else "465"))
                 except ValueError:
                     raise MailReadError("SMTP 포트는 정수여야 합니다.") from None
                 if not 1 <= port <= 65535:

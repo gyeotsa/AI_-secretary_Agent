@@ -1,6 +1,6 @@
 # ANIS 전 영역 완료 원장
 
-기준일: 2026-09-14. 이 문서는 **현재 PC에서 소스로 실행하는 ANIS 전체 제품**의 완료 조건을 추적한다. 공통 런타임 한 배치의 진척, 테스트 통과 개수, 모델 설치 상태를 전체 제품 완성도로 환산하지 않는다.
+기준일: 2026-09-15. 이 문서는 **현재 PC에서 소스로 실행하는 ANIS 전체 제품**의 완료 조건을 추적한다. 공통 런타임 한 배치의 진척, 테스트 통과 개수, 모델 설치 상태를 전체 제품 완성도로 환산하지 않는다.
 
 ## 1. 범위와 현재 결론
 
@@ -28,6 +28,11 @@
 행을 닫으려면 필요한 네 게이트를 모두 충족해야 한다. 게이트를 적용하지 않는 경우에는 그 이유와 사용자 범위 결정을 남긴다. 증거가 삭제·변조·만료됐거나 관련 코드/모델/계정 조건이 바뀌면 영향받는 게이트만 다시 연다. R27과 O01–O06, 시각 영역 R24와 U03–U08은 상위/하위 연결이므로 표본이나 성공 수를 중복 합산하지 않는다.
 
 ## 3. 최신 증거와 알려진 반례
+
+9월 15일 네이버 메일 계정 UI/DPAPI 저장/실제 플러그인 연결 뒤 전체 지정 회귀는
+**2848 passed, 17 skipped, 11 deselected (163.15초)**다. 계정 서비스 135개, Qt offscreen
+24개와 실제 플러그인 통합 검사를 포함한다. 실제 네이버 로그인/도착이나 캘린더·장치 수락은 아니다.
+Windows 화면 조작 도구가 초기화 ACL 오류로 실패해 실제 UI 조작은 미실행이다.
 
 9월 14일 통합 작업 트리의 지정 전체 회귀는 **2674 passed, 17 skipped, 11 deselected (218.75초)**다.
 기본 디렉터리 재귀 수집 대신 pytest.ini의 전체 파일을 명시해 과거 접근 불가 임시 폴더를 건드리지
@@ -134,7 +139,7 @@ R22/R19/U11은 하나의 “클라우드 연결 완료”로 닫지 않는다. �
 
 | 서비스 | 현재 실행 경로 | 다음 구현/검증 경계 |
 | --- | --- | --- |
-| 네이버 | `core/mail_runtime.py`, `plugins/mail.py`: 읽기 전용 받은편지함/본문 + 승인 SMTP/STARTTLS. 공개 검색 URL 경로도 유지 | 메일·캘린더 우선. 현재 명시적 로컬 설정 기반, 계정 UI/실접속 미검증. 캘린더 공식 API/CalDAV 제약과 다음 작업은 NAVER_INTEGRATION.md 참조 |
+| 네이버 | `core/mail_runtime.py`, `plugins/mail.py`: 읽기 전용 받은편지함/본문 + 승인 SMTP/STARTTLS. `core/mail_accounts.py`, `ui/mail_account_dialog.py`: DPAPI 단일 계정 UI/인증 전용 검사/로컬 해제와 실제 실행 연결 | 메일·캘린더 우선. UI/서비스 오프라인 계약 검증, 실제 로그인·도착은 미검증. 캘린더 공식 API/CalDAV 제약과 다음 작업은 NAVER_INTEGRATION.md 참조 |
 | 구글 | `plugins/cloud_communication.py`, `core/remote_runtime.py`: OAuth 백엔드, 승인 Gmail 전송, Calendar 생성/읽기, Drive 메타데이터 | 일반 연결 UI/callback, Gmail 받은편지함/검색, Calendar 다중 페이지, Drive 본문/RAG와 실제 계정 검증 필요 |
 | 깃허브 | `plugins/git.py`: 로컬 저장소 Git status/diff/log/commit/push/pull | GitHub 계정 상태·Issues/PR/CI 전용 API/CLI 경로 없음. 기존 Git 인증을 GitHub 연결 검증으로 간주하지 않음 |
 | 카카오톡 | `core/desktop_messaging.py`: Windows 대상/입력창 확인, 승인 전송, 새 발신 말풍선 비교 | 형택 실제 도착 수락, 비전송 준비 상태 진단. 대화 기록 검색·첨부·그룹·서버 수신 영수증은 현재 계약과 별개 |
