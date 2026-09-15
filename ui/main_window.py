@@ -17,6 +17,7 @@ from .knowledge_graph_workspace import KnowledgeGraphWindow
 from .command_center import CommandCenterDialog
 from .brain_orbit import BrainOrbitWidget
 from .gesture_settings import GestureSettingsDialog
+from .dialog_theme import apply_dark_dialog_theme
 
 MAIN_STYLE = """
 QWidget { color: #dce8f5; font-family: "Segoe UI"; font-size: 12px; }
@@ -858,12 +859,14 @@ class PluginDiagnosticsDialog(QDialog):
 
     def __init__(self, plugin_registry, parent=None):
         super().__init__(parent)
+        apply_dark_dialog_theme(self)
         self.plugin_registry = plugin_registry
         self.setWindowTitle("Plugin 상태 및 진단")
         self.resize(760, 520)
         layout = QVBoxLayout(self)
         guide = QLabel("등록 · 설치 · 연결 · 인증 · 계약 · 실제 실행 검증은 서로 다른 상태입니다.")
-        guide.setStyleSheet("color: #00d4ff; padding: 6px;")
+        guide.setObjectName("dialogGuide")
+        guide.setWordWrap(True)
         layout.addWidget(guide)
         self.plugin_list = QListWidget()
         self.plugin_list.currentItemChanged.connect(self._show_details)

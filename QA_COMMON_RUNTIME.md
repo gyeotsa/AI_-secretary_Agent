@@ -1,4 +1,32 @@
-# 공통 에이전트 런타임 개선 — 2026-09-08~15
+# 공통 에이전트 런타임 개선 — 2026-09-08~16
+
+## 2026-09-16 P 진단·메일 창 대비와 로컬 연결 지연 점검
+
+- P 진단 창은 메인 창의 밝은 글자색만 상속하고 Windows의 흰색 기본 배경을 남겼다.
+  `ui/dialog_theme.py`의 명시적 배경/글자/입력/선택/비활성/스크롤바 팔레트와 QSS를
+  PluginDiagnosticsDialog, MailAccountDialog에 한정 적용했다. 앱 전체/Windows 테마는 바꾸지 않는다.
+- 밝은 팔레트의 Windows/Fusion 스타일에서 부모 유무, 메인 QSS 상속, 비활성 선택,
+  안내문/비밀번호 입력, 비활성 버튼, 실제 static QMessageBox를 Qt offscreen 렌더링했다.
+  텍스트 대비 4.5 이상을 검사하고 실제 한글 PNG 3종을 눈으로 확인했다.
+  offscreen Qt의 시스템 폰트 목록이 비어 있어 테스트 프로세스에서만 맑은 고딕/Segoe UI를
+  로드했다. 한글 글리프 검사와 모달 테스트 watchdog도 포함한다. 실제 사용자 창 조작 수락은 아니다.
+- 테마 단독 25 passed, 테마+메일 UI+연결+장치 UI 집중 67 passed/1 deselected(8.09초).
+  이전 샘플 좌표가 수평 viewport 밖에 있던 테스트와 QMessageBox.done 호출의 잘못된
+  테스트 전제는 visible rect/No 버튼으로 수정했다. 별도 리뷰의 49 passed와 합산하지 않는다.
+- 격리 실제 JarvisApp `5ppncuo2`: offscreen 시작 39.75초, STT not_loaded/model_loaded=false,
+  마이크·카메라·TTS OFF, exit_code=0/shutdown_errors=[]. 시작 시간이 이전 11.08초보다
+  길었으며 원인을 이번 표본으로 단정하지 않는다. 사용자 DB/계정은 사용하지 않았다.
+- 로컬 모델 연결 조사(전일 실행): localhost resolver는 0.37~0.45ms로 빨랐으나 ::1:11434는
+  2026~2029ms 뒤 WSAECONNREFUSED 10061, 127.0.0.1 연결은 0.3~14.6ms였다.
+  GET /api/version requests: localhost 2031~2060ms / IPv4 1.5~19.7ms;
+  새 httpx.AsyncClient 경로: localhost 253~266ms / IPv4 1.5~2.9ms(클라이언트 생성 약9ms 별도).
+  IPv6 미수신 뒤 IPv4로 넘어가는 비용을 재현했으며 DNS 자체 지연은 아니다.
+  활성 턴에 2초 비용을 그대로 적용하거나 120초 검수 timeout 전체 원인이라고 하지 않는다.
+- 단일 IPv4 Ollama 구성이라면 명시적으로 `OLLAMA_BASE_URL=http://127.0.0.1:11434`를
+  선택하는 것이 후보 해결책이다. transport 내부에서 localhost를 자동 치환하지 않았다.
+  구성된 endpoint/Host/proxy/TLS 의미를 보존하며 실제 .env/사용자 설정은 변경하지 않았다.
+  독립 transport 회귀 18 passed(1.08초); 모델 생성/외부 네트워크는 이 연결 측정에 없었다.
+
 
 ## 2026-09-15 네이버 계정 설정 후속
 

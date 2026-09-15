@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.plugin import ToolCancelledError
+from .dialog_theme import apply_dark_dialog_theme
 
 
 # A parent window may itself be destroyed while an SSL operation is finishing.
@@ -69,6 +70,7 @@ class MailAccountDialog(QDialog):
 
     def __init__(self, service, parent=None):
         super().__init__(parent)
+        apply_dark_dialog_theme(self)
         self.service = service
         self._worker = None
         self._pending_outcome = None
