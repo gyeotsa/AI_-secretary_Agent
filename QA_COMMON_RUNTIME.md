@@ -2,6 +2,38 @@
 
 ## 2026-09-16 P 진단·메일 창 대비와 로컬 연결 지연 점검
 
+- 전체 지정 회귀: **2944 passed, 17 skipped, 12 deselected (261.81초)**, exit_code=0.
+  XML은 `tmp/qa-sep16-all-results.xml`(커밋 제외). skip은 Windows symlink 생성 권한8개와
+  Tool Intent 변형 검사에 해당하지 않는 대화9개다. 별도 integration12개는 선택에서 제외됐다.
+  compileall/pip check/git diff --check 통과. 실제 계정·장치 수락 완료와는 별개다.
+- 실제 Executor 답변 검사 `_03h9ymq`는 **실패**했다. qwen2.5-coder:7b-instruct의 초안
+  생성(prose/context8192/output4096) 첫 호출이120.281초 후 Timeout, 프로세스 exit_code=1.
+  새 검수 단계에 도달하지 않았고 답변도 생성되지 않았다. 검수 예산이 일반 생성timeout을
+  줄이지 않았다는 경계가 실측됐다. 모델 로딩/서버 실행 원인은 미확정이며 재시도 성공으로
+  덮지 않는다. 120초 원인을 IPv6의250ms 비용으로 설명하지 않는다.
+- 고정 합성 초안(재귀 예제3개)을 검수 서비스에 직접 전달한 별도 실제 표본:
+  qwen2.5:7b-instruct / keyed schema / context8192 / output1536, 활성turn에서 호출했다.
+  해당 프로세스만 IPv4 endpoint를 선택했다(사용자 설정 불변). 검수 호출38.250초에 Timeout,
+  전체50.031초, status=unverified/critique_calls=1/repair_calls=0,
+  review_budget_exhausted/original_preserved=true/code_executed=false를 확인했다.
+  이는 예산 만료 뒤 추가 호출 방지·원문 보존의 실증이며 검수 정확도/응답 성공이 아니다.
+  클라이언트 초기화·QA준비를 포함한 전체 경과는45초를 넘을 수 있고 절대 wall-clock 제한이 아니다.
+  임시 Python 출력의 한글은 콘솔 인코딩이 깨져 문구 시각 검증으로 사용하지 않았다.
+  추후 고정 초안 검사를 UTF-8 출력의 정식 QA harness로 옮기는 것이 안전하다.
+- 검수 전용 `AnswerReviewPolicy`를 추가했다. 기본 45초의 공통 수락 예산과 검수 출력1536/
+  교정 출력4096토큰 한도를 사용한다. 더 작은 역할별 출력 한도는 키우지 않는다.
+  Ollama의 호출별 request_timeout/max_output_tokens override만 사용하고 기존 일반 생성의
+  timeout120/역할별 profile·keep_alive/사용자 설정을 바꾸지 않는다.
+- 검수→교정→재검수의 각 호출 직전/직후와 최종 판정에서 monotonic 기한을 확인한다.
+  예산 소진 후 새 호출/늦은 passed를 허용하지 않고 가용 초안과 고정 오류코드를 보존한다.
+  교정 후 재검수 실패 시 이전 실패 이유는 이전 초안 이력으로 구분하며 새 후보의 실패 판정으로
+  재사용하지 않는다. turn context 없이 client가 직접 내는 취소도 만료보다 우선한다.
+- requests/httpx timeout은 대기/비활동 제한이지 절대 wall-clock 강제 종료가 아니다.
+  주입 클라이언트가 timeout 인자를 지원하지 않으면 호출 전후 수락 검사만 받는다.
+  스레드 강제 종료/분리 작업/자동 재시도는 추가하지 않았다. 정확도나 모든 지연 해결이 아니다.
+- 답변·LLM·취소·전송·대화 보정·trace 집중8파일 **356 passed(28.39초)**.
+  가짜 시계로 initial/repair/recheck 이전 만료, 늦은 성공/오류, 취소 경합, 기준/초안 보존,
+  per-call 한도/일반 호출 불변을 대조했다. 전체 회귀·실제 모델 검증은 별도 기록한다.
 - P 진단 창은 메인 창의 밝은 글자색만 상속하고 Windows의 흰색 기본 배경을 남겼다.
   `ui/dialog_theme.py`의 명시적 배경/글자/입력/선택/비활성/스크롤바 팔레트와 QSS를
   PluginDiagnosticsDialog, MailAccountDialog에 한정 적용했다. 앱 전체/Windows 테마는 바꾸지 않는다.

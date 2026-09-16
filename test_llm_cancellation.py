@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from core.llm import AnthropicClient, HybridLLMClient, OllamaClient
+from core.llm import AnthropicClient, HybridLLMClient, ModelCallError, OllamaClient
 from core.plugin import ToolCancelledError
 from core.turn_context import TurnExecutionContext, bind_turn_context
 from test_hybrid_llm import FakeClient
@@ -79,3 +79,88 @@ def test_anthropic_cancellation_is_not_wrapped(method):
     client.client = SimpleNamespace(messages=SimpleNamespace(create=create))
     with bind_turn_context(context), pytest.raises(ToolCancelledError):
         getattr(client, method)([{"role": "user", "content": "hello"}])
+
+
+def _offline_ollama(profile_limit=4096):
+    from core.model_registry import ModelProfile
+    client = object.__new__(OllamaClient)
+    client.model = "test-only"
+    client.base_url = "http://127.0.0.1:1"
+    client.system_prompt = ""
+    client.profile = ModelProfile("reasoning", "test-only", 0.1, profile_limit, "5m")
+    return client
+
+
+@pytest.mark.parametrize("profile_limit,expected", [(4096, 1536), (512, 512), (-1, 1536), (-2, 1536)])
+def test_call_limits_tighten_profile_without_changing_defaults(monkeypatch, profile_limit, expected):
+    calls = []
+    client = _offline_ollama(profile_limit)
+    profile = client.profile
+
+    class Response:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"message": {"content": "complete"}, "done": True}
+
+    def post(url, *, json, timeout):
+        calls.append((json, timeout))
+        return Response()
+
+    monkeypatch.setattr("core.llm.post_json", post)
+    assert client.chat_structured([], {"type": "object"}, context_window=8192,
+        request_timeout=4.5, max_output_tokens=1536) == "complete"
+    assert calls[0][1] == 4.5
+    assert calls[0][0]["options"]["num_predict"] == expected
+    assert calls[0][0]["options"]["num_ctx"] == 8192
+    assert calls[0][0]["format"] == {"type": "object"}
+    assert client.chat([]) == "complete"
+    assert client.chat_prose([]) == "complete"
+    assert all(payload["options"]["num_predict"] == profile_limit and timeout == 120
+               for payload, timeout in calls[1:])
+    assert client.profile is profile and profile.max_tokens == profile_limit
+    assert profile.keep_alive == "5m"
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, float("nan"), float("inf"), -float("inf"), "3", (1, 2), 10 ** 400])
+def test_invalid_call_timeout_is_rejected_before_dispatch(monkeypatch, value):
+    monkeypatch.setattr("core.llm.post_json", lambda *a, **k: pytest.fail("invalid timeout dispatched"))
+    with pytest.raises(ValueError, match="positive finite number"):
+        _offline_ollama().chat_structured([], request_timeout=value)
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, 1.5, float("nan"), float("inf"), "1536"])
+def test_invalid_call_output_limit_is_rejected_before_dispatch(monkeypatch, value):
+    monkeypatch.setattr("core.llm.post_json", lambda *a, **k: pytest.fail("invalid output limit dispatched"))
+    with pytest.raises(ValueError, match="positive integer"):
+        _offline_ollama().chat_structured([], max_output_tokens=value)
+
+
+def test_cancelled_call_takes_precedence_over_invalid_limit(monkeypatch):
+    monkeypatch.setattr("core.llm.post_json", lambda *a, **k: pytest.fail("cancelled call dispatched"))
+    context = TurnExecutionContext("cancelled-limited-call", "test")
+    with bind_turn_context(context), pytest.raises(ToolCancelledError):
+        context.cancel()
+        _offline_ollama().chat_structured([], request_timeout=0, max_output_tokens=0)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_output_limit_truncation_never_becomes_completed_text(monkeypatch, cancel):
+    context = TurnExecutionContext("limited-output", "test")
+
+    class Response:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"message": {"content": "partial"}, "done_reason": "length"}
+
+    def post(*args, **kwargs):
+        if cancel:
+            context.cancel()
+        return Response()
+
+    monkeypatch.setattr("core.llm.post_json", post)
+    with bind_turn_context(context), pytest.raises(ToolCancelledError if cancel else ModelCallError) as raised:
+        _offline_ollama().chat_structured([], request_timeout=1, max_output_tokens=2)
+    if not cancel:
+        assert raised.value.code == "truncated_output"

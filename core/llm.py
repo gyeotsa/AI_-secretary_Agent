@@ -1,6 +1,7 @@
 import anthropic
 import requests
 import json
+import math
 import re
 import time
 from typing import Tuple, List, Dict, Any, Optional
@@ -462,13 +463,36 @@ class OllamaClient(BaseLLMClient):
             return False
 
     def chat_structured(self, messages: List[Dict], json_schema: Optional[Dict] = None,
-                        *, context_window: Optional[int] = None) -> str:
-        return self._chat(messages, json_schema, context_window=context_window)
+                        *, context_window: Optional[int] = None,
+                        request_timeout: Optional[float] = None,
+                        max_output_tokens: Optional[int] = None) -> str:
+        """Call-local limits; never mutate the shared role profile.
+
+        The transport timeout bounds inactivity, not total wall-clock time.
+        Callers with an acceptance deadline must also check it after return.
+        """
+        return self._chat(messages, json_schema, context_window=context_window,
+                          request_timeout=request_timeout, max_output_tokens=max_output_tokens)
 
     def _chat(self, messages: List[Dict], json_schema: Optional[Dict] = None,
-              *, context_window: Optional[int] = None, prose: bool = False) -> str:
+              *, context_window: Optional[int] = None, prose: bool = False,
+              request_timeout: Optional[float] = None,
+              max_output_tokens: Optional[int] = None) -> str:
         metric_started = time.perf_counter()
         check_turn_cancelled()
+        if request_timeout is not None:
+            try:
+                valid_timeout = (not isinstance(request_timeout, bool)
+                                 and isinstance(request_timeout, (int, float))
+                                 and math.isfinite(request_timeout) and request_timeout > 0)
+            except OverflowError:
+                valid_timeout = False
+            if not valid_timeout:
+                raise ValueError("request_timeout must be a positive finite number")
+        if max_output_tokens is not None and (
+                isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int)
+                or max_output_tokens <= 0):
+            raise ValueError("max_output_tokens must be a positive integer")
         try:
             # 역할을 하나의 문자열로 평탄화하면 작은 로컬 모델이 최근 사용자
             # 발화와 과거 assistant 응답을 혼동하기 쉽다. Ollama의 chat
@@ -508,11 +532,19 @@ class OllamaClient(BaseLLMClient):
             if json_schema:
                 payload["format"] = json_schema
 
+            if max_output_tokens is not None:
+                # A call may tighten, but never enlarge, a positive role limit.
+                # Ollama's non-positive sentinel values are not finite caps.
+                profile_limit = self.profile.max_tokens
+                payload["options"]["num_predict"] = (
+                    min(profile_limit, max_output_tokens) if profile_limit > 0 else max_output_tokens
+                )
+
             check_turn_cancelled()
             response = post_json(
                 f"{self.base_url}/api/chat",
                 json=payload,
-                timeout=120
+                timeout=120 if request_timeout is None else request_timeout
             )
             # Transport aborts active turn requests on cancellation. Retain the
             # checkpoint for a cancellation concurrent with successful return.

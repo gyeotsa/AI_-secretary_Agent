@@ -5,7 +5,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from core.answer_verification import (
-    AnswerVerificationService, build_answer_contract, requires_answer_review,
+    AnswerReviewPolicy, AnswerVerificationService, build_answer_contract, requires_answer_review,
 )
 from core.plugin import ToolCancelledError
 from core.turn_context import TurnExecutionContext, bind_turn_context
@@ -411,8 +411,10 @@ def test_local_critic_and_repair_use_bounded_context_and_private_release_profile
         client.role = role
         client.profile = shared[role]
 
-    def structured(client, messages, json_schema=None, *, context_window=None):
-        calls.append((client.role, client.profile, context_window, json_schema))
+    def structured(client, messages, json_schema=None, *, context_window=None,
+                   request_timeout=None, max_output_tokens=None):
+        calls.append((client.role, client.profile, context_window, json_schema,
+                      request_timeout, max_output_tokens))
         if client.role == "code":
             return repaired
         return reviewer.chat_structured(messages, json_schema)
@@ -428,8 +430,10 @@ def test_local_critic_and_repair_use_bounded_context_and_private_release_profile
     assert text == repaired and review.status == "passed"
     assert [call[0] for call in calls] == ["reasoning", "code", "reasoning"]
     assert all(profile.keep_alive == "0" and profile is not shared[role] and context == 8192
-               for role, profile, context, schema in calls)
+               for role, profile, context, schema, timeout, output in calls)
     assert all(profile.keep_alive == "5m" for profile in shared.values())
+    assert all(0 < call[4] <= 45 for call in calls)
+    assert [call[5] for call in calls] == [1536, 4096, 1536]
     assert calls[1][3] is None
     assert calls[0][3]["properties"]["criteria"]["maxProperties"] == 2
 
@@ -448,3 +452,255 @@ def test_duplicate_json_object_keys_never_silently_override_a_review():
     _, review = service(Reviewer(raw)).verify(build_answer_contract("코드를 설명해줘"), examples(1))
     assert review.status == "unverified"
     assert "duplicate_json_key" in review.issues[0]
+
+
+class ReviewClock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+def test_review_policy_defaults_are_immutable_and_separate_from_role_settings():
+    policy = AnswerReviewPolicy()
+    assert (policy.total_seconds, policy.critique_max_tokens, policy.repair_max_tokens) == (45, 1536, 4096)
+    with pytest.raises(FrozenInstanceError):
+        policy.total_seconds = 1
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, float("nan"), float("inf"), -float("inf"), "45", 10 ** 400])
+def test_review_policy_rejects_invalid_time(value):
+    with pytest.raises(ValueError, match="positive finite number"):
+        AnswerReviewPolicy(total_seconds=value)
+
+
+@pytest.mark.parametrize("name", ["critique_max_tokens", "repair_max_tokens"])
+@pytest.mark.parametrize("value", [True, False, 0, -1, 1.5, float("nan"), float("inf"), "1536"])
+def test_review_policy_rejects_invalid_output_limits(name, value):
+    with pytest.raises(ValueError, match="positive integer"):
+        AnswerReviewPolicy(**{name: value})
+
+
+@pytest.mark.parametrize("stage", ["initial", "repair", "recheck"])
+def test_expired_factory_never_dispatches_the_next_call(stage):
+    clock = ReviewClock()
+    reviewer = Reviewer("failed", "passed")
+    repairer = Repairer(examples(1).replace("else n", "else n + 1"))
+    factories = []
+
+    def reviewer_factory():
+        kind = "initial" if not reviewer.calls else "recheck"
+        factories.append(kind)
+        if kind == stage:
+            clock.advance(45)
+        return reviewer
+
+    def repairer_factory():
+        factories.append("repair")
+        if stage == "repair":
+            clock.advance(45)
+        return repairer
+
+    verifier = AnswerVerificationService(reviewer_factory, repairer_factory, clock=clock)
+    draft = examples(1)
+    text, review = verifier.verify(build_answer_contract("코드 설명해줘"), draft)
+    assert review.status == "unverified"
+    assert any("review_budget_exhausted" in issue for issue in review.issues)
+    expected = {"initial": (0, 0), "repair": (1, 0), "recheck": (1, 1)}[stage]
+    assert (review.critique_calls, review.repair_calls) == expected
+    assert (len(reviewer.calls), len(repairer.calls)) == expected
+    assert factories[-1] == stage
+    if stage == "recheck":
+        assert text.endswith(repairer.value) and not review.criteria_results
+        assert any(issue.startswith("이전 초안 검수:") for issue in review.issues)
+    else:
+        assert text.endswith(draft)
+    if stage == "repair":
+        assert "경계 조건이 잘못되었습니다." in review.issues
+        assert all(row.quote in draft for row in review.criteria_results)
+
+
+@pytest.mark.parametrize("stage", ["initial", "repair", "recheck"])
+@pytest.mark.parametrize("late_error", [False, True])
+def test_late_result_or_error_is_unverified_and_preserves_available_evidence(stage, late_error):
+    clock = ReviewClock()
+
+    class TimedReviewer(Reviewer):
+        def chat_structured(self, messages, json_schema):
+            kind = "initial" if not self.calls else "recheck"
+            result = super().chat_structured(messages, json_schema)
+            if stage == kind:
+                clock.advance(45)
+                if late_error:
+                    raise TimeoutError("private provider detail")
+            return result
+
+    class TimedRepairer(Repairer):
+        def chat(self, messages):
+            result = super().chat(messages)
+            if stage == "repair":
+                clock.advance(45)
+                if late_error:
+                    raise TimeoutError("private provider detail")
+            return result
+
+    draft = examples(1)
+    repaired = draft.replace("else n", "else n + 1")
+    reviewer = TimedReviewer("passed" if stage == "initial" else "failed", "passed")
+    repairer = TimedRepairer(repaired)
+    verifier = AnswerVerificationService(lambda: reviewer, lambda: repairer, clock=clock)
+    text, review = verifier.verify(build_answer_contract("코드 설명해줘"), draft)
+    assert review.status == "unverified" and "private provider detail" not in str(review.to_dict())
+    assert any("review_budget_exhausted" in issue for issue in review.issues)
+    expected = {"initial": (1, 0), "repair": (1, 1), "recheck": (2, 1)}[stage]
+    assert (review.critique_calls, review.repair_calls) == expected
+    assert (len(reviewer.calls), len(repairer.calls)) == expected
+    assert text.endswith(repaired if stage == "recheck" else draft)
+    if stage == "repair":
+        assert "경계 조건이 잘못되었습니다." in review.issues
+        assert review.criteria_results
+    elif stage == "recheck":
+        assert any(issue.startswith("이전 초안 검수:") for issue in review.issues)
+        assert not review.criteria_results
+
+
+def test_static_work_can_consume_budget_before_any_factory(monkeypatch):
+    import core.answer_verification as module
+    clock = ReviewClock()
+    original = module._static_check
+
+    def slow_static(*args):
+        clock.advance(45)
+        return original(*args)
+
+    def forbidden():
+        pytest.fail("expired verification must not construct clients")
+
+    monkeypatch.setattr(module, "_static_check", slow_static)
+    text, review = AnswerVerificationService(forbidden, forbidden, clock=clock).verify(
+        build_answer_contract("코드 설명해줘"), examples(1))
+    assert text.endswith(examples(1)) and review.status == "unverified"
+    assert (review.critique_calls, review.repair_calls) == (0, 0)
+    assert "review_budget_exhausted" in review.issues[-1]
+
+
+def test_budget_is_checked_before_returning_passed_verdict(monkeypatch):
+    clock = ReviewClock()
+    verifier = AnswerVerificationService(lambda: Reviewer(), clock=clock)
+    original = verifier._critique
+
+    def finish_at_deadline(*args):
+        result = original(*args)
+        clock.advance(45)
+        return result
+
+    monkeypatch.setattr(verifier, "_critique", finish_at_deadline)
+    text, review = verifier.verify(build_answer_contract("코드 설명해줘"), examples(1))
+    assert review.status == "unverified" and text.endswith(examples(1))
+    assert "review_budget_exhausted" in review.issues[-1]
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_cancellation_wins_over_simultaneous_budget_expiry(raises):
+    clock = ReviewClock()
+    context = TurnExecutionContext("review-budget-cancel", "test")
+
+    def cancel(payload):
+        clock.advance(45)
+        context.cancel()
+        if raises:
+            raise TimeoutError("late transport failure")
+        return {"criteria": {}}
+
+    verifier = AnswerVerificationService(lambda: Reviewer(cancel), clock=clock)
+    with bind_turn_context(context), pytest.raises(ToolCancelledError):
+        verifier.verify(build_answer_contract("코드 설명해줘"), examples(1))
+
+
+def test_local_calls_share_remaining_budget_and_custom_output_caps(monkeypatch):
+    from core.llm import OllamaClient
+    from core.model_registry import ModelProfile
+
+    clock = ReviewClock()
+    reviewer = Reviewer("failed", "passed")
+    profile = ModelProfile("reasoning", "test-only", 0.1, 1024, "5m")
+    calls = []
+    elapsed = iter([9, 12, 3])
+    client = object.__new__(OllamaClient)
+    client.profile = profile
+    repaired = examples(1).replace("else n", "else n + 1")
+
+    def structured(_client, messages, json_schema=None, *, context_window=None,
+                   request_timeout=None, max_output_tokens=None):
+        calls.append((request_timeout, max_output_tokens, context_window))
+        clock.advance(next(elapsed))
+        return repaired if json_schema is None else reviewer.chat_structured(messages, json_schema)
+
+    monkeypatch.setattr(OllamaClient, "chat_structured", structured)
+    verifier = AnswerVerificationService(lambda: client, lambda: client,
+        policy=AnswerReviewPolicy(30, 700, 900), clock=clock)
+    text, review = verifier.verify(build_answer_contract("코드 설명해줘"), examples(1))
+    assert text == repaired and review.status == "passed"
+    assert calls == [(30, 700, 8192), (21, 900, 8192), (9, 700, 8192)]
+    assert client.profile is profile and (profile.max_tokens, profile.keep_alive) == (1024, "5m")
+
+
+def test_reused_service_starts_a_new_budget_for_each_verification():
+    clock = ReviewClock()
+
+    class SlowReviewer(Reviewer):
+        def chat_structured(self, messages, json_schema):
+            result = super().chat_structured(messages, json_schema)
+            clock.advance(30)
+            return result
+
+    verifier = AnswerVerificationService(lambda: SlowReviewer(), clock=clock)
+    for _ in range(2):
+        _, review = verifier.verify(build_answer_contract("코드 설명해줘"), examples(1))
+        assert review.status == "passed"
+
+
+@pytest.mark.parametrize("stage", ["initial", "repair", "recheck"])
+def test_direct_client_cancellation_wins_without_bound_context(stage):
+    clock = ReviewClock()
+
+    class CancellingReviewer(Reviewer):
+        def chat_structured(self, messages, json_schema):
+            kind = "initial" if not self.calls else "recheck"
+            result = super().chat_structured(messages, json_schema)
+            if stage == kind:
+                clock.advance(45)
+                raise ToolCancelledError("cancelled directly by client")
+            return result
+
+    class CancellingRepairer(Repairer):
+        def chat(self, messages):
+            result = super().chat(messages)
+            if stage == "repair":
+                clock.advance(45)
+                raise ToolCancelledError("cancelled directly by client")
+            return result
+
+    reviewer = CancellingReviewer("failed", "passed")
+    repairer = CancellingRepairer(examples(1))
+    verifier = AnswerVerificationService(lambda: reviewer, lambda: repairer, clock=clock)
+    with pytest.raises(ToolCancelledError, match="cancelled directly"):
+        verifier.verify(build_answer_contract("코드 설명해줘"), examples(1))
+    expected = {"initial": (1, 0), "repair": (1, 1), "recheck": (2, 1)}[stage]
+    assert (len(reviewer.calls), len(repairer.calls)) == expected
+
+
+@pytest.mark.parametrize("error", [TimeoutError("private detail"), ValueError("truncated private reply")])
+def test_recheck_failure_retains_historical_issues_without_stale_verdict(error):
+    draft = examples(1)
+    repaired = draft.replace("else n", "else n + 1")
+    verifier = service(Reviewer("failed", error), Repairer(repaired))
+    text, review = verifier.verify(build_answer_contract("코드 설명해줘"), draft)
+    assert text.endswith(repaired) and review.status == "unverified"
+    assert not review.criteria_results  # The old failure was about the old draft.
+    assert "이전 초안 검수: 경계 조건이 잘못되었습니다." in review.issues
+    assert "private" not in str(review.to_dict())
