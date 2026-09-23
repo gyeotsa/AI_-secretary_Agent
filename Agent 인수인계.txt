@@ -1,5 +1,100 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
 
+## 2026-09-24 ANIS 코딩 대화·검수·경험 연결 재수정 및 실제 모델 수락 결과
+
+### 상태와 이전 보고 정정
+
+- 09-18의 기능 완료 설명을 이 기록으로 대체한다. 기존에는 코드 누락 승인, 원문 없는 재시도,
+  짧은 후속 발화 오분류, 잘못된 성공 판정 및 세션/작업공간 혼선이 실제로 남아 있었다.
+  사용자가 오답 코드를 다시 제공하지 않아서 생긴 문제라고 보지 않는다.
+- 이번 변경은 아래 구조적 결함을 고치고 회귀를 고정한 것이다. 실제 Qwen은 여전히 양궁 풀이를
+  틀리므로, 코딩 정답 생성·자동 오답 수정까지 완성됐다는 의미가 아니다. 모델 수락은 미완료다.
+- 기존 TurnExecutionContext, AnswerContract, 코드 블록 분석기와 제한된 검수/교정 흐름을 재사용했다.
+  별도 모델 설치, Jev/API 연결, 의존성 추가, 원격 push, 배포는 하지 않았다.
+
+### 구현
+
+1. core/semantic_request.py의 resolve_coding_context로 현재 문제·이전 답변/코드·피드백을 연결한다.
+   문제 → 설명뿐인 답변 → 풀어줘 → 코드 → 오답이야/이상한데/다시 봐 흐름을 같은 문제로 해석한다.
+   새 주제, 대화 로그 분석, 명시적 외부 실행 요청은 분리하며 과거 완료 작업은 pending으로 취급하지
+   않는다. main_qt.py의 두 입력 경로가 select_conversation_history를 사용해 활성 문제 원문을 보존한다.
+   이는 모든 자연어를 이해하는 새 모델이 아니라 문맥이 확인된 대화 연결 보정이며 미확인 입력은
+   기존 의미 분류기로 간다. 매우 긴 대화는 모델 문맥 한도에 도달할 수 있고 이를 무한 지원하지 않는다.
+2. core/agent_services.py는 생성·검수·교정에 같은 원문/현재 요청/이전 코드/실패 피드백을 전달한다.
+   문제 속 숫자를 답변 항목 수로 오인하거나 실패 코드를 보존 의무로 묶지 않는다. 설명 전용 요청은
+   code 라벨이나 오래된 실패 피드백보다 우선한다. 코드 모드에 완전한 구현 지침을 전달하며 별도의
+   중복 재시도 대신 기존 AnswerVerificationService에서 한 번만 교정한다.
+3. core/answer_verification.py는 requires_code 계약에 대해 설명·빈 블록·pass/주석뿐인 Python 등을
+   정적으로 거부한다. 실패 후 같은 Python 구현은 공백/주석/코드 블록 분할 변경으로 통과할 수 없다.
+   Python AST 동일성은 알고리즘 동치 증명이 아니다. 코드 누락이 계속되면 풀이 미완성(incomplete),
+   취소는 전파, 교정 잘림은 원초안과 repair_truncated 정보 유지. 코드 정당화에 모델의 자기 칭찬을
+   근거로 승인하지 않게 실제 코드 줄 인용도 요구한다. 정적 passed는 실행 테스트 통과를 뜻하지 않는다.
+4. core/executor.py는 현재 턴의 세션/작업공간과 실제 전달된 코드로 정확한 이전 시도 ID를 연결한다.
+   원래 문제, 실패 코드/피드백, 수정 답변, 이전 시도 ID, 검수/턴/namespace 메타데이터를 저장한다.
+   사용자 보고는 executed=False 구조로 보관한다. 코드 없는 미완성 답변은 풀이 시도로 저장하지 않는다.
+   설명 질문의 '오류'는 실패 보고가 아니므로 검증 상태를 취소하지 않는다. 기억 검색도 짧은 '오답이야'
+   만이 아니라 원래 문제를 포함하며 저장·검색에 동일한 memory_namespace를 사용한다.
+5. core/coding_experience.py는 사용자 성공 보고와 실제 실행 검증을 분리한다. 정답이 아니야,
+   통과 못했어, 성공 0개 실패 4개 및 반복 성공 보고로 다른 오답 시도를 승격하지 않는다.
+   record_test_result는 정확한 코드/시도 ID/세션/작업공간에 연결된 실행 결과(input/expected/actual/
+   passed/executed)를 요구한다. 검증은 그 테스트 범위에 한정된다. 기존 키워드 verified는 migration에서
+   legacy_unverified로 낮추되 행은 보존한다. failure_cause/tests 필드가 있어도 확인되지 않은 원인이나
+   테스트는 만들어 넣지 않는다. 현재 대화 경로는 자동 원인 추출 및 신뢰된 테스트 실행기를 호출하지 않는다.
+6. 검증된 정확한 시도만 동일 namespace/doc_id로 멱등 색인한다. 색인 실패는 로그로 남기고 재시도할 수
+   있다. core/rag.py는 검색 시 canonical 경험 레코드와 문서 본문/출처를 대조하여 구형 승인, 다른 범위,
+   변조·검증 취소 문서를 제외한다. 구형 문서를 실제 삭제하지는 않는다.
+   중요한 제한: 현재 사용자 '통과했어'만으로 검증 경험 RAG에 자동 등록하지 않는다. trusted runner
+   결과를 기록하는 API와 검증된 사례 색인 경로는 구현됐으나, 일반 채팅에서 임의 생성 코드를 실행하는
+   자동 실행/교정 루프는 아직 연결하지 않았다. 안전한 실행 경계 없이 exec를 앱에 넣지 않는다.
+
+### 검증 및 재현
+
+- 관련 14개 파일 최종 회귀: 566 passed / 6 deselected, 57.17초. 겹치는 재실행 횟수를 합산하지 않는다.
+  대상: test_coding_conversation_flow, test_coding_conversation_context, test_coding_experience,
+  test_answer_verification, test_semantic_request, test_semantic_response_mode, test_request_channel_boundary,
+  test_answer_review_integration, test_executor_semantic_conversation, test_semantic_executor_flow,
+  test_conversation_prose_truncation, test_conversation_repair_gating, test_turn_envelope, test_turn_execution_context
+  (모두 .py, .venv Python의 -m pytest -q 뒤에 지정). 테스트는 격리 저장소와 모델 대역으로
+  실제 interpreter/executor/service/review/store 흐름을 연결한다. GUI 마우스 수락이나 실모델 성능 시험의
+  대체가 아니다. pytest 기본 설정의 integration 6개는 미선택이며 전체 저장소 테스트는 이번에 재실행하지 않았다.
+- scripts/qa_coding_repair.py는 격리 임시 저장소, 클라우드 비활성화 상태로 설치된 Ollama 모델을 호출한다.
+  coder=qwen2.5-coder:7b-instruct, reviewer=qwen2.5:7b-instruct. 문제 전문 대신 동일 제약과 4예제를 담은
+  합성 양궁 입력으로 원문/설명 뒤 풀어줘/오답 코드 뒤 이상한데 3개를 검사했다. 실제 모델 시험은 빈 도구
+  registry의 interpreter와 production ConversationService/role factory를 직접 연결한 범위다.
+  전체 앱/GUI/전체 도구 registry의 실모델 수락까지 수행했다고 표현하지 않는다.
+- 최종 보고서: data/qa/coding-repair-2026-09-24-code-role.json (합성 대화만, 로컬 산출물로 커밋 제외).
+  세 요청 모두 grounded code, 닫힌 코드 존재, 잘림 없음, 최종 review=unverified였다.
+  | 입력 | 응답 시간 | 독립 실행 대조 |
+  | 원문 문제 | 42.02초 | 예제 0/4, 작은 입력 완전탐색 대조 1/40, 화살 총합 위반 |
+  | 풀어줘 | 76.47초 | 요청한 solution 함수 없음(get_max_difference 생성), 예제 수락 실패 |
+  | 이상한데 | 35.41초 | 예제 0/4, 작은 입력 완전탐색 대조 0/40, n 제약 무시 |
+  첫 보고서(data/qa/coding-repair-2026-09-23.json)에서 critic의 오답 승인도 발견했고 근거 검증을 강화했다.
+  이후 unverified는 안전 실패 확인이지 오답 교정 성공이 아니다. 예제 주석을 실행 증거로 세지 않는다.
+- scripts/check_archery_report.py는 이미 사람이 읽어 위험 동작이 없음을 확인한 위 합성 코드를 별도
+  Python 프로세스(20초 제한)에서 실행 대조하는 QA 전용 도구다. 범용 비신뢰 코드 sandbox가 아니다.
+  4예제, 화살 총합/범위, 독립 완전탐색 oracle와 작은 n의 고정 40개 사례를 비교한다.
+  올바른 기준 구현이 이 검사를 통과하는 테스트도 포함했다. 모델 오답 검사 명령의 exit 1은 예상 결과다.
+- 재현 명령(PowerShell, repo 루트):
+  .\.venv\Scripts\python.exe scripts/qa_coding_repair.py --report data/qa/coding-repair-new.json
+  # 보고서 코드 내용을 직접 검사한 뒤에만 다음 QA를 실행한다.
+  .\.venv\Scripts\python.exe scripts/check_archery_report.py data/qa/coding-repair-new.json
+- 초기 회귀에서 일부 기존 fixture가 사용자 기본 DB를 열어 빈 coding_experiences 테이블의 schema가
+  초기화/마이그레이션됐다. 이후 fixture를 임시 DB로 격리했다. 확인 시 경험 행은 0개였고 경험 내용 삭제나
+  RAG 정리는 하지 않았다. 사용자 DB/Chroma 및 무관한 UI/연속작업 변경은 커밋하지 않는다.
+- 기존 Windows 임시 폴더 ACL 오류는 권한 승인된 pytest 실행으로 우회했다. 과거 임시 폴더를 삭제하지 않았다.
+  git diff --check 통과. 최신 코드 반영에는 실행 중인 ANIS 프로세스 재시작이 필요하며 강제 종료하지 않았다.
+
+### 커밋과 남은 수락 조건
+
+- 9c0c165 [Fix] Enforce complete code answers and bounded review repairs
+- 8a05ecb [Fix] Bind coding follow-ups to active problem context
+- 11aff92 [Fix] Scope coding experience verification and RAG provenance
+- b3458cf [Fix] Integrate grounded coding repair and scoped experience flow
+- 이 인수인계서는 별도 문서 커밋으로 기록한다. 원격 push 없음.
+- 남은 작업은 안전한 테스트 실행 경계와 실제 실패 결과를 이용한 제한된 교정 루프, 요청한 함수 인터페이스
+  및 예제/제약의 기계 검증, 실제 모델의 양궁 수락, 필요시 모델 변경의 비교 검증이다.
+  답변 정확도를 올리기 위해 라우터 교체나 프롬프트 문구만으로 해결됐다고 선언하지 않는다.
+
 ## 2026-09-16 P 진단·메일 UI 가독성 및 전체 QA 후속
 
 - 사용자 요청: P 버튼으로 들어간 흰 배경 UI 가독성 수정, 전체 작업 계속.
