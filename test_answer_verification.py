@@ -1,6 +1,6 @@
 """Contract review is bounded and never executes generated or user code."""
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -27,7 +27,8 @@ class Reviewer:
         if isinstance(value, str) and value in {"passed", "failed", "unverified"}:
             return {"criteria": [{"id": key, "status": value,
                 "reason": "정적 대조 통과" if value == "passed" else "경계 조건이 잘못되었습니다.",
-                "quote": payload["draft"][:min(16, len(payload["draft"]))]}
+                "quote": (payload["code_quotes"][0] if key == "code_semantics" and payload.get("code_quotes")
+                          else payload["draft"][:min(16, len(payload["draft"]))])}
                 for key in payload["criteria"]]}
         return value
 
@@ -440,7 +441,9 @@ def test_local_critic_and_repair_use_bounded_context_and_private_release_profile
 
 def test_keyed_criteria_constrains_every_requirement_without_duplicate_ids():
     def keyed(payload):
-        return {"criteria": {key: {"status": "passed", "reason": "정적 검토", "quote": payload["evidence_quotes"][0]}
+        return {"criteria": {key: {"status": "passed", "reason": "정적 검토",
+                                  "quote": (payload["code_quotes"][0] if key == "code_semantics"
+                                            else payload["evidence_quotes"][0])}
                              for key in payload["criteria"]}}
     draft = examples(3)
     _, review = service(Reviewer(keyed)).verify(build_answer_contract("예시 3개를 코드와 설명해줘"), draft)
@@ -704,3 +707,117 @@ def test_recheck_failure_retains_historical_issues_without_stale_verdict(error):
     assert not review.criteria_results  # The old failure was about the old draft.
     assert "이전 초안 검수: 경계 조건이 잘못되었습니다." in review.issues
     assert "private" not in str(review.to_dict())
+
+
+@pytest.mark.parametrize("draft", [
+    "알겠어. 주어진 조건을 요약했어. 이제 문제를 풀어볼게요.",
+    "```text\n완전한 코드를 작성하겠습니다.\n```",
+    "```python\n# TODO: implement the solution\n```",
+    "```python\ndef solution(n, info):\n    pass\n```",
+    "```python\ndef solution(n, info):\n    ...\n```",
+    "```python\nimport itertools\ndef solution(n, info):\n    pass\n```",
+])
+def test_required_implementation_cannot_be_approved_as_prose_or_placeholder(draft):
+    contract = replace(build_answer_contract("풀어줘"), requires_code=True)
+    reviewer, repairer = Reviewer("passed"), Repairer(draft)
+    text, review = service(reviewer, repairer).verify(contract, draft)
+    assert review.status == "incomplete" and "풀이 미완성" in text
+    assert "완성된 풀이가 아닙니다" in text
+    assert review.critique_calls == 0 and review.repair_calls == 1
+    assert not reviewer.calls and len(repairer.calls) == 1
+
+
+def test_missing_implementation_repair_receives_full_bound_request_and_rechecks_code():
+    problem = "원래 문제: 화살 n발을 사용하고 동률이면 낮은 점수가 많은 배열을 선택한다."
+    previous = "```python\ndef solution(n, info):\n    return [-1]\n```"
+    failure = "n=5의 예상 결과와 실제 결과가 다릅니다."
+    request = problem + "\n이전 답변:\n" + previous + "\n실패 보고:\n" + failure + "\n현재 요청: 다시 풀어줘"
+    contract = replace(build_answer_contract("다시 풀어줘"), message=request,
+                       requires_code=True, previous_code=previous, failure_feedback=failure)
+    repaired = "```python\ndef solution(n, info):\n    return [0] * 10 + [n]\n```"
+    reviewer, repairer = Reviewer("unverified"), Repairer(repaired)
+    text, review = service(reviewer, repairer).verify(contract, "이제 문제를 풀어볼게요.")
+    payload = json.loads(repairer.calls[0][-1]["content"])
+    assert payload["request"] == reviewer.calls[0]["request"] == request
+    assert payload["previous_code"] == previous and payload["failure_feedback"] == failure
+    assert review.repair_calls == review.critique_calls == 1
+    assert review.status == "unverified" and text.endswith(repaired)
+    assert not review.code_executed  # A block's presence does not prove correctness.
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+def test_failed_code_with_only_comments_or_formatting_changed_cannot_pass(fenced):
+    previous = "def solution(n, info):\n    return [-1]"
+    if fenced:
+        previous = "```python\n" + previous + "\n```"
+    repeated = "다시 풀었어.\n```python\n# reviewed again\ndef solution( n , info ):\n    return [ -1 ]\n```"
+    contract = replace(build_answer_contract("다시 풀어줘"), requires_code=True,
+                       previous_code=previous, failure_feedback="오답이야")
+    reviewer, repairer = Reviewer("passed"), Repairer(repeated)
+    _, review = service(reviewer, repairer).verify(contract, repeated)
+    assert review.status == "incomplete" and review.critique_calls == 0
+    assert any("이전 코드와 구현이 같습니다" in issue for issue in review.issues)
+    assert len(repairer.calls) == 1
+
+
+def test_same_code_is_not_rejected_without_failure_feedback():
+    draft = examples(1)
+    contract = replace(build_answer_contract("코드를 보여줘"), previous_code=draft)
+    text, review = service(Reviewer()).verify(contract, draft)
+    assert text == draft and review.status == "passed"
+
+
+def test_raw_prior_code_and_separate_current_python_fences_compare_equally():
+    previous = "def solution(n, info):\n    return [-1]\n\nprint(solution(1, [1]))"
+    draft = ("```python\ndef solution(n, info):\n    return [-1]\n```\n"
+             "테스트 예시:\n```python\nprint(solution(1, [1]))\n```")
+    contract = replace(build_answer_contract("다시 풀어줘"), requires_code=True,
+                       previous_code=previous, failure_feedback="오답이야")
+    _, review = service(Reviewer(), Repairer(draft)).verify(contract, draft)
+    assert review.status == "incomplete" and review.critique_calls == 0
+
+
+@pytest.mark.parametrize("truncated", [False, True])
+def test_missing_code_repair_cancellation_and_truncation_are_not_hidden(truncated):
+    from core.llm import ProseResponse
+    contract = replace(build_answer_contract("풀어줘"), requires_code=True)
+    draft = "이제 문제를 풀어볼게요."
+    value = ProseResponse(examples(1), truncated=True) if truncated else ToolCancelledError("cancelled")
+    verifier = service(Reviewer(), Repairer(value))
+    if not truncated:
+        with pytest.raises(ToolCancelledError, match="cancelled"):
+            verifier.verify(contract, draft)
+        return
+    text, review = verifier.verify(contract, draft)
+    assert review.status == "incomplete" and text.endswith(draft)
+    assert review.repair_truncated and review.to_dict()["repair_truncated"]
+    assert any("truncated_repair" in issue for issue in review.issues)
+    assert review.critique_calls == 0 and review.repair_calls == 1
+
+
+@pytest.mark.parametrize("message", ["이 코드를 설명해줘", "코드 없이 알고리즘의 원리만 설명해줘"])
+def test_code_topic_explanation_does_not_require_implementation(message):
+    contract = build_answer_contract(message)
+    assert contract.requires_review and not contract.requires_code
+    text, review = service(Reviewer()).verify(contract, "입력 조건을 나눠서 계산하는 원리입니다.")
+    assert review.status == "passed" and "풀이 미완성" not in text
+
+
+def test_strict_client_truncated_repair_retains_reason_and_original():
+    from core.llm import ModelCallError
+    contract = replace(build_answer_contract("풀어줘"), requires_code=True)
+    error = ModelCallError("ollama", "test-only", "truncated_output", "private provider data")
+    text, review = service(Reviewer(), Repairer(error)).verify(contract, "이제 문제를 풀어볼게요.")
+    assert review.status == "incomplete" and "풀이 미완성" in text
+    assert review.repair_truncated and "private provider data" not in str(review.to_dict())
+    assert any("truncated_repair" in issue for issue in review.issues)
+
+
+def test_oversized_bound_problem_stays_intact_and_missing_code_is_explicitly_incomplete():
+    problem = "중간 조건도 반드시 보존해야 함. " * 2000 + "마지막 조건: 동률 규칙."
+    contract = replace(build_answer_contract("풀어줘"), message=problem, requires_code=True)
+    text, review = service().verify(contract, "이제 문제를 풀어볼게요.")
+    assert contract.message == problem
+    assert review.status == "incomplete" and "풀이 미완성" in text
+    assert review.critique_calls == review.repair_calls == 0
+    assert any("단일 검수 한도" in issue for issue in review.issues)
