@@ -338,7 +338,9 @@ def test_production_catalog_is_complete_without_tool_execution(tmp_path, monkeyp
     monkeypatch.setattr(value, "execute_tool", forbidden)
     model = _Model(_data(relation="conversation", operation="conversation",
                          intent_name="", tool_names=[], slots={}))
-    decision = SemanticRequestInterpreter(model, value).interpret("안녕하세요")
+    # A greeting takes the deterministic conversation path; use an unresolved
+    # conversational request to exercise the production catalogue itself.
+    decision = SemanticRequestInterpreter(model, value).interpret("생각을 정리하고 싶어")
     assert decision.grounded
     assert len(model.calls) == 2
     prompt = json.loads(model.calls[0][1]["content"])

@@ -31,6 +31,7 @@ from core.project_indexer import get_project_indexer
 from core.permission import get_permission_manager
 from core.executor import get_executor
 from core.turn_context import TurnExecutionContext, bind_turn_context
+from core.semantic_request import select_conversation_history
 from core.plugin import ToolCancelledError
 from core.scheduler import get_automation_engine
 from core.proactive import ProactiveNotificationPolicy
@@ -618,7 +619,7 @@ class JarvisApp:
             turn_id=execution.turn_id,
             session_id=self.session_id,
             user_text=text,
-            conversation_history=tuple(dict(item) for item in self.messages[-10:]),
+            conversation_history=select_conversation_history(text, self.messages),
             specialist_key=specialist_key,
             memory_namespace=str(
                 getattr(getattr(self, "memory", None), "workspace_namespace", "global")
@@ -679,7 +680,7 @@ class JarvisApp:
                 turn_id=uuid.uuid4().hex,
                 session_id=self.session_id,
                 user_text=text_value,
-                conversation_history=tuple(dict(item) for item in self.messages[-10:]),
+                conversation_history=select_conversation_history(text_value, self.messages),
                 specialist_key=(
                     str(specialist_payload.get("workspace", "")).strip()
                     if isinstance(specialist_payload, dict) else ""
