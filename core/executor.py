@@ -6,7 +6,7 @@ import threading
 import time
 
 from core.llm import get_llm_client, OllamaClient
-from core.answer_verification import AnswerVerificationService
+from core.answer_verification import AnswerVerificationService, _blocks
 from core.scratchpad import Scratchpad, Task
 from core.planner import Planner, PlanningError
 from core.tools import get_tool_executor, get_tools_description_text, get_tool_names
@@ -14,7 +14,7 @@ from core.reflection import Reflection
 from core.context import ContextManager
 from core.permission import get_permission_manager, TOOL_PERMISSION_MAP
 from core.memory import get_memory, build_memory_context, build_relevant_knowledge_context
-from core.workspace import get_workspace_manager
+from core.workspace import get_workspace_manager, WorkspaceManager
 from core.verifier import get_tool_verifier
 from core.recovery import get_recovery_manager
 from core.conversation_context import ConversationContextResolver, ResolvedRequest
@@ -42,6 +42,8 @@ from core.task_contracts import (
 )
 from core.quality_metrics import get_quality_metric_store
 from core.utterance_scope import analyze_utterance_scope, allows_execution_follow_up
+from core.semantic_request import resolve_coding_context, SemanticDecision
+from core.coding_experience import get_coding_experience_store, _code_text
 from core.turn_context import (
     TurnExecutionContext, bind_turn_context, current_turn_context, check_turn_cancelled,
 )
@@ -158,7 +160,7 @@ class Executor:
         self.intent_router = IntentRouter(self.tool_executor.plugin_registry)
         from core.semantic_request import SemanticRequestInterpreter
         self.semantic_interpreter = SemanticRequestInterpreter(
-            self.reasoning_llm, self.tool_executor.plugin_registry
+            self.reasoning_llm, self.tool_executor.plugin_registry, classify_response_mode=True,
         )
         self.model_role_router = get_model_role_router()
         self._progress_callback: Optional[Callable[[str], None]] = None
@@ -399,6 +401,27 @@ class Executor:
         history = list(conversation_history or [])
         normalized = goal.strip().lower()
         tool_scope = self._validated_tool_scope(allowed_tool_names)
+        coding_context = resolve_coding_context(goal, history)
+        code_failure_feedback = coding_context.get("failure_feedback") if coding_context else None
+        previous_attempt_id = ""
+        if coding_context and coding_context.get("previous_answer"):
+            store = get_coding_experience_store()
+            previous = store.latest_attempt(session_key, workspace_scope)
+            # Confirm only the answer the user actually saw, within this turn's
+            # immutable session/workspace. Repeated reports never walk backward.
+            if (previous and previous["problem"] == coding_context["problem"]
+                    and (previous["correction"] == coding_context["previous_answer"]
+                         or (coding_context.get("previous_code") and
+                             _code_text(previous["correction"]) == coding_context["previous_code"].strip()))):
+                previous_attempt_id = previous["id"]
+                # Describing an error branch is not a report that this answer
+                # failed. Use the already-bound speech act before mutating trust.
+                if code_failure_feedback or store.is_success_report(goal):
+                    store.record_user_feedback(
+                        previous_attempt_id, session_id=session_key,
+                        workspace_path=workspace_scope, feedback=goal,
+                    )
+                self._publish_coding_experience(store, previous_attempt_id, session_key, workspace_scope)
 
         def terminal_outcome(response: str, status: str = "completed",
                              pending_question: str = "") -> ExecutionOutcome:
@@ -416,6 +439,22 @@ class Executor:
                 status = "partial"
             elif review_data and review_data.get("status") in {"failed", "unverified"}:
                 status = "unverified"
+            if (coding_context and coding_context.get("requires_code")
+                    and not blocked_claim and not unsupported_activity and not truncated
+                    and any(block.closed and block.body.strip() and block.language not in {"text", "json"}
+                            for block in _blocks(str(response)))):
+                check_turn_cancelled()
+                get_coding_experience_store().record_attempt(
+                    session_key, code_failure_feedback or "", str(response),
+                    workspace_path=workspace_scope, problem=coding_context["problem"],
+                    failed_code=coding_context.get("previous_code", "") if code_failure_feedback else "",
+                    test_results=([{"source": "user_report", "executed": False,
+                                    "raw": code_failure_feedback}] if code_failure_feedback else []),
+                    previous_attempt_id=previous_attempt_id,
+                    metadata={"answer_review": review_data, "status": status,
+                              "memory_namespace": self._memory_namespace(),
+                              "turn_id": current_turn_context().turn_id if current_turn_context() else ""},
+                )
             response = str(response)
             if existing_task_id:
                 task = self.dialogue_state.get_task(
@@ -448,18 +487,27 @@ class Executor:
             # A question about a command is not the answer to an outstanding
             # recipient/body slot either.  Keep that task untouched and answer
             # without granting the Planner the embedded command's authority.
-            return terminal_outcome(self._respond_conversationally(goal, history))
+            decision = (SemanticDecision(
+                goal, relation="conversation", operation="conversation", grounded=True,
+                confidence=1.0, source="coding_context",
+                answer_kind="code" if coding_context["requires_code"] else "reasoning",
+            ) if coding_context else None)
+            return terminal_outcome(self._respond_conversationally(
+                goal, history, semantic_decision=decision, failure_feedback=code_failure_feedback,
+            ))
 
         if self.is_control_command(goal):
             return self.handle_control_command(goal, session_key)
 
-        if getattr(self, "semantic_interpreter", None) is not None:
+        def execution_scope_guard():
             # Model confidence cannot confer authority denied by the current
             # utterance. Quoted payloads were masked by the shared scope parser.
             if utterance_scope.negated:
                 return terminal_outcome("요청하신 작업은 실행하지 않겠습니다.", "cancelled")
             if utterance_scope.conditional:
-                question = (f"‘{utterance_scope.condition}’ 조건을 아직 확인하지 않았습니다. "
+                condition = " ".join(utterance_scope.condition.split())
+                condition = condition if len(condition) <= 160 else condition[:157] + "…"
+                question = (f"‘{condition}’ 조건을 아직 확인하지 않았습니다. "
                             "조건을 먼저 확인할까요, 아니면 지금 실행하라는 뜻인가요?")
                 task = (self.dialogue_state.get_task(session_key, existing_task_id, workspace_scope)
                         if existing_task_id else None)
@@ -467,6 +515,7 @@ class Executor:
                 self.dialogue_state.delete(session_key, task.task_id)
                 self.dialogue_state.create(session_key, goal, question, history, task.task_id, workspace_scope)
                 return ExecutionOutcome(question, "awaiting_user", goal, question, task.task_id)
+            return None
 
         # Production natural-language decisions cross one semantic boundary.
         # Legacy declarative routing remains available to compatibility callers,
@@ -474,6 +523,19 @@ class Executor:
         semantic = None
         interpreter = getattr(self, "semantic_interpreter", None)
         if interpreter is not None:
+            # Keep the local semantic model's catalogue small.  The registry
+            # remains the source of truth; this is only a task-scoped shortlist
+            # so a 7B model does not compare every unrelated capability.
+            semantic_allowed_tools = tool_scope
+            if semantic_allowed_tools is None:
+                loadout_selector = getattr(self, "tool_loadout", None)
+                if loadout_selector is not None:
+                    loadout = loadout_selector.select(goal)
+                    # Only narrow on a declared intent with a strong margin;
+                    # weak descriptor overlap stays on the full registry so a
+                    # heuristic shortlist cannot hide the correct capability.
+                    if loadout.reason.startswith("intent:") and loadout.confidence >= 0.75:
+                        semantic_allowed_tools = list(loadout.tool_names)
             pending_semantic = self.dialogue_state.get(session_key, None, workspace_scope)
             pending_state = (self.dialogue_state.get_intent_state(pending_semantic.task_id)
                              if pending_semantic else None) or {}
@@ -489,20 +551,29 @@ class Executor:
                     # task. The interpreter decides new vs. continue explicitly.
                     pending_state = {"recent_completed": recent}
             semantic = interpreter.interpret(
-                goal, history=history, pending=pending_state, allowed_tools=tool_scope,
+                goal, history=history, pending=pending_state, allowed_tools=semantic_allowed_tools,
             )
             check_turn_cancelled()
             record_runtime_event("semantic_decision", relation=semantic.relation,
                                  operation=semantic.operation, intent=semantic.intent_name,
-                                 grounded=semantic.grounded, reason=semantic.reason)
+                                 grounded=semantic.grounded, reason=semantic.reason,
+                                 source=semantic.source, confidence=semantic.confidence,
+                                 tool_count=len(semantic.tool_names),
+                                 needs_clarification=semantic.needs_clarification)
             if semantic.grounded and semantic.relation == "cancel" and not semantic.needs_clarification:
                 return self._cancel_scoped_tasks(session_key, semantic.control_scope, goal)
             if semantic.is_grounded_conversation:
                 outcome = terminal_outcome(self._respond_conversationally(
                     goal, history, semantic_decision=semantic,
+                    failure_feedback=code_failure_feedback,
                 ))
                 outcome.grounded_conversation = True
                 return outcome
+            # Conditions in supplied material do not authorize tool execution,
+            # but must not prevent a validated tool-free answer about it.
+            guarded = execution_scope_guard()
+            if guarded is not None:
+                return guarded
             semantic_resolution = semantic.to_resolution(self.intent_router.registry)
             if semantic_resolution.matched:
                 continuing = bool(pending_semantic and semantic.relation in {"continue", "correct"})
@@ -543,6 +614,22 @@ class Executor:
                         task.task_id if task else (existing_task_id or ""), progress_callback,
                     )
             if semantic.needs_clarification or not semantic.grounded or not semantic.tool_names:
+                if semantic.reason in {
+                    "semantic_response_mode_invalid", "semantic_discovery_invalid",
+                    "semantic_schema_not_object", "semantic_schema_or_confidence_invalid",
+                    "invalid_clarification_flag", "invalid_clarification_question",
+                    "invalid_tool_names", "intent_tool_mismatch", "unknown_intent",
+                    "unknown_or_out_of_scope_tool", "invalid_slots", "conversation_cannot_execute",
+                    "invalid_action_operation", "unknown_slot", "slot_type_invalid",
+                    "operation_tool_mismatch", "message_literal_changed",
+                    "filename_not_verified_candidate",
+                } or semantic.reason.startswith("ungrounded_literal:"):
+                    # A rejected model contract is not missing user information.
+                    # Do not add a generic pending task that biases later turns.
+                    return terminal_outcome(
+                        "요청을 해석하는 과정에서 모델의 분류 결과를 검증하지 못했습니다. "
+                        "설명이 부족하다는 뜻은 아니며, 어떤 작업도 실행하지 않았습니다.", "failed",
+                    )
                 if semantic.reason.startswith(("semantic_interpretation_failed", "semantic_model_unavailable")):
                     if semantic.reason.endswith((":context_saturated", ":truncated_output")):
                         message = "모델의 입력 또는 출력 길이 한도에 도달해 실행하지 않았습니다. 요청이나 첨부 설명을 나누어 다시 시도해 주세요."
@@ -2679,6 +2766,7 @@ class Executor:
 
     def _respond_conversationally(
         self, message: str, history: List[Dict[str, str]], *, semantic_decision=None,
+        failure_feedback: str | None = None,
     ) -> str:
         """Answer ordinary conversation without exposing or invoking tools."""
         scope = analyze_utterance_scope(message, history)
@@ -2718,19 +2806,27 @@ class Executor:
         if conversation_service is None:
             conversation_service = ConversationService(self.llm)
             self.conversation_service = conversation_service
+        coding_context = resolve_coding_context(message, history)
+        memory_query = (coding_context["problem"] + "\n" + message
+                        if coding_context and coding_context["problem"] != message else message)
         memory_context = build_relevant_knowledge_context(
-            message, self._workspace_scope(), limit=6
+            memory_query, self._workspace_scope(), limit=6
         )
         rag_context = ""
         context_manager = getattr(self, "context_manager", None)
         if context_manager is not None:
-            rag_context = context_manager.get_rag_context(message)
+            lookup = context_manager.get_rag_context
+            rag_context = (lookup(memory_query, namespace=self._memory_namespace())
+                           if ContextManager._accepts_keyword(lookup, "namespace") else lookup(memory_query))
         grounded_context = "\n".join(
             part for part in (memory_context, rag_context) if part
         )
         response = conversation_service.respond(
             message, history, assistant_name=assistant_name, voice_name=custom_voice,
             address=address, style=conversation_style, memory_context=grounded_context,
+            answer_kind=(getattr(semantic_decision, "answer_kind", "conversation")
+                         if grounded_conversation else "conversation"),
+            failure_feedback=failure_feedback,
         )
         # The conversation classification selects a channel; it is not proof
         # that an external action happened. Also guard compatible/custom
@@ -2739,6 +2835,34 @@ class Executor:
         if context_manager is not None:
             context_manager.mark_response_usage(response)
         return response
+
+    def _memory_namespace(self) -> str:
+        turn = current_turn_context()
+        if turn is not None:
+            return turn.memory_namespace
+        workspace = self._workspace_scope()
+        return WorkspaceManager.namespace_for(workspace) if workspace else "global"
+
+    def _publish_coding_experience(self, store, attempt_id: str, session_id: str,
+                                   workspace_path: str) -> None:
+        rag = getattr(getattr(self, "context_manager", None), "rag", None)
+        if rag is None:
+            return
+        document = store.rag_document(
+            attempt_id, session_id=session_id, workspace_path=workspace_path,
+            namespace=self._memory_namespace(),
+        )
+        if document:
+            check_turn_cancelled()
+            try:
+                rag.add_text_document(**document)
+            except ToolCancelledError:
+                raise
+            except Exception as exc:
+                # The same document id makes a later confirmation/retry idempotent.
+                check_turn_cancelled()
+                record_runtime_event("coding_experience_index_failed", attempt_id=attempt_id,
+                                     error_type=type(exc).__name__)
 
     def _selected_voice_preferences(self) -> tuple[str, str, str]:
         settings = getattr(getattr(self, "tool_executor", None), "tts_settings", None)

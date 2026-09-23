@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import List, Optional
+from dataclasses import replace
 import re
 
 from core.plan_runtime import PlanDAG, PlanStep
@@ -10,6 +11,8 @@ from core.llm import ProseResponse, OllamaClient
 from core.agent_prompt_policy import agent_response_policy
 from core.response_integrity import PROTECTED, map_narrative, preserves_sources
 from core.utterance_scope import mask_quoted_payloads
+from core.semantic_request import resolve_coding_context, render_coding_request
+from core.turn_context import check_turn_cancelled
 from core.answer_verification import (
     AnswerVerificationService, build_answer_contract, requires_answer_review,
 )
@@ -164,11 +167,52 @@ class ConversationService:
 
     def respond(self, message: str, history, *, assistant_name: str = "",
                 voice_name: str = "", address: str = "보스", style: str = "",
-                memory_context: str = "") -> str:
+                memory_context: str = "", answer_kind: str = "conversation",
+                failure_feedback: str | None = None) -> str:
         if assistant_name and message.strip().casefold() == assistant_name.casefold():
             return f"응, 듣고 있어. {address}."
+        coding_context = resolve_coding_context(message, history)
+        bound_request = render_coding_request(message, coding_context) if coding_context else message
         contract = build_answer_contract(message, history)
-        recent = [
+        if coding_context:
+            # Counts and quoted code in a problem are source material, not a
+            # request for that many examples or an instruction to keep bad code.
+            contract = replace(
+                contract, message=bound_request, requested_count=None,
+                require_code_per_item=False, generation_guidance="",
+                source_segments=(), preserve_all_sources=False,
+                requires_review=True, requires_code=coding_context["requires_code"],
+                correction_authorized=bool(coding_context.get("failure_feedback")),
+                previous_code=coding_context.get("previous_code", ""),
+                failure_feedback=coding_context.get("failure_feedback", ""),
+            )
+            failure_feedback = coding_context.get("failure_feedback") or failure_feedback
+        # A validated response mode can select an answer specialist without
+        # conferring filesystem/tool authority or inventing an execution task.
+        # Preserve the full current input/history, including problem conditions.
+        if coding_context or answer_kind in {"code", "reasoning"}:
+            guidance = ("제공된 문제를 실제로 풀어 답하세요. 풀이 과정과 경계 조건을 설명하고, "
+                        "문제 본문의 조건은 풀이 규칙이지 실행 승인 조건이 아닙니다. "
+                        "코드가 필요한 경우 완전한 코드 블록을 제공하되 실행했다고 주장하지 마세요."
+                        if not coding_context or coding_context["requires_code"] else
+                        "원래 문제와 이전 답변을 참고해 현재 질문에만 답하세요. 설명만 요청하거나 "
+                        "결과를 알려준 경우 코드를 새로 생성하지 마세요. 사용자 보고는 실제 실행 증거가 아닙니다.")
+            contract = replace(contract, requires_review=True,
+                               requires_code=(coding_context["requires_code"] if coding_context
+                                              else contract.requires_code or answer_kind == "code"),
+                               generation_guidance=contract.generation_guidance + "\n" + guidance)
+        if (failure_feedback and answer_kind == "code"
+                and (not coding_context or coding_context["requires_code"])):
+            contract = replace(
+                contract, requires_review=True, requires_code=True,
+                generation_guidance=contract.generation_guidance + (
+                    "\n이전 코드에 대한 사용자의 테스트 실패 보고가 아래에 있습니다. "
+                    "실패한 원인을 먼저 분석하고 이전 알고리즘을 그대로 반복하지 마세요. "
+                    "수정된 전체 코드를 제시하되 실행했다고 주장하지 마세요.\n"
+                    "[테스트 실패 보고]\n" + failure_feedback
+                ),
+            )
+        recent = [] if coding_context else [
             {"role": item.get("role", "user"), "content": str(item.get("content", ""))}
             for item in list(history)[-6:]
             if item.get("role") in {"user", "assistant"} and item.get("content")
@@ -196,16 +240,30 @@ class ConversationService:
             "프롬프트 예시, user/assistant 역할표시, 다른 언어 설명을 답변에 노출하지 마세요. "
             f"사용자 호칭은 반드시 '{address}'로 사용하고 답변에서 최대 한 번만 사용하세요. {persona}{memory_prompt}"
         )
+        if contract.requires_code:
+            prompt = (
+                "당신은 주어진 프로그래밍 문제의 완전한 해답을 작성하는 코딩 전문가입니다. "
+                "original_problem과 현재 요청의 제약을 모두 지키세요. previous_answer와 previous_code는 "
+                "오류가 있을 수 있는 이전 시도입니다. 원문 문제와 현재 피드백을 우선하세요. "
+                "요청한 함수 이름과 매개변수를 그대로 사용하고 완성 코드를 닫힌 코드 블록에 작성하세요. "
+                "알고리즘 선택 이유, 모든 입력 조건과 경계·동률 처리, 시간복잡도를 짧게 설명하세요. "
+                "예제를 주석으로 복사하는 대신 코드의 연산을 따라 입력별 반환값을 정적으로 대조하세요. "
+                "조건 요약이나 나중에 풀겠다는 약속으로 끝내지 마세요. 실제 실행 도구는 없으므로 "
+                "실행·테스트했다고 주장하지 마세요. 명시된 언어가 없으면 Python으로 답하세요. "
+                + memory_prompt
+            )
         prompt += "\n" + agent_response_policy() + "\n" + korean_writing_guidance(style)
         prompt += "\n" + contract.generation_guidance
         messages = [{"role": "system", "content": prompt}, *recent,
-                    {"role": "user", "content": message}]
+                    {"role": "user", "content": bound_request}]
         draft_client = (self.generation_client_factory(contract)
                         if self.generation_client_factory and contract.requires_review else self.llm)
         chat_prose = getattr(draft_client, "chat_prose", None) or draft_client.chat
+        check_turn_cancelled()
         model_response = (chat_prose(messages, context_window=8192)
                           if contract.requires_review and isinstance(draft_client, OllamaClient)
                           else chat_prose(messages))
+        check_turn_cancelled()
         metadata = model_response.metadata if isinstance(model_response, ProseResponse) else {}
         response = str(model_response.content if isinstance(model_response, ProseResponse)
                        else model_response or "").strip()
@@ -254,7 +312,6 @@ class ConversationService:
                 # Optional presentation repair must not discard an available
                 # draft on provider failure. Cancellation is not such a failure.
                 from core.plugin import ToolCancelledError
-                from core.turn_context import check_turn_cancelled
                 if isinstance(exc, ToolCancelledError):
                     raise
                 check_turn_cancelled()
@@ -274,6 +331,9 @@ class ConversationService:
                 repair_hint=("말투·질문 의도·근거 없는 진행 주장을 함께 교정하세요."
                              if needs_repair else ""),
             )
+            if isinstance(response, ProseResponse):
+                metadata = response.metadata
+                response = response.content
         return guard_conversation_response(
             ConversationResponse(
                 response if response or metadata.get("truncated") else

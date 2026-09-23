@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.dialogue_state import DialogueStateStore
+from core.coding_experience import CodingExperienceStore
 from core.executor import Executor
 from core.intent_router import IntentRouter
 from core.plan_runtime import PlanDAG, PlanRunResult, PlanStep, StepStatus
@@ -133,6 +134,8 @@ def _model_output(**changes):
 
 @pytest.fixture
 def make_executor(tmp_path, monkeypatch):
+    experience = CodingExperienceStore(str(tmp_path / "coding-experiences.db"))
+    monkeypatch.setattr("core.executor.get_coding_experience_store", lambda: experience)
     workspace = SimpleNamespace(get_workspace_path=lambda: str(tmp_path), is_set=lambda: True)
     monkeypatch.setattr("plugins.filesystem.get_workspace_manager", lambda: workspace)
     monkeypatch.setattr("core.executor.record_runtime_event", lambda *_a, **_k: None)
