@@ -723,10 +723,18 @@ class VectorRAGManager:
         for document in self._documents_snapshot():
             if document.get("namespace", "global") not in allowed_namespaces: continue
             for chunk in document.get("chunk_metadata", []):
-                catalog[chunk.get("chunk_id", "")] = {"source": document.get("source", ""), **chunk}
+                catalog[chunk.get("chunk_id", "")] = {
+                    "source": document.get("source", ""),
+                    "namespace": document.get("namespace", "global"),
+                    **document.get("metadata", {}), **chunk,
+                }
         filtered = []
         for item in candidates:
             item = {**catalog.get(item.get("chunk_id", ""), {}), **item}
+            if (item.get("source_type") == "verified_coding_experience"
+                    or str(item.get("source", "")).startswith("memory://coding-experience-")):
+                if not self._verified_coding_experience_candidate(item):
+                    continue
             expires_at = item.get("expires_at")
             stale = bool(expires_at and float(expires_at) <= now)
             if stale and not include_stale: continue
@@ -747,6 +755,23 @@ class VectorRAGManager:
             filtered.append(item)
         filtered.sort(key=lambda item: (item["score"], float(item.get("recorded_at", 0))), reverse=True)
         return filtered[:top_k]
+
+    def _verified_coding_experience_candidate(self, item: dict) -> bool:
+        """Recheck exact stored evidence; old RAG approval flags are not proof."""
+        if (not item.get("coding_attempt_id") or not item.get("coding_session_id")
+                or "coding_workspace_path" not in item or not item.get("coding_memory_namespace")
+                or item.get("namespace") != item["coding_memory_namespace"]):
+            return False
+        import sqlite3
+        from core.coding_experience import get_coding_experience_store
+        try:
+            document = get_coding_experience_store().rag_document(
+                item["coding_attempt_id"], session_id=item["coding_session_id"],
+                workspace_path=item["coding_workspace_path"], namespace=item["coding_memory_namespace"],
+            )
+        except (sqlite3.Error, OSError, TypeError, ValueError):
+            return False
+        return bool(document and item.get("content") in self.chunk_text(document["text"]))
     
     def list_documents(self, *, namespace: str | None = None) -> str:
         target_namespace = self._resolve_namespace(namespace)
