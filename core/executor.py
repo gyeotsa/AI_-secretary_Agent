@@ -569,6 +569,32 @@ class Executor:
                 ))
                 outcome.grounded_conversation = True
                 return outcome
+            if semantic.reason in {
+                "semantic_response_mode_invalid", "semantic_discovery_invalid",
+                "semantic_schema_not_object", "semantic_schema_or_confidence_invalid",
+                "invalid_clarification_flag", "invalid_clarification_question",
+                "invalid_tool_names", "intent_tool_mismatch", "unknown_intent",
+                "unknown_or_out_of_scope_tool", "invalid_slots", "conversation_cannot_execute",
+                "invalid_action_operation", "unknown_slot", "slot_type_invalid",
+                "operation_tool_mismatch", "message_literal_changed",
+                "filename_not_verified_candidate",
+            } or semantic.reason.startswith("ungrounded_literal:"):
+                # A rejected model contract is not missing user information or
+                # a condition to authorize. Leave any existing pending task alone.
+                return terminal_outcome(
+                    "요청을 해석하는 과정에서 모델의 분류 결과를 검증하지 못했습니다. "
+                    "설명이 부족하다는 뜻은 아니며, 어떤 작업도 실행하지 않았습니다.", "failed",
+                )
+            if semantic.reason.startswith(("semantic_interpretation_failed", "semantic_model_unavailable")):
+                if semantic.reason.endswith((":context_saturated", ":truncated_output")):
+                    message = "모델의 입력 또는 출력 길이 한도에 도달해 실행하지 않았습니다. 요청이나 첨부 설명을 나누어 다시 시도해 주세요."
+                elif semantic.reason.endswith(":connection") or semantic.reason == "semantic_model_unavailable":
+                    message = "요청 해석 모델에 연결하지 못해 작업을 실행하지 않았습니다. 모델 상태를 확인한 뒤 다시 시도해 주세요."
+                elif semantic.reason.endswith(":timeout"):
+                    message = "요청 해석 모델의 응답 시간이 초과되어 작업을 실행하지 않았습니다."
+                else:
+                    message = "요청 해석 모델이 유효한 실행 명세를 반환하지 않아 작업을 실행하지 않았습니다."
+                return terminal_outcome(message, "failed")
             # Conditions in supplied material do not authorize tool execution,
             # but must not prevent a validated tool-free answer about it.
             guarded = execution_scope_guard()
@@ -614,35 +640,6 @@ class Executor:
                         task.task_id if task else (existing_task_id or ""), progress_callback,
                     )
             if semantic.needs_clarification or not semantic.grounded or not semantic.tool_names:
-                if semantic.reason in {
-                    "semantic_response_mode_invalid", "semantic_discovery_invalid",
-                    "semantic_schema_not_object", "semantic_schema_or_confidence_invalid",
-                    "invalid_clarification_flag", "invalid_clarification_question",
-                    "invalid_tool_names", "intent_tool_mismatch", "unknown_intent",
-                    "unknown_or_out_of_scope_tool", "invalid_slots", "conversation_cannot_execute",
-                    "invalid_action_operation", "unknown_slot", "slot_type_invalid",
-                    "operation_tool_mismatch", "message_literal_changed",
-                    "filename_not_verified_candidate",
-                } or semantic.reason.startswith("ungrounded_literal:"):
-                    # A rejected model contract is not missing user information.
-                    # Do not add a generic pending task that biases later turns.
-                    return terminal_outcome(
-                        "요청을 해석하는 과정에서 모델의 분류 결과를 검증하지 못했습니다. "
-                        "설명이 부족하다는 뜻은 아니며, 어떤 작업도 실행하지 않았습니다.", "failed",
-                    )
-                if semantic.reason.startswith(("semantic_interpretation_failed", "semantic_model_unavailable")):
-                    if semantic.reason.endswith((":context_saturated", ":truncated_output")):
-                        message = "모델의 입력 또는 출력 길이 한도에 도달해 실행하지 않았습니다. 요청이나 첨부 설명을 나누어 다시 시도해 주세요."
-                    elif semantic.reason.endswith(":connection") or semantic.reason == "semantic_model_unavailable":
-                        message = "요청 해석 모델에 연결하지 못해 작업을 실행하지 않았습니다. 모델 상태를 확인한 뒤 다시 시도해 주세요."
-                    elif semantic.reason.endswith(":timeout"):
-                        message = "요청 해석 모델의 응답 시간이 초과되어 작업을 실행하지 않았습니다."
-                    else:
-                        message = "요청 해석 모델이 유효한 실행 명세를 반환하지 않아 작업을 실행하지 않았습니다."
-                    return terminal_outcome(
-                        message,
-                        "failed",
-                    )
                 question = semantic.clarification_question or (
                     "요청의 대상과 필요한 작업을 아직 확실히 연결하지 못했어요. "
                     "어떤 결과를 원하시는지 한 번만 더 설명해 주세요."

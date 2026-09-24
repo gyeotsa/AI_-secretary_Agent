@@ -56,20 +56,50 @@ def test_action_still_cannot_cross_conditional_or_negative_authority(utterance, 
     assert not executor.plan_calls and not executor.test_surface.calls
 
 
-@pytest.mark.parametrize("reason", [
-    "semantic_response_mode_invalid", "semantic_discovery_invalid", "invalid_slots",
-    "semantic_schema_or_confidence_invalid", "conversation_cannot_execute",
-    "unknown_or_out_of_scope_tool", "ungrounded_literal:recipient",
+@pytest.mark.parametrize("reason, expected_message", [
+    *[(reason, "설명이 부족하다는 뜻은 아니며") for reason in (
+        "semantic_response_mode_invalid", "semantic_discovery_invalid", "invalid_slots",
+        "semantic_schema_or_confidence_invalid", "conversation_cannot_execute",
+        "unknown_or_out_of_scope_tool", "ungrounded_literal:recipient",
+    )],
+    ("semantic_interpretation_failed:TransportError:connection", "연결하지 못해"),
+    ("semantic_interpretation_failed:TransportError:timeout", "응답 시간이 초과"),
+    ("semantic_interpretation_failed:TransportError:context_saturated", "길이 한도"),
+    ("semantic_interpretation_failed:TransportError:truncated_output", "길이 한도"),
+    ("semantic_model_unavailable", "연결하지 못해"),
+    ("semantic_interpretation_failed:RuntimeError", "유효한 실행 명세"),
 ])
-def test_model_contract_failure_never_adds_a_pending_user_question(reason, make_executor):
+@pytest.mark.parametrize("utterance", [
+    "대화가 자꾸 엉뚱하게 이어지네",
+    "두 값을 비교하면 큰 값을 반환합니다. solution 함수를 완성해 주세요.",
+    "내가 승인하면 note.txt 파일을 수정해줘",
+    "note.txt 파일을 수정하지 마",
+])
+def test_model_failure_never_adds_a_pending_user_question(reason, expected_message, utterance, make_executor):
     executor = make_executor({"reason": reason})
     pending = _pending_send(executor)
     before = executor.dialogue_state.list(SESSION, executor._workspace_scope())
-    outcome = executor.execute_turn("대화가 자꾸 엉뚱하게 이어지네", SESSION)
+    outcome = executor.execute_turn(utterance, SESSION)
     assert outcome.status == "failed"
-    assert "설명이 부족하다는 뜻은 아니며" in outcome.response
+    assert expected_message in outcome.response
     assert executor.dialogue_state.list(SESSION, executor._workspace_scope()) == before
     assert executor.dialogue_state.get_task(SESSION, pending.task_id).status == "awaiting_user"
+    assert not executor.plan_calls and not executor.test_surface.calls
+
+
+@pytest.mark.parametrize("reason", [
+    "semantic_response_mode_invalid", "semantic_interpretation_failed:TransportError:timeout",
+])
+def test_conditional_model_failure_closes_only_its_queued_task(reason, make_executor):
+    executor = make_executor({"reason": reason})
+    goal = "두 값을 비교하면 큰 값을 반환합니다. solution 함수를 완성해 주세요."
+    task = executor.dialogue_state.create_task(SESSION, goal, workspace_path=executor._workspace_scope())
+    outcome = executor.execute_turn(goal, SESSION, existing_task_id=task.task_id)
+    stored = executor.dialogue_state.get_task(SESSION, task.task_id, executor._workspace_scope())
+    assert outcome.status == stored.status == "failed"
+    assert outcome.task_id == task.task_id and stored.result == outcome.response
+    assert executor.dialogue_state.list(SESSION, executor._workspace_scope()) == []
+    assert len(executor.dialogue_state.list_tasks(SESSION)) == 1
     assert not executor.plan_calls and not executor.test_surface.calls
 
 

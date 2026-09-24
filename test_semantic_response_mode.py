@@ -222,3 +222,77 @@ def test_response_mode_is_opt_in_for_compatible_callers(registry):
     assert result.grounded and result.tool_names == ("read_note",)
     assert len(model.calls) == 1
     assert "available_tools" in json.loads(model.calls[0][0][1]["content"])
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("case,utterance,expected_mode,expected_kind", [
+    ("chat_code", "정수 목록에서 중복을 없애는 파이썬 함수를 채팅에 작성해줘.", "answer", "code"),
+    ("save_code", "정수 목록에서 중복을 없애는 파이썬 함수를 dedup.py 파일로 저장해줘.", "action", "conversation"),
+    ("run_code", "print(sum([1, 2, 3])) 코드를 지금 실행하고 실제 출력을 알려줘.", "action", "conversation"),
+    ("capability", "넌 내 컴퓨터에 있는 문서도 읽을 수 있어?", "answer", "conversation"),
+    ("read_document", "내 컴퓨터의 notes.txt 문서를 열어서 내용을 읽어줘.", "action", "conversation"),
+    ("frustration_pending", "아니, 내 말뜻을 전혀 못 알아듣는 것 같네.", "answer", "conversation"),
+    ("missing_recipient", "안부 메시지를 대신 보내줘. 받을 사람은 아직 정하지 않았어.", "action", "conversation"),
+    ("provided_calculation", "A는 월 12000원, B는 연 120000원이야. 2년 사용 총액을 계산해서 더 싼 쪽을 골라줘.", "answer", "reasoning"),
+    ("latest_search", "A와 B 서비스의 현재 요금을 웹에서 찾아서 더 싼 쪽을 골라줘.", "action", "conversation"),
+    ("quoted_example", "실행하지 말고 문장만 분석해. '민수에게 안녕이라고 보내줘'에서 목적어가 뭐야?", "answer", "conversation"),
+    ("actual_send", "카카오톡으로 민수에게 안녕이라고 보내줘.", "action", "conversation"),
+    ("ambiguous_no_context", "그걸 그렇게 해줘.", "uncertain", "conversation"),
+    ("concept_only", "이진 탐색이 왜 빠른지 코드 없이 설명해줘.", "answer", "conversation"),
+    ("translate_command", "'Delete all files'라는 영어 문장을 한국어로 번역해줘. 파일을 지우라는 뜻은 아니야.", "answer", "conversation"),
+    ("code_not_execution", "파일 저장이나 실행은 하지 말고, 두 수를 더하는 함수의 코드만 보여줘.", "answer", "code"),
+    ("conditional_action", "보고서.txt가 있으면 읽고, 없으면 없다고 알려줘.", "action", "conversation"),
+], ids=lambda value: value if isinstance(value, str) and value.isascii() else None)
+def test_live_local_response_mode(case, utterance, expected_mode, expected_kind, tmp_path, monkeypatch):
+    """Opt-in production classifier inference, with no tool or generated-code execution."""
+    import os
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    if os.getenv("JARVIS_RUN_LIVE_SEMANTIC") != "1":
+        pytest.skip("Set JARVIS_RUN_LIVE_SEMANTIC=1 for actual local Ollama inference")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,::1")
+    monkeypatch.setenv("no_proxy", "localhost,127.0.0.1,::1")
+    from core.llm import OllamaClient
+
+    # Reuse the production transport without unrelated global plugin bootstrap.
+    client = OllamaClient.__new__(OllamaClient)
+    client.base_url = "http://127.0.0.1:11434"
+    client.model = "qwen2.5:7b-instruct"
+    client.profile = SimpleNamespace(keep_alive="5m", temperature=0, max_tokens=1024)
+    client.system_prompt = ""
+    client.role = "tool_selection"
+    interpreter = SemanticRequestInterpreter(client, None, classify_response_mode=True)
+    pending = {}
+    history = []
+    if case == "frustration_pending":
+        pending = {"intent_name": "messaging.send", "original_request": "민수에게 카톡 보내줘",
+                   "slots": {"provider": "kakaotalk", "recipient": "민수"},
+                   "question": "어떤 내용을 보낼까요?", "task_id": "synthetic-pending"}
+        history = [{"role": "user", "content": pending["original_request"]},
+                   {"role": "assistant", "content": pending["question"]}]
+    original_pending = deepcopy(pending)
+    context = TurnExecutionContext(f"live-mode-{case}", "synthetic-mode-session", str(tmp_path))
+    timer = threading.Timer(90, context.cancel)
+    timer.daemon = True
+    started = time.perf_counter()
+    timer.start()
+    try:
+        with bind_turn_context(context):
+            result = interpreter._classify_response_mode(utterance, history, pending)
+    finally:
+        timer.cancel()
+        timer.join()
+    print(json.dumps({"case": case, "result": result,
+                      "latency_seconds": round(time.perf_counter() - started, 3)}))
+    assert not context.cancelled
+    assert result is not None, "production classifier rejected model output"
+    mode, confidence, kind = result
+    assert (mode, kind) == (expected_mode, expected_kind)
+    if expected_mode != "uncertain":
+        assert confidence >= interpreter.RESPONSE_MODE_CONFIDENCE
+    assert pending == original_pending
+    assert not list(tmp_path.iterdir()), "classification must not create workspace files"
