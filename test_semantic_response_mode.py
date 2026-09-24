@@ -135,7 +135,6 @@ def test_uncertainty_is_distinct_and_cannot_grant_tools(registry, mode, confiden
     _mode(confidence=True), _mode(confidence="0.99"), _mode(confidence=float("nan")),
     _mode(confidence=1.1), _mode(confidence=-.1), _mode(mode="execute"), _mode(mode=[]),
     _mode(answer_kind="executable"), _mode(answer_kind=[]),
-    _mode("action", answer_kind="code"), _mode("uncertain", answer_kind="reasoning"),
     {**_mode(), "tool_names": ["write_note"]},
 ])
 def test_malformed_mode_is_technical_failure_not_missing_user_info(registry, output):
@@ -145,6 +144,18 @@ def test_malformed_mode_is_technical_failure_not_missing_user_info(registry, out
     assert not result.needs_clarification and not result.grounded
     assert not result.tool_names and not result.to_resolution(registry).matched
     assert len(model.calls) == 1
+
+
+@pytest.mark.parametrize("kind", ["code", "reasoning"])
+def test_action_answer_style_cannot_block_or_authorize_tools(registry, kind):
+    interpreter, model = _interpreter(registry, _mode("action", answer_kind=kind),
+                                      _data(slots={"filename": "invented.txt"}))
+    result = interpreter.interpret("Agent 인수인계.txt 읽어줘")
+    assert result.reason == "ungrounded_literal:filename" and not result.grounded
+    assert len(model.calls) == 2
+    interpreter, _ = _interpreter(registry, _mode("uncertain", answer_kind=kind))
+    result = interpreter.interpret("그거 해줘")
+    assert result.reason == "semantic_response_mode_uncertain" and not result.tool_names
 
 
 @pytest.mark.parametrize("utterance,relation", [("승인", "approve"), ("전체 작업 취소", "cancel")])
@@ -257,6 +268,14 @@ def test_live_local_response_mode(case, utterance, expected_mode, expected_kind,
     monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1,::1")
     monkeypatch.setenv("no_proxy", "localhost,127.0.0.1,::1")
     from core.llm import OllamaClient
+    from core.productization import METRICS  # Initialize transport metrics outside target workspace.
+
+    # Bootstrap may create its local data directory; the classification itself
+    # must not write files in the separate target workspace.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    raw_outputs = []
 
     # Reuse the production transport without unrelated global plugin bootstrap.
     client = OllamaClient.__new__(OllamaClient)
@@ -265,6 +284,12 @@ def test_live_local_response_mode(case, utterance, expected_mode, expected_kind,
     client.profile = SimpleNamespace(keep_alive="5m", temperature=0, max_tokens=1024)
     client.system_prompt = ""
     client.role = "tool_selection"
+    original_call = client.chat_structured
+    def capture_call(*args, **kwargs):
+        response = original_call(*args, **kwargs)
+        raw_outputs.append(response)
+        return response
+    client.chat_structured = capture_call
     interpreter = SemanticRequestInterpreter(client, None, classify_response_mode=True)
     pending = {}
     history = []
@@ -275,7 +300,7 @@ def test_live_local_response_mode(case, utterance, expected_mode, expected_kind,
         history = [{"role": "user", "content": pending["original_request"]},
                    {"role": "assistant", "content": pending["question"]}]
     original_pending = deepcopy(pending)
-    context = TurnExecutionContext(f"live-mode-{case}", "synthetic-mode-session", str(tmp_path))
+    context = TurnExecutionContext(f"live-mode-{case}", "synthetic-mode-session", str(workspace))
     timer = threading.Timer(90, context.cancel)
     timer.daemon = True
     started = time.perf_counter()
@@ -289,10 +314,10 @@ def test_live_local_response_mode(case, utterance, expected_mode, expected_kind,
     print(json.dumps({"case": case, "result": result,
                       "latency_seconds": round(time.perf_counter() - started, 3)}))
     assert not context.cancelled
-    assert result is not None, "production classifier rejected model output"
+    assert result is not None, raw_outputs
     mode, confidence, kind = result
     assert (mode, kind) == (expected_mode, expected_kind)
     if expected_mode != "uncertain":
         assert confidence >= interpreter.RESPONSE_MODE_CONFIDENCE
     assert pending == original_pending
-    assert not list(tmp_path.iterdir()), "classification must not create workspace files"
+    assert not list(workspace.iterdir()), "classification must not create workspace files"
