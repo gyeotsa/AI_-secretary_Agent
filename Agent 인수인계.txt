@@ -1,5 +1,57 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
 
+## 2026-09-24 채팅 코드 실제 실행·교정·경험 저장 연결
+
+- 사용자 승인에 따라 일반 코딩 답변에 실제 예제 실행을 연결했다. 아래 이전 기록의
+  '채팅 자동 실행/교정 루프 미연결'은 이 항목으로 대체한다. 모델의 정답률 해결을 뜻하지 않는다.
+- 흐름: 사용자 원문의 함수/입출력 예제 추출 → 코드 생성 → 정적 검사 → 격리 Python 실행 →
+  host에서 기대값/실제값 비교 → 실패 입력·기대값·실제값·오류를 교정 모델에 전달 → 재실행.
+  기존 45초 검수 예산 안에서 교정 최대 2회다. 코드 누락 교정 뒤에도 실행 실패 교정 기회가 있다.
+- `core/code_execution.py`는 Wasmtime 49.0.0에서 CPython 3.12.0 WASI를 실행한다. host 디렉터리,
+  네트워크 socket, 환경변수, stdin/stdout handle을 상속하지 않는다. stdout/stderr는 각각 64 KiB까지
+  메모리로 받는다. guest memory 256 MiB, fuel 제한, 예제당 3초/묶음 8초 제한과 턴 취소를 적용한다.
+  별도 host exec/subprocess Python 또는 제한 없는 실행으로 fallback하지 않는다. 순차 실행 lock으로
+  epoch 취소가 다른 대화의 guest에 영향을 주지 않으며 각 예제는 새로운 WASM 인스턴스에서 시작한다.
+- 입력 지원: 하나의 완전한 Python 코드 블록, 원문에 식별된 solution 또는 def 함수, JSON 값으로
+  표현 가능한 함수 인자/반환값. 표의 입출력 예제 및 `인자 -> 기대값` 형식을 읽는다. 기대값은
+  모델 답변/주석에서 수집하지 않고 host에 보관한다. 원문에서 예제를 확정하지 못하거나 서로
+  모순되면 실행 검증 미수행으로 표시한다. C++/Java, 표준입출력 프로그램, 외부 패키지/파일이 필요한
+  프로젝트는 이번 자동 실행 범위가 아니다. 자연어로만 서술한 조건이나 새로운 경계 사례의 정답을
+  임의로 만들어 채점하지 않는다. 후속 설명 요청과 명시적인 실행 거부는 자동 실행하지 않는다.
+- `AnswerReview`에 execution_status, tested_code, test_results, execution_history를 추가했다.
+  actual/expected 비교는 host에서 하고, 실행 가능한 예제의 통과 여부를 검수 모델에게 맡기지 않는다.
+  미실행·실행 제한·실패·통과를 구분한다. 수정 후보가 아직 실행되지 않았다면 이전 코드의 실행 증거를
+  붙이지 않는다. 일반 정적 검수와 실행 검증은 구분되어 있고 정적 모델 판단은 테스트 통과가 아니다.
+- 최종 답변에 '원문 예제 N/M 통과, 숨겨진 테스트/전체 정답 미확인'을 표시한다. 실패가 남으면
+  '실행 검증 실패'와 실패 입력·기대값·실제값 일부를 함께 표시하며 제출 가능한 정답으로 승인하지 않는다.
+  통과는 해당 예제만의 결과이며 모든 제약/숨겨진 테스트를 검증했다는 의미가 아니다.
+- `Executor`는 내부 실패 초안과 수정 답변을 같은 문제·세션·작업공간의 시도 ID로 연결해 저장한다.
+  최종 답변에 코드가 없어도 이미 실행한 실패 초안의 증거는 보존한다. 검증한 정확한 코드가
+  최종 코드와 일치하고 전체 선택 예제를 실행했을 때 기존 record_test_result API에 기록한다.
+  통과한 시도만 기존 namespace/doc_id 경로로 RAG에 등록한다. 사용자 성공 발화만으로 승격하지 않는다.
+- 설치: 프로젝트 .venv에 wasmtime==49.0.0 설치 완료. 공식 VMware WasmLabs 릴리스의
+  python-3.12.0.wasm(26,267,204 bytes)을 data/models/python-wasi/python.wasm에 설치했고
+  SHA-256 e5dc5a398b07b54ea8fdb503bf68fb583d533f10ec3f930963e02b9505f7a763를 대조했다.
+  매 프로세스 최초 로딩 때도 해시를 검사한다. binary는 Git에 넣지 않는다. 다른 개발 환경 설치는
+  requirements 설치 후 `.\.venv\Scripts\python.exe scripts/setup_coding_runtime.py`로 재현한다.
+  배포본은 같은 guest 경로와 Wasmtime native library를 포함해야 하며 exe 패키징 수락은 별도다.
+  자동 채팅 중 네트워크 다운로드는 없다. guest가 없거나 무결성 검증 실패 시 실행 미수행으로 끝난다.
+  런타임 API: https://bytecodealliance.github.io/wasmtime-py/
+  guest 배포: https://github.com/vmware-labs/webassembly-language-runtimes/releases/tag/python%2F3.12.0%2B20231211-040d5a6
+- 검증: 관련 15개 파일 630 passed / 22 deselected (49.50초). 기존 모델/GUI opt-in integration은
+  미선택이다. test_code_execution.py에서 실제 WASI로 양궁 정답/오답, host 파일 읽기/쓰기 차단,
+  네트워크/환경변수 접근 차단, 무한 루프/메모리 한도, 실행 중 취소, 실제 실패→교정→저장 흐름을 확인했다.
+  기존 정적 검수 전용 대역 테스트 2개는 execution_runner=None으로 정적 경로를 명시했다.
+- 실모델: data/qa/coding-wasi-final-2026-09-24.json. Qwen 코딩 후속 요청 '이상한데'가 grounded code로
+  연결됐다. 39.89초, 교정 2회, 실제 실행 이력 2개, 각 예제 0/4, 최종 status/ execution_status=failed,
+  code_executed=true. 실패 근거 전달/재실행/미완성 판정은 확인했으나 Qwen 양궁 정답 수락은 실패다.
+  scripts/qa_coding_repair.py는 이제 실행 예제 통과까지 성공 조건에 포함하므로 이 경우 exit 1이 정상이다.
+  올바른 기준 코드로는 4/4 및 실제 Executor의 verified 경험 저장 성공을 회귀에서 확인했다.
+- 사용자 DB/Chroma 정리나 외부 전송은 하지 않았다. 회귀는 임시 DB를 사용했다. 코드 변경 적용에는
+  ANIS 재시작이 필요하다. 생성/모델 정확도 비교와 다른 언어·stdin 지원은 후속 범위로 남는다.
+- 구현 커밋: fd61b20 [Feat] Execute coding examples in WASI and repair from actual failures.
+  인수인계서는 별도 문서 커밋이다. 기존 UI/연속작업/MCP 관련 변경은 포함하지 않았으며 원격 push 없음.
+
 ## 2026-09-24 응답 경로 분류·해석 실패 상태 전이 보정
 
 ### 이번 반영
