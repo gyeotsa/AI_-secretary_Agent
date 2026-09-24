@@ -1,4 +1,4 @@
-"""Local-only coding dialogue acceptance; generated code is never executed here.
+"""Local-only coding dialogue acceptance, with capability-free WASI example checks.
 
 Run from the repository with .venv/Scripts/python.exe scripts/qa_coding_repair.py.
 All application stores/configuration live in a temporary directory. The report
@@ -106,10 +106,16 @@ def main():
             report.append(record)
             report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-            print(json.dumps({k:v for k,v in record.items() if k != "response"}, ensure_ascii=False), flush=True)
+            review = record["review"] or {}
+            print(json.dumps({"case": name, "seconds": record["seconds"], "route": record["route"],
+                "code_present": record["code_present"], "review_status": review.get("status"),
+                "execution_status": review.get("execution_status"), "repair_calls": review.get("repair_calls"),
+                "example_passes": sum(r["passed"] for r in review.get("test_results", [])),
+                "example_count": len(review.get("test_results", []))}, ensure_ascii=False), flush=True)
         os.chdir(root)
         logging.shutdown()
-    return 0 if all(r["grounded"] and r["code_present"] and not r["truncated"] for r in report) else 1
+    return 0 if all(r["grounded"] and r["code_present"] and not r["truncated"]
+                   and (r["review"] or {}).get("execution_status") == "passed" for r in report) else 1
 
 
 if __name__ == "__main__":

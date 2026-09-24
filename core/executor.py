@@ -439,22 +439,50 @@ class Executor:
                 status = "partial"
             elif review_data and review_data.get("status") in {"failed", "unverified"}:
                 status = "unverified"
+            final_has_code = any(block.closed and block.body.strip() and block.language not in {"text", "json"}
+                                 for block in _blocks(str(response)))
             if (coding_context and coding_context.get("requires_code")
                     and not blocked_claim and not unsupported_activity and not truncated
-                    and any(block.closed and block.body.strip() and block.language not in {"text", "json"}
-                            for block in _blocks(str(response)))):
+                    and (final_has_code or (review_data or {}).get("execution_history"))):
                 check_turn_cancelled()
-                get_coding_experience_store().record_attempt(
-                    session_key, code_failure_feedback or "", str(response),
-                    workspace_path=workspace_scope, problem=coding_context["problem"],
-                    failed_code=coding_context.get("previous_code", "") if code_failure_feedback else "",
-                    test_results=([{"source": "user_report", "executed": False,
-                                    "raw": code_failure_feedback}] if code_failure_feedback else []),
-                    previous_attempt_id=previous_attempt_id,
-                    metadata={"answer_review": review_data, "status": status,
-                              "memory_namespace": self._memory_namespace(),
-                              "turn_id": current_turn_context().turn_id if current_turn_context() else ""},
-                )
+                store = get_coding_experience_store()
+                execution_history = (review_data or {}).get("execution_history", [])
+                attempt_parent = previous_attempt_id
+                failed_code = coding_context.get("previous_code", "") if code_failure_feedback else ""
+                for tested in execution_history:
+                    if final_has_code and tested["code"] == (review_data or {}).get("tested_code"):
+                        continue
+                    previous_attempt_id_for_test = store.record_attempt(
+                        session_key, code_failure_feedback or "자동 실행 검증",
+                        "```python\n" + tested["code"] + "\n```",
+                        workspace_path=workspace_scope, problem=coding_context["problem"],
+                        previous_attempt_id=attempt_parent,
+                        test_results=tested["results"],
+                        metadata={"memory_namespace": self._memory_namespace(), "source": "automatic_test"},
+                    )
+                    # Internal failed drafts are retained without RAG promotion.
+                    if tested["status"] in {"passed", "failed"}:
+                        store.record_test_result(previous_attempt_id_for_test, session_id=session_key,
+                            workspace_path=workspace_scope, tested_code=tested["code"], test_results=tested["results"])
+                    attempt_parent = previous_attempt_id_for_test
+                    failed_code = tested["code"]
+                if final_has_code:
+                    attempt_id = store.record_attempt(
+                        session_key, code_failure_feedback or "", str(response),
+                        workspace_path=workspace_scope, problem=coding_context["problem"],
+                        failed_code=failed_code,
+                        test_results=([{"source": "user_report", "executed": False,
+                                        "raw": code_failure_feedback}] if code_failure_feedback else []),
+                        previous_attempt_id=attempt_parent,
+                        metadata={"answer_review": review_data, "status": status,
+                                  "memory_namespace": self._memory_namespace(),
+                                  "turn_id": current_turn_context().turn_id if current_turn_context() else ""},
+                    )
+                    if (review_data and review_data.get("execution_status") in {"passed", "failed"}
+                            and review_data.get("tested_code") and review_data.get("test_results")):
+                        store.record_test_result(attempt_id, session_id=session_key, workspace_path=workspace_scope,
+                            tested_code=review_data["tested_code"], test_results=review_data["test_results"])
+                        self._publish_coding_experience(store, attempt_id, session_key, workspace_scope)
             response = str(response)
             if existing_task_id:
                 task = self.dialogue_state.get_task(

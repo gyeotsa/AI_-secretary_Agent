@@ -84,7 +84,7 @@ def test_problem_prose_followup_failed_code_repair_and_exact_user_confirmation(c
     repair = Model("이제 풀어볼게요.", GOOD_ANSWER)
     critic = ApprovingReviewer()
     executor.conversation_service = ConversationService(draft,
-        answer_verifier=AnswerVerificationService(lambda: critic, lambda: repair))
+        answer_verifier=AnswerVerificationService(lambda: critic, lambda: repair, execution_runner=None))
     history = []
     outcomes = []
     for request in (PROBLEM, "풀어줘", "오답이야", "통과했어"):
@@ -203,7 +203,8 @@ def test_self_declared_correctness_is_not_code_review_evidence():
             return result
     service = ConversationService(Model(BAD_ANSWER + "\n이 코드는 모든 조건을 충족합니다."),
         answer_verifier=AnswerVerificationService(lambda: SelfPraiseReviewer(),
-                                                  lambda: pytest.fail("untrusted review must not repair")))
+                                                  lambda: pytest.fail("untrusted review must not repair"),
+                                                  execution_runner=None))
     response = service.respond(PROBLEM, [], answer_kind="code")
     assert response.answer_review.status == "unverified"
     assert any("ungrounded_code_review" in issue for issue in response.answer_review.issues)

@@ -1,8 +1,4 @@
-"""Bounded, tool-free checks for substantive conversational answers.
-
-Static parsing and a grounded model review are not execution evidence.  Neither
-this module nor its model clients receive a Tool runtime or execute example code.
-"""
+"""Bounded answer checks, including capability-free WASI example execution."""
 from __future__ import annotations
 
 import ast
@@ -18,6 +14,7 @@ from core.response_integrity import protected_segments
 from core.structured_output import parse_json_object
 from core.turn_context import check_turn_cancelled
 from core.utterance_scope import mask_quoted_payloads
+from core.code_execution import extract_examples, check_examples
 
 
 _MAX_TEXT = 24_000
@@ -122,6 +119,7 @@ class AnswerContract:
     correction_authorized: bool = False
     previous_code: str = ""
     failure_feedback: str = ""
+    execution_problem: str = ""
 
 
 @dataclass(frozen=True)
@@ -144,6 +142,10 @@ class AnswerReview:
     requested_count: int | None = None
     observed_count: int | None = None
     repair_truncated: bool = False
+    execution_status: str = "not_requested"
+    tested_code: str = ""
+    test_results: tuple[dict, ...] = ()
+    execution_history: tuple[dict, ...] = ()
 
     def to_dict(self) -> dict:
         value = asdict(self)
@@ -403,11 +405,13 @@ def _local_client(role: str):
 
 class AnswerVerificationService:
     def __init__(self, reviewer_factory: Callable | None = None, repairer_factory: Callable | None = None,
-                 *, policy: AnswerReviewPolicy | None = None, clock: Callable[[], float] | None = None):
+                 *, policy: AnswerReviewPolicy | None = None, clock: Callable[[], float] | None = None,
+                 execution_runner=check_examples):
         self.reviewer_factory = reviewer_factory or (lambda: _local_client("reasoning"))
         self.repairer_factory = repairer_factory or (lambda: _local_client("code"))
         self.policy = policy if policy is not None else AnswerReviewPolicy()
         self.clock = clock if clock is not None else time.monotonic
+        self.execution_runner = execution_runner
 
     @staticmethod
     def _criteria(contract: AnswerContract, draft: str) -> dict[str, str]:
@@ -561,6 +565,99 @@ class AnswerVerificationService:
         return candidate
 
     def verify(self, contract: AnswerContract, draft: str, *, style: str = "", repair_hint: str = "") -> tuple[str, AnswerReview]:
+        if contract.requires_code and contract.execution_problem and self.execution_runner is not None:
+            specification = extract_examples(contract.execution_problem)
+            if specification:
+                return self._verify_examples(contract, draft, specification, style, repair_hint)
+            text, review = self._verify_static(contract, draft, style=style, repair_hint=repair_hint)
+            return ("[실행 검증 미수행: 원문에서 함수와 입출력 예제를 확정하지 못했습니다.]\n\n" + text,
+                    replace(review, status="unverified" if review.status == "passed" else review.status,
+                            execution_status="unavailable"))
+        return self._verify_static(contract, draft, style=style, repair_hint=repair_hint)
+
+    def _verify_examples(self, contract, draft, specification, style, repair_hint):
+        budget = _ReviewBudget(self.policy, self.clock)
+        candidate = str(draft)
+        history = []
+        results = ()
+        tested_code = ""
+        execution_status, status = "not_run", "unverified"
+        issues = ()
+        repair_truncated = False
+        try:
+            # Two corrections within the existing time budget: a missing-code
+            # repair must not consume the only opportunity to fix a test failure.
+            for attempt in range(3):
+                budget.remaining()
+                results, tested_code = (), ""
+                execution_status = "not_run"
+                issues, _ = _static_check(contract, candidate, str(draft))
+                blocks = _blocks(candidate)
+                if not issues:
+                    if len(blocks) != 1 or blocks[0].language not in _PYTHON_LANGUAGES:
+                        issues = ("실행 검증은 하나의 완전한 Python 함수 코드 블록을 지원합니다.",)
+                        execution_status = "unavailable"
+                        break
+                    tested_code = blocks[0].body.strip()
+                    execution = self.execution_runner(tested_code, specification,
+                                                       seconds=min(8.0, budget.remaining()))
+                    results = tuple(execution["results"])
+                    execution_status = execution["status"]
+                    history.append({"code": tested_code, "status": execution_status, "results": results})
+                    budget.remaining()
+                    if execution_status == "passed":
+                        status = "passed"
+                        issues = ()
+                        break
+                    if execution_status == "unavailable":
+                        issues = ("실행 검증을 완료하지 못했습니다: " + execution.get("reason", "runner_unavailable"),)
+                        break
+                    status = "failed"
+                    issues = ("실제 실행에서 원문 예제를 통과하지 못했습니다. 다음 실패를 고치세요:\n" +
+                              json.dumps([r for r in results if not r["passed"]], ensure_ascii=False)[:6000],)
+                else:
+                    status = "incomplete"
+                if attempt < 2:
+                    candidate = self._repair(contract, candidate, issues, style, repair_hint, budget)
+                    # Evidence belongs to the exact tested bytes, never a newly
+                    # accepted correction whose next check may time out.
+                    results, tested_code = (), ""
+                    execution_status, status = "not_run", "unverified"
+        except ToolCancelledError:
+            raise
+        except Exception as exc:
+            check_turn_cancelled()
+            reason = exc.code if isinstance(exc, AnswerReviewProtocolError) else type(exc).__name__
+            repair_truncated = reason == "truncated_repair"
+            issues += ("실행 검증/교정을 완료하지 못했습니다: " + reason,)
+            status = "unverified"
+        executed = any(r.get("executed") for r in results)
+        review = AnswerReview(status=status, method="wasm_examples", repair_calls=budget.repair_calls,
+            code_executed=executed, issues=issues, repair_truncated=repair_truncated,
+            execution_status=execution_status, tested_code=tested_code,
+            test_results=results, execution_history=tuple(history))
+        passed = sum(r["passed"] for r in results)
+        total = len(specification["cases"])
+        if execution_status == "passed" and status == "passed":
+            notice = f"[실행 검증: 원문 예제 {passed}/{total}개 통과. 숨겨진 테스트와 전체 정답은 미확인입니다.]"
+        elif executed and execution_status == "failed":
+            notice = f"[실행 검증 실패: 원문 예제 {passed}/{total}개 통과. 아래 코드는 테스트 실패가 남은 미완성 풀이입니다.]"
+        elif executed:
+            notice = f"[풀이 검증 미완료: 원문 예제 {passed}/{total}개 통과. 아래 코드에는 남은 실패 또는 미확인 사항이 있습니다.]"
+        else:
+            notice = "[실행 검증 미수행: 코드 형식·예제 또는 실행 환경을 확인하지 못했습니다. 정답 여부는 미확인입니다.]"
+        if not _implementation_blocks(candidate):
+            notice = "[풀이 미완성: 요청한 구현 코드를 생성하지 못했습니다.]"
+        failures = [r for r in results if not r["passed"]]
+        if failures:
+            notice += "\n" + "\n".join(
+                "실패 예제: " + json.dumps({k: r[k] for k in ("input", "expected", "actual", "error")},
+                                          ensure_ascii=False)[:800] for r in failures[:2])
+        elif execution_status == "unavailable" and issues:
+            notice += "\n" + issues[0]
+        return notice + "\n\n" + candidate, review
+
+    def _verify_static(self, contract: AnswerContract, draft: str, *, style: str = "", repair_hint: str = "") -> tuple[str, AnswerReview]:
         check_turn_cancelled()
         original = str(draft or "")
         if not requires_answer_review(contract, original):

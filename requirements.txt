@@ -53,3 +53,4 @@ playwright>=1.50.0
 yt-dlp>=2025.1.15
 dateparser>=1.4.1,<2
 g2pk==0.9.4
+wasmtime==49.0.0

@@ -185,6 +185,7 @@ class ConversationService:
                 correction_authorized=bool(coding_context.get("failure_feedback")),
                 previous_code=coding_context.get("previous_code", ""),
                 failure_feedback=coding_context.get("failure_feedback", ""),
+                execution_problem=coding_context["problem"] if coding_context["requires_code"] else "",
             )
             failure_feedback = coding_context.get("failure_feedback") or failure_feedback
         # A validated response mode can select an answer specialist without
@@ -212,6 +213,13 @@ class ConversationService:
                     "[테스트 실패 보고]\n" + failure_feedback
                 ),
             )
+        if contract.requires_code:
+            # Execution opt-out applies to the current request, including short
+            # follow-ups. Code generation does not imply ignoring this choice.
+            declined = re.search(r"(?:실행|테스트).{0,8}(?:하지\s*(?:마|말)|금지|없이)|"
+                                 r"(?:do\s+not|don't|without)\s+(?:run|execut|test)", message, re.I)
+            contract = replace(contract, execution_problem=("" if declined else
+                contract.execution_problem or message))
         recent = [] if coding_context else [
             {"role": item.get("role", "user"), "content": str(item.get("content", ""))}
             for item in list(history)[-6:]
