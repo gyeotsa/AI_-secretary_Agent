@@ -11,7 +11,7 @@ from core.code_execution import WASM_PATH, check_examples, extract_examples
 from core.agent_services import ConversationService
 from core.plugin import ToolCancelledError
 from scripts.qa_coding_repair import PROBLEM, BAD_ANSWER
-from test_coding_conversation_flow import GOOD_ANSWER, Model, coding_runtime
+from test_coding_conversation_flow import GOOD_ANSWER, Model, ApprovingReviewer, coding_runtime
 from test_semantic_executor_flow import make_executor
 
 
@@ -82,12 +82,89 @@ def test_actual_failures_drive_repair_and_scoped_storage(runtime, coding_runtime
 
 def test_failed_correction_stays_failed(runtime):
     wrong = "```python\ndef solution(n, info): return [0]*11\n```"
-    repair = Model(wrong, wrong)
+    repair = Model(wrong, wrong.replace("def solution", "# explanation changed only\ndef solution"))
     text, review = AnswerVerificationService(repairer_factory=lambda: repair).verify(
         AnswerContract(PROBLEM, requires_code=True, execution_problem=PROBLEM), BAD_ANSWER)
-    assert review.status == "failed" and review.repair_calls == 2
+    assert review.status == "incomplete" and review.repair_calls == 2
     assert not all(r["passed"] for r in review.test_results)
-    assert "실패 예제" in text and "원문 예제" in text
+    assert "실패 예제" in text and "수정 미완료" in text
+    assert len(review.execution_history) == 2
+    assert review.revision_status == "unchanged" and "```" not in text
+    assert review.tested_code == review.execution_history[-1]["code"]
+    assert "explanation changed only" not in text
+
+
+def test_general_python_function_repair(runtime):
+    request = 'Python def normalize_name(name): 함수를 작성해줘. 공백 제거 후 소문자로 변환\n" A " -> "a"\n"" -> ""'
+    wrong = '```python\ndef normalize_name(name): return name.lower()\n```'
+    correct = '```python\ndef normalize_name(name): return name.strip().lower()\n```'
+    repair = Model(correct)
+    text, review = AnswerVerificationService(repairer_factory=lambda: repair).verify(
+        AnswerContract(request, requires_code=True, execution_problem=request), wrong)
+    assert review.execution_status == "passed" and len(review.execution_history) == 2
+    assert '"actual": " a "' in json.loads(repair.requests[0][-1]["content"])["issues"][0]
+    assert "2/2" in text
+
+
+def test_unchanged_rejected_baseline_never_becomes_verified(runtime, coding_runtime):
+    executor, store = coding_runtime
+    repair = Model(GOOD_ANSWER, GOOD_ANSWER)
+    executor.conversation_service = ConversationService(Model(GOOD_ANSWER), answer_verifier=
+        AnswerVerificationService(repairer_factory=lambda: repair))
+    outcome = executor.execute_turn("오답이야", "rejected", [
+        {"role": "user", "content": PROBLEM}, {"role": "assistant", "content": GOOD_ANSWER}])
+    assert outcome.answer_review["revision_status"] == "unchanged"
+    assert outcome.answer_review["execution_status"] == "passed"  # examples only
+    assert outcome.answer_review["status"] == "incomplete"
+    assert "```" not in outcome.response and "수정 미완료" in outcome.response
+    latest = store.latest_attempt("rejected", executor._workspace_scope())
+    assert latest["metadata"]["rejected_revision"] and not latest["verified"]
+    assert all(row["passed"] for row in latest["test_results"])
+    assert not store.verified_documents(session_id="rejected", workspace_path=executor._workspace_scope())
+
+
+def test_hidden_first_failure_is_restored_only_for_its_session(runtime, coding_runtime):
+    executor, store = coding_runtime
+    executor.conversation_service = ConversationService(Model(BAD_ANSWER), answer_verifier=
+        AnswerVerificationService(repairer_factory=lambda: Model(BAD_ANSWER)))
+    first = executor.execute_turn(PROBLEM, "hidden")
+    assert first.answer_review["revision_status"] == "unchanged" and "```" not in first.response
+    history = [{"role": "user", "content": PROBLEM}, {"role": "assistant", "content": first.response}]
+    original_history = json.dumps(history)
+    drafts = Model(GOOD_ANSWER, GOOD_ANSWER)
+    executor.conversation_service = ConversationService(drafts)
+    unrelated = executor.execute_turn("다시 풀어줘", "other-session", history)
+    resumed = executor.execute_turn("다시 풀어줘", "hidden", history)
+    assert "return [-1]" not in drafts.requests[0][-1]["content"]
+    assert "return [-1]" in drafts.requests[1][-1]["content"]
+    assert "actual" in drafts.requests[1][-1]["content"]
+    assert resumed.answer_review["execution_status"] == "passed"
+    assert unrelated.answer_review["execution_status"] == "passed"
+    assert json.dumps(history) == original_history
+
+
+def test_hidden_static_failure_is_retained_without_claiming_execution(coding_runtime):
+    executor, store = coding_runtime
+    class RejectingReviewer(ApprovingReviewer):
+        def chat_structured(self, messages, **kwargs):
+            response = super().chat_structured(messages, **kwargs)
+            for row in response["criteria"].values():
+                row["status"] = "failed"
+            return response
+    executor.conversation_service = ConversationService(Model(BAD_ANSWER), answer_verifier=
+        AnswerVerificationService(reviewer_factory=RejectingReviewer,
+                                  repairer_factory=lambda: Model(BAD_ANSWER), execution_runner=None))
+    first = executor.execute_turn(PROBLEM, "hidden-static")
+    assert first.answer_review["revision_status"] == "unchanged" and "```" not in first.response
+    latest = store.latest_attempt("hidden-static", executor._workspace_scope())
+    assert not latest["verified"] and not latest["test_results"]
+    assert latest["metadata"]["source"] == "rejected_revision"
+    drafts = Model(GOOD_ANSWER)
+    executor.conversation_service = ConversationService(drafts, answer_verifier=
+        AnswerVerificationService(reviewer_factory=ApprovingReviewer, execution_runner=None))
+    executor.execute_turn("다시 풀어줘", "hidden-static", [
+        {"role": "user", "content": PROBLEM}, {"role": "assistant", "content": first.response}])
+    assert "return [-1]" in drafts.requests[0][-1]["content"]
 
 
 @pytest.mark.parametrize("utterance", ["이 코드를 실행하지 말고 설명만 해줘",

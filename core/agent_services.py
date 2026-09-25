@@ -254,6 +254,9 @@ class ConversationService:
                 "original_problem과 현재 요청의 제약을 모두 지키세요. previous_answer와 previous_code는 "
                 "오류가 있을 수 있는 이전 시도입니다. 원문 문제와 현재 피드백을 우선하세요. "
                 "요청한 함수 이름과 매개변수를 그대로 사용하고 완성 코드를 닫힌 코드 블록에 작성하세요. "
+                "코딩 테스트뿐 아니라 일반 구현·디버깅·설계 요청도 현재 요구사항에 맞게 답하세요. "
+                "사용자가 지정한 언어·버전·라이브러리·실행 환경을 유지하고, 제공되지 않은 프로젝트 구조나 API를 만들어내지 마세요. "
+                "수정 요청에서는 실패 원인과 실제 변경점을 설명하고, 정보가 부족한 부분은 가정 또는 미확인으로 구분하세요. "
                 "알고리즘 선택 이유, 모든 입력 조건과 경계·동률 처리, 시간복잡도를 짧게 설명하세요. "
                 "예제를 주석으로 복사하는 대신 코드의 연산을 따라 입력별 반환값을 정적으로 대조하세요. "
                 "조건 요약이나 나중에 풀겠다는 약속으로 끝내지 마세요. 실제 실행 도구는 없으므로 "
@@ -342,6 +345,10 @@ class ConversationService:
             if isinstance(response, ProseResponse):
                 metadata = response.metadata
                 response = response.content
+            if (review is not None and review.status == "passed"
+                    and review.execution_status == "not_requested"
+                    and any(row.id == "code_semantics" for row in review.criteria_results)):
+                response = ("[정적 검토만 수행했습니다. 실제 실행·환경 호환성·전체 정확성은 미확인입니다.]\n\n" + response)
         return guard_conversation_response(
             ConversationResponse(
                 response if response or metadata.get("truncated") else

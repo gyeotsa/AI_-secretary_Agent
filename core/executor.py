@@ -407,6 +407,22 @@ class Executor:
         if coding_context and coding_context.get("previous_answer"):
             store = get_coding_experience_store()
             previous = store.latest_attempt(session_key, workspace_scope)
+            if (previous and previous["problem"] == coding_context["problem"]
+                    and previous["metadata"].get("delivery_response") == coding_context["previous_answer"]):
+                # A withheld revision has no visible code. Restore only the
+                # attempt linked to this exact reply, problem and scope; keep
+                # it in the local model context, never in the user's transcript.
+                for index in range(len(history) - 1, -1, -1):
+                    if (history[index].get("role") == "assistant"
+                            and history[index].get("content") == coding_context["previous_answer"]):
+                        failures = [row for row in previous["test_results"]
+                                    if row.get("executed") and not row.get("passed")]
+                        history[index] = {**history[index], "content": (
+                            history[index]["content"] + "\n[채택하지 않은 이전 시도]\n" + previous["correction"]
+                            + "\n[이전 실행 실패]\n" + json.dumps(failures, ensure_ascii=False)[:6000])}
+                        coding_context = resolve_coding_context(goal, history)
+                        code_failure_feedback = coding_context.get("failure_feedback")
+                        break
             # Confirm only the answer the user actually saw, within this turn's
             # immutable session/workspace. Repeated reports never walk backward.
             if (previous and previous["problem"] == coding_context["problem"]
@@ -443,10 +459,16 @@ class Executor:
                                  for block in _blocks(str(response)))
             if (coding_context and coding_context.get("requires_code")
                     and not blocked_claim and not unsupported_activity and not truncated
-                    and (final_has_code or (review_data or {}).get("execution_history"))):
+                    and (final_has_code or (review_data or {}).get("execution_history")
+                         or (review_data or {}).get("rejected_answer"))):
                 check_turn_cancelled()
                 store = get_coding_experience_store()
-                execution_history = (review_data or {}).get("execution_history", [])
+                execution_history = list((review_data or {}).get("execution_history", []))
+                rejected_answer = (review_data or {}).get("rejected_answer", "")
+                rejected_code = _code_text(rejected_answer)
+                if rejected_code and not any(row["code"] == rejected_code for row in execution_history):
+                    execution_history.append({"code": rejected_code, "status": "not_run", "results": [],
+                                              "rejected_revision": True, "answer": rejected_answer})
                 attempt_parent = previous_attempt_id
                 failed_code = coding_context.get("previous_code", "") if code_failure_feedback else ""
                 for tested in execution_history:
@@ -454,14 +476,17 @@ class Executor:
                         continue
                     previous_attempt_id_for_test = store.record_attempt(
                         session_key, code_failure_feedback or "자동 실행 검증",
-                        "```python\n" + tested["code"] + "\n```",
+                        tested.get("answer") or "```python\n" + tested["code"] + "\n```",
                         workspace_path=workspace_scope, problem=coding_context["problem"],
                         previous_attempt_id=attempt_parent,
                         test_results=tested["results"],
-                        metadata={"memory_namespace": self._memory_namespace(), "source": "automatic_test"},
+                        metadata={"memory_namespace": self._memory_namespace(),
+                                  "source": "rejected_revision" if tested["status"] == "not_run" else "automatic_test",
+                                  "rejected_revision": tested.get("rejected_revision", False),
+                                  "delivery_response": str(response) if not final_has_code else ""},
                     )
                     # Internal failed drafts are retained without RAG promotion.
-                    if tested["status"] in {"passed", "failed"}:
+                    if tested["status"] in {"passed", "failed"} and not tested.get("rejected_revision"):
                         store.record_test_result(previous_attempt_id_for_test, session_id=session_key,
                             workspace_path=workspace_scope, tested_code=tested["code"], test_results=tested["results"])
                     attempt_parent = previous_attempt_id_for_test

@@ -69,6 +69,41 @@ def test_greeting_has_no_extra_model_call_and_contract_is_immutable():
         contract.requires_review = True
 
 
+@pytest.mark.parametrize("language,code", [("javascript", "const value = 1;"),
+    ("sql", "SELECT 1;"), ("rust", "fn main() { println!(\"hi\"); }")])
+def test_other_language_answers_receive_semantic_review(language, code):
+    contract = build_answer_contract("예시를 보여줘")
+    draft = f"```{language}\n{code}\n```"
+    reviewer = Reviewer()
+    assert requires_answer_review(contract, draft)
+    _, review = service(reviewer).verify(contract, draft)
+    assert "code_semantics" in reviewer.calls[0]["criteria"]
+    assert review.critique_calls == 1
+
+
+def test_unclosed_code_is_not_exempt_from_review():
+    assert requires_answer_review(build_answer_contract("예시를 보여줘"), "```javascript\nconst x =")
+    assert requires_answer_review(build_answer_contract("예시를 보여줘"), "```python\ndef f():")
+
+
+def test_static_failure_cannot_be_approved_by_repeating_same_code():
+    draft = "```javascript\nfunction add(a, b) { return a - b; }\n```"
+    reviewer = Reviewer("failed", "passed")
+    _, review = service(reviewer, Repairer(draft)).verify(
+        build_answer_contract("JavaScript 코드를 수정해줘"), draft)
+    assert review.status != "passed" and review.critique_calls == 1
+    assert any("변경하지" in issue for issue in review.issues)
+
+
+def test_conversation_labels_static_code_review_without_execution():
+    from core.agent_services import ConversationService
+    draft = "```javascript\nconst value = 1;\n```"
+    response = ConversationService(Repairer(draft), answer_verifier=service(Reviewer())).respond(
+        "JavaScript 예시를 설명해줘", [])
+    assert "정적 검토만" in response and "전체 정확성은 미확인" in response
+    assert not response.answer_review.code_executed
+
+
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
 @pytest.mark.parametrize("prefix,indent", [("   - 코드", "     "), ("   1. 코드", "      "), ("", "   ")])
 def test_list_nested_fences_preserve_code_and_count(newline, prefix, indent):
@@ -171,7 +206,7 @@ def test_semantic_failure_repairs_generated_code_once_then_rechecks():
 
 
 def test_failed_second_critique_never_loops_or_claims_completion():
-    reviewer, repairer = Reviewer("failed", "failed"), Repairer(examples(1))
+    reviewer, repairer = Reviewer("failed", "failed"), Repairer(examples(1).replace("else n", "else n + 1"))
     _, review = service(reviewer, repairer).verify(build_answer_contract("예시 1개를 코드와 설명해줘"), examples(1))
     assert review.status == "failed"
     assert len(reviewer.calls) == 2 and len(repairer.calls) == 1

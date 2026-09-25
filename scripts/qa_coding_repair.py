@@ -48,7 +48,7 @@ EXAMPLES = [
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, required=True)
-    parser.add_argument("--case", choices=("problem", "short_followup", "failure_feedback"))
+    parser.add_argument("--case", choices=("problem", "short_followup", "failure_feedback", "general_function"))
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     report_path = args.report.resolve()
@@ -82,6 +82,7 @@ def main():
                 answer_verifier=AnswerVerificationService(),
                 generation_client_factory=_local_answer_draft_client)
         cases = [
+            ("general_function", 'Python def normalize_name(name): 함수를 작성해줘. 입력 문자열 양끝 공백을 제거하고 소문자로 반환해줘.\n" A " -> "a"\n"" -> ""\n" Hello World " -> "hello world"', []),
             ("problem", PROBLEM, []),
             ("short_followup", "풀어줘", [{"role": "user", "content": PROBLEM},
                 {"role": "assistant", "content": "조건을 확인했어. 이제 풀어볼게."}]),
