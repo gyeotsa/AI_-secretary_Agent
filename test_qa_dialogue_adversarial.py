@@ -13,6 +13,11 @@ from core.tool_loadout import ToolLoadoutSelector
 from core.utterance_scope import analyze_utterance_scope
 
 
+@pytest.fixture(autouse=True)
+def isolated_runtime_events(monkeypatch):
+    monkeypatch.setattr("core.executor.record_runtime_event", lambda *_a, **_k: None)
+
+
 @pytest.fixture(scope="module")
 def router():
     registry = PluginRegistry()
@@ -138,7 +143,12 @@ def _executor(tmp_path, router):
     executor._progress_callback = None
     executor.current_agent_task_id = ""
     executor._task_controls = {}
-    executor._respond_conversationally = lambda request, history: "설명만 제공했습니다."
+    executor.learning_runtime = SimpleNamespace(
+        begin=lambda *_a, **_k: "isolated-trace", finish=lambda *_a, **_k: None,
+        event=lambda *_a, **_k: None,
+    )
+    executor.quality_metrics = SimpleNamespace(record=lambda *_a, **_k: None)
+    executor._respond_conversationally = lambda request, history, **kwargs: "설명만 제공했습니다."
     executor._execute_resolved_intent = lambda *_args, **_kwargs: pytest.fail(
         "언급된 명령을 도구로 실행하려고 했습니다"
     )

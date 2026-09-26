@@ -102,7 +102,9 @@ def test_long_completed_context_does_not_supply_new_request_filename(make_execut
 
     result = executor.execute_turn("이번에는 current.txt 파일을 읽어줘", SESSION, conversation_history=history)
 
-    assert result.status == "awaiting_user"
+    assert result.status == "failed"
+    assert "모델의 분류 결과를 검증하지 못했습니다" in result.response
+    assert executor.dialogue_state.get(SESSION) is None
     assert not executor.plan_calls
     assert executor.test_surface.calls == []
     assert model.prompts[0]["current_user_input"] == "이번에는 current.txt 파일을 읽어줘"
