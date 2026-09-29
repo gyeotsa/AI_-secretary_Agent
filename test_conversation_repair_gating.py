@@ -190,9 +190,10 @@ def test_repair_may_change_narrative_while_preserving_source():
 def test_failed_repair_does_not_expose_compact_role_markers(draft):
     llm = SequenceLLM(draft, TimeoutError("repair timed out"))
 
-    result = ConversationService(llm).respond("안녕", [])
-
-    assert result == "응, 듣고 있어. 무슨 이야기부터 해볼까, 보스?"
+    from core.llm import ModelCallError
+    with pytest.raises(ModelCallError) as error:
+        ConversationService(llm).respond("안녕", [])
+    assert error.value.code == "empty_response"
     assert len(llm.calls) == 2
 
 

@@ -102,7 +102,13 @@ __TOOLS_TEXT__
                 return response
 
         print("\n[ReAct] 최대 스텝을 초과했습니다")
-        return "죄송합니다, 문제를 해결하는 데 시간이 너무 오래 걸렸어요. 조금 더 구체적으로 질문해주세요!"
+        from core.llm import OllamaClient
+        from core.response_realizer import ResponseRealizer
+        return ResponseRealizer(OllamaClient("conversation")).realize(
+            f"실행 단계 한도 {self.max_steps}회 도달. 목표 달성 미확인.",
+            tool_name="", user_request=query, assistant_name="비서", address="",
+            status="unverified", history=messages[1:],
+        )
 
 
 # Singleton instance

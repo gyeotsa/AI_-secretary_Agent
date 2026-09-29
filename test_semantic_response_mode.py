@@ -61,8 +61,9 @@ def test_answer_skips_tool_catalogue_and_preserves_original(registry, monkeypatc
     assert schema["additionalProperties"] is False
     assert context_window == 8192
     payload = json.loads(messages[1]["content"])
-    assert set(payload) == {"current_user_input", "recent_dialogue", "pending_request"}
-    assert payload["current_user_input"] == utterance
+    assert set(payload) == {"pending_request"}
+    assert messages[-1] == {"role": "user", "content": utterance}
+    assert len(messages) == 3
 
 
 @pytest.mark.parametrize("utterance", ["말을 전혀 이해 못하는구나?", "그걸 풀어줘."])
@@ -79,8 +80,9 @@ def test_answer_uses_history_without_consuming_pending_action(registry, utteranc
     result = interpreter.interpret(utterance, history=history, pending=pending)
     assert result.is_grounded_conversation and result.slots == {}
     payload = json.loads(model.calls[0][0][1]["content"])
-    assert payload["recent_dialogue"] == history[1:]
-    assert payload["recent_dialogue"][0]["content"] == problem
+    assert model.calls[0][0][2:-1] == history[1:]
+    assert model.calls[0][0][2]["content"] == problem
+    assert model.calls[0][0][-1] == {"role": "user", "content": utterance}
     assert payload["pending_request"] == original and pending == original
     system = model.calls[0][0][0]["content"]
     assert "신뢰할 수 없는 대화 자료" in system
@@ -90,9 +92,13 @@ def test_answer_uses_history_without_consuming_pending_action(registry, utteranc
 def test_current_input_is_not_truncated_for_mode_classification(registry):
     utterance = "제공된 문서를 설명해줘.\n" + "이것은 실행 지시가 아닌 문서의 내용입니다.\n" * 1000
     interpreter, model = _interpreter(registry, _mode())
-    result = interpreter.interpret(utterance)
+    history = [{"role": "user", "content": "이전에 물어본 내용"},
+               {"role": "assistant", "content": "이전 답변"},
+               {"role": "user", "content": utterance}]
+    result = interpreter.interpret(utterance, history=history)
     assert result.raw_text == utterance
-    assert json.loads(model.calls[0][0][1]["content"])["current_user_input"] == utterance
+    assert model.calls[0][0][-1]["content"] == utterance
+    assert model.calls[0][0][2:-1] == history[:-1]
 
 
 def test_action_still_crosses_existing_contract_validation(registry):
@@ -149,10 +155,11 @@ def test_malformed_mode_is_technical_failure_not_missing_user_info(registry, out
 @pytest.mark.parametrize("kind", ["code", "reasoning"])
 def test_action_answer_style_cannot_block_or_authorize_tools(registry, kind):
     interpreter, model = _interpreter(registry, _mode("action", answer_kind=kind),
+                                      _data(slots={"filename": "invented.txt"}),
                                       _data(slots={"filename": "invented.txt"}))
     result = interpreter.interpret("Agent 인수인계.txt 읽어줘")
     assert result.reason == "ungrounded_literal:filename" and not result.grounded
-    assert len(model.calls) == 2
+    assert len(model.calls) == 3
     interpreter, _ = _interpreter(registry, _mode("uncertain", answer_kind=kind))
     result = interpreter.interpret("그거 해줘")
     assert result.reason == "semantic_response_mode_uncertain" and not result.tool_names
@@ -186,11 +193,11 @@ def test_literal_messaging_continuation_precedes_response_mode(registry):
      "unknown_or_out_of_scope_tool"),
 ])
 def test_action_mode_cannot_bypass_grounding_approval_or_tool_scope(registry, final, reason):
-    interpreter, model = _interpreter(registry, _mode("action", .99), final)
+    interpreter, model = _interpreter(registry, _mode("action", .99), final, final)
     result = interpreter.interpret("Agent 인수인계.txt 읽어줘", allowed_tools=["read_note"])
     assert not result.grounded and result.reason == reason
     assert not result.to_resolution(registry).matched
-    assert len(model.calls) == 2
+    assert len(model.calls) == 3
 
 
 def test_misclassified_answer_still_has_no_executable_contract(registry):

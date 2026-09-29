@@ -25,7 +25,7 @@ from core.model_registry import get_model_role_router
 from core.tool_result import ToolRunResult, ToolRunStatus
 from core.plan_runtime import PlanCoordinator, PlanDAG, PlanRunResult, PlanStep
 from core.agent_services import (
-    ConversationService, PlanningService, ResponseComposer, guard_conversation_response,
+    ConversationService, ConversationResponse, PlanningService, ResponseComposer, guard_conversation_response,
 )
 from core.assistant_settings import get_assistant_settings
 from core.response_realizer import ResponseRealizer
@@ -91,6 +91,7 @@ class ExecutionOutcome:
     response_truncated: bool = False
     unsupported_activity_claim: bool = False
     answer_review: Optional[Dict[str, Any]] = None
+    response_generated: bool = False
 
 
 class Executor:
@@ -141,7 +142,9 @@ class Executor:
         self.verifier = get_tool_verifier()
         self.recovery_manager = get_recovery_manager()
         self.context_resolver = ConversationContextResolver(self.llm)
-        self.response_realizer = ResponseRealizer(self.llm)
+        # Additional context-aware presentation is local-only; ResponseRealizer
+        # also rejects non-loopback Ollama hosts before any model call.
+        self.response_realizer = ResponseRealizer(OllamaClient("conversation"))
 
         # decide_next_action()에서 잠깐 system_prompt를 바꿔 쓰고 나서 복원하기 위한 원본 보관
         # (generate_response() 등 다른 메서드가 Jarvis 페르소나 프롬프트를 계속 쓸 수 있어야 함)
@@ -263,6 +266,7 @@ class Executor:
                 goal, session_id, conversation_history, progress_callback,
                 existing_task_id, allowed_tool_names, execution_context,
             )
+            outcome = self.render_outcome(outcome, goal, conversation_history or (), session_key)
             learning_runtime.finish(
                 trajectory_id, status=outcome.status, response=outcome.response,
                 metadata={"task_id": outcome.task_id, "retry_count": outcome.retry_count,
@@ -296,6 +300,62 @@ class Executor:
                 success=False, context={"goal": goal[:300]},
             )
             raise
+
+    def render_outcome(self, outcome: ExecutionOutcome, request: str, history=(), session_id="default"):
+        """One local-only presentation boundary; it cannot alter execution state."""
+        if outcome.response_generated:
+            return outcome
+        realizer = getattr(self, "response_realizer", None)
+        if realizer is None:
+            return outcome
+        results = outcome.tool_results or ((outcome.tool_result,) if outcome.tool_result else ())
+        tool_name = results[0].tool_name if len(results) == 1 else ""
+        state = getattr(self, "dialogue_state", None)
+        task = state.get_task(session_id, outcome.task_id, self._workspace_scope()) if state and outcome.task_id else None
+        facts = []
+        approval_actions = []
+        if outcome.status == "awaiting_approval" and task:
+            for step in task.plan:
+                if step.get("status") != "awaiting_approval":
+                    continue
+                contract = self.intent_router.registry.get_capability(step.get("tool_name", ""))
+                properties = contract.input_schema.get("properties", {}) if contract else {}
+                inputs = {key: value for key, value in step.get("tool_input", {}).items()
+                          if not any(s in key.lower() for s in ("password", "secret", "token", "auth", "credential"))}
+                approval_actions.append({"tool": step.get("tool_name"), "inputs": inputs})
+                for key, value in inputs.items():
+                    # A sole schema enum is an internal capability constant,
+                    # not a verbatim user value (its display name may be Korean).
+                    if properties.get(key, {}).get("enum") == [value]:
+                        continue
+                    if isinstance(value, (str, int, float)) and str(value):
+                        facts.append(str(value))
+        settings = get_assistant_settings()
+        try:
+            outcome.response = realizer.realize(
+                outcome.response, tool_name=tool_name, user_request=request,
+                assistant_name=settings.assistant_name, address=settings.get("user_address"),
+                style=settings.get("response_style"), required_facts=facts,
+                status=outcome.status, history=history,
+                runtime_context={"goal": outcome.goal, "question": outcome.question,
+                                 "confirmed_slots": task.slots if task else {},
+                                 "approval_actions": approval_actions,
+                                 "verified_execution": bool(results) and all(r.succeeded and r.evidence for r in results),
+                                 "completed_steps": outcome.completed_steps,
+                                 "failed_steps": outcome.failed_steps},
+            )
+        except ToolCancelledError:
+            # Cancelling a wording pass cannot undo an observed side effect.
+            if results and outcome.status in {"completed", "partial", "unverified"}:
+                return outcome
+            raise
+        outcome.response_generated = True
+        if outcome.question or outcome.status == "awaiting_user":
+            outcome.question = outcome.response
+        if task:
+            state.update_task(task.task_id, result=outcome.response,
+                              pending_question=outcome.question or None)
+        return outcome
 
     def _record_turn_quality(self, goal: str, outcome: ExecutionOutcome,
                              started_at: float,
@@ -442,6 +502,7 @@ class Executor:
         def terminal_outcome(response: str, status: str = "completed",
                              pending_question: str = "") -> ExecutionOutcome:
             """Close a persisted queued task even when no Tool/Planner path is needed."""
+            generated = isinstance(response, ConversationResponse) and bool(str(response).strip())
             blocked_claim = bool(getattr(response, "unverified_completion", False))
             unsupported_activity = bool(getattr(response, "unsupported_activity", False))
             truncated = bool(getattr(response, "truncated", False))
@@ -526,6 +587,7 @@ class Executor:
                     response_truncated=truncated,
                     unsupported_activity_claim=unsupported_activity,
                     answer_review=review_data,
+                    response_generated=generated and not (blocked_claim or unsupported_activity),
                 )
             return ExecutionOutcome(
                 response, status, goal, question=pending_question,
@@ -533,6 +595,7 @@ class Executor:
                 response_truncated=truncated,
                 unsupported_activity_claim=unsupported_activity,
                 answer_review=review_data,
+                response_generated=generated and not (blocked_claim or unsupported_activity),
             )
 
         utterance_scope = analyze_utterance_scope(goal, history)
@@ -549,8 +612,15 @@ class Executor:
                 goal, history, semantic_decision=decision, failure_feedback=code_failure_feedback,
             ))
 
+        settings = get_assistant_settings()
+        if normalized and normalized in {
+                str(getattr(settings, key, "")).casefold() for key in ("wake_word", "assistant_name")}:
+            decision = SemanticDecision(goal, relation="conversation", operation="conversation",
+                                        grounded=True, source="wake_word")
+            return terminal_outcome(self._respond_conversationally(goal, history, semantic_decision=decision))
+
         if self.is_control_command(goal):
-            return self.handle_control_command(goal, session_key)
+            return self._handle_control_command(goal, session_key)
 
         def execution_scope_guard():
             # Model confidence cannot confer authority denied by the current
@@ -622,8 +692,13 @@ class Executor:
                 ))
                 outcome.grounded_conversation = True
                 return outcome
-            if semantic.reason in {
+            if semantic.dialogue_response and not semantic.needs_clarification:
+                outcome = terminal_outcome(semantic.dialogue_response, "failed")
+                outcome.response_generated = True
+                return outcome
+            if not semantic.clarification_question and (semantic.reason in {
                 "semantic_response_mode_invalid", "semantic_discovery_invalid",
+                "semantic_clarification_invalid",
                 "semantic_schema_not_object", "semantic_schema_or_confidence_invalid",
                 "invalid_clarification_flag", "invalid_clarification_question",
                 "invalid_tool_names", "intent_tool_mismatch", "unknown_intent",
@@ -631,12 +706,11 @@ class Executor:
                 "invalid_action_operation", "unknown_slot", "slot_type_invalid",
                 "operation_tool_mismatch", "message_literal_changed",
                 "filename_not_verified_candidate",
-            } or semantic.reason.startswith("ungrounded_literal:"):
+            } or semantic.reason.startswith("ungrounded_literal:")):
                 # A rejected model contract is not missing user information or
                 # a condition to authorize. Leave any existing pending task alone.
                 return terminal_outcome(
-                    "요청을 해석하는 과정에서 모델의 분류 결과를 검증하지 못했습니다. "
-                    "설명이 부족하다는 뜻은 아니며, 어떤 작업도 실행하지 않았습니다.", "failed",
+                    f"실행 명세 검증 실패: {semantic.reason}. 실행된 도구: 0.", "failed",
                 )
             if semantic.reason.startswith(("semantic_interpretation_failed", "semantic_model_unavailable")):
                 if semantic.reason.endswith((":context_saturated", ":truncated_output")):
@@ -684,7 +758,8 @@ class Executor:
                     else:
                         self.dialogue_state.transition_task(task.task_id, "awaiting_user")
                     return ExecutionOutcome(semantic_resolution.question, "awaiting_user", goal,
-                                            semantic_resolution.question, task.task_id)
+                                            semantic_resolution.question, task.task_id,
+                                            response_generated=semantic_resolution.question == semantic.clarification_question)
                 if semantic_resolution.ready:
                     if continuing:
                         self.dialogue_state.delete(session_key, task.task_id)
@@ -709,7 +784,8 @@ class Executor:
                                            history, task.task_id, workspace_scope)
                 if task.status != "awaiting_user":
                     self.dialogue_state.transition_task(task.task_id, "awaiting_user")
-                return ExecutionOutcome(question, "awaiting_user", original_goal, question, task.task_id)
+                return ExecutionOutcome(question, "awaiting_user", original_goal, question, task.task_id,
+                                        response_generated=bool(semantic.clarification_question))
             # A multi-step/unnamed intent continues through the existing observed
             # DAG planner. The tool set comes from semantic discovery, not keywords.
             execution_context += "\n[검증된 요청 의미]\n" + json.dumps({
@@ -1607,7 +1683,7 @@ class Executor:
                     continue
                 text = str(value).strip()
                 if text:
-                    visible.append(f"{label_map[key_text]}: {text[:200]}")
+                    visible.append(f"{label_map[key_text]}: {text}")
         for item in dict.fromkeys(visible):
             lines.append(item)
         lines.append("계속하려면 ‘승인’이라고 말씀해 주세요.")
@@ -1846,7 +1922,7 @@ class Executor:
                     "중단할 작업이 여러 개예요. 작업 번호 또는 ‘모든 작업 취소’를 지정해 주세요.",
                     "awaiting_user", goal,
                 )
-        results = [self.handle_control_command(f"{t.task_id} 취소", session_key) for t in tasks]
+        results = [self._handle_control_command(f"{t.task_id} 취소", session_key) for t in tasks]
         cancelled = [r.task_id for r in results if r.status == "cancelled"]
         failed = [r.task_id for r in results if r.status != "cancelled"]
         response = (f"작업 {len(cancelled)}개를 취소했습니다." if cancelled
@@ -1856,6 +1932,10 @@ class Executor:
         return ExecutionOutcome(response, "partial" if failed else "cancelled", goal)
 
     def handle_control_command(self, text: str, session_id: Optional[str] = None) -> ExecutionOutcome:
+        return self.render_outcome(self._handle_control_command(text, session_id), text,
+                                   session_id=session_id or "default")
+
+    def _handle_control_command(self, text: str, session_id: Optional[str] = None) -> ExecutionOutcome:
         session_key = session_id or "default"
         normalized = text.strip().lower()
         from core.semantic_request import explicit_control
@@ -2574,15 +2654,6 @@ class Executor:
                 response = self.intent_router.registry.present_result(
                     resolution.tool_name, tool_run.raw_output
                 )
-                realizer = getattr(self, "response_realizer", None)
-                if realizer is not None:
-                    settings = get_assistant_settings()
-                    response = realizer.realize(
-                        response, tool_name=resolution.tool_name,
-                        user_request=goal, assistant_name=settings.assistant_name,
-                        address=settings.get("user_address"),
-                        style=settings.get("response_style"),
-                    )
                 outcome.response = response
                 self.dialogue_state.update_task(task_id, result=response)
                 self.dialogue_state.save_recent_intent(

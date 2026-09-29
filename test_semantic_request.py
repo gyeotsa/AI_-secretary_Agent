@@ -230,7 +230,7 @@ def test_two_stage_discovery_exposes_every_tool_then_only_selected_contract(regi
     assert all("parameters" not in c for c in first["available_tools"])
     assert [c["tool"] for c in second["available_tools"]] == ["weather_lookup"]
     assert "location" in second["available_tools"][0]["parameters"]
-    assert first["current_user_input"] == second["current_user_input"] == "서울 비 올까?"
+    assert [call[0][-1] for call in model.calls] == [{"role": "user", "content": "서울 비 올까?"}] * 2
     assert [call[2] for call in model.calls] == [8192, 8192]
 
 
@@ -254,6 +254,7 @@ def test_invalid_discovery_never_reaches_semantic_resolution(registry, discovery
 
 def test_final_pass_cannot_select_tool_outside_discovered_scope(registry):
     model = _DiscoveryModel({"tool_names": ["weather_lookup"], "confidence": .9}, _data())
+    model.outputs.append(_data())  # Reconsideration must retain discovery's tool scope.
     interpreter = SemanticRequestInterpreter(model, registry)
     interpreter.SINGLE_PASS_CATALOG_CHARS = 0
     decision = interpreter.interpret("Agent 인수인계.txt 읽어줘")
@@ -421,7 +422,8 @@ def test_structured_capable_models_receive_json_contract(registry):
 
 
 def test_complete_slots_with_clarification_flag_never_become_ready(registry):
-    decision, _ = _interpret(registry, "Agent 인수인계.txt 읽어줘", _data(needs_clarification=True))
+    decision, _ = _interpret(registry, "Agent 인수인계.txt 읽어줘", _data(
+        needs_clarification=True, clarification_question="파일 전체를 읽을까요, 특정 부분을 읽을까요?"))
     assert decision.grounded and not decision.to_resolution(registry).ready
 
 

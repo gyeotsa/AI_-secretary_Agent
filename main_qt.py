@@ -29,7 +29,7 @@ from core.audio_processor import get_audio_processor
 from core.workspace import get_workspace_manager
 from core.project_indexer import get_project_indexer
 from core.permission import get_permission_manager
-from core.executor import get_executor
+from core.executor import get_executor, ExecutionOutcome
 from core.turn_context import TurnExecutionContext, bind_turn_context
 from core.semantic_request import select_conversation_history
 from core.plugin import ToolCancelledError
@@ -172,7 +172,7 @@ class AppSignals(QObject):
     # 권한 응답용 시그널: (result_bool)
     permission_response = pyqtSignal(bool)
     progress_update = pyqtSignal(object)
-    proactive_message = pyqtSignal(str)
+    proactive_message = pyqtSignal(object)
     control_response_ready = pyqtSignal(object)
     voice_text_detected = pyqtSignal(str)
     microphone_status = pyqtSignal(str)
@@ -555,21 +555,10 @@ class JarvisApp:
         if specialist is not None:
             self.window.open_specialist_workspace(specialist.key)
             response = f"{specialist.title} 작업공간을 열었어요. 이 창에서도 채팅으로 작업을 이어갈 수 있어요."
-            self.window.show_assistant_text(response)
-            self.window.show_specialist_result(response, specialist.key)
+            self.notify_user(response, request=text)
             self.state_machine.go_idle()
             return
 
-        if text.strip().casefold() == settings.wake_word.casefold():
-            response = self._personalize_address("네, 보스. 말씀하세요.")
-            self.window.show_assistant_text(response)
-            self.last_response = response
-            self.messages.append({"role": "user", "content": text})
-            self.messages.append({"role": "assistant", "content": response})
-            self.memory.save_message(self.session_id, "user", text)
-            self.memory.save_message(self.session_id, "assistant", response)
-            self.state_machine.go_idle()
-            return
         
         # LISTENING 상태에서 사운드바 활성화: speaking=False, audio level 설정
         self.window.set_soundbar_speaking(False)
@@ -589,8 +578,8 @@ class JarvisApp:
             if text.strip().lower().startswith(("새 작업:", "새 작업：")):
                 queued_goal = text.split(":", 1)[-1].split("：", 1)[-1].strip()
                 task = self.executor.enqueue_goal(queued_goal, self.session_id)
-                self.window.show_assistant_text(
-                    f"현재 작업 다음에 새 작업 {task.task_id}을 이어서 진행하겠습니다, 보스."
+                self.notify_user(
+                    f"새 작업 {task.task_id} 대기열 등록. 현재 작업 이후 실행 예정.", request=text,
                 )
                 return
             # A normal new turn supersedes the running turn.  Its worker may finish,
@@ -760,6 +749,11 @@ class JarvisApp:
                     )
                     execution.checkpoint()
                 response_text = workflow_runtime.present_run(run)
+                with bind_turn_context(execution):
+                    response_text = self.executor.render_outcome(
+                        ExecutionOutcome(response_text, str(getattr(run, "status", "completed")), text),
+                        text, conversation_history, envelope.session_id,
+                    ).response
                 print("[DEBUG] WorkflowRuntime returned:", response_text)
                 self.signals.ai_response_ready.emit(TurnResult(
                     envelope, response_text, str(getattr(run, "status", "completed"))
@@ -808,6 +802,17 @@ class JarvisApp:
             else:
                 error_response = "작업을 처리하는 중 내부 오류가 발생했습니다. 진단 로그를 확인해 주세요."
                 error_code = type(e).__name__
+            if not isinstance(e, ModelCallError):
+                try:
+                    with bind_turn_context(execution):
+                        error_response = self.executor.render_outcome(
+                            ExecutionOutcome(error_response, "failed", text),
+                            text, conversation_history, envelope.session_id,
+                        ).response
+                except ToolCancelledError:
+                    return
+            else:
+                error_response = f"[시스템 상태: {error_code}]\n{error_response}"
             self.signals.ai_response_ready.emit(TurnResult(
                 envelope, error_response, "failed", error_code
             ))
@@ -823,10 +828,22 @@ class JarvisApp:
             message = message.message
         self.window.show_assistant_text(self._personalize_address(message))
 
-    def notify_user(self, message: str):
+    def notify_user(self, message: str, *, request: str = "", status: str = "completed"):
         """Observer·Scheduler 등이 사용자에게 먼저 말을 걸 수 있는 공개 진입점."""
         if message and message.strip():
-            self.signals.proactive_message.emit(message.strip())
+            session_id = self.session_id
+            history = tuple(dict(m) for m in self.messages[-6:])
+            def render():
+                try:
+                    outcome = self.executor.render_outcome(
+                        ExecutionOutcome(message.strip(), status), request, history, session_id,
+                    )
+                    text = outcome.response
+                except Exception as exc:
+                    print(f"[Response] {type(exc).__name__}")
+                    text = f"[시스템 상태: {status}]\n{message.strip()}"
+                self.signals.proactive_message.emit({"session_id": session_id, "text": text})
+            threading.Thread(target=render, daemon=True).start()
 
     def _on_automation_result(self, event):
         if event.get("error"):
@@ -835,10 +852,16 @@ class JarvisApp:
             message = f"보스, {event.get('result') or '알람 시간입니다.'}"
         else:
             message = f"보스, 예약 작업을 완료했습니다. {event.get('result', '')}"
-        self.notify_user(message)
+        self.notify_user(message, status="failed" if event.get("error") else "completed")
 
-    def _on_proactive_message(self, message: str):
+    def _on_proactive_message(self, message):
         """사용자 입력 없이 발생한 알림도 일반 대화 기록과 UI에 남긴다."""
+        if isinstance(message, str):
+            self.notify_user(message)
+            return
+        if message.get("session_id") != self.session_id:
+            return
+        message = message["text"]
         message = self._personalize_address(message)
         self.last_response = message
         self.window.show_assistant_text(message)
@@ -1010,9 +1033,9 @@ class JarvisApp:
         if not enabled:
             self._cancel_speech_only()
             threading.Thread(target=self.tool_executor.shutdown_tts, daemon=True).start()
-            self.window.show_assistant_text("답변 음성을 껐습니다. 이제 음성 생성 대기 없이 텍스트로 바로 응답합니다.")
+            self.notify_user("답변 음성 출력 비활성화. 텍스트 응답 유지.")
         else:
-            self.window.show_assistant_text("답변 음성을 켰습니다.")
+            self.notify_user("답변 음성 출력 활성화.")
             threading.Thread(target=self.tool_executor.prepare_selected_tts, daemon=True).start()
 
     def _consolidate_memory_async(
@@ -1117,18 +1140,10 @@ class JarvisApp:
         
         if command == "WORK":
             result = self.mode_manager.activate_work_mode()
-            self.window.show_assistant_text(result)
-            self.last_response = result
-            # 자동으로 음성 응답
-            thread = threading.Thread(target=lambda: self._speak_with_check(result), daemon=True)
-            thread.start()
+            self.notify_user(result, request=command)
         elif command == "GAME":
             result = self.mode_manager.activate_game_mode()
-            self.window.show_assistant_text(result)
-            self.last_response = result
-            # 자동으로 음성 응답
-            thread = threading.Thread(target=lambda: self._speak_with_check(result), daemon=True)
-            thread.start()
+            self.notify_user(result, request=command)
         elif command == "LISTEN_START":
             # 지속적인 음성 감지 시작
             thread = threading.Thread(target=self._start_continuous_listen, daemon=True)
@@ -1144,8 +1159,7 @@ class JarvisApp:
                 thread.start()
             else:
                 result = "⚠️ 응답이 없어서 음성으로 읽어줄 수 없어요, 보스!"
-                self.window.show_assistant_text(result)
-                self.last_response = result
+                self.notify_user(result, request=command, status="failed")
         elif command.startswith("ADD_DOC:"):
             # 문서 추가 처리
             file_path = command[len("ADD_DOC:"):]
@@ -1154,11 +1168,7 @@ class JarvisApp:
         elif command == "VIEW_PROFILE":
             # 프로필 보기
             profile_summary = self.user_profile.get_profile_summary()
-            self.window.show_assistant_text(profile_summary)
-            self.last_response = profile_summary
-            # 자동으로 음성 응답
-            thread = threading.Thread(target=lambda: self._speak_with_check(profile_summary), daemon=True)
-            thread.start()
+            self.notify_user(profile_summary, request=command)
         
         self.state_machine.start_responding()
         QTimer.singleShot(1000, lambda: self.state_machine.go_idle())
@@ -1257,11 +1267,7 @@ class JarvisApp:
     def _add_document(self, file_path: str):
         # 문서 추가 처리
         result = self.rag_manager.add_document(file_path)
-        self.last_response = result
-        self.window.show_assistant_text(result)
-        # 자동으로 음성 응답
-        thread = threading.Thread(target=lambda: self.tool_executor.speak_text(result), daemon=True)
-        thread.start()
+        self.notify_user(result, request=f"문서 추가: {file_path}")
     
     def _ensure_visible(self):
         """명시적으로 필요할 때만 창을 복원한다. 주기적으로 앞으로 가져오지 않는다."""

@@ -92,8 +92,8 @@ def test_quoted_superseded_recipient_does_not_block_valid_correction(make_execut
 
 
 def test_long_completed_context_does_not_supply_new_request_filename(make_executor):
-    model = _ScriptedModel(_model_output(
-        operation="read", tool_names=[READ_TOOL], slots={"filename": "old-secret.txt"}))
+    rejected = _model_output(operation="read", tool_names=[READ_TOOL], slots={"filename": "old-secret.txt"})
+    model = _ScriptedModel(rejected, rejected)
     executor = make_executor(model=model)
     history = [
         {"role": "user", "content": "old-secret.txt 파일을 읽어줘"},
@@ -103,7 +103,7 @@ def test_long_completed_context_does_not_supply_new_request_filename(make_execut
     result = executor.execute_turn("이번에는 current.txt 파일을 읽어줘", SESSION, conversation_history=history)
 
     assert result.status == "failed"
-    assert "모델의 분류 결과를 검증하지 못했습니다" in result.response
+    assert "ungrounded_literal:filename" in result.response
     assert executor.dialogue_state.get(SESSION) is None
     assert not executor.plan_calls
     assert executor.test_surface.calls == []

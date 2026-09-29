@@ -287,6 +287,9 @@ class DialogueStateStore:
         values.extend([datetime.now(timezone.utc).isoformat(), task_id])
         with self._lock, self._connect() as conn:
             cursor = conn.execute(f"UPDATE agent_tasks SET {', '.join(fields)} WHERE task_id = ?", values)
+            if pending_question is not None:
+                conn.execute("UPDATE pending_requests SET question=? WHERE task_id=?",
+                             (pending_question, task_id))
         return cursor.rowcount > 0
 
     def transition_task(self, task_id: str, status: str, **changes) -> bool:

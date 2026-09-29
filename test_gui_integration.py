@@ -75,6 +75,10 @@ class _Rag:
 
 
 class _Executor:
+    @staticmethod
+    def render_outcome(outcome, *_args):
+        return outcome
+
     def execute_goal(self, _text, _session_id, _conversation_history=None):
         # This test validates the GUI thread round trip, not cold Plugin Registry
         # startup. Depending on a process-global ToolExecutor made the result
@@ -199,6 +203,7 @@ def test_proactive_message_is_displayed_and_saved_without_user_input(monkeypatch
     jarvis.memory = _Memory()
     jarvis.messages = []
     jarvis.session_id = "proactive-session"
+    jarvis.executor = SimpleNamespace(render_outcome=lambda outcome, *_args: outcome)
     jarvis.last_response = ""
     jarvis.signals = AppSignals()
     jarvis.signals.proactive_message.connect(jarvis._on_proactive_message)
@@ -221,6 +226,7 @@ def test_selected_voice_address_is_applied_at_gui_boundary(monkeypatch):
     jarvis.memory = _Memory()
     jarvis.messages = []
     jarvis.session_id = "address-session"
+    jarvis.executor = SimpleNamespace(render_outcome=lambda outcome, *_args: outcome)
     jarvis.last_response = ""
     jarvis.tool_executor = type(
         "SpeechTools",
@@ -275,12 +281,15 @@ def test_new_request_is_queued_while_current_task_is_processing():
     jarvis.memory = _Memory()
     jarvis.messages = []
     jarvis.session_id = "queue-session"
+    jarvis.signals = AppSignals()
+    jarvis.signals.proactive_message.connect(jarvis._on_proactive_message)
     jarvis._is_processing_ai = True
     _ControllableExecutor.queued = []
 
     jarvis._on_user_input("새 작업: 내일 일정도 확인해줘")
 
     assert _ControllableExecutor.queued == [("내일 일정도 확인해줘", 0)]
+    assert _pump_until(lambda: bool(jarvis.window.assistants))
     assert "feedbeef" in jarvis.window.assistants[-1]
 
 
@@ -439,24 +448,35 @@ def test_superseded_turn_result_never_reaches_ui_or_tts():
     assert jarvis.last_response == ""
 
 
-def test_standalone_wake_word_does_not_reach_planner():
+def test_standalone_wake_word_uses_generated_conversation():
     _app()
-    class PlannerMustNotRun:
-        def execute_goal(self, *_args, **_kwargs):
-            raise AssertionError("단독 호출어가 Planner에 전달되었습니다.")
+    from core.executor import ExecutionOutcome
+    class DialogueExecutor:
+        calls = []
+        def execute_turn(self, text, *_args, **_kwargs):
+            self.calls.append(text)
+            return ExecutionOutcome("응, 무슨 일이야?", response_generated=True)
 
     jarvis = JarvisApp.__new__(JarvisApp)
     jarvis.window = _Window()
     jarvis.state_machine = _StateMachine()
-    jarvis.executor = PlannerMustNotRun()
+    jarvis.executor = DialogueExecutor()
+    jarvis.signals = AppSignals()
+    jarvis.signals.ai_response_ready.connect(jarvis._on_ai_response)
+    jarvis.tool_executor = _SpeechTools()
+    jarvis.hardware_manager = _Hardware()
+    jarvis._active_specialist_key = ""
     jarvis.memory = _Memory()
     jarvis.messages = []
     jarvis.session_id = "wake-chat-session"
+    jarvis.audio_processor = None
     jarvis.last_response = ""
     jarvis._is_processing_ai = False
     jarvis.assistant_settings = SimpleNamespace(wake_word="자비스")
 
     jarvis._on_user_input("자비스")
 
-    assert jarvis.window.assistants[-1] == "네, 보스. 말씀하세요."
+    assert _pump_until(lambda: bool(jarvis.window.assistants))
+    assert jarvis.window.assistants[-1] == "응, 무슨 일이야?"
+    assert jarvis.executor.calls == ["자비스"]
     assert jarvis._is_processing_ai is False

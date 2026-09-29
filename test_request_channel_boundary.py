@@ -57,7 +57,7 @@ def test_action_still_cannot_cross_conditional_or_negative_authority(utterance, 
 
 
 @pytest.mark.parametrize("reason, expected_message", [
-    *[(reason, "설명이 부족하다는 뜻은 아니며") for reason in (
+    *[(reason, reason) for reason in (
         "semantic_response_mode_invalid", "semantic_discovery_invalid", "invalid_slots",
         "semantic_schema_or_confidence_invalid", "conversation_cannot_execute",
         "unknown_or_out_of_scope_tool", "ungrounded_literal:recipient",

@@ -169,8 +169,6 @@ class ConversationService:
                 voice_name: str = "", address: str = "보스", style: str = "",
                 memory_context: str = "", answer_kind: str = "conversation",
                 failure_feedback: str | None = None) -> str:
-        if assistant_name and message.strip().casefold() == assistant_name.casefold():
-            return f"응, 듣고 있어. {address}."
         coding_context = resolve_coding_context(message, history)
         bound_request = render_coding_request(message, coding_context) if coding_context else message
         contract = build_answer_contract(message, history)
@@ -349,10 +347,12 @@ class ConversationService:
                     and review.execution_status == "not_requested"
                     and any(row.id == "code_semantics" for row in review.criteria_results)):
                 response = ("[정적 검토만 수행했습니다. 실제 실행·환경 호환성·전체 정확성은 미확인입니다.]\n\n" + response)
+        if not response and not metadata.get("truncated"):
+            from core.llm import ModelCallError
+            raise ModelCallError(type(self.llm).__name__, "", "empty_response", "응답 본문이 비어 있습니다.")
         return guard_conversation_response(
             ConversationResponse(
-                response if response or metadata.get("truncated") else
-                f"응, 듣고 있어. 무슨 이야기부터 해볼까, {address}?",
+                response,
                 answer_review=review, **metadata,
             ), message,
         )

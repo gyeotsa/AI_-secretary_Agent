@@ -1,4 +1,71 @@
-# 공통 에이전트 런타임 개선 — 2026-09-08~26
+# 공통 에이전트 런타임 개선 — 2026-09-08~29
+
+## 2026-09-29 문맥 기반 대화와 안전한 정보 수집
+
+- 증상은 카톡 요청에 고정 분류 검증 실패만 반복되는 것이었다. 관측된 원인은 모델의
+  수신자 환각(ungrounded_literal:recipient)이며, 사용자 설명 부족으로 단정하지 않는다.
+- SemanticRequestInterpreter는 실행 스키마와 nullable 접수 스키마를 분리하고 실제 대화
+  역할/확정 슬롯을 유지한다. 제한 재시도 후 복구는 실행 명세가 아닌 질문/설명만 생성한다.
+  누락 필드는 모델이 판단하며 특정 명령에 고정 질문을 매핑하지 않는다.
+- Executor.render_outcome → ResponseRealizer가 상태·실제 결과·승인 입력을 받아 표현한다.
+  실패/제어/승인과 Qt 알림·워크플로 응답도 이 경계를 사용한다. 생성된 질문은 재작성하지
+  않으며 화면 질문과 영속 pending 질문을 일치시킨다. 원문/코드/정확한 승인 본문은 보존한다.
+- 새 생성 경로는 loopback Ollama만 허용한다. 모델 불가나 출력 검증 실패에는 명시적인
+  시스템 상태를 표시한다. 실행 검증·승인·취소를 우회하거나 작업 성공을 꾸며내지 않는다.
+- 최종 작업 트리의 관련 27파일: **752 passed, 24 deselected (70.39초)**.
+  test_adaptive_dialogue.py와 test_semantic_clarification.py를 추가했고 semantic/Executor,
+  GUI/continuity, 응답 무결성/취소/승인, proactive와 Jev 회귀를 함께 검사했다.
+  기존 미커밋 기능을 포함한 결과이므로 HEAD 또는 이번 독립 커밋만의 전체 회귀가 아니다.
+- 실제 qwen2.5:7b-instruct, context8192, temperature0.2, output2048 표본:
+  **1 passed, 13 deselected (48.80초)**. 실제 Executor/생산 shortlist와 이전 오류 이력에서
+  “카톡 보내줘” → “민수” → “내일 6시에 보자”를 수집하고 awaiting_approval에 도달했다.
+  승인 답변에 정확한 수신자/본문이 유지됐다. 강제 검증 실패의 로컬 복구도 질문만 반환했다.
+  모든 실제 도구 실행을 실패 대역으로 막았으며, 실제 카톡 전송/실앱 사용자 수락은 아니다.
+- 실모델 재현(PowerShell, 저장소 루트, 실행 중인 Ollama 필요):
+
+  ```powershell
+  $env:PYTHON_DOTENV_DISABLED = '1'
+  $env:JARVIS_RUN_LIVE_CLARIFICATION = '1'
+  .\.venv\Scripts\python.exe -X utf8 -B -m pytest test_adaptive_dialogue.py -q -s -m integration --tb=short --basetemp="$env:TEMP/jarvis-adaptive-live-check"
+  Remove-Item Env:JARVIS_RUN_LIVE_CLARIFICATION
+  ```
+
+  basetemp는 실행마다 사용하지 않은 전용 경로를 선택한다(pytest가 기존 내용을 정리함).
+  캘린더 대역에 경로의 날짜가 혼입되지 않도록 날짜 없는 경로를 사용한다.
+- 제한: 모델 질문 품질의 전역 보장은 아니다. 개발 중 언어 혼입과 승인 사실 누락을
+  재현해 출력 검사/제한 재시도로 보강했다. 실행 승인과 필수 정보 수집은 별개다.
+  UI 상태·장치 진단·모델 오프라인 시스템 안내는 정적 사실로 남으며, 앱 재실행이 필요하다.
+  빌드/배포/계정 전송을 수행하지 않았다. 검증 횟수를 과거 수치와 합산하지 않는다.
+
+### 커밋 범위만의 독립 회귀
+
+Git 인덱스의 21개 변경 파일과 HEAD 기준 나머지 파일을 별도 검증 폴더로 추출했다.
+미커밋 Jev/Kimi/continuity·UI 개편, 개인 DB와 임시 산출물은 제외했다.
+관련 25파일 **722 passed, 24 deselected (67.71초)**, exit_code=0.
+이는 위의 작업 트리 752개 결과와 다른 범위이며 합산하지 않는다. 실제 모델은 재호출하지 않았다.
+원래 .venv의 Python으로 검증 폴더를 cwd로 삼아 다음과 같이 실행했다:
+
+```powershell
+$env:PYTHON_DOTENV_DISABLED = '1'
+$env:QT_QPA_PLATFORM = 'offscreen'
+$qaFiles = @(
+  'test_adaptive_dialogue.py', 'test_semantic_clarification.py', 'test_semantic_request.py',
+  'test_semantic_response_mode.py', 'test_semantic_executor_flow.py', 'test_runtime_quality_matrix.py',
+  'test_executor_semantic_conversation.py', 'test_dialogue_runtime.py', 'test_conversation_context.py',
+  'test_qa_dialogue_boundary.py', 'test_qa_dialogue_adversarial.py', 'test_coding_conversation_context.py',
+  'test_request_channel_boundary.py', 'test_gui_integration.py', 'test_response_realizer.py',
+  'test_executor_approval_safety.py', 'test_finance_messaging.py', 'test_conversation_repair_gating.py',
+  'test_conversation_prose_truncation.py', 'test_response_integrity.py', 'test_turn_execution_context.py',
+  'test_turn_envelope.py', 'test_proactive_policy.py', 'test_p11_automation_proactive.py',
+  'test_conversation_output_guard.py'
+)
+# 새 checkout에서는 해당 가상환경 Python 경로로 변경한다.
+& C:/Users/ice31/lepo/AI_-secretary_Agent/.venv/Scripts/python.exe -X utf8 -B -m pytest @qaFiles -q --tb=short --basetemp=C:/Users/ice31/Documents/Codex/dialogue-index-pytest-a
+```
+
+위 basetemp는 이미 사용한 검증 경로다. 재실행 시 새 전용 경로로 바꾼다.
+continuity 전용 notify_user 연결과 Jev 테스트 대역 수정은 해당 미커밋 기능과 함께 남겼다.
+독립 커밋에는 기존 기본 분류 경로와 일반 Qt 알림 경계만 포함한다.
 
 ## 2026-09-26 현재 작업 트리 회귀·취소·탭 재정렬
 

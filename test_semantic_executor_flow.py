@@ -103,7 +103,9 @@ class _ScriptedModel:
         self.prompts = []
 
     def chat(self, messages):
-        self.prompts.append(json.loads(messages[-1]["content"]))
+        self.prompts.append({**json.loads(messages[1]["content"]),
+                             "recent_dialogue": messages[2:-1],
+                             "current_user_input": messages[-1]["content"]})
         assert self.outputs, "literal continuation must not make another model call"
         return json.dumps(self.outputs.pop(0), ensure_ascii=False)
 
@@ -235,7 +237,8 @@ def test_semantic_clarification_reuses_persisted_task_and_original_goal(make_exe
 
 
 def test_real_interpreter_literal_reply_preserves_body_across_restart(make_executor):
-    model = _ScriptedModel(_model_output())
+    model = _ScriptedModel(_model_output(
+        needs_clarification=True, clarification_question="김하이님께 전할 내용을 알려주세요."))
     first_executor = make_executor(model=model)
     first = first_executor.execute_turn("김하이에게 카카오톡 메시지를 보내줘", SESSION)
     assert first.status == "awaiting_user"

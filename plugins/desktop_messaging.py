@@ -48,8 +48,10 @@ class DesktopMessagingPlugin(BasePlugin):
                 "type": "object",
                 "properties": {
                     "provider": {"type": "string", "enum": ["kakaotalk"], "default": "kakaotalk"},
-                    "recipient": {"type": "string", "minLength": 1},
-                    "message": {"type": "string", "minLength": 1},
+                    "recipient": {"type": "string", "minLength": 1,
+                                  "description": "카카오톡에 표시된 상대방 또는 대화방 이름. 전화번호나 카카오 계정 ID가 아님"},
+                    "message": {"type": "string", "minLength": 1,
+                                "description": "사용자가 전하라고 지정한 메시지 원문. 작업 요청 문장 자체를 본문으로 쓰지 않음"},
                 },
                 "required": ["provider", "recipient", "message"],
                 "additionalProperties": False,
