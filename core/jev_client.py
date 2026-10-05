@@ -12,6 +12,7 @@ import httpx
 
 from core import auxiliary_models
 from core.plugin import ToolCancelledError
+from core.local_inference import InferenceDeadlineError, check_inference_deadline
 from core.remote_runtime import SecureTokenVault
 from core.turn_context import check_turn_cancelled
 
@@ -35,6 +36,10 @@ def _key(value):
 def _request(method, path, key, *, body=None, checkpoint=check_turn_cancelled):
     """One bounded request; OFF/cancel closes and joins local I/O, no retries."""
     _key(key)
+    caller_check = checkpoint
+    def checkpoint():
+        caller_check()
+        check_inference_deadline()
 
     async def run():
         async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=3),
@@ -79,6 +84,8 @@ def _request(method, path, key, *, body=None, checkpoint=check_turn_cancelled):
     try:
         checkpoint()
         return asyncio.run(run())
+    except InferenceDeadlineError:
+        raise
     except (httpx.HTTPError, TimeoutError):
         raise JevError("Jev 연결이 지연되거나 끊겼습니다. 네트워크를 확인하세요.") from None
 
@@ -242,7 +249,7 @@ def classify_response_mode(raw_text, transcript, pending, instructions):
         return None
     generation = auxiliary_models.ticket()
     def checkpoint():
-        check_turn_cancelled()
+        check_inference_deadline()
         if (not auxiliary_models.is_current(generation)
                 or auxiliary_models.selection() != ("jev", True)):
             raise JevError("Jev 설정이 변경되어 분류 결과를 사용하지 않았습니다.")
@@ -285,7 +292,7 @@ def classify_response_mode(raw_text, transcript, pending, instructions):
             return None
         auxiliary_models.set_status("Jev 분류 완료")
         return mode, confidence, kind
-    except ToolCancelledError:
+    except (ToolCancelledError, InferenceDeadlineError):
         raise
     except (JevError, OSError, ValueError, TypeError, AttributeError):
         auxiliary_models.set_status("Jev 미사용 · 연결/설정 확인 필요 · 기본 분류 사용")

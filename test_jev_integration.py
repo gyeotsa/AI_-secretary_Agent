@@ -12,6 +12,7 @@ import pytest
 from core import auxiliary_models as selection, jev_client as jev
 from core.jev_client import JevAccounts, JevError
 from core.plugin import ToolCancelledError
+from core.local_inference import InferenceDeadlineError, inference_deadline
 from core.remote_runtime import SecureTokenVault
 from core.semantic_request import SemanticRequestInterpreter
 from test_kimi_integration import isolated
@@ -233,6 +234,31 @@ def test_http_contract_errors_redirects_size_and_cancellation(monkeypatch):
             raise ToolCancelledError("cancel")
     with pytest.raises(ToolCancelledError):
         jev._request("GET", "/wait", "fake-test-key", checkpoint=checkpoint)
+    assert released.is_set()
+
+
+def test_shared_deadline_interrupts_jev_io_and_does_not_become_fallback(monkeypatch, service):
+    register(service, monkeypatch)
+    selection.configure("jev", True)
+    def expired(*args, **kwargs):
+        raise InferenceDeadlineError("synthetic timeout")
+    monkeypatch.setattr(jev, "_request", expired)
+    with pytest.raises(InferenceDeadlineError):
+        jev.classify_response_mode("설명해줘", [], {}, "classify")
+
+
+def test_shared_deadline_closes_owned_jev_request(monkeypatch):
+    real_client = httpx.AsyncClient
+    released = threading.Event()
+    async def handler(request):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            released.set()
+    monkeypatch.setattr(jev.httpx, "AsyncClient", lambda **kw: real_client(
+        transport=httpx.MockTransport(handler), **kw))
+    with pytest.raises(InferenceDeadlineError), inference_deadline(.15):
+        jev._request("GET", "/models", "synthetic-test-key")
     assert released.is_set()
 
 

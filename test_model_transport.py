@@ -13,6 +13,7 @@ import requests
 
 import core.model_transport as transport
 from core.plugin import ToolCancelledError
+from core.local_inference import InferenceDeadlineError, current_inference_deadline, inference_deadline
 from core.turn_context import TurnExecutionContext, bind_turn_context, current_turn_context
 
 
@@ -31,6 +32,20 @@ def local_http():
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
             state.requests.append((self.path, json.loads(body)))
+            if self.path == "/trickle":
+                self.send_response(200)
+                self.send_header("Content-Length", "4096")
+                self.end_headers()
+                state.started.set()
+                try:
+                    for _ in range(100):
+                        self.wfile.write(b" ")
+                        self.wfile.flush()
+                        time.sleep(.01)
+                except OSError:
+                    state.disconnected.set()
+                self.close_connection = True
+                return
             if self.path in {"/headers", "/body"}:
                 if self.path == "/body":
                     self.send_response(200)
@@ -226,3 +241,42 @@ def test_late_transport_error_cannot_override_cancellation(monkeypatch):
     ))
     with pytest.raises(ToolCancelledError):
         _invoke(context, "http://mock.test")
+
+
+@pytest.mark.parametrize("path", ["/headers", "/body", "/trickle"])
+@pytest.mark.parametrize("in_event_loop", [False, True])
+@pytest.mark.parametrize("has_turn", [False, True])
+def test_shared_deadline_closes_pending_io_without_cancelling_parent(local_http, path, in_event_loop, has_turn):
+    context = TurnExecutionContext("deadline", "session") if has_turn else None
+    def call():
+        with inference_deadline(.25):
+            return _invoke(context, local_http.url + path, in_event_loop=in_event_loop, timeout=5)
+    started = time.monotonic()
+    with pytest.raises(InferenceDeadlineError):
+        call()
+    assert time.monotonic() - started < .8
+    assert local_http.started.is_set() and local_http.disconnected.wait(.5)
+    assert len(local_http.requests) == 1
+    assert context is None or not context.cancelled
+    assert current_inference_deadline() is None
+    assert not any(t.name == transport._HELPER_THREAD_NAME for t in threading.enumerate())
+    assert _invoke(context, local_http.url + "/ok", in_event_loop=in_event_loop).status_code == 200
+
+
+def test_turn_cancelled_during_deadline_cleanup_still_has_priority(monkeypatch):
+    context = TurnExecutionContext("deadline-cleanup", "session")
+    real_client = httpx.AsyncClient
+    released = threading.Event()
+    async def wait(request):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            context.cancel()
+            released.set()
+    monkeypatch.setattr(transport.httpx, "AsyncClient", lambda **kw: real_client(
+        **kw, transport=httpx.MockTransport(wait), trust_env=False))
+    with pytest.raises(ToolCancelledError), inference_deadline(.15):
+        _invoke(context, "http://mock.test", in_event_loop=True)
+    assert released.is_set() and context.cancelled
+    assert current_inference_deadline() is None
+    assert not any(t.name == transport._HELPER_THREAD_NAME for t in threading.enumerate())

@@ -8,6 +8,7 @@ import requests
 
 from core import llm
 from core.plugin import ToolCancelledError
+from core.local_inference import InferenceDeadlineError
 from core.semantic_request import SemanticDecision
 from core.tool_result import Evidence, ToolRunResult, ToolRunStatus
 from core.turn_context import TurnExecutionContext, bind_turn_context
@@ -72,6 +73,7 @@ def test_trace_records_only_bounded_metadata_and_preserves_request(monkeypatch, 
 
 
 @pytest.mark.parametrize("failure", [requests.Timeout("private timeout endpoint"),
+                                      InferenceDeadlineError("private deadline endpoint"),
                                       ToolCancelledError("private turn identity")])
 def test_trace_preserves_exception_and_restores_patch(monkeypatch, capsys, failure):
     calls = []

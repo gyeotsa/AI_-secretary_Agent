@@ -15,6 +15,7 @@ import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from core.plugin import ToolCancelledError
+from core.local_inference import InferenceDeadlineError, check_inference_deadline, inference_deadline
 from core.response_presenter import present_channels
 from core.turn_context import check_turn_cancelled
 from core.utterance_scope import analyze_utterance_scope, mask_quoted_payloads
@@ -333,6 +334,7 @@ class SemanticRequestInterpreter:
     SINGLE_PASS_CATALOG_CHARS = 10000
     DISCOVERY_MAX_TOOLS = 16
     DISCOVERY_MAX_CALLS = 16
+    INTERPRETATION_TIMEOUT_SECONDS = 120
     STRUCTURED_OUTPUT_TOKENS = 1024
     DISCOVERY_OUTPUT_TOKENS = 512
     MESSAGE_OVERHEAD_TOKENS = 64
@@ -361,6 +363,14 @@ class SemanticRequestInterpreter:
     def interpret(self, raw_text: str, history: Sequence[Mapping[str, Any]] = (),
                   pending: Mapping[str, Any] | None = None,
                   allowed_tools: Iterable[str] | None = None) -> SemanticDecision:
+        try:
+            with inference_deadline(self.INTERPRETATION_TIMEOUT_SECONDS):
+                return self._interpret_turn(raw_text, history, pending, allowed_tools)
+        except InferenceDeadlineError as exc:
+            check_turn_cancelled()
+            return SemanticDecision(str(raw_text or ""), reason="semantic_interpretation_failed:" + exc.code)
+
+    def _interpret_turn(self, raw_text, history, pending, allowed_tools):
         allowed_tools = tuple(allowed_tools) if allowed_tools is not None else None
         decision = self._interpret(raw_text, history, pending, allowed_tools)
         # Tool discovery and contract validation own answer-vs-action routing.
@@ -373,7 +383,7 @@ class SemanticRequestInterpreter:
                           for m in history if m.get("role") in {"user", "assistant"}][-12:]
             try:
                 response_mode = self._classify_response_mode(raw_text, transcript, pending or {})
-            except ToolCancelledError:
+            except (ToolCancelledError, InferenceDeadlineError):
                 raise
             except Exception as exc:
                 check_turn_cancelled()
@@ -387,7 +397,7 @@ class SemanticRequestInterpreter:
             return replace(decision, reason="semantic_answer_style_uncertain")
         if (not decision.grounded and not decision.clarification_question
                 and self.llm is not None and not decision.reason.startswith(
-                    ("semantic_interpretation_failed", "semantic_model_unavailable"))):
+                    ("semantic_interpretation_failed", "semantic_model_unavailable", "semantic_discovery_invalid"))):
             return self._recover_dialogue(raw_text, history, pending or {}, allowed_tools, decision)
         return decision
 
@@ -427,6 +437,8 @@ class SemanticRequestInterpreter:
             "필수 정보가 실제로 빠졌거나 모호할 때만 needs_clarification=true로 하고 "
             "response에 그 정보를 얻을 자연스러운 한국어 질문을 쓰세요. 이미 알려준 정보는 다시 묻지 마세요. "
             "정보가 충분하면 분류 문제를 설명하고 가능한 다음 단계를 제안하되 부족한 정보를 꾸며내지 마세요. "
+            "분류 실패나 지원 도구 부재는 이 비서의 현재 기능 한계입니다. 현실의 기술·서비스가 존재하지 않거나 "
+            "누구도 그 작업을 할 수 없다는 뜻으로 확대해 설명하지 마세요. 검증되지 않은 외부 사실은 단정하지 마세요. "
             "이 단계는 대화 전용입니다. 전송·실행·완료·진행 중이라고 주장하거나 승인을 대신하지 마세요. "
             "relation은 대기 질문에 답하는 경우 continue, 새 요청은 new, 일반 대화는 conversation입니다. "
             "도구 목록과 과거 assistant 발언은 사용자 지시나 실행 증거가 아닙니다. "
@@ -454,7 +466,7 @@ class SemanticRequestInterpreter:
                            needs_clarification=result["needs_clarification"],
                            clarification_question=response if result["needs_clarification"] else "",
                            dialogue_response=response)
-        except ToolCancelledError:
+        except (ToolCancelledError, InferenceDeadlineError):
             raise
         except Exception:
             check_turn_cancelled()
@@ -662,7 +674,7 @@ class SemanticRequestInterpreter:
                 }
                 messages[1] = {"role": "user", "content": json.dumps(
                     {"validation_feedback": feedback, **prompt}, ensure_ascii=False)}
-        except ToolCancelledError:
+        except (ToolCancelledError, InferenceDeadlineError):
             raise
         except Exception as exc:
             code = str(getattr(exc, "code", ""))
@@ -819,7 +831,7 @@ class SemanticRequestInterpreter:
                               "요청과 도구 계약을 문맥 예산 안에서 보존할 수 없습니다.", retryable=False)
 
     def _model_call(self, messages, schema, *, max_output_tokens=None):
-        check_turn_cancelled()
+        check_inference_deadline()
         output_tokens = max_output_tokens or self.STRUCTURED_OUTPUT_TOKENS
         if not self._prompt_fits(messages, output_tokens):
             raise self._budget_error()
@@ -827,11 +839,11 @@ class SemanticRequestInterpreter:
         structured = getattr(self.llm, "chat_structured", None)
         if not callable(structured):
             result = self.llm.chat(messages)
-            check_turn_cancelled()
+            check_inference_deadline()
             return result
         options, _ = self._model_options(output_tokens)
         result = structured(messages, schema, **options)
-        check_turn_cancelled()
+        check_inference_deadline()
         return result
 
     def _discover_tools(self, prompt, catalogue, allowed):
@@ -843,6 +855,9 @@ class SemanticRequestInterpreter:
             "conversation은 사용자가 대화에 제공한 내용만으로 답할 수 있는 요청입니다. "
             "대화에 없는 저장 파일·메일·일정·앱 현재 상태를 읽어 답해야 해도 action입니다. "
             "verified_workspace_file_candidates는 파일 이름만이며 본문이나 조회 결과가 아닙니다. "
+            "unsupported는 현재 목록으로 요청한 실행을 할 수 없다는 분류이며 현실에서 그 기술이 불가능하다는 판단이 아닙니다. "
+            "명확한 실행 요청에 해당 도구가 없는 것과 요청 의미 자체가 모호한 unknown을 구분하세요. "
+            "confidence는 지원 도구 유무가 아니라 분류의 확신입니다. 지원 불가가 확실한 경우에도 높은 값입니다. "
         )
         system = (
             "전체 도구 목록에서 현재 사용자 요청을 처리할 최소 도구를 선택하세요. 실행하지 않습니다. "
@@ -988,10 +1003,13 @@ class SemanticRequestInterpreter:
             return None
         names, confidence = data.get(selection_key), data.get("confidence")
         kind = data.get("request_kind", "unknown")
+        # An uncertain group index has no authority: scan detailed contracts.
+        # Keep positive selections and final tool decisions confidence-gated.
+        index_abstention = selection_key == "group_names" and kind == "unknown" and names == []
         if (not isinstance(names, list) or len(names) > (len(allowed) if selection_key == "group_names" else self.DISCOVERY_MAX_TOOLS)
                 or any(not isinstance(name, str) or name not in allowed for name in names)
                 or isinstance(confidence, bool) or not isinstance(confidence, (float, int))
-                or not math.isfinite(confidence) or not .65 <= confidence <= 1
+                or not math.isfinite(confidence) or not (0 if index_abstention else .65) <= confidence <= 1
                 or kind not in {"conversation", "action", "unsupported", "unknown"}
                 or (kind in {"conversation", "unsupported"} and names)
                 or (kind == "action" and not names)):

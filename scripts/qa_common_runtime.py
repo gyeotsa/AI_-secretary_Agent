@@ -418,7 +418,7 @@ def _run_qa(args, root: Path, sandbox: Path, settings) -> int:
                                   "decision": decision.__dict__, "calls": calls,
                                   "seconds": round(time.monotonic()-started, 2)},
                                  ensure_ascii=False), flush=True)
-                if decision.reason.endswith((":timeout", ":connection")):
+                if decision.reason.endswith((":timeout", ":connection", ":inference_deadline_exceeded")):
                     print(json.dumps({"event": "semantic_matrix_aborted",
                                       "reason": decision.reason,
                                       "note": "Remaining cases were not run; this is not a quality pass."}), flush=True)

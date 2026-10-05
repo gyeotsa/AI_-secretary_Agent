@@ -86,6 +86,18 @@ def test_full_information_recovery_does_not_require_an_invented_missing_field(ma
     assert not executor.dialogue_state.list(SESSION) and not executor.plan_calls
 
 
+def test_invalid_discovery_is_not_user_ambiguity_or_freeform_recovery(make_executor):
+    model = LocalModel({"request_kind": "unknown", "tool_names": [], "confidence": 0}, {
+        "relation": "new", "needs_clarification": True,
+        "response": "검증되지 않은 외부 기술 설명과 재질문"})
+    executor = make_executor(model=model)
+    executor.semantic_interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    outcome = executor.execute_turn("등록되지 않은 장치의 상태를 바꿔줘", SESSION)
+    assert outcome.status == "failed" and not outcome.response_generated
+    assert not executor.dialogue_state.list(SESSION) and not executor.plan_calls
+    assert len(model.outputs) == 1 and len(model.prompts) == 1
+
+
 @pytest.mark.parametrize("asks_again", [False, True])
 def test_unsupported_recovery_cannot_invent_missing_information(make_executor, asks_again):
     model = LocalModel({"request_kind": "unsupported", "tool_names": [], "confidence": .7}, {

@@ -612,7 +612,7 @@ def test_candidate_refinement_shares_discovery_call_cap_and_cancellation(registr
 
 
 @pytest.mark.parametrize("orphan", [False, True])
-@pytest.mark.parametrize("index_kind", ["action", "conversation", "unsupported", "wrong_group"])
+@pytest.mark.parametrize("index_kind", ["action", "conversation", "unsupported", "wrong_group", "unknown"])
 def test_grouped_discovery_covers_last_group_and_pluginless_capabilities(orphan, index_kind):
     value = _many_tools()
     target = value.get_capabilities()[-1].name
@@ -627,7 +627,7 @@ def test_grouped_discovery_covers_last_group_and_pluginless_capabilities(orphan,
             chosen = ([group for group in groups if group == "group_0"] if index_kind == "wrong_group"
                       else [group for group, names in groups.items() if target in names] if index_kind == "action" else [])
             kind = "action" if chosen else "unsupported" if index_kind in {"action", "wrong_group"} else index_kind
-            return {"request_kind": kind, "group_names": chosen, "confidence": .95}
+            return {"request_kind": kind, "group_names": chosen, "confidence": 0.0 if kind == "unknown" else .95}
         if "request_kind" in schema["properties"]:
             detailed.update(entry["tool"] for entry in payload["available_tools"])
             chosen = [target] if any(entry["tool"] == target for entry in payload["available_tools"]) else []
@@ -694,6 +694,25 @@ def test_invalid_later_index_batch_never_reaches_contract_or_execution():
     result = SemanticRequestInterpreter(model, value).interpret("새로운 검사 작업을 해줘")
     assert result.reason == "semantic_discovery_invalid" and not result.grounded
     assert len(model.calls) == 2
+
+
+@pytest.mark.parametrize("key,kind,names,confidence,valid", [
+    ("group_names", "unknown", [], 0, True),
+    ("group_names", "unknown", [], .64, True),
+    ("group_names", "unknown", ["candidate"], .64, False),
+    ("group_names", "action", ["candidate"], .64, False),
+    ("group_names", "unsupported", [], .64, False),
+    ("tool_names", "unknown", [], .64, False),
+    ("group_names", "unknown", [], True, False),
+    ("group_names", "unknown", [], float("nan"), False),
+    ("group_names", "unknown", [], -1, False),
+])
+def test_low_confidence_abstention_only_opens_detail_review(registry, key, kind, names, confidence, valid):
+    model = _RoutingModel(lambda *_: {"request_kind": kind, key: names, "confidence": confidence})
+    result = SemanticRequestInterpreter(model, registry)._discovery_selection(
+        [{"role": "system", "content": "discovery"}, {"role": "user", "content": json.dumps({
+            "current_user_input": "요청을 검토해줘", "recent_dialogue": []})}], {"candidate"}, key)
+    assert (result is not None) is valid
 
 
 def test_discovery_call_budget_stops_before_another_send():

@@ -1,5 +1,36 @@
 # 공통 에이전트 런타임 개선 — 2026-09-08~10-05
 
+## 2026-10-05 전체 추론 기한·실모델 반례 후속
+
+- 잠금 대기가 호출별 request_timeout에 포함되지 않고, 늦게 획득한 잠금도 모델 본문에
+  진입하던 결함을 공통 추론 경계에서 수정했다. 기한은 ContextVar로 현재 요청에만
+  연결하며 Semantic 전체 120초와 중첩 호출/재시도/폴백이 같은 시계를 사용한다.
+  정리 중 취소가 들어와도 취소가 우선한다. 만료는 parent turn 자체를 취소하지 않는다.
+- 모델 HTTP는 기존 소유 async task/socket 정리를 재사용한다. helper thread로도
+  turn/기한을 함께 전파한다. headers/body/trickle, 이벤트 루프 유무, turn 유무를 검사했다.
+  DNS·동기 SDK·cleanup은 기한을 초과할 수 있으므로 강제 선점이나 GPU 즉시 해제를
+  보장하지 않는다. 늦은 답변·도구 권한과 기한 초과 후 다른 모델 실행을 거부한다.
+- 실제 A `Temp/anis-common-qa-rbfzud4u`는 **8/9**였다. unknown+[]/.0 index를 거부한 뒤
+  자유 대화로 복구하는 경로가 근거 없는 외부 사실을 만들었다. 낮은 확신도의 빈 index
+  abstention만 상세 계약 검토로 보내고, 내부 discovery 오류는 대화 복구하지 않는다.
+  긍정/상세 도구 판단의 확신도 제한과 전체 16회 discovery ceiling은 유지한다.
+- 수정 후 실제 B `Temp/anis-common-qa-mvr4_5m7`도 **8/9**다. 미지원은 .9/no_supported_tool로
+  통과했지만 검색만/재생 금지 요청을 재생 도구로 잘못 분류했다. 실제 도구는 실행하지
+  않았다. 현재 Executor의 negation guard는 둘 다 차단하므로 안전한 부분 실행도 못 하는
+  의미 해석 한계가 남는다. 특정 서비스 예외 대신 입력/모든 도구 계약에 묶인 typed
+  constraint 검수 및 단일 재고려가 다음 작업이다. QA oracle나 확신도를 바꾸지 않았다.
+- 전체 허용 도구 실제 Executor 파일 첫 줄 읽기는 **실패 / 22.77초**,
+  `Temp/anis-common-qa-83z3zgn4`다. 읽기 전용 격리 진단 DB에서 `context_saturated`를
+  확인했다. timeout이 아니며, 이전 revision의 성공을 최신 수락으로 대신하지 않는다.
+  합성 파일/1–1줄 외 모든 leaf dispatch를 차단하는 QA guard는 유지한다.
+- 집중 C는 **315 passed, 24 deselected (28.50초)**였다. D의 **9 failed, 365 passed**는
+  새 직접 호출 fixture가 메시지 envelope를 누락한 것이며 수정했다. 최종 전체 지정
+  회귀는 **3636 passed, 17 skipped, 34 deselected (243.98초)**,
+  `tmp/qa-oct05-deadline-final-a.xml`이다. skip 17개의 기존 사유와 integration 제외는
+  이전과 같으며 실모델/계정/장치/사용자 수락에 합산하지 않는다.
+- 이전 격리 GUI는 자동 종료됐다. 이번 GUI 입력/장문 표시 수락은 없고, 공식 확장의
+  설치·일반 Chrome 세션의 ANIS 캘린더 어댑터 연결도 확인되지 않았다. 전 영역 완료는 아니다.
+
 ## 2026-10-05 입력 예산·탐색 권한·실제 읽기 범위
 
 - 후속 배치별 후보는 전체 후보를 보존한 한 번의 계약 재선택으로 중복 대안을 제거한다.

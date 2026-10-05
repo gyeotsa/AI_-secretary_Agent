@@ -9,7 +9,7 @@ from config import Config
 from core.tools import get_tools_schema, AUTO_LOOP_EXCLUDED_TOOLS
 from core.model_registry import get_model_registry
 from core.plugin import ToolCancelledError
-from core.turn_context import check_turn_cancelled
+from core.local_inference import InferenceDeadlineError, check_inference_deadline
 from core.model_transport import post_json
 from core.local_inference import serialized_inference, remember_idle_model
 
@@ -111,9 +111,9 @@ class BaseLLMClient:
 
     def chat_prose(self, messages: List[Dict]) -> ProseResponse:
         """Opt in to human-readable partial output; never continue implicitly."""
-        check_turn_cancelled()
+        check_inference_deadline()
         result = self.chat(messages)
-        check_turn_cancelled()
+        check_inference_deadline()
         return result if isinstance(result, ProseResponse) else ProseResponse(result)
 
 
@@ -138,10 +138,10 @@ class AnthropicClient(BaseLLMClient):
 
     def chat_with_tools(self, messages: List[Dict], allowed_tool_names=None) -> Tuple[str, List[Dict]]:
         metric_started = time.perf_counter()
-        check_turn_cancelled()
+        check_inference_deadline()
         try:
             system_prompt, api_messages = self._prepare_messages(messages)
-            check_turn_cancelled()
+            check_inference_deadline()
             response = self.client.messages.create(
                 model=Config.ANTHROPIC_MODEL,
                 max_tokens=Config.MAX_TOKENS,
@@ -150,7 +150,7 @@ class AnthropicClient(BaseLLMClient):
                 temperature=Config.TEMPERATURE,
                 tools=[tool for tool in self.tools if allowed_tool_names is None or tool["name"] in allowed_tool_names],
             )
-            check_turn_cancelled()
+            check_inference_deadline()
 
             if getattr(response, "stop_reason", None) == "max_tokens":
                 raise ModelCallError("anthropic", Config.ANTHROPIC_MODEL, "truncated_output",
@@ -165,13 +165,13 @@ class AnthropicClient(BaseLLMClient):
                 return text_blocks[0].text, []
 
             return "", []
-        except ToolCancelledError:
+        except (ToolCancelledError, InferenceDeadlineError):
             raise
         except ModelCallError:
-            check_turn_cancelled()
+            check_inference_deadline()
             raise
         except Exception as e:
-            check_turn_cancelled()
+            check_inference_deadline()
             raise ModelCallError(
                 "anthropic", Config.ANTHROPIC_MODEL, "provider", str(e), retryable=True
             ) from e
@@ -183,10 +183,10 @@ class AnthropicClient(BaseLLMClient):
         return self._chat(messages, prose=True)
 
     def _chat(self, messages: List[Dict], *, prose: bool = False) -> str:
-        check_turn_cancelled()
+        check_inference_deadline()
         try:
             system_prompt, api_messages = self._prepare_messages(messages)
-            check_turn_cancelled()
+            check_inference_deadline()
             response = self.client.messages.create(
                 model=Config.ANTHROPIC_MODEL,
                 max_tokens=Config.MAX_TOKENS,
@@ -194,7 +194,7 @@ class AnthropicClient(BaseLLMClient):
                 messages=api_messages,
                 temperature=Config.TEMPERATURE,
             )
-            check_turn_cancelled()
+            check_inference_deadline()
             finish_reason = getattr(response, "stop_reason", "") or ""
             truncated = finish_reason == "max_tokens"
             if truncated and not prose:
@@ -206,13 +206,13 @@ class AnthropicClient(BaseLLMClient):
                 return ProseResponse(text, truncated=truncated, finish_reason=finish_reason,
                                      provider="anthropic", model=Config.ANTHROPIC_MODEL)
             return response.content[0].text
-        except ToolCancelledError:
+        except (ToolCancelledError, InferenceDeadlineError):
             raise
         except ModelCallError:
-            check_turn_cancelled()
+            check_inference_deadline()
             raise
         except Exception as e:
-            check_turn_cancelled()
+            check_inference_deadline()
             raise ModelCallError(
                 "anthropic", Config.ANTHROPIC_MODEL, "provider", str(e), retryable=True
             ) from e
@@ -349,16 +349,16 @@ class OllamaClient(BaseLLMClient):
 
             print(f"[LLM] Ollama tool 호출: model={self.model}, tools={len(ollama_tools)}")
 
-            check_turn_cancelled()
+            check_inference_deadline()
             response = post_json(
                 f"{self.base_url}/api/chat",
                 json=payload,
                 timeout=120
             )
-            check_turn_cancelled()
+            check_inference_deadline()
             response.raise_for_status()
             result = response.json()
-            check_turn_cancelled()
+            check_inference_deadline()
             if result.get("done_reason") == "length" or result.get("done") is False:
                 raise ModelCallError("ollama", self.model, "truncated_output",
                                      "모델 출력이 완료되기 전에 잘렸습니다.", retryable=False)
@@ -396,17 +396,17 @@ class OllamaClient(BaseLLMClient):
                     return text, []
 
             return "", []
-        except ToolCancelledError:
+        except (ToolCancelledError, InferenceDeadlineError):
             raise
         except requests.exceptions.ConnectionError as exc:
-            check_turn_cancelled()
+            check_inference_deadline()
             from core.productization import METRICS
             METRICS.increment(f"model.{self.model}.failure")
             raise ModelCallError(
                 "ollama", self.model, "connection", str(exc), retryable=True
             ) from exc
         except requests.exceptions.Timeout as exc:
-            check_turn_cancelled()
+            check_inference_deadline()
             from core.productization import METRICS
             METRICS.increment(f"model.{self.model}.failure")
             raise ModelCallError(
@@ -416,7 +416,7 @@ class OllamaClient(BaseLLMClient):
             # tool calling 미지원 모델일 경우 fallback으로 chat 메서드 사용
             try:
                 error_detail = e.response.json()
-                check_turn_cancelled()
+                check_inference_deadline()
                 if "does not support tools" in str(error_detail):
                     # tool calling 미지원시 일반 chat으로 fallback
                     text = self.chat(messages)
@@ -425,13 +425,13 @@ class OllamaClient(BaseLLMClient):
                     "ollama", self.model, f"http_{e.response.status_code}",
                     str(error_detail), retryable=e.response.status_code >= 500,
                 ) from e
-            except ToolCancelledError:
+            except (ToolCancelledError, InferenceDeadlineError):
                 raise
             except ModelCallError:
-                check_turn_cancelled()
+                check_inference_deadline()
                 raise
             except Exception:
-                check_turn_cancelled()
+                check_inference_deadline()
                 # tool calling 미지원일 가능성 있으면 fallback
                 if e.response.status_code == 400:
                     text = self.chat(messages)
@@ -441,10 +441,10 @@ class OllamaClient(BaseLLMClient):
                     str(e), retryable=e.response.status_code >= 500,
                 ) from e
         except ModelCallError:
-            check_turn_cancelled()
+            check_inference_deadline()
             raise
         except Exception as e:
-            check_turn_cancelled()
+            check_inference_deadline()
             raise ModelCallError(
                 "ollama", self.model, "protocol", str(e), retryable=False
             ) from e
@@ -474,8 +474,9 @@ class OllamaClient(BaseLLMClient):
                         max_output_tokens: Optional[int] = None) -> str:
         """Call-local limits; never mutate the shared role profile.
 
-        The transport timeout bounds inactivity, not total wall-clock time.
-        Callers with an acceptance deadline must also check it after return.
+        Explicit request_timeout includes queue wait and owned HTTP polling.
+        Expired results are rejected; OS DNS/provider cleanup can overshoot.
+        Nested calls cannot extend an enclosing inference deadline.
         """
         return self._chat(messages, json_schema, context_window=context_window,
                           request_timeout=request_timeout, max_output_tokens=max_output_tokens)
@@ -486,7 +487,7 @@ class OllamaClient(BaseLLMClient):
               request_timeout: Optional[float] = None,
               max_output_tokens: Optional[int] = None) -> str:
         metric_started = time.perf_counter()
-        check_turn_cancelled()
+        check_inference_deadline()
         remember_idle_model((self.base_url, self.model), self.release)
         if request_timeout is not None:
             try:
@@ -548,7 +549,7 @@ class OllamaClient(BaseLLMClient):
                     min(profile_limit, max_output_tokens) if profile_limit > 0 else max_output_tokens
                 )
 
-            check_turn_cancelled()
+            check_inference_deadline()
             response = post_json(
                 f"{self.base_url}/api/chat",
                 json=payload,
@@ -556,10 +557,10 @@ class OllamaClient(BaseLLMClient):
             )
             # Transport aborts active turn requests on cancellation. Retain the
             # checkpoint for a cancellation concurrent with successful return.
-            check_turn_cancelled()
+            check_inference_deadline()
             response.raise_for_status()
             result = response.json()
-            check_turn_cancelled()
+            check_inference_deadline()
             finish_reason = str(result.get("done_reason") or "")
             truncated = finish_reason == "length" or result.get("done") is False
             if truncated and not prose:
@@ -592,24 +593,24 @@ class OllamaClient(BaseLLMClient):
                                      finish_reason=finish_reason or ("incomplete" if truncated else ""),
                                      provider="ollama", model=self.model)
             return ""
-        except ToolCancelledError:
+        except (ToolCancelledError, InferenceDeadlineError):
             raise
         except requests.exceptions.ConnectionError as exc:
-            check_turn_cancelled()
+            check_inference_deadline()
             from core.productization import METRICS
             METRICS.increment(f"model.{self.model}.failure")
             raise ModelCallError(
                 "ollama", self.model, "connection", str(exc), retryable=True
             ) from exc
         except requests.exceptions.Timeout as exc:
-            check_turn_cancelled()
+            check_inference_deadline()
             from core.productization import METRICS
             METRICS.increment(f"model.{self.model}.failure")
             raise ModelCallError(
                 "ollama", self.model, "timeout", str(exc), retryable=True
             ) from exc
         except requests.exceptions.HTTPError as e:
-            check_turn_cancelled()
+            check_inference_deadline()
             # 오류 응답 자세히 보기
             try:
                 error_detail = e.response.json()
@@ -620,10 +621,10 @@ class OllamaClient(BaseLLMClient):
                 str(error_detail), retryable=e.response.status_code >= 500,
             ) from e
         except ModelCallError:
-            check_turn_cancelled()
+            check_inference_deadline()
             raise
         except Exception as e:
-            check_turn_cancelled()
+            check_inference_deadline()
             raise ModelCallError(
                 "ollama", self.model, "protocol", str(e), retryable=False
             ) from e
@@ -674,36 +675,36 @@ class HybridLLMClient(BaseLLMClient):
 
     def chat_with_tools(self, messages: List[Dict], allowed_tool_names=None) -> Tuple[str, List[Dict]]:
         started = time.perf_counter()
-        check_turn_cancelled()
+        check_inference_deadline()
         if self.primary is not None:
             try:
                 try:
                     text, tools = self.primary.chat_with_tools(messages, allowed_tool_names)
                 except TypeError:
-                    check_turn_cancelled()
+                    check_inference_deadline()
                     text, tools = self.primary.chat_with_tools(messages)
-                check_turn_cancelled()
+                check_inference_deadline()
                 if tools or (text and not self._is_error_text(text)):
                     self.last_provider = "anthropic"
                     self.routing_stats["anthropic_success"] += 1
                     self.last_latency_ms = (time.perf_counter() - started) * 1000
                     return text, tools
                 self.primary_unavailable_reason = text
-            except ToolCancelledError:
+            except (ToolCancelledError, InferenceDeadlineError):
                 raise
             except Exception as exc:
-                check_turn_cancelled()
+                check_inference_deadline()
                 self.primary_unavailable_reason = str(exc)
             self.routing_stats["anthropic_failure"] += 1
-        check_turn_cancelled()
+        check_inference_deadline()
         self.last_provider = "ollama"
         self.routing_stats["ollama_fallback"] += 1
         try:
             result = self.fallback.chat_with_tools(messages, allowed_tool_names)
         except TypeError:
-            check_turn_cancelled()
+            check_inference_deadline()
             result = self.fallback.chat_with_tools(messages)
-        check_turn_cancelled()
+        check_inference_deadline()
         self.last_latency_ms = (time.perf_counter() - started) * 1000
         return result
 
@@ -716,12 +717,12 @@ class HybridLLMClient(BaseLLMClient):
 
     def _chat(self, messages: List[Dict], *, prose: bool = False) -> str:
         started = time.perf_counter()
-        check_turn_cancelled()
+        check_inference_deadline()
         if self.primary is not None:
             try:
                 chat = (getattr(self.primary, "chat_prose", None) or self.primary.chat) if prose else self.primary.chat
                 text = chat(messages)
-                check_turn_cancelled()
+                check_inference_deadline()
                 if text and not self._is_error_text(text):
                     self.last_provider = "anthropic"
                     stat = ("anthropic_partial" if isinstance(text, ProseResponse)
@@ -730,18 +731,18 @@ class HybridLLMClient(BaseLLMClient):
                     self.last_latency_ms = (time.perf_counter() - started) * 1000
                     return text
                 self.primary_unavailable_reason = text
-            except ToolCancelledError:
+            except (ToolCancelledError, InferenceDeadlineError):
                 raise
             except Exception as exc:
-                check_turn_cancelled()
+                check_inference_deadline()
                 self.primary_unavailable_reason = str(exc)
             self.routing_stats["anthropic_failure"] += 1
-        check_turn_cancelled()
+        check_inference_deadline()
         self.last_provider = "ollama"
         self.routing_stats["ollama_fallback"] += 1
         chat = (getattr(self.fallback, "chat_prose", None) or self.fallback.chat) if prose else self.fallback.chat
         result = chat(messages)
-        check_turn_cancelled()
+        check_inference_deadline()
         self.last_latency_ms = (time.perf_counter() - started) * 1000
         return result
 

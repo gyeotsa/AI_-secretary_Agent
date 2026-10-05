@@ -1,5 +1,53 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
 
+## 2026-10-05 공통 추론 전체 기한·취소 우선순위 보강
+
+- 이어서 작업 요청으로 공통 시간 제한의 원인을 재현했다. 시작 HEAD는 4768e79이며
+  앞서 미완료로 적힌 문서 12개 커밋은 이 revision에서 이미 완료됐다. 사용자 DB/
+  .env/brain/tmp/QA 산출물은 건드리거나 stage하지 않는다. 코딩 정답률/K3/Graphify/
+  강화학습/배포/push 보류와 실계정 쓰기의 별도 승인을 유지한다.
+- 수정 전 serialized_inference는 request_timeout=.02여도 잠금 대기를 약 .156초 한 뒤
+  모델 본문에 진입했다. 별도 local_inference(timeout=.005)도 .03초 뒤 풀린 잠금을
+  약 .047초에 획득해 만료된 작업을 실행했다. 실제 계정 없이 소유한 합성 thread로 재현했다.
+- core/local_inference.py의 ContextVar 기반 전체 기한을 기존 공통 잠금/모델 HTTP 경로에
+  연결했다. 명시적 request_timeout은 대기·HTTP poll·중첩 호출을 함께 제한하며 중첩
+  호출은 상위 기한을 늘리지 못한다. SemanticRequestInterpreter 전체 단계도 120초를
+  공유한다. 늦은 잠금 획득/응답/재시도/Hybrid 및 Jev 폴백은 실행·답변 권한을 얻지 못한다.
+- HTTP helper thread는 copy_context로 기한과 turn을 함께 전달한다. headers/body/연속
+  trickle에서도 만료 시 소유 task/socket을 정리하고 helper를 join한다. parent turn을
+  timeout만으로 취소하지 않으며, 정리 중 새 취소가 들어오면 ToolCancelledError가 우선한다.
+  OS DNS 해석·동기 provider 호출·정리 시간이 물리적 기한을 초과할 수 있다. 늦은 결과는
+  거부하지만 강제 선점/즉시 GPU 해제/서버 rollback이나 모든 streaming chunk 차단은 보장하지 않는다.
+- 실제 해석 A는 8/9(Temp/anis-common-qa-rbfzud4u): coarse index의 unknown+[]/.0를
+  내부 오류로 처리해 상세 계약을 보지 않았고, 대화 복구는 외부 기술에 대한 근거 없는
+  설명을 만들었다. index의 빈 abstention만 낮은 확신도를 허용해 상세 검토로 보내며,
+  긍정 선택/최종 도구의 확신도 기준은 그대로다. semantic_discovery_invalid는 사용자의
+  설명 부족으로 바꿔 재질문하거나 자유 대화로 복구하지 않는다. 지원 불가는 현재 도구
+  범위라는 공통 지침을 추가했으며 특정 요청/서비스 예외나 확신도 조작은 없다.
+- 집중 A 314 passed/24 deselected(28.31초), 형제 경로 B 354 passed/1 deselected(32.22초),
+  취소 cleanup 보강 C 315 passed/24 deselected(28.50초). D의 9 failed/365 passed는 새
+  직접 호출 fixture가 system/user envelope를 누락한 결함이며 올바른 envelope로 수정했다.
+  이후 최종 전체 지정 회귀는 3636 passed/17 skipped/34 deselected(243.98초),
+  tmp/qa-oct05-deadline-final-a.xml이다. skip/deselect와 실제 모델 실패를 통과에 합산하지 않는다.
+- 실제 해석 B는 여전히 8/9(Temp/anis-common-qa-mvr4_5m7). 미지원 판정은 .9로 통과했으나
+  검색/재생 금지 요청을 browser_play_media로 잘못 분류했다. 실제 검색·재생·메일·전송은
+  실행하지 않았다. Executor의 기존 전체 negation guard는 검색과 재생을 모두 막는
+  fail-closed 경계이므로, 이 결과는 의미 충실도 실패이지 실제 무단 재생의 증거가 아니다.
+- 실제 전체 도구 허용 Executor/합성 파일 1–1줄 읽기도 22.77초에 실패했다
+  (Temp/anis-common-qa-83z3zgn4). 격리 learning.db의 semantic_decision은
+  semantic_interpretation_failed:ModelCallError:context_saturated이며 timeout은 아니었다.
+  leaf guard가 합성 파일/범위 외 실행을 막았고 성공으로 기록하지 않는다. 이전 21.74초
+  성공을 현재 revision 수락으로 대체하지 않는다. 자동 회귀만으로 실제 이해 성능을 닫지 않는다.
+- 이전 GUI는 20분 자동 종료로 사라졌다. 이번에 실제 입력/응답 화면을 관찰하지 않았으며
+  기존 직접 입력 요청에 대한 성공을 추정하지 않는다. 공식 Playwright 확장 설치와 일반
+  Chrome 캘린더 탭의 ANIS 어댑터 연결도 아직 미확인이다. 쿠키/profile 복사나 보안 UI 조작은 없다.
+- 다음 우선 작업: 혼합 긍정/금지 지시를 모든 선택 도구의 전체 계약과 비교하는 공통
+  typed constraint 검수와 단일 재고려를 연결한다. 검증된 현재 입력에만 일부 실행을
+  허용하고 unknown/invalid/timeout이면 기존 전체 negation 차단을 유지한다. 말고 순서/
+  따옴표/다른 도메인도 검사하며 YouTube 키워드 예외로 해결하지 않는다. 전체 후보 보존
+  상태의 context_saturated 원인과 실제 파일 재수락도 함께 진행한다. 캘린더/계정/장치/
+  전문가 사용자 수락과 전체 완성도는 열린 상태다.
+
 ## 2026-10-05 입력 보존·도구 탐색 권한과 읽기 QA 보강
 
 - 전 영역 완성 요청을 이어서 처리한다. 코딩 모델 정답률/K3/Graphify/강화학습/배포/push
@@ -65,7 +113,7 @@
   da2a85fb45590fad95338d6b31d2b69c6155e7bb로 로컬 커밋했다. 제목은 [Feat] 한국어이며
   author/committer 모두 gyeotsa <gyeotsa@users.noreply.github.com>. 개인 DB/.env/brain/tmp/
   QA 산출물은 제외했다. pip check 및 staged diff check 통과. 배포·push하지 않았다.
-- 다음: 이 문서와 지원/QA 문서 12개 기록 커밋 → 사용자 직접 GUI 입력/확장 설치 결과
+- 문서/지원/QA 기록 12개는 4768e79로 커밋 완료했다. 다음: 사용자 직접 GUI 입력/확장 설치 결과
   확인 → ANIS 자체 캘린더 조회·승인 등록 어댑터 구현/수락. 실제 matrix 마지막 미지원
   확신도 표본, 초기 load/긴 추론 timeout, 실계정/장치/전문가 품질 수락은 남아 있다.
   전체 제품 완성도/Codex 동등성이나 계정·전송 수락은 자동 검사로 대체하지 않는다.

@@ -438,6 +438,15 @@ def test_semantic_model_failure_leaves_existing_pending_request_untouched(make_e
     assert executor.plan_calls == []
 
 
+def test_semantic_deadline_is_failed_not_missing_info_or_an_answer(make_executor):
+    executor = make_executor({"reason": "semantic_interpretation_failed:inference_deadline_exceeded"})
+    pending = _pending_send(executor)
+    outcome = executor.execute_turn("다른 파일도 확인해줘", SESSION)
+    assert outcome.status == "failed" and "시간이 초과" in outcome.response
+    assert not outcome.grounded_conversation and not executor.plan_calls
+    assert executor.dialogue_state.get_task(SESSION, pending.task_id).status == "awaiting_user"
+
+
 def _cancel_before_execution(*_args, **_kwargs):
     raise ToolCancelledError("isolated test cancellation before any effect")
 

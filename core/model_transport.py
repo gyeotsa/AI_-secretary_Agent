@@ -1,7 +1,7 @@
 """Synchronous model HTTP calls with cooperative, socket-level turn cancellation.
 
 The public result and transport errors retain the ``requests`` contract used by
-LLM clients. Calls outside a turn still use requests directly. An active turn
+LLM clients. Calls outside a turn/deadline still use requests directly. A turn
 owns an async HTTP task, so cancelling it closes the connection instead of
 leaving a blocking generation request running on an abandoned worker thread.
 """
@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
+from contextvars import copy_context
 import threading
 from typing import Any
 
 import httpx
 import requests
+
+from core.local_inference import InferenceDeadlineError, check_inference_deadline, current_inference_deadline
 
 from core.turn_context import (
     TurnExecutionContext,
@@ -56,29 +59,29 @@ def _httpx_timeout(timeout: Any) -> httpx.Timeout:
 
 
 async def _post_for_turn(
-    url: str, body: Any, timeout: Any, context: TurnExecutionContext,
+    url: str, body: Any, timeout: Any, context: TurnExecutionContext | None,
 ) -> requests.Response:
-    context.checkpoint()
+    check_inference_deadline()
     async with httpx.AsyncClient(
         timeout=_httpx_timeout(timeout), follow_redirects=True,
     ) as client:
-        context.checkpoint()
+        check_inference_deadline()
 
         async def send() -> requests.Response:
             # Keep ownership through both header and body reads. The stream
             # context closes the response even when aread() is cancelled.
-            context.checkpoint()
+            check_inference_deadline()
             async with client.stream("POST", url, json=body) as response:
                 await response.aread()
-                context.checkpoint()
+                check_inference_deadline()
                 return _as_requests_response(response)
 
         request = asyncio.create_task(send(), name="model-http-request")
         try:
             while not request.done():
                 await asyncio.wait({request}, timeout=_CANCEL_POLL_SECONDS)
-                context.checkpoint()
-            context.checkpoint()
+                check_inference_deadline()
+            check_inference_deadline()
             return request.result()
         finally:
             if not request.done():
@@ -89,7 +92,7 @@ async def _post_for_turn(
 
 
 def _run_for_turn(
-    url: str, body: Any, timeout: Any, context: TurnExecutionContext,
+    url: str, body: Any, timeout: Any, context: TurnExecutionContext | None,
 ) -> requests.Response:
     try:
         asyncio.get_running_loop()
@@ -98,8 +101,7 @@ def _run_for_turn(
 
     # asyncio.run cannot nest in an existing event loop. A single owned helper
     # handles that case; it is joined, never detached on cancellation. Capture
-    # and bind the caller's turn explicitly because ContextVars do not travel
-    # automatically to a new thread.
+    # the context so both turn cancellation and the deadline travel together.
     outcome: Future[requests.Response] = Future()
 
     def run() -> None:
@@ -109,14 +111,16 @@ def _run_for_turn(
         except BaseException as exc:
             outcome.set_exception(exc)
 
-    worker = threading.Thread(target=run, name=_HELPER_THREAD_NAME, daemon=False)
+    captured = copy_context()
+    worker = threading.Thread(target=lambda: captured.run(run), name=_HELPER_THREAD_NAME, daemon=False)
     worker.start()
     try:
         while worker.is_alive():
             worker.join(_CANCEL_POLL_SECONDS)
     except BaseException:
         # Also clean up if the synchronous caller itself is interrupted.
-        context.cancel()
+        if context is not None:
+            context.cancel()
         while worker.is_alive():
             worker.join(_CANCEL_POLL_SECONDS)
         raise
@@ -128,30 +132,35 @@ def post_json(url: str, *, json: Any, timeout: Any) -> requests.Response:
 
     HTTP error statuses remain responses for the caller's raise_for_status().
     Cancellation raises ToolCancelledError and takes precedence over a late
-    transport error. Disconnecting does not promise server-side rollback or
+    transport error or inference deadline. A deadline closes only this request,
+    not its parent turn. Disconnecting does not promise server-side rollback or
     immediate GPU release; that remains the model server's responsibility.
     OS hostname resolution can also delay cancellation: asyncio joins an
     already-running getaddrinfo worker before closing its event loop. Numeric
     IP endpoints avoid that DNS stage; no resolver/HTTP worker is abandoned.
     """
     context = current_turn_context()
-    if context is None:
+    if context is None and current_inference_deadline() is None:
         return requests.post(url, json=json, timeout=timeout)
 
-    context.checkpoint()
+    check_inference_deadline()
     try:
         response = _run_for_turn(url, json, timeout, context)
+    except InferenceDeadlineError:
+        if context is not None:
+            context.checkpoint()
+        raise
     except httpx.TimeoutException as exc:
-        context.checkpoint()
+        check_inference_deadline()
         raise requests.Timeout(str(exc)) from exc
     except (httpx.NetworkError, httpx.RemoteProtocolError, httpx.ProxyError) as exc:
-        context.checkpoint()
+        check_inference_deadline()
         raise requests.ConnectionError(str(exc)) from exc
     except httpx.TooManyRedirects as exc:
-        context.checkpoint()
+        check_inference_deadline()
         raise requests.TooManyRedirects(str(exc)) from exc
     except httpx.HTTPError as exc:
-        context.checkpoint()
+        check_inference_deadline()
         raise requests.RequestException(str(exc)) from exc
-    context.checkpoint()
+    check_inference_deadline()
     return response

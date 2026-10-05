@@ -16,6 +16,13 @@ Coding Agent 폐쇄 루프입니다. 더 강한 모델은 복잡한 계획과 �
   간주하지 않습니다.
 - timeout, 연결 실패, 빈 응답과 공급자 오류는 typed `ModelCallError`로 전달합니다.
   이 오류는 모델의 자연어 답변, 학습 데이터, 작업 성공 결과로 저장되지 않습니다.
+- 명시적인 `request_timeout`은 공통 추론 잠금 대기와 소유 HTTP poll을 포함합니다.
+  중첩 호출/폴백은 상위 기한을 늘리지 못하며 전체 기한 초과는 별도 typed
+  `InferenceDeadlineError(code=inference_deadline_exceeded)`로 전달합니다. Semantic 요청
+  해석의 탐색·명세·스타일·복구는 하나의 120초 예산을 공유하며 만료 후 권한을 부여하지 않습니다.
+  취소는 cleanup 중에도 시간 초과보다 우선합니다. 동기 SDK/DNS/정리의 강제 선점은
+  보장하지 않고, 늦게 돌아온 결과를 거부하는 경계입니다. 상세 증거와 미해결 실제
+  의미 해석 반례는 [공통 QA 기록](QA_COMMON_RUNTIME.md)을 참조하세요.
 - System Prompt는 고정된 이름·호칭·25자 제한·모드 태그가 아니라 현재 사용자 설정,
   응답 목적, Tool 사용 가능성과 최신성 요구를 조합합니다.
 

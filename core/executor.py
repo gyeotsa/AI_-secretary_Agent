@@ -722,7 +722,7 @@ class Executor:
                     message = "모델의 입력 또는 출력 길이 한도에 도달해 실행하지 않았습니다. 요청이나 첨부 설명을 나누어 다시 시도해 주세요."
                 elif semantic.reason.endswith(":connection") or semantic.reason == "semantic_model_unavailable":
                     message = "요청 해석 모델에 연결하지 못해 작업을 실행하지 않았습니다. 모델 상태를 확인한 뒤 다시 시도해 주세요."
-                elif semantic.reason.endswith(":timeout"):
+                elif semantic.reason.endswith((":timeout", ":inference_deadline_exceeded")):
                     message = "요청 해석 모델의 응답 시간이 초과되어 작업을 실행하지 않았습니다."
                 else:
                     message = "요청 해석 모델이 유효한 실행 명세를 반환하지 않아 작업을 실행하지 않았습니다."
