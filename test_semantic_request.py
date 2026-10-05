@@ -295,7 +295,7 @@ def test_unsupported_action_is_not_conversation(registry):
     interpreter = SemanticRequestInterpreter(model, registry)
     interpreter.SINGLE_PASS_CATALOG_CHARS = 0
     result = interpreter.interpret("실제 우주선을 조종해줘")
-    assert result.relation == "new" and result.needs_clarification
+    assert result.relation == "new" and not result.needs_clarification
     assert result.reason == "no_supported_tool" and not result.tool_names
     assert len(model.calls) == 1
 
@@ -312,6 +312,31 @@ def test_discovery_disposition_cannot_hide_actions(registry, kind, tools, confid
     result = interpreter.interpret("파일을 작성해줘")
     assert not result.grounded and result.reason == "semantic_discovery_invalid"
     assert len(model.calls) == 1
+
+
+@pytest.mark.parametrize("selection_key", ["group_names", "tool_names"])
+def test_discovery_generation_schema_enforces_kind_and_selection_consistency(registry, selection_key):
+    from jsonschema import Draft202012Validator
+    model = _RoutingModel(lambda *_: {"request_kind": "conversation", selection_key: [], "confidence": .99})
+    interpreter = SemanticRequestInterpreter(model, registry)
+    messages = [{"role": "system", "content": "discovery"}, {"role": "user", "content": json.dumps({
+        "current_user_input": "이야기하자", "recent_dialogue": []})}]
+    assert interpreter._discovery_selection(messages, {"candidate"}, selection_key) == ((), "conversation", .99)
+    schema = model.calls[0][1]
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    for kind, names, expected in [
+        ("conversation", [], True), ("conversation", ["candidate"], False),
+        ("unsupported", [], True), ("unsupported", ["candidate"], False),
+        ("action", ["candidate"], True), ("action", [], False),
+        ("unknown", [], True), ("unknown", ["candidate"], True),
+        ("action", ["invented"], False),
+    ]:
+        assert validator.is_valid({"request_kind": kind, selection_key: names, "confidence": .85}) is expected
+    # Each grammar branch is independently a complete object contract, not a
+    # partial condition that a provider can ignore while generating output.
+    assert all(branch["required"] == schema["required"] and not branch["additionalProperties"]
+               for branch in schema["oneOf"])
 
 
 @pytest.mark.parametrize("kind,confidence", [("unknown", .95), ("conversation", .75)])
@@ -331,29 +356,44 @@ def test_production_catalog_is_complete_without_tool_execution(tmp_path, monkeyp
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
     value = PluginRegistry()
     value.load_plugins_from_directory()
+    from plugins.legacy_runtime import LegacyRuntimePlugin
+    value.register_plugin(LegacyRuntimePlugin())
     assert not value._load_failures
 
     def forbidden(*args, **kwargs):
         raise AssertionError("Catalog inspection must not execute tools")
 
     monkeypatch.setattr(value, "execute_tool", forbidden)
-    model = _Model(_data(relation="conversation", operation="conversation",
-                         intent_name="", tool_names=[], slots={}))
+    class GroupConversation:
+        def __init__(self):
+            self.calls = []
+
+        def chat_structured(self, messages, schema, **kwargs):
+            self.calls.append(messages)
+            key = "group_names" if "group_names" in schema["properties"] else "tool_names"
+            return json.dumps({"request_kind": "conversation", key: [], "confidence": .99})
+
+    model = GroupConversation()
     # A greeting takes the deterministic conversation path; use an unresolved
     # conversational request to exercise the production catalogue itself.
     decision = SemanticRequestInterpreter(model, value).interpret("생각을 정리하고 싶어")
     assert decision.grounded
-    assert len(model.calls) == 2
-    prompt = json.loads(model.calls[0][1]["content"])
+    prompts = [json.loads(call[1]["content"]) for call in model.calls]
+    indexes = [prompt for prompt in prompts if "available_tool_groups" in prompt]
+    details = [prompt for prompt in prompts if "available_tool_groups" not in prompt]
+    assert len(indexes) == 1  # Entire index fits one call; it does not grant a no-tool disposition.
     expected = {c.name for c in value.get_capabilities()} - SemanticRequestInterpreter.RUNTIME_ONLY_TOOLS
-    assert {c["tool"] for c in prompt["available_tools"]} == expected
-    assert all("parameters" not in c for c in prompt["available_tools"])
-    assert json.loads(model.calls[1][1]["content"])["available_tools"] == []
-    assert len(expected) > 100  # The production inventory, never a tiny test surface.
+    assert {name for prompt in indexes for names in prompt["available_tool_groups"].values()
+            for name in names} == expected
+    assert all(prompt["available_tools"] == [] for prompt in indexes)
+    assert {entry["tool"] for prompt in details for entry in prompt["available_tools"]} == expected
+    assert 1 < len(model.calls) <= SemanticRequestInterpreter.DISCOVERY_MAX_CALLS
+    assert len(expected) >= 202  # Full production inventory, including legacy compatibility tools.
     encoded = json.dumps(model.calls[0], ensure_ascii=False, separators=(",", ":"))
     print(json.dumps({"production_catalog_tools": len(expected), "registered_plugins": len(value.plugins),
                       "registered_intents": len(value.get_all_intents()), "prompt_chars": len(encoded),
-                      "prompt_utf8_bytes": len(encoded.encode("utf-8"))}))
+                      "prompt_utf8_bytes": len(encoded.encode("utf-8")), "index_calls": len(indexes),
+                      "detail_calls": len(details), "discovery_calls": len(model.calls)}))
 
 
 def test_literal_substring_is_not_enough_when_full_body_boundary_is_known(registry):
@@ -419,6 +459,356 @@ def test_structured_capable_models_receive_json_contract(registry):
 
     decision = SemanticRequestInterpreter(Structured(), registry).interpret("Agent 인수인계.txt 읽어줘")
     assert decision.grounded
+
+
+class _ManyToolSurface(BasePlugin):
+    def __init__(self, number):
+        super().__init__()
+        self.name = f"group_{number}"
+
+    def get_tools(self):
+        return [ToolSchema(f"{self.name}_inspect_{'x' * 90}_{i}", "Inspection contract " * 12,
+                           {"type": "object", "properties": {"limit": {
+                               "type": "integer", "description": "Exact requested quantity " * 6}}},
+                           side_effect="read") for i in range(10)]
+
+    def execute_tool(self, *args):
+        raise AssertionError("Discovery must not execute a tool")
+
+
+def _many_tools():
+    value = PluginRegistry()
+    for number in range(8):
+        value.register_plugin(_ManyToolSurface(number))
+    return value
+
+
+class _RoutingModel:
+    def __init__(self, respond):
+        self.respond = respond
+        self.calls = []
+
+    def chat_structured(self, messages, schema, **kwargs):
+        payload = json.loads(messages[1]["content"])
+        self.calls.append((payload, schema, kwargs, messages))
+        return json.dumps(self.respond(payload, schema, len(self.calls)), ensure_ascii=False)
+
+
+def test_global_refinement_preserves_complete_overflow_candidate_pool_before_final_validation():
+    class CandidatePool(_Surface):
+        def get_tools(self):
+            tools = []
+            for number in range(9):
+                tools.extend(ToolSchema(f"choice_{2 * number + offset}", "candidate", {}, side_effect="read")
+                             for offset in range(2))
+                tools.append(ToolSchema(f"ballast_{number}", "contract", {"type": "object", "properties": {
+                    "mode": {"type": "string", "enum": ["a" * 700, "b" * 700]}}}, side_effect="read"))
+            return tools
+
+        def get_intents(self):
+            return []
+
+    value = PluginRegistry()
+    value.register_plugin(CandidatePool())
+    refinements = []
+    def respond(payload, schema, call):
+        if "available_tool_groups" in payload:
+            return {"request_kind": "action", "group_names": list(payload["available_tool_groups"]), "confidence": .99}
+        if "request_kind" not in schema["properties"]:
+            assert [entry["tool"] for entry in payload["available_tools"]] == ["choice_17"]
+            return _data(intent_name="", tool_names=["choice_17"], slots={})
+        names = [entry["tool"] for entry in payload["available_tools"]]
+        selected = [name for name in names if name.startswith("choice_")]
+        if len(selected) == 18:
+            assert names == selected
+            assert schema["properties"]["tool_names"]["maxItems"] == 16
+            refinements.append(selected)
+            selected = ["choice_17"]
+        return {"request_kind": "action" if selected else "unsupported", "tool_names": selected, "confidence": .99}
+    model = _RoutingModel(respond)
+    result = SemanticRequestInterpreter(model, value).interpret("현재 자료를 조회해줘")
+    assert result.grounded and result.tool_names == ("choice_17",)
+    assert len(refinements) == 1 and set(refinements[0]) == {f"choice_{number}" for number in range(18)}
+    assert len(model.calls) <= SemanticRequestInterpreter.DISCOVERY_MAX_CALLS + 1
+
+
+@pytest.mark.parametrize("kind", ["conversation", "unsupported", "unknown"])
+def test_negative_candidate_refinement_cannot_promote_prior_action_to_conversation(registry, kind):
+    model = _DiscoveryModel({"request_kind": "action", "tool_names": ["read_note", "weather_lookup"], "confidence": .99},
+                            {"request_kind": kind, "tool_names": [], "confidence": .99})
+    interpreter = SemanticRequestInterpreter(model, registry)
+    interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    result = interpreter.interpret("자료를 조회해줘")
+    assert not result.grounded and not result.is_grounded_conversation
+    assert result.reason == "semantic_discovery_invalid" and len(model.calls) == 2
+
+
+def test_global_refinement_keeps_all_mock_mail_read_and_send_stages():
+    class MailPair(_Surface):
+        def get_tools(self):
+            return [ToolSchema("mail_read", "메일 조회", {"type": "object", "properties": {
+                "message_id": {"type": "string"}}, "required": ["message_id"]}, side_effect="read"),
+                ToolSchema("mail_send", "메일 전송", {"type": "object", "properties": {
+                    "recipient": {"type": "string"}, "body": {"type": "string"}},
+                    "required": ["recipient", "body"]}, side_effect="external_send")]
+
+        def get_intents(self):
+            return []
+
+    value = PluginRegistry()
+    value.register_plugin(MailPair())
+    selected = {"request_kind": "action", "tool_names": ["mail_read", "mail_send"], "confidence": .99}
+    model = _DiscoveryModel(selected, selected)
+    model.outputs.append(_data(intent_name="", operation="external_send", tool_names=["mail_read", "mail_send"],
+                               slots={"message_id": "msg_42"}))
+    interpreter = SemanticRequestInterpreter(model, value)
+    interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    result = interpreter.interpret("msg_42 메일을 조회한 뒤 수신자에게 전달해줘")
+    assert result.grounded and result.tool_names == ("mail_read", "mail_send")
+    assert result.operation == "external_send" and len(model.calls) == 3
+    assert all({entry["tool"] for entry in json.loads(call[0][1]["content"])["available_tools"]}
+               == {"mail_read", "mail_send"} for call in model.calls)
+    assert not result.to_resolution(value).ready  # Still requires compound planning and approval, never direct execution.
+
+
+def test_oversized_refinement_pool_fails_without_truncating_candidates():
+    value = _many_tools()
+    detailed = set()
+    def respond(payload, schema, call):
+        if "available_tool_groups" in payload:
+            groups = [group for group in payload["available_tool_groups"] if group in {"group_0", "group_1"}]
+            return {"request_kind": "action" if groups else "unsupported", "group_names": groups, "confidence": .99}
+        names = [entry["tool"] for entry in payload["available_tools"]]
+        detailed.update(names)
+        return {"request_kind": "action", "tool_names": names, "confidence": .99}
+    model = _RoutingModel(respond)
+    result = SemanticRequestInterpreter(model, value).interpret("현재 자료를 조회해줘")
+    assert result.reason.endswith(":context_saturated") and not result.grounded
+    assert detailed == {c.name for c in value.get_capabilities() if c.name.startswith(("group_0_", "group_1_"))}
+    assert all("request_kind" in schema["properties"] for _, schema, *_ in model.calls)
+
+
+def test_candidate_refinement_shares_discovery_call_cap_and_cancellation(registry):
+    from core.plugin import ToolCancelledError
+    from core.turn_context import TurnExecutionContext, bind_turn_context
+    selected = {"request_kind": "action", "tool_names": ["read_note", "weather_lookup"], "confidence": .99}
+    limited = _DiscoveryModel(selected, selected)
+    interpreter = SemanticRequestInterpreter(limited, registry)
+    interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    interpreter.DISCOVERY_MAX_CALLS = 1
+    result = interpreter.interpret("자료를 조회해줘")
+    assert result.reason.endswith(":discovery_budget_exhausted") and len(limited.calls) == 1
+    context = TurnExecutionContext("refinement", "session")
+    def respond(payload, schema, call):
+        if call == 2:
+            context.cancel()
+        return selected
+    cancelling = _RoutingModel(respond)
+    interpreter = SemanticRequestInterpreter(cancelling, registry)
+    interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    with bind_turn_context(context), pytest.raises(ToolCancelledError):
+        interpreter.interpret("자료를 조회해줘")
+    assert len(cancelling.calls) == 2
+
+
+@pytest.mark.parametrize("orphan", [False, True])
+@pytest.mark.parametrize("index_kind", ["action", "conversation", "unsupported", "wrong_group"])
+def test_grouped_discovery_covers_last_group_and_pluginless_capabilities(orphan, index_kind):
+    value = _many_tools()
+    target = value.get_capabilities()[-1].name
+    if orphan:
+        value.plugins.pop("group_7")  # Capability remains registered without group ownership metadata.
+    seen, detailed = set(), set()
+
+    def respond(payload, schema, call):
+        if "available_tool_groups" in payload:
+            groups = payload["available_tool_groups"]
+            seen.update(name for names in groups.values() for name in names)
+            chosen = ([group for group in groups if group == "group_0"] if index_kind == "wrong_group"
+                      else [group for group, names in groups.items() if target in names] if index_kind == "action" else [])
+            kind = "action" if chosen else "unsupported" if index_kind in {"action", "wrong_group"} else index_kind
+            return {"request_kind": kind, "group_names": chosen, "confidence": .95}
+        if "request_kind" in schema["properties"]:
+            detailed.update(entry["tool"] for entry in payload["available_tools"])
+            chosen = [target] if any(entry["tool"] == target for entry in payload["available_tools"]) else []
+            return {"request_kind": "action" if chosen else "unsupported", "tool_names": chosen, "confidence": .99}
+        return _data(intent_name="", tool_names=[target], slots={})
+
+    model = _RoutingModel(respond)
+    decision = SemanticRequestInterpreter(model, value).interpret("현재 측정값 알려줘")
+    assert decision.grounded and decision.tool_names == (target,)
+    assert seen == {c.name for c in value.get_capabilities()}
+    assert detailed == ({name for name in seen if name.startswith("group_7_")} if index_kind == "action" else seen)
+    assert sum("available_tool_groups" in p for p, *_ in model.calls) >= 2
+    assert [entry["tool"] for entry in model.calls[-1][0]["available_tools"]] == [target]
+    for _, schema, options, messages in model.calls:
+        reserve = 512 if "request_kind" in schema["properties"] else 1024
+        assert options == {"context_window": 8192, "max_output_tokens": reserve}
+        assert sum(len(m["content"].encode("utf-8")) for m in messages) + len(messages) * 64 + 256 + reserve <= 8192
+
+
+@pytest.mark.parametrize("later_kind", ["conversation", "unknown"])
+def test_mixed_index_batches_refine_all_groups_before_global_unsupported(later_kind):
+    value = _many_tools()
+    detailed = set()
+    def respond(payload, schema, call):
+        if "available_tool_groups" in payload:
+            return {"request_kind": "unsupported" if call == 1 else later_kind,
+                    "group_names": [], "confidence": .99}
+        detailed.update(entry["tool"] for entry in payload["available_tools"])
+        return {"request_kind": "unsupported", "tool_names": [], "confidence": .99}
+    model = _RoutingModel(respond)
+    result = SemanticRequestInterpreter(model, value).interpret("실제 위성의 궤도를 바꿔줘")
+    assert result.reason == "no_supported_tool" and not result.is_grounded_conversation
+    assert detailed == {c.name for c in value.get_capabilities()}
+
+
+def test_selected_group_no_hit_checks_remainder_and_mixed_negative_is_not_unsupported():
+    value = _many_tools()
+    detailed = set()
+    def respond(payload, schema, call):
+        if "available_tool_groups" in payload:
+            chosen = [group for group in payload["available_tool_groups"] if group == "group_0"]
+            return {"request_kind": "action" if chosen else "unsupported", "group_names": chosen, "confidence": .99}
+        if "request_kind" in schema["properties"]:
+            names = {entry["tool"] for entry in payload["available_tools"]}
+            detailed.update(names)
+            kind = "conversation" if all(name.startswith("group_0_") for name in names) else "unsupported"
+            return {"request_kind": kind, "tool_names": [], "confidence": .99}
+        assert payload["available_tools"] == []
+        return _data(relation="conversation", operation="conversation", intent_name="", tool_names=[], slots={})
+    model = _RoutingModel(respond)
+    result = SemanticRequestInterpreter(model, value).interpret("새로운 작업을 해줘")
+    assert detailed == {c.name for c in value.get_capabilities()}
+    assert result.is_grounded_conversation and result.source == "model"
+    assert "request_kind" not in model.calls[-1][1]["properties"]
+
+
+def test_invalid_later_index_batch_never_reaches_contract_or_execution():
+    value = _many_tools()
+    def respond(payload, schema, call):
+        assert "available_tool_groups" in payload
+        return {"request_kind": "unsupported" if call == 1 else "action",
+                "group_names": [] if call == 1 else ["invented_group"], "confidence": .99}
+    model = _RoutingModel(respond)
+    result = SemanticRequestInterpreter(model, value).interpret("새로운 검사 작업을 해줘")
+    assert result.reason == "semantic_discovery_invalid" and not result.grounded
+    assert len(model.calls) == 2
+
+
+def test_discovery_call_budget_stops_before_another_send():
+    value = _many_tools()
+    model = _RoutingModel(lambda *_: {"request_kind": "unsupported", "group_names": [], "confidence": .99})
+    interpreter = SemanticRequestInterpreter(model, value)
+    interpreter.DISCOVERY_MAX_CALLS = 1
+    result = interpreter.interpret("새로운 검사 작업을 해줘")
+    assert result.reason.endswith(":discovery_budget_exhausted") and not result.grounded
+    assert len(model.calls) == 1
+
+
+def test_cancellation_after_group_index_propagates_without_detail_send():
+    from core.plugin import ToolCancelledError
+    from core.turn_context import TurnExecutionContext, bind_turn_context
+    value = _many_tools()
+    context = TurnExecutionContext("grouped", "session")
+    def respond(payload, schema, call):
+        context.cancel()
+        return {"request_kind": "action", "group_names": [next(iter(payload["available_tool_groups"]))],
+                "confidence": .99}
+    model = _RoutingModel(respond)
+    with bind_turn_context(context), pytest.raises(ToolCancelledError):
+        SemanticRequestInterpreter(model, value).interpret("검사 작업을 해줘")
+    assert len(model.calls) == 1
+
+
+@pytest.mark.parametrize("style", ["strict", "context", "capped", "variadic", "uninspectable", "chat"])
+def test_model_call_negotiates_only_supported_keywords_and_preserves_dialogue(registry, monkeypatch, style):
+    calls = []
+    model = SimpleNamespace()
+    def invoke(messages, schema=None, **options):
+        calls.append((messages, options))
+        return "{}"
+    if style == "strict":
+        model.chat_structured = lambda messages, schema: invoke(messages, schema)
+    elif style == "context":
+        model.chat_structured = lambda messages, schema, *, context_window=None: invoke(messages, schema, context_window=context_window)
+    elif style == "capped":
+        model.chat_structured = lambda messages, schema, *, max_output_tokens=None: invoke(messages, schema, max_output_tokens=max_output_tokens)
+    elif style == "variadic":
+        model.chat_structured = invoke
+    elif style == "uninspectable":
+        model.chat_structured = lambda messages, schema: invoke(messages, schema)
+        monkeypatch.setattr("core.semantic_request.inspect.signature", lambda _: (_ for _ in ()).throw(ValueError()))
+    else:
+        model.chat = invoke
+    history = [{"role": "user", "content": "old exact 🙂"}, {"role": "assistant", "content": "old reply"}]
+    envelope = [{"role": "system", "content": "system"}, {"role": "user", "content": json.dumps({
+        "current_user_input": "current exact 🙂", "recent_dialogue": history, "data": "untrusted metadata"})}]
+    interpreter = SemanticRequestInterpreter(model, registry)
+    assert interpreter._model_call(envelope, {}) == "{}"
+    assert calls[0][0][2:] == [*history, {"role": "user", "content": "current exact 🙂"}]
+    options = calls[0][1]
+    assert ("context_window" in options) == (style in {"context", "variadic"})
+    assert ("max_output_tokens" in options) == (style in {"capped", "variadic"})
+
+
+@pytest.mark.parametrize("profile_limit", [1024, 8192, 0])
+def test_whole_prompt_and_uncapped_provider_output_are_budgeted_before_send(registry, profile_limit):
+    model = _Model(_data())
+    model.profile = SimpleNamespace(max_tokens=profile_limit)
+    history = [{"role": "user", "content": "preserved history " * 500}]
+    result = SemanticRequestInterpreter(model, registry).interpret("Agent 인수인계.txt 읽어줘", history=history)
+    assert result.reason.endswith(":context_saturated") and not result.grounded
+    assert model.calls == []
+    assert history[0]["content"] == "preserved history " * 500
+
+
+def test_pending_tool_group_is_refined_even_after_index_conversation(registry):
+    for number in range(8):
+        registry.register_plugin(_ManyToolSurface(number))
+    pending = {"intent_name": "messaging.send", "slots": {"recipient": "형택", "provider": "kakaotalk"},
+               "question": "무슨 내용을 보낼까요?", "original_request": "형택에게 카톡 보내줘"}
+    def respond(payload, schema, call):
+        if "request_kind" in schema["properties"]:
+            key = "group_names" if "available_tool_groups" in payload else "tool_names"
+            return {"request_kind": "conversation", key: [], "confidence": .99}
+        assert [entry["tool"] for entry in payload["available_tools"]] == ["desktop_send_message"]
+        return _data(relation="conversation", operation="conversation", intent_name="", tool_names=[], slots={})
+    model = _RoutingModel(respond)
+    result = SemanticRequestInterpreter(model, registry).interpret("잠깐 이야기하고 싶어", pending=pending)
+    assert result.is_grounded_conversation
+    details = [p for p, schema, *_ in model.calls if "request_kind" in schema["properties"]
+               and "available_tool_groups" not in p]
+    assert {entry["tool"] for p in details for entry in p["available_tools"]} == {
+        c.name for c in registry.get_capabilities()} - SemanticRequestInterpreter.RUNTIME_ONLY_TOOLS
+    assert pending["slots"] == {"recipient": "형택", "provider": "kakaotalk"}
+
+
+def test_range_parameter_descriptions_and_defaults_reach_discovery_and_final(tmp_path):
+    from plugins.filesystem import FilesystemPlugin
+    from plugins.legacy_runtime import LegacyRuntimePlugin
+    value = PluginRegistry()
+    plugin = FilesystemPlugin()
+    plugin.workspace = SimpleNamespace(get_workspace_path=lambda: str(tmp_path))
+    value.register_plugin(plugin)
+    value.register_plugin(LegacyRuntimePlugin())
+    model = _DiscoveryModel({"request_kind": "action", "tool_names": ["filesystem_read_file"], "confidence": .99},
+                            _data(intent_name="filesystem.read_file", tool_names=["filesystem_read_file"],
+                                  slots={"filename": "QA 기록.txt", "start_line": 1, "end_line": 1}))
+    interpreter = SemanticRequestInterpreter(model, value)
+    interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    result = interpreter.interpret("QA 기록.txt 파일의 첫 번째 줄만 그대로 알려줘",
+                                   allowed_tools=["read_file", "filesystem_read_file"])
+    assert result.grounded and result.slots["start_line"] == result.slots["end_line"] == 1
+    first, final = [json.loads(call[0][1]["content"]) for call in model.calls]
+    assert {entry["tool"] for entry in first["available_tools"]} == {"read_file", "filesystem_read_file"}
+    fields = next(entry["fields"] for entry in first["available_tools"] if entry["tool"] == "filesystem_read_file")
+    parameters = final["available_tools"][0]["parameters"]
+    original = value.get_capability("filesystem_read_file").input_schema["properties"]
+    for name in ("filename", "start_line", "end_line", "max_chars"):
+        assert fields[name]["description"] == parameters[name]["description"] == original[name]["description"][:160]
+    assert fields["start_line"]["default"] == 1 and fields["max_chars"]["default"] == 16000
+    assert "default" not in fields["end_line"]
 
 
 def test_complete_slots_with_clarification_flag_never_become_ready(registry):
@@ -549,7 +939,8 @@ def test_live_local_semantic_interpretation(case, registry, tmp_path, monkeypatc
 
 
 @pytest.mark.integration
-def test_live_production_catalog_semantics(tmp_path, monkeypatch):
+@pytest.mark.parametrize("catalog_scope", ["two_contracts", "production"])
+def test_live_production_catalog_semantics(tmp_path, monkeypatch, catalog_scope):
     """Full production discovery, synthetic file, local inference only; no tool runs."""
     import os
     import time
@@ -561,6 +952,8 @@ def test_live_production_catalog_semantics(tmp_path, monkeypatch):
     from core.llm import OllamaClient
     value = PluginRegistry()
     value.load_plugins_from_directory()
+    from plugins.legacy_runtime import LegacyRuntimePlugin
+    value.register_plugin(LegacyRuntimePlugin())
     assert not value._load_failures
     value.get_plugin("filesystem").workspace = SimpleNamespace(get_workspace_path=lambda: str(tmp_path))
 
@@ -570,7 +963,7 @@ def test_live_production_catalog_semantics(tmp_path, monkeypatch):
     monkeypatch.setattr(value, "execute_tool", forbidden)
     for plugin in value.plugins.values():
         monkeypatch.setattr(plugin, "execute_tool", forbidden)
-    target = tmp_path / "Agent 인수인계.txt"
+    target = tmp_path / "QA 기록.txt"
     target.write_bytes("실제 첫 줄\n두 번째 줄\n".encode("utf-8"))
     client = OllamaClient.__new__(OllamaClient)
     client.base_url = "http://localhost:11434"
@@ -602,8 +995,9 @@ def test_live_production_catalog_semantics(tmp_path, monkeypatch):
     monkeypatch.setattr(requests, "post", measured_post)
     started = time.perf_counter()
     decision = SemanticRequestInterpreter(client, value).interpret(
-        "Agent 인수인계 파일에 작성되어 있는 첫 번째 줄 내용을 알려줘")
-    print(json.dumps({"case": "production_catalog_file_read", "model": client.model,
+        "QA 기록.txt 파일의 첫 번째 줄만 그대로 알려줘",
+        allowed_tools=["read_file", "filesystem_read_file"] if catalog_scope == "two_contracts" else None)
+    print(json.dumps({"case": f"{catalog_scope}_file_read", "model": client.model,
                       "latency_seconds": round(time.perf_counter() - started, 3),
                       "decision": decision.__dict__, "metrics": metrics}, ensure_ascii=True))
     assert decision.grounded, decision.reason

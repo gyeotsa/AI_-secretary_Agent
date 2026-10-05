@@ -132,6 +132,13 @@ class MorningBriefService:
             )
 
     def _tasks(self, session_id: str, workspace_path: str) -> SourceSection:
+        continuity = getattr(self, "continuity_service", None)
+        if continuity is not None:
+            board = continuity.dashboard()
+            return SourceSection("tasks", "통합 리마인더 · 다음 할 일", "available",
+                                 {"next_actions": board["next_actions"], "blocked": board["blocked"],
+                                  "sync": board.get("sync", {})},
+                                 "ContinuityStore (연결된 로컬 세션)", self._now())
         if self.dialogue_state is None or not session_id:
             return SourceSection("tasks", "미완료 작업", "disconnected", None,
                                  "DialogueStateStore", self._now(), "현재 세션이 연결되지 않았습니다.")

@@ -1,5 +1,6 @@
 """Role-focused desktop workspaces layered over the shared Jarvis agent runtime."""
 from __future__ import annotations
+from .theme import set_widget_style
 
 from pathlib import Path
 from copy import deepcopy
@@ -213,7 +214,7 @@ class SpecialistHubDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("전문가 작업공간")
         self.resize(620, 420)
-        self.setStyleSheet(STYLE)
+        set_widget_style(self, STYLE)
         layout = QVBoxLayout(self)
         title = QLabel("전문가 작업공간")
         title.setObjectName("heading")
@@ -249,7 +250,7 @@ class SpecialistWorkspaceWindow(QMainWindow):
         self.setWindowTitle(f"JARVIS · {spec.title}")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
         self.resize(1180, 760)
-        self.setStyleSheet(STYLE)
+        set_widget_style(self, STYLE)
         self._build()
 
     def _build(self):
@@ -465,7 +466,7 @@ class MockupWorkspaceWindow(QMainWindow):
         self.setWindowTitle("JARVIS · 시안 제작 전문가")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
         self.resize(1320, 820)
-        self.setStyleSheet(STYLE)
+        set_widget_style(self, STYLE)
         self.analysis_done.connect(self._on_analysis_done)
         self.render_done.connect(self._on_render_done)
         self.operation_failed.connect(self._on_failed)
@@ -518,7 +519,7 @@ class MockupWorkspaceWindow(QMainWindow):
             active_layout = QVBoxLayout(self.active_profile_card); active_layout.setContentsMargins(12, 9, 12, 9)
             active_caption = QLabel("현재 적용할 스타일"); active_caption.setObjectName("muted")
             self.active_profile_label = QLabel("선택되지 않음")
-            self.active_profile_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #f59e0b;")
+            set_widget_style(self.active_profile_label, "font-size: 15px; font-weight: 700; color: #f59e0b;")
             self.active_profile_meta = QLabel("아래 목록에서 스타일을 클릭해 주세요.")
             self.active_profile_meta.setObjectName("muted"); self.active_profile_meta.setWordWrap(True)
             active_layout.addWidget(active_caption); active_layout.addWidget(self.active_profile_label)
@@ -738,19 +739,15 @@ class MockupWorkspaceWindow(QMainWindow):
     def _update_active_profile_card(self, profile):
         selected = profile is not None
         self.active_profile_label.setText(profile.name if selected else "선택되지 않음")
-        self.active_profile_label.setStyleSheet(
-            "font-size: 15px; font-weight: 700; color: #67e8f9;" if selected else
-            "font-size: 15px; font-weight: 700; color: #f59e0b;"
-        )
+        set_widget_style(self.active_profile_label, "font-size: 15px; font-weight: 700; color: #67e8f9;" if selected else
+            "font-size: 15px; font-weight: 700; color: #f59e0b;")
         self.active_profile_meta.setText(
             f"참고 이미지 {len(profile.reference_paths)}장 · 클릭한 이 스타일이 다음 생성에 사용됩니다."
             if selected else "아래 목록에서 스타일을 클릭해 주세요."
         )
-        self.active_profile_card.setStyleSheet(
-            "QFrame#activeProfileCard { background: #0d2633; border: 1px solid #22d3ee; border-radius: 10px; }"
+        set_widget_style(self.active_profile_card, "QFrame#activeProfileCard { background: #0d2633; border: 1px solid #22d3ee; border-radius: 10px; }"
             if selected else
-            "QFrame#activeProfileCard { background: #211b12; border: 1px solid #a16207; border-radius: 10px; }"
-        )
+            "QFrame#activeProfileCard { background: #211b12; border: 1px solid #a16207; border-radius: 10px; }")
         if hasattr(self, "render_button"):
             self.render_button.setEnabled(selected)
             self.render_button.setText("선택한 스타일로 시안 제작" if selected else "스타일을 먼저 선택해 주세요")

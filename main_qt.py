@@ -35,6 +35,7 @@ from core.semantic_request import select_conversation_history
 from core.plugin import ToolCancelledError
 from core.scheduler import get_automation_engine
 from core.proactive import ProactiveNotificationPolicy
+from core.continuity import ContinuityService, is_continuity_query
 from core.response_presenter import present_channels
 from core.runtime_services import get_runtime_service_manager
 from core.assistant_settings import get_assistant_settings
@@ -169,6 +170,7 @@ class AppSignals(QObject):
     tts_finished = pyqtSignal()
     # 권한 요청용 시그널: (permission_name, permission_description)
     permission_request = pyqtSignal(str, str)
+    permission_action_request = pyqtSignal(object)
     # 권한 응답용 시그널: (result_bool)
     permission_response = pyqtSignal(bool)
     progress_update = pyqtSignal(object)
@@ -312,6 +314,8 @@ class JarvisApp:
         
         # PermissionManager에 UI callback 연결
         def permission_callback(permission):
+            if not permission.persist_decision:
+                return self._request_action_permission(permission)
             self._permission_result = None
             self._permission_event.clear()
             # 시그널로 메인 스레드에 요청 보내기
@@ -324,6 +328,7 @@ class JarvisApp:
         
         # 권한 요청 시그널 연결 (메인 스레드에서 실행)
         self.signals.permission_request.connect(self._on_permission_request)
+        self.signals.permission_action_request.connect(self._on_action_permission_request)
         # 권한 응답 시그널 연결 (필요시)
         self.signals.permission_response.connect(self._on_permission_response)
         
@@ -352,6 +357,17 @@ class JarvisApp:
         print(f"[Automation] 시작 상태: {self.automation_engine.start()}")
         self.proactive_policy = ProactiveNotificationPolicy(self.notify_user)
         self.proactive_policy.start()
+        self.continuity_service = ContinuityService(
+            memory_path=self.memory.episode_manager.db_path,
+            dialogue_path=self.executor.dialogue_state.db_path,
+            plan_path=self.executor.plan_coordinator.store.db_path,
+            journal_path=getattr(getattr(self.tool_executor, "_action_journal", None),
+                                 "db_path", "data/action_journal.db"),
+            notification_policy=self.proactive_policy,
+        )
+        self.window.set_continuity_service(self.continuity_service)
+        self.morning_brief.continuity_service = self.continuity_service
+        self.continuity_service.start()
         
         # 시그널 연결
         self.state_machine.state_changed.connect(self._on_state_changed)
@@ -427,21 +443,13 @@ class JarvisApp:
             self.messages = self.memory.load_session(last_session_id)
             print(f"[기억] 가장 최근 세션 {last_session_id}를 불러왔습니다, 메시지 {len(self.messages)}개")
             
-            # UI에 최근 메시지 표시
-            last_user_msg = None
-            last_assistant_msg = None
-            for msg in reversed(self.messages):
-                if msg["role"] == "user" and not last_user_msg:
-                    last_user_msg = msg["content"]
-                elif msg["role"] == "assistant" and not last_assistant_msg:
-                    last_assistant_msg = msg["content"]
-                if last_user_msg and last_assistant_msg:
-                    break
-            
-            if last_user_msg:
-                self.window.show_user_text(last_user_msg)
-            if last_assistant_msg:
-                self.window.show_assistant_text(last_assistant_msg)
+            # Restore the conversation in chronological order in the chat shell.
+            for message in self.messages:
+                if message["role"] == "user":
+                    self.window.show_user_text(message["content"])
+                elif message["role"] == "assistant":
+                    self.window.show_assistant_text(message["content"])
+
         else:
             self.session_id = self.memory.create_session("새 대화")
         self.window.set_current_session(self.session_id)
@@ -482,11 +490,10 @@ class JarvisApp:
         self.messages = self.memory.load_session(session_id)
         self.window.set_current_session(session_id)
         self.window.clear_conversation_display()
-        for role in ("user", "assistant"):
-            message = next((item for item in reversed(self.messages) if item["role"] == role), None)
-            if message and role == "user":
+        for message in self.messages:
+            if message["role"] == "user":
                 self.window.show_user_text(message["content"])
-            elif message:
+            elif message["role"] == "assistant":
                 self.window.show_assistant_text(message["content"])
 
     def _create_session(self, title: str):
@@ -528,6 +535,17 @@ class JarvisApp:
     
     def _on_user_input(self, text: str, existing_task_id=None, specialist_payload=None):
         self._last_user_activity = time.time()
+        continuity = getattr(self, "continuity_service", None)
+        if (continuity is not None and existing_task_id is None and specialist_payload is None
+                and is_continuity_query(text)):
+            # Reading the next-action list must not cancel an in-flight task.
+            response = continuity.answer_now()
+            self.window.show_user_text(text)
+            self.window.show_continuity_reminder()
+            self.messages.append({"role": "user", "content": text})
+            self.memory.save_message(self.session_id, "user", text)
+            self.notify_user(response, request=text)
+            return
         print("[DEBUG] _on_user_input called with:", text)
         explicit_queue = text.strip().lower().startswith(("새 작업:", "새 작업："))
         if existing_task_id is None and not explicit_queue:
@@ -1329,6 +1347,35 @@ class JarvisApp:
         )
         threading.Thread(target=self.project_indexer.sync_changes, daemon=True).start()
     
+    def _request_action_permission(self, permission):
+        """A late reply can only complete its own one-time action request."""
+        from core.turn_context import check_turn_cancelled
+        request = {"name": permission.name, "description": permission.description,
+                   "event": threading.Event(), "cancelled": threading.Event(), "result": False}
+        self.signals.permission_action_request.emit(request)
+        try:
+            for _ in range(300):  # 30 seconds, while allowing turn cancellation.
+                check_turn_cancelled()
+                if request["event"].wait(0.1):
+                    return request["result"] is True
+            return False
+        finally:
+            request["cancelled"].set()
+
+    def _on_action_permission_request(self, request):
+        if request["cancelled"].is_set():
+            request["event"].set()
+            return
+        try:
+            allowed = self.window.request_permission(
+                request["name"], request["description"], persist_decision=False,
+                cancel_event=request["cancelled"])
+            request["result"] = bool(allowed and not request["cancelled"].is_set())
+        except Exception:
+            request["result"] = False
+        finally:
+            request["event"].set()
+
     def _on_permission_request(self, permission_name: str, permission_description: str):
         """메인 스레드에서 권한 요청 대화상자를 보여주고 결과를 반환"""
         result = self.window.request_permission(permission_name, permission_description)
@@ -1460,7 +1507,10 @@ class JarvisApp:
             return
         self._runtime_shutdown_started = True
         self._shutdown_errors = []
+        from core.auxiliary_models import shutdown as shutdown_auxiliary_models
+        shutdown_auxiliary_models()
         cleanup = (
+            ("continuity_service", "stop"),
             ("hardware_manager", "shutdown"),
             ("gesture_runtime", "stop"),
             ("proactive_policy", "stop"),

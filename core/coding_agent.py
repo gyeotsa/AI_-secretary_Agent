@@ -15,6 +15,7 @@ import re
 import shutil
 
 from core.project_indexer import ProjectIndexer
+from core.turn_context import check_turn_cancelled
 
 
 @dataclass(frozen=True)
@@ -298,10 +299,13 @@ class CodingAgent:
         edits = initial_edits
         last_result = CodingTransactionResult("failed", error="실행되지 않았습니다.")
         for attempt in range(1, max(1, min(max_attempts, 5)) + 1):
+            check_turn_cancelled()
             last_result = self.apply_transaction(edits, validation_commands)
             last_result.attempt_count = attempt
             if last_result.succeeded:
                 return last_result
+            if attempt == max(1, min(max_attempts, 5)):
+                break
             replacement = repair_callback(last_result, attempt)
             if not replacement:
                 return last_result
@@ -312,10 +316,13 @@ class CodingAgent:
         """Turn natural language into reviewed JSON edits; only this class writes files."""
         plan = self.build_plan(request)
         proposal = self._propose_edits(request, plan, llm)
+        checkpoint = getattr(llm, "check_cancelled", check_turn_cancelled)
+        checkpoint()
         self._validate_test_policy(proposal)
 
         def repair(failure: CodingTransactionResult, _attempt: int):
             replacement = self._propose_edits(request, plan, llm, failure.error)
+            checkpoint()
             self._validate_test_policy(replacement)
             return [FileEdit(**item) for item in replacement["edits"]]
 

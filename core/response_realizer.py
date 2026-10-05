@@ -49,6 +49,9 @@ class ResponseRealizer:
     EXCLUDED_TOOLS = {
         "repeat_text", "speak_text", "listen", "browser_learning_status",
         "browser_learn_video_preference",
+        # Grounded summaries already pair exact quotations with source IDs.
+        "communication_read_summary",
+        "cloud_search_evidence", "cloud_sync_documents",
     }
 
     def __init__(self, llm):

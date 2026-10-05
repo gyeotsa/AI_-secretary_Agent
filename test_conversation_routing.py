@@ -74,8 +74,10 @@ def test_profile_assistant_name_is_treated_as_a_call_not_a_rename(tmp_path, monk
         [{"role": "assistant", "content": "이제 아니스로 불러줘."}],
     )
 
-    assert outcome.response == "응, 듣고 있어. 지휘관님."
-    assert executor.llm.messages is None
+    assert outcome.response == executor.llm.response
+    assert executor.llm.messages[-1] == {"role": "user", "content": "아니스"}
+    assert "지휘관님" in executor.llm.messages[0]["content"]
+    assert not executor.dialogue_state.list("anis-call")
 
 
 def test_conversation_path_blocks_unexecuted_completion_claim(tmp_path):

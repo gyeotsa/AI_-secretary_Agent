@@ -10,6 +10,7 @@ import json
 from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema, get_plugin_registry
 from core.self_development import SelfDevelopmentRuntime
 from core.tool_result import Artifact, Evidence, ToolRunResult
+from core.auxiliary_models import coding_timeout_seconds
 
 
 class AgentSelfPlugin(BasePlugin):
@@ -43,7 +44,7 @@ class AgentSelfPlugin(BasePlugin):
                 {"type": "object", "properties": {"request": {"type": "string"}},
                  "required": ["request"], "additionalProperties": False},
                 ["filesystem_read", "filesystem_write", "shell_execute", "self_modify"],
-                side_effect="change", timeout_seconds=360, max_retries=0, cancellable=True,
+                side_effect="change", timeout_seconds=coding_timeout_seconds(), max_retries=0, cancellable=True,
             ),
         ]
 
@@ -130,9 +131,11 @@ class AgentSelfPlugin(BasePlugin):
                     artifacts=[Artifact("directory", str(self._runtime.root), {"role": "self_repository"})],
                 )
             if tool_name == "agent_self_execute_change":
-                from core.llm import get_llm_client
+                from core.llm import get_coding_llm_client
+                context = self.get_execution_context()
                 plan, result = self._runtime.execute_change(
-                    str(tool_input["request"]), get_llm_client("coding")
+                    str(tool_input["request"]), get_coding_llm_client(
+                        cancellation_check=context.raise_if_cancelled if context else None)
                 )
                 if not result.succeeded:
                     return ToolRunResult.failed(tool_name=tool_name, error=result.error)

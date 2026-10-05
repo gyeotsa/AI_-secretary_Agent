@@ -68,7 +68,7 @@ class APIConfig:
         for role in os.getenv("HYBRID_CLAUDE_ROLES", "").split(",")
         if role.strip()
     ])
-    OLLAMA_BASE_URL: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
+    OLLAMA_BASE_URL: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
     OLLAMA_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b-instruct"))
     OLLAMA_CONVERSATION_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_CONVERSATION_MODEL", "qwen2.5:7b-instruct"))
     OLLAMA_REASONING_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_REASONING_MODEL", "qwen2.5:7b-instruct"))
@@ -76,6 +76,9 @@ class APIConfig:
     OLLAMA_VISION_MODEL: str = field(default_factory=lambda: os.getenv("OLLAMA_VISION_MODEL", "gemma3:4b"))
     OLLAMA_DESIGN_VISION_MODEL: str = field(
         default_factory=lambda: os.getenv("OLLAMA_DESIGN_VISION_MODEL", "qwen2.5vl:7b")
+    )
+    OLLAMA_COMPUTER_USE_MODEL: str = field(
+        default_factory=lambda: os.getenv("OLLAMA_COMPUTER_USE_MODEL", "qwen2.5vl:7b")
     )
     MOCKUP_VISUAL_REVIEW: bool = field(
         default_factory=lambda: os.getenv("MOCKUP_VISUAL_REVIEW", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -204,6 +207,11 @@ class Config:
     @property
     def OLLAMA_DESIGN_VISION_MODEL(cls):
         return cls.API_CONFIG.OLLAMA_DESIGN_VISION_MODEL
+
+    @classmethod
+    @property
+    def OLLAMA_COMPUTER_USE_MODEL(cls):
+        return cls.API_CONFIG.OLLAMA_COMPUTER_USE_MODEL
 
     @classmethod
     @property

@@ -64,10 +64,14 @@ def coding_runtime(make_executor, monkeypatch, tmp_path):
     prepare_conversation(executor, monkeypatch)
     store = CodingExperienceStore(str(tmp_path / "coding.db"))
     monkeypatch.setattr("core.executor.get_coding_experience_store", lambda: store)
-    def classify(messages):
-        assert json.loads(messages[-1]["content"])["current_user_input"] == "통과했어"
+    def classify(messages, schema, **kwargs):
+        assert messages[-1]["content"] == "통과했어"
+        if "relation" in schema["properties"]:
+            return json.dumps({"relation": "conversation", "operation": "conversation",
+                "tool_names": [], "slots": {}, "confidence": 1.0,
+                "needs_clarification": False, "clarification_question": "", "control_scope": "current"})
         return json.dumps({"mode": "answer", "answer_kind": "conversation", "confidence": 1.0})
-    model = SimpleNamespace(chat=classify)
+    model = SimpleNamespace(chat_structured=classify)
     executor.semantic_interpreter = SemanticRequestInterpreter(
         model, executor.intent_router.registry, classify_response_mode=True)
     return executor, store

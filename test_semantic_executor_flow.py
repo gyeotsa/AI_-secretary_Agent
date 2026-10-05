@@ -136,6 +136,9 @@ def _model_output(**changes):
 
 @pytest.fixture
 def make_executor(tmp_path, monkeypatch):
+    from core.assistant_settings import AssistantSettings
+    settings = AssistantSettings(SimpleNamespace(get_preference=lambda _key, default: default))
+    monkeypatch.setattr("core.executor.get_assistant_settings", lambda: settings)
     experience = CodingExperienceStore(str(tmp_path / "coding-experiences.db"))
     monkeypatch.setattr("core.executor.get_coding_experience_store", lambda: experience)
     workspace = SimpleNamespace(get_workspace_path=lambda: str(tmp_path), is_set=lambda: True)
@@ -237,7 +240,7 @@ def test_semantic_clarification_reuses_persisted_task_and_original_goal(make_exe
 
 
 def test_real_interpreter_literal_reply_preserves_body_across_restart(make_executor):
-    model = _ScriptedModel(_model_output(
+    model = _ScriptedModel({"request_kind": "action", "tool_names": [SEND_TOOL], "confidence": .99}, _model_output(
         needs_clarification=True, clarification_question="김하이님께 전할 내용을 알려주세요."))
     first_executor = make_executor(model=model)
     first = first_executor.execute_turn("김하이에게 카카오톡 메시지를 보내줘", SESSION)
@@ -402,7 +405,7 @@ def test_real_semantic_read_returns_exact_source_and_does_not_write(make_executo
     target = tmp_path / filename
     original_bytes = source.encode("utf-8")
     target.write_bytes(original_bytes)
-    model = _ScriptedModel(_model_output(
+    model = _ScriptedModel({"request_kind": "action", "tool_names": ["filesystem_read_file"], "confidence": .99}, _model_output(
         operation="read", tool_names=["filesystem_read_file"], slots={"filename": filename},
     ))
     executor = make_executor(model=model)

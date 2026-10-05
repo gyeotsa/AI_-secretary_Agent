@@ -24,7 +24,8 @@ class Session:
     def post(self, url, **kwargs):
         self.calls.append(("POST", url, kwargs))
         if "oauth" in url:
-            return Response({"access_token": "access", "refresh_token": "refresh", "expires_in": 3600})
+            return Response({"access_token": "access", "refresh_token": "refresh", "expires_in": 3600,
+                             "token_type": "Bearer", "scope": "openid email"})
         if "chat.postMessage" in url:
             self.slack_text = kwargs["json"]["text"]
             return Response({"ok": True, "ts": "171.42"})
@@ -32,6 +33,8 @@ class Session:
 
     def get(self, url, **kwargs):
         self.calls.append(("GET", url, kwargs))
+        if "openidconnect.googleapis.com" in url:
+            return Response({"sub": "fixture-google-subject", "email": "boss@example.com", "email_verified": True})
         if "conversations.history" in url:
             return Response({"ok": True, "messages": [{"ts": "171.42", "text": self.slack_text, "user": "U1"}]})
         if "/events/" in url:
@@ -125,7 +128,22 @@ def test_plugin_keeps_draft_and_apply_separate(tmp_path, monkeypatch):
 
 
 def test_communication_summary_preserves_message_ids(monkeypatch):
-    plugin = CloudCommunicationPlugin()
+    import json
+    from types import SimpleNamespace
+    from core.llm import OllamaClient
+    from core.plugin import BasePlugin
+
+    plugin = object.__new__(CloudCommunicationPlugin)
+    BasePlugin.__init__(plugin)
+    plugin.api = SimpleNamespace()
+    model = object.__new__(OllamaClient)
+    model.base_url, model.model = "http://127.0.0.1:11434", "fixture-local"
+    model.chat_structured = lambda *_args, **_kwargs: json.dumps({
+        "summary": [{"text": "첫 메시지", "sources": [{"remote_id": "1.2", "quote": "첫 메시지"}]}],
+        "decisions": [], "actions": [],
+    }, ensure_ascii=False)
+    monkeypatch.setattr(plugin, "_summary_client", lambda: model)
+    plugin.api.read_messages = lambda *_args: []
     monkeypatch.setattr(plugin.api, "read_messages", lambda *_args: [
         {"ts": "1.2", "text": "첫 메시지", "user": "U1"},
         {"ts": "1.3", "text": "둘째 메시지", "user": "U2"},

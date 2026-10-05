@@ -556,7 +556,10 @@ class PluginRegistry:
                    if tool_input.get(name) in (None, "")]
         errors.extend(f"필수 입력이 없습니다: {name}" for name in missing)
         schema_errors = self._validate_instance(tool_input, contract.input_schema, "입력")
-        errors.extend(error for error in schema_errors if "is a required property" not in error)
+        # Suppress only duplicate top-level errors. Conditional/nested required
+        # fields (e.g. browser URL vs. Windows title) must still be enforced.
+        duplicates = {f"입력 JSON Schema 오류: '{name}' is a required property" for name in missing}
+        errors.extend(error for error in schema_errors if error not in duplicates)
         return errors
 
     def validate_contracts(self) -> Dict[str, List[str]]:

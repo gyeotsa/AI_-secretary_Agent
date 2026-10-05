@@ -2107,6 +2107,8 @@ class ToolExecutor:
     def _record_tool_run(self, tool_input: dict, result: ToolRunResult) -> None:
         """중앙 Tool 경계의 입력·결과·Evidence·지연 시간을 Action Journal에 기록한다."""
         try:
+            from core.turn_context import current_turn_context
+            turn = current_turn_context()
             journal = getattr(self, "_action_journal", None)
             if journal is None:
                 from core.runtime.action_journal import get_action_journal
@@ -2117,6 +2119,9 @@ class ToolExecutor:
                 description=f"{result.tool_name}: {result.status.value}",
                 source="tool_executor",
                 data={
+                    "session_id": turn.session_id if turn else "",
+                    "turn_id": turn.turn_id if turn else "",
+                    "workspace_path": turn.workspace_path if turn else "",
                     "tool_name": result.tool_name,
                     "status": result.status.value,
                     "input": self._journal_safe_value(tool_input),

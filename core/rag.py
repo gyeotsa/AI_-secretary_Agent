@@ -9,6 +9,7 @@ import threading
 from io import StringIO
 from config import Config
 from core.knowledge_memory import FreshnessPolicy
+from core.local_inference import serialized_inference
 
 
 class VectorRAGManager:
@@ -84,6 +85,7 @@ class VectorRAGManager:
     def _document_key(self, doc_id: str, namespace: str | None = None) -> str:
         return f"{self._resolve_namespace(namespace)}::{doc_id}"
     
+    @serialized_inference
     def _init_vector_rag(self):
         try:
             # 1. Chroma DB 초기화
@@ -235,6 +237,7 @@ class VectorRAGManager:
                                    "start_line": start_line, "end_line": end_line})
         return chunks
     
+    @serialized_inference
     def add_document(self, file_path: str, metadata: dict | None = None, *,
                      namespace: str | None = None) -> str:
         if not os.path.exists(file_path):
@@ -305,6 +308,7 @@ class VectorRAGManager:
         except Exception as e:
             return f"문서 추가 오류: {str(e)}"
 
+    @serialized_inference
     def add_text_document(self, text: str, *, doc_id: str, namespace: str | None = None,
                           metadata: dict | None = None, source_uri: str | None = None) -> str:
         """Index trusted in-memory text such as a consolidated Memory record."""
@@ -454,6 +458,7 @@ class VectorRAGManager:
             self._save()
         return True
     
+    @serialized_inference
     def search_docs(self, query: str, top_k: int = 3, metadata_filter: dict | None = None,
                     include_stale: bool = False,
                     namespace: str | None = None) -> list:
@@ -549,6 +554,7 @@ class VectorRAGManager:
             for parameter in parameters
         )
 
+    @serialized_inference
     def _hybrid_search(self, query: str, top_k: int, metadata_filter=None,
                        include_stale=False, *, namespace: str | None = None) -> list:
         """Merge independent vector and lexical rankings with reciprocal-rank fusion."""
@@ -622,6 +628,7 @@ class VectorRAGManager:
             item["retrieval_confidence"] = round(min(1.0, coverage * 0.55 + channels * 0.3 + rank_prior * 0.15), 4)
         return results
     
+    @serialized_inference
     def _vector_search(self, query: str, top_k: int, metadata_filter=None,
                        include_stale=False, *, namespace: str | None = None) -> list:
         """Vector DB 기반 검색 + Reranker"""

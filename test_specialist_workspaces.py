@@ -92,7 +92,11 @@ def test_main_window_opens_both_specialist_workspaces():
     assert set(main.specialist_windows) == {"document", "photoshop"}
     assert document.spec.model_role == "document"
     assert photoshop.spec.model_role == "image_editing"
-    assert document.parent() is None and photoshop.parent() is None
+    assert main.workspace_tabs.indexOf(document) >= 0
+    assert main.workspace_tabs.currentWidget() is photoshop
+    assert main.open_specialist_workspace("document") is document
+    assert main.workspace_tabs.currentWidget() is document
+    assert main.workspace_tabs.count() == 3  # chat + two reusable workspaces
     assert not document.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     assert not photoshop.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     photoshop.close(); document.close(); main.close()
@@ -106,6 +110,27 @@ def test_main_window_opens_native_knowledge_graph_workspace():
     assert not graph.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     assert "전체" in graph.stats.text()
     graph.close(); main.close()
+
+
+def test_workspace_tab_reorder_keeps_identity_and_chat_protection():
+    app = QApplication.instance() or QApplication([])
+    main = JarvisMainWindow()
+    document = main.open_specialist_workspace("document")
+    photoshop = main.open_specialist_workspace("photoshop")
+    tabs = main.workspace_tabs
+    tabs.tabBar().moveTab(tabs.indexOf(document), 0)
+    assert main.open_specialist_workspace("document") is document
+    assert tabs.currentWidget() is document
+    tabs.tabCloseRequested.emit(tabs.indexOf(main.chat_panel))
+    assert tabs.indexOf(main.chat_panel) >= 0
+    tabs.tabCloseRequested.emit(tabs.indexOf(document))
+    assert tabs.indexOf(document) == -1
+    assert main.open_specialist_workspace("photoshop") is photoshop
+    assert tabs.currentWidget() is photoshop
+    assert main.open_specialist_workspace("document") is document
+    assert tabs.currentWidget() is document and tabs.count() == 3
+    main.close()
+    assert app is not None
 
 
 def test_native_knowledge_graph_uses_live_force_layout_and_tracks_edges():

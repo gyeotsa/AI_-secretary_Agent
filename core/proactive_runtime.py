@@ -155,6 +155,12 @@ class ProactiveStore:
                              "WHERE notification_id=? AND status='pending'",
                              [(time.time(), item) for item in ids])
 
+    def dismiss(self, ids: List[str]) -> None:
+        """Retire queued reminders whose source task is no longer actionable."""
+        with self._session() as conn:
+            conn.executemany("UPDATE notifications SET status='dismissed' WHERE notification_id=? AND status='pending'",
+                             [(item,) for item in ids])
+
     @staticmethod
     def _notification(row) -> Dict[str, Any]:
         value = dict(row)

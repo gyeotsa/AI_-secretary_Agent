@@ -11,6 +11,7 @@ from core.model_registry import get_model_registry
 from core.plugin import ToolCancelledError
 from core.turn_context import check_turn_cancelled
 from core.model_transport import post_json
+from core.local_inference import serialized_inference, remember_idle_model
 
 
 class ModelCallError(RuntimeError):
@@ -33,6 +34,8 @@ class ModelCallError(RuntimeError):
         super().__init__(f"{self.provider}/{self.model} {self.code}: {self.detail}")
 
     def user_message(self) -> str:
+        if self.provider == "kimi_k3":
+            return f"Kimi K3: {self.detail}"
         if self.code == "connection":
             return "로컬 AI 모델 서버에 연결할 수 없습니다. Ollama 실행 상태를 확인해 주세요."
         if self.code == "timeout":
@@ -311,8 +314,10 @@ class OllamaClient(BaseLLMClient):
             })
         return ollama_tools
 
+    @serialized_inference
     def chat_with_tools(self, messages: List[Dict], allowed_tool_names=None) -> Tuple[str, List[Dict]]:
         metric_started = time.perf_counter()
+        remember_idle_model((self.base_url, self.model), self.release)
         try:
             # 호출별 system 메시지가 있으면 전역 기본 프롬프트를 중복 삽입하지
             # 않는다. 이 규칙 덕분에 공유 클라이언트를 변경하지 않고 역할별
@@ -450,6 +455,7 @@ class OllamaClient(BaseLLMClient):
     def chat_prose(self, messages: List[Dict], *, context_window: Optional[int] = None) -> ProseResponse:
         return self._chat(messages, prose=True, context_window=context_window)
 
+    @serialized_inference
     def release(self) -> bool:
         """Unload this role's model so another local specialist can use VRAM/RAM."""
         try:
@@ -474,12 +480,14 @@ class OllamaClient(BaseLLMClient):
         return self._chat(messages, json_schema, context_window=context_window,
                           request_timeout=request_timeout, max_output_tokens=max_output_tokens)
 
+    @serialized_inference
     def _chat(self, messages: List[Dict], json_schema: Optional[Dict] = None,
               *, context_window: Optional[int] = None, prose: bool = False,
               request_timeout: Optional[float] = None,
               max_output_tokens: Optional[int] = None) -> str:
         metric_started = time.perf_counter()
         check_turn_cancelled()
+        remember_idle_model((self.base_url, self.model), self.release)
         if request_timeout is not None:
             try:
                 valid_timeout = (not isinstance(request_timeout, bool)
@@ -745,6 +753,15 @@ class HybridLLMClient(BaseLLMClient):
             "primary_unavailable_reason": self.primary_unavailable_reason,
             **self.routing_stats,
         }
+
+
+def get_coding_llm_client(*, cancellation_check=None) -> BaseLLMClient:
+    """Opt-in for code generation only; never changes tool/vision routing."""
+    from core.auxiliary_models import selection
+    if selection() == ("kimi_k3", True):
+        from core.kimi_client import KimiClient
+        return KimiClient(cancellation_check=cancellation_check)
+    return get_llm_client("coding")
 
 
 def get_llm_client(role: str = "default") -> BaseLLMClient:

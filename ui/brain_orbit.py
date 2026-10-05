@@ -1,5 +1,6 @@
 """Low-overhead 2.5D brain, agent and workspace navigator."""
 from __future__ import annotations
+from .theme import theme_color
 
 from dataclasses import dataclass
 import hashlib
@@ -571,9 +572,9 @@ class BrainOrbitWidget(QWidget):
             color = QColor("#63dded") if surface.category == "system" else QColor("#a889ff")
             alpha = int(90 + depth * 150)
             painter.setPen(QPen(self._with_alpha(color, alpha), 1.2))
-            painter.setBrush(QColor(8, 20, 34, int(115 + depth * 100)))
+            painter.setBrush(theme_color("surface", int(115 + depth * 100)))
             painter.drawRoundedRect(rect, height / 2, height / 2)
-            painter.setPen(self._with_alpha(QColor("#e9f8ff"), alpha))
+            painter.setPen(self._with_alpha(theme_color("text"), alpha))
             painter.setFont(QFont("Segoe UI", max(6, int(7 * node_scale)), 600))
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, surface.label.upper())
             self._hit_regions[surface.key] = rect.adjusted(-5, -5, 5, 5)
@@ -887,7 +888,7 @@ class BrainOrbitWidget(QWidget):
                 painter.setPen(QPen(self._with_alpha(color, 105), 1.2))
                 painter.setBrush(self._with_alpha(color, 24))
                 painter.drawEllipse(point, halo, halo)
-            painter.setPen(QPen(self._with_alpha(QColor("#eafaff"), alpha), .72))
+            painter.setPen(QPen(self._with_alpha(theme_color("text"), alpha), .72))
             painter.setBrush(self._with_alpha(color, alpha))
             painter.drawEllipse(point, radius, radius)
             if transition > .34:
@@ -900,7 +901,7 @@ class BrainOrbitWidget(QWidget):
             if transition > .55 and (is_selected or is_hovered or node.id in labelled):
                 label = node.label if len(node.label) <= 24 else node.label[:23] + "…"
                 label_rect = QRectF(point.x() + radius + 4, point.y() - 8, 168, 18)
-                painter.setPen(self._with_alpha(QColor("#e9f8ff"), 245 if is_selected else 185))
+                painter.setPen(self._with_alpha(theme_color("text"), 245 if is_selected else 185))
                 painter.setFont(QFont("Segoe UI", 8 if is_selected else 7, 600))
                 painter.drawText(label_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
         painter.restore()
@@ -923,7 +924,7 @@ class BrainOrbitWidget(QWidget):
         painter.save()
         painter.setOpacity(max(0.0, min(1.0, opacity)))
         painter.setPen(QPen(self._with_alpha(color, 190), 1.15))
-        painter.setBrush(QColor(5, 13, 24, 226))
+        painter.setBrush(theme_color("surface", 245))
         painter.drawRoundedRect(rect, 12, 12)
         painter.setPen(self._with_alpha(color, 235))
         painter.setFont(QFont("Segoe UI", 10, 700))
@@ -931,15 +932,15 @@ class BrainOrbitWidget(QWidget):
                          Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                          node.label if len(node.label) <= 34 else node.label[:33] + "…")
         metadata = f"{node.note_type.upper()}  ·  중요도 {int(round(node.importance * 100))}%  ·  연결 {int(node.degree)}"
-        painter.setPen(QColor(159, 190, 208, 220))
+        painter.setPen(theme_color("muted"))
         painter.setFont(QFont("Segoe UI", 8))
         painter.drawText(rect.adjusted(14, 35, -12, -51), Qt.AlignmentFlag.AlignLeft, metadata)
         details = node.action.strip() or (" · ".join(node.topics[:3]) if node.topics else node.relative_path)
         if len(details) > 62:
             details = details[:61] + "…"
-        painter.setPen(QColor(220, 236, 244, 220))
+        painter.setPen(theme_color("text"))
         painter.drawText(rect.adjusted(14, 57, -12, -28), Qt.AlignmentFlag.AlignLeft, details)
-        painter.setPen(QColor(111, 150, 172, 205))
+        painter.setPen(theme_color("muted"))
         painter.setFont(QFont("Segoe UI", 7))
         painter.drawText(rect.adjusted(14, 82, -12, -7), Qt.AlignmentFlag.AlignLeft,
                          "더블클릭하면 지식 그래프 작업공간에서 엽니다")
@@ -1034,10 +1035,10 @@ class BrainOrbitWidget(QWidget):
         bounds = self.rect()
         center = QPointF(bounds.center().x(), bounds.center().y() - (4 if self.compact else 8))
         scale = max(0.72, min(1.15, min(self.width() / 760, self.height() / 300)))
-        painter.fillRect(bounds, QColor("#040911"))
+        painter.fillRect(bounds, theme_color("window"))
         background = QRadialGradient(center, max(self.width(), self.height()) * 0.58)
-        background.setColorAt(0, QColor(19, 42, 63, 150))
-        background.setColorAt(0.62, QColor(10, 20, 35, 80))
+        background.setColorAt(0, theme_color("surface", 150))
+        background.setColorAt(0.62, theme_color("surface", 80))
         background.setColorAt(1, QColor(4, 9, 17, 0))
         painter.fillRect(bounds, background)
         portal = self._smoothstep(self.portal_progress)
@@ -1081,7 +1082,7 @@ class BrainOrbitWidget(QWidget):
             )
         elif (self._graph_loaded and not self._spatial_graph_nodes
               and self.portal_progress > .72):
-            painter.setPen(QColor(151, 184, 202, 215))
+            painter.setPen(theme_color("muted"))
             painter.setFont(QFont("Segoe UI", 9, 600))
             painter.drawText(
                 QRectF(18, center.y() - 18, self.width() - 36, 36),
@@ -1100,7 +1101,7 @@ class BrainOrbitWidget(QWidget):
         status_rect = QRectF(12, 9, 125, 20)
         painter.drawText(status_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, status)
         self._hit_regions["__camera__"] = status_rect.adjusted(-5, -4, 5, 4)
-        painter.setPen(QColor(105, 139, 162, 150))
+        painter.setPen(theme_color("muted"))
         painter.setFont(QFont("Segoe UI", 7))
         painter.drawText(QRectF(self.width() - 350, 8, 338, 20),
                          Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,

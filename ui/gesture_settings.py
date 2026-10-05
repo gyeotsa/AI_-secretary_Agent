@@ -1,5 +1,6 @@
 """User-facing gesture calibration and command-mapping controls."""
 from __future__ import annotations
+from .theme import set_widget_style
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -52,7 +53,7 @@ class GestureSettingsDialog(QDialog):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        self.setStyleSheet("""
+        set_widget_style(self, """
             QDialog, QFrame { background: #091322; color: #dcecff; }
             QLabel#title { color: #f0f8ff; font-size: 19px; font-weight: 700; }
             QLabel#description { color: #8fa9c2; }

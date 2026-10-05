@@ -8,6 +8,8 @@ import requests
 
 from core import llm
 from core.plugin import ToolCancelledError
+from core.semantic_request import SemanticDecision
+from core.tool_result import Evidence, ToolRunResult, ToolRunStatus
 from core.turn_context import TurnExecutionContext, bind_turn_context
 from scripts import qa_common_runtime as qa
 
@@ -197,3 +199,110 @@ def test_main_installs_opt_in_trace_before_runtime_and_restores_on_exit(
         assert qa.main() == 7
     assert llm.post_json is original
     assert output.getvalue().count('"event": "model_trace"') == (2 if enabled else 0)
+
+
+@pytest.mark.parametrize('fault', [None, 'extra_line', 'wrong_bounds', 'wrong_hash',
+                                  'truncated', 'no_evidence', 'wrong_tool', 'failed',
+                                  'changed_file', 'extra_display', 'missing_display',
+                                  'wrong_path', 'missing_path', 'wrong_evidence_kind',
+                                  'wrong_evidence_path', 'wrong_evidence_hash',
+                                  'wrong_evidence_content', 'wrong_evidence_bounds', 'failed_receipt'])
+def test_read_qa_requires_exact_scope_and_unchanged_source(tmp_path, fault):
+    import hashlib
+    target = tmp_path / 'QA 기록.txt'
+    before = 'x = [1, 2] 🙂\r\n두 번째 줄\r\n'.encode('utf-8')
+    target.write_bytes(before)
+    first = before.decode('utf-8').splitlines(keepends=True)[0]
+    payload = {'path': str(target), 'content': first, 'start_line': 1, 'end_line': 1,
+               'sha256': hashlib.sha256(before).hexdigest(), 'truncated': False}
+    result = ToolRunResult.successful(tool_name='filesystem_read_file', raw_output='',
+                                     evidence=[Evidence('file_content', 'actual', dict(payload))])
+    outcome = SimpleNamespace(status='completed', tool_result=result, response=first)
+    if fault == 'extra_line':
+        payload['content'] = before.decode('utf-8')
+    elif fault == 'wrong_bounds':
+        payload['end_line'] = 2
+    elif fault == 'wrong_hash':
+        payload['sha256'] = '0' * 64
+    elif fault == 'truncated':
+        payload['truncated'] = True
+    elif fault == 'no_evidence':
+        result.evidence = []
+    elif fault == 'wrong_tool':
+        result.tool_name = 'read_file'
+    elif fault == 'failed':
+        outcome.status = 'unverified'
+    elif fault == 'changed_file':
+        target.write_bytes(b'changed')
+    elif fault == 'extra_display':
+        outcome.response = before.decode('utf-8')
+    elif fault == 'missing_display':
+        outcome.response = 'completed'
+    elif fault == 'wrong_path':
+        payload['path'] = str(tmp_path / 'another.txt')
+    elif fault == 'missing_path':
+        del payload['path']
+    elif fault == 'wrong_evidence_kind':
+        result.evidence = [Evidence('tool_error', 'not a read', dict(payload))]
+    elif fault and fault.startswith('wrong_evidence_'):
+        data = dict(payload)
+        key = {'wrong_evidence_path': 'path', 'wrong_evidence_hash': 'sha256',
+               'wrong_evidence_content': 'content', 'wrong_evidence_bounds': 'end_line'}[fault]
+        data[key] = 2 if key == 'end_line' else 'wrong'
+        result.evidence = [Evidence('file_content', 'actual', data)]
+    elif fault == 'failed_receipt':
+        result.status = ToolRunStatus.FAILED
+    if fault in {'extra_line', 'wrong_bounds', 'wrong_hash', 'truncated', 'wrong_path', 'missing_path'}:
+        result.evidence = [Evidence('file_content', 'actual', dict(payload))]
+    result.raw_output = json.dumps(payload, ensure_ascii=False)
+    assert qa.exact_fixture_read(outcome, target, before) is (fault is None)
+
+
+@pytest.mark.parametrize('tool_name,tool_input', [
+    ('write_file', {'filename': 'QA 기록.txt', 'start_line': 1, 'end_line': 1}),
+    ('filesystem_read_file', {'filename': 'other.txt', 'start_line': 1, 'end_line': 1}),
+    ('filesystem_read_file', {'filename': 'QA 기록.txt', 'start_line': 1, 'end_line': 2}),
+    ('filesystem_read_file', {'filename': 'QA 기록.txt', 'start_line': True, 'end_line': True}),
+    ('filesystem_read_file', {'filename': 'QA 기록.txt'}),
+    ('filesystem_read_file', None),
+])
+def test_read_qa_guard_covers_every_dispatch_including_replans(tmp_path, tool_name, tool_input):
+    calls = []
+    executor = SimpleNamespace(tool_executor=SimpleNamespace(
+        execute_tool=lambda name, values: calls.append((name, values)) or 'read'))
+    target = tmp_path / 'QA 기록.txt'
+    qa.restrict_fixture_reads(executor, target)
+    allowed = {'filename': target.name, 'start_line': 1, 'end_line': 1}
+    assert executor.tool_executor.execute_tool('filesystem_read_file', allowed) == 'read'
+    with pytest.raises(ToolCancelledError):
+        executor.tool_executor.execute_tool(tool_name, tool_input)
+    assert calls == [('filesystem_read_file', allowed)]
+
+
+@pytest.mark.parametrize('reason,confidence,relation,passed', [
+    ('no_supported_tool', .95, 'new', True),
+    ('semantic_discovery_invalid', 0.0, 'unknown', False),
+    ('semantic_schema_or_confidence_invalid', .99, 'new', False),
+    ('no_supported_tool', .7, 'new', False),
+    ('no_supported_tool', .99, 'conversation', False),
+])
+def test_semantic_qa_does_not_count_unresolved_requests_as_unsupported(reason, confidence, relation, passed):
+    decision = SemanticDecision('synthetic', relation=relation, confidence=confidence, reason=reason)
+    assert qa.semantic_fixture_passed(decision, 'unsupported') is passed
+
+
+@pytest.mark.parametrize('expected,operation,tool,slots', [
+    ('read', 'read', 'filesystem_read_file', {'filename': 'QA 기록.txt', 'start_line': 1, 'end_line': 1}),
+    ('inbox', 'read', 'mail_list_inbox', {'limit': 5, 'unread_only': True}),
+    ('site_search', 'execute', 'browser_site_search', {'provider': 'youtube', 'query': '빗소리'}),
+])
+def test_semantic_qa_preserves_exact_tool_operation_and_constraints(expected, operation, tool, slots):
+    from dataclasses import replace
+    decision = SemanticDecision('synthetic', grounded=True, relation='new', operation=operation,
+                                tool_names=(tool,), slots=slots)
+    assert qa.semantic_fixture_passed(decision, expected)
+    for wrong in (replace(decision, grounded=False), replace(decision, operation='unknown'),
+                  replace(decision, tool_names=('another_tool',)),
+                  replace(decision, needs_clarification=True), replace(decision, slots={}),
+                  replace(decision, slots={**slots, next(iter(slots)): None})):
+        assert not qa.semantic_fixture_passed(wrong, expected)

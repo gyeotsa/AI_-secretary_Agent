@@ -1,5 +1,6 @@
 """Integrated, live Command Center and first-run diagnostic wizard."""
 from __future__ import annotations
+from .theme import set_widget_style, theme_color
 
 import json
 import math
@@ -86,7 +87,7 @@ class RuntimeOrb(QWidget):
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(center, radius + offset, radius + offset)
-        painter.setPen(QColor("#dffcff"))
+        painter.setPen(theme_color("text"))
         painter.setFont(QFont("Segoe UI", 9, 600))
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.state.upper())
 
@@ -127,7 +128,7 @@ class CommandCenterDialog(QDialog):
         self.setWindowTitle("ANIS · COMMAND CENTER")
         self.resize(1240, 820)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
-        self.setStyleSheet(COMMAND_CENTER_STYLE)
+        set_widget_style(self, COMMAND_CENTER_STYLE)
         self._build()
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh)
@@ -548,7 +549,7 @@ class FirstRunWizard(QDialog):
         self.bridge.failed.connect(self._failed)
         self.setWindowTitle("ANIS 첫 실행 점검")
         self.resize(720, 520)
-        self.setStyleSheet(COMMAND_CENTER_STYLE)
+        set_widget_style(self, COMMAND_CENTER_STYLE)
         layout = QVBoxLayout(self)
         title = QLabel("실행 환경을 먼저 확인할게요")
         title.setObjectName("title")

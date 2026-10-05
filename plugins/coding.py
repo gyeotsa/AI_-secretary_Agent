@@ -9,6 +9,7 @@ from core.coding_agent import CodingAgent, FileEdit
 from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema
 from core.tool_result import Artifact, Evidence, ToolRunResult
 from core.workspace import get_workspace_manager
+from core.auxiliary_models import coding_timeout_seconds
 
 
 class CodingPlugin(BasePlugin):
@@ -64,6 +65,7 @@ class CodingPlugin(BasePlugin):
                 {"type": "object", "properties": {"request": {"type": "string"}},
                  "required": ["request"]},
                 ["filesystem_read", "filesystem_write", "shell_execute"], side_effect="change",
+                timeout_seconds=coding_timeout_seconds(), cancellable=True,
             ),
         ]
 
@@ -153,9 +155,11 @@ class CodingPlugin(BasePlugin):
                     artifacts=[Artifact("directory", str(agent.root), {"role": "planned_repository"})],
                 )
             if tool_name == "coding_execute_request":
-                from core.llm import get_llm_client
+                from core.llm import get_coding_llm_client
+                context = self.get_execution_context()
                 plan, result = agent.execute_request(
-                    str(tool_input["request"]), get_llm_client("coding")
+                    str(tool_input["request"]), get_coding_llm_client(
+                        cancellation_check=context.raise_if_cancelled if context else None)
                 )
                 if not result.succeeded:
                     return ToolRunResult.failed(tool_name=tool_name, error=result.error)

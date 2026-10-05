@@ -24,10 +24,14 @@ class FilesystemPlugin(BasePlugin):
         return [
             ToolSchema("filesystem_read_file", "현재 작업 폴더의 실제 파일 내용을 줄 범위로 읽습니다. 파일을 변경하지 않습니다.", {
                 "type": "object", "properties": {
-                    "filename": {"type": "string", "minLength": 1},
-                    "start_line": {"type": "integer", "minimum": 1, "default": 1},
-                    "end_line": {"type": "integer", "minimum": 1},
-                    "max_chars": {"type": "integer", "minimum": 1, "maximum": 32000, "default": 16000},
+                    "filename": {"type": "string", "minLength": 1,
+                                 "description": "현재 작업 폴더 안의 실제 파일 이름 또는 상대 경로"},
+                    "start_line": {"type": "integer", "minimum": 1, "default": 1,
+                                   "description": "포함할 시작 줄 번호(1부터). 생략하면 1줄부터 읽습니다."},
+                    "end_line": {"type": "integer", "minimum": 1,
+                                 "description": "포함할 마지막 줄 번호. 생략하면 파일 끝까지 읽습니다. 한 줄 조회는 start_line과 같은 번호를 지정합니다."},
+                    "max_chars": {"type": "integer", "minimum": 1, "maximum": 32000, "default": 16000,
+                                  "description": "반환할 최대 문자 수. 넘으면 truncated=true로 일부만 반환합니다. 줄 범위를 대신하지 않습니다."},
                 }, "required": ["filename"], "additionalProperties": False}, ["filesystem_read"],
                 side_effect="read", verification_required=True),
             ToolSchema("filesystem_tree", "디렉터리 트리를 조회합니다", {

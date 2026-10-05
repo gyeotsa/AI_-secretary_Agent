@@ -1,3 +1,5 @@
+import pytest
+
 from core.response_realizer import ResponseRealizer, protected_facts
 
 
@@ -48,6 +50,22 @@ def test_literal_repeat_bypasses_rewrite():
         address="지휘관님",
     )
     assert result == "GAME이라고 말해줘"
+    assert llm.calls == []
+
+
+@pytest.mark.parametrize("tool_name", ["communication_read_summary", "cloud_search_evidence", "cloud_sync_documents"])
+def test_grounded_communication_summary_keeps_quote_source_pairs(tool_name):
+    canonical = "핵심 내용: 일정은 내일로 변경합니다. [message-17]\n원문: 일정은 내일로 변경합니다."
+    llm = StubLLM("일정이 바뀌었대요.")
+    result = ResponseRealizer(llm).realize(
+        canonical,
+        tool_name=tool_name,
+        user_request="채널 메시지를 요약해줘",
+        assistant_name="아니스",
+        address="지휘관님",
+        style="반말로 짧게",
+    )
+    assert result == canonical
     assert llm.calls == []
 
 

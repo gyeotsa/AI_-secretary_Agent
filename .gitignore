@@ -52,6 +52,8 @@ data/diagnostics/
 data/acceptance/
 data/cache/
 data/browser_profiles/
+data/computer_use/
+data/oauth_tokens/
 data/AnisKnowledgeVault/
 data/obsidian_settings.json
 

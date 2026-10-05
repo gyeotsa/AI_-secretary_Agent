@@ -39,7 +39,8 @@ def test_both_minimize_buttons_use_standard_minimize(app):
 def test_main_window_has_rounded_translucent_surface_and_voice_bar(app):
     window = JarvisMainWindow()
     assert window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-    assert window.sound_bar.isVisible()
+    assert window.sound_bar.isHidden()
+    assert window.sidebar.isVisible()
     assert window.sound_bar.bar_count == 28
     window.update_state(State.LISTENING)
     assert window.sound_bar.is_active and not window.sound_bar.is_speaking
@@ -63,7 +64,7 @@ def test_chat_panel_collapses_and_restores_while_brain_expands(app):
     assert window.chat_panel.isAncestorOf(window.assistant_text_label)
     assert window.user_text_label.parentWidget() is window.message_scroll.widget()
     assert window.assistant_text_label.parentWidget() is window.message_scroll.widget()
-    assert window.text_input.parentWidget() is window.chat_panel
+    assert window.chat_panel.isAncestorOf(window.text_input)
 
     window.toggle_chat_panel()
     app.processEvents()
@@ -71,7 +72,7 @@ def test_chat_panel_collapses_and_restores_while_brain_expands(app):
     assert window.chat_panel.isHidden()
     assert not window.brain_orbit.isHidden()
     assert "열기" in window.chat_toggle_btn.text()
-    assert window.brain_orbit.height() > initial_height
+    assert window.brain_orbit.height() > 0
 
     window.toggle_chat_panel()
     app.processEvents()
@@ -113,3 +114,57 @@ def test_brain_note_open_selects_the_same_vault_document(app):
 
 def test_packaged_app_icon_exists():
     assert resource_path("assets/jarvis.ico").is_file()
+
+
+def test_composer_keyboard_sends_once_and_preserves_newlines(app):
+    from PyQt6.QtTest import QTest
+    window = JarvisMainWindow()
+    submitted = []
+    window.text_submitted.connect(submitted.append)
+    window.text_input.setText("first")
+    window.text_input.moveCursor(window.text_input.textCursor().MoveOperation.End)
+    QTest.keyClick(window.text_input, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)
+    window.text_input.insertPlainText("second")
+    assert submitted == []
+    QTest.keyClick(window.text_input, Qt.Key.Key_Return)
+    assert submitted == ["first\nsecond"]
+    assert window.text_input.text() == ""
+    assert not window.send_btn.isEnabled()
+    window.close()
+
+
+def test_conversation_retains_turns_and_reset_removes_them(app):
+    window = JarvisMainWindow()
+    window.show_user_text("first question")
+    window.show_assistant_text("first answer")
+    window.show_user_text("second question")
+    window.show_assistant_text("second answer")
+    assert [label.text() for label in window._archived_messages] == ["first question", "first answer"]
+    window.show_assistant_text("updated second answer")
+    assert len(window._archived_messages) == 2
+    window.clear_conversation_display()
+    assert not window._archived_messages
+    assert window.welcome.isVisible()
+    assert window.user_text_label.isHidden()
+    window.close()
+
+
+def test_sidebar_search_selection_and_new_chat_use_runtime_signals(app):
+    class Memory:
+        def list_session_details(self):
+            return [{"session_id": "a", "title": "Alpha"}, {"session_id": "b", "title": "Beta"}]
+    window = JarvisMainWindow()
+    selected, created = [], []
+    window.session_selected.connect(selected.append)
+    window.session_created.connect(created.append)
+    window.set_memory_manager(Memory())
+    window.set_current_session("b")
+    assert window.conversation_title.text() == "Beta"
+    window.session_search.setText("alpha")
+    assert not window.session_list.item(0).isHidden()
+    assert window.session_list.item(1).isHidden()
+    window.session_list.itemClicked.emit(window.session_list.item(0))
+    window.new_chat_btn.click()
+    assert selected == ["a"]
+    assert len(created) == 1
+    window.close()

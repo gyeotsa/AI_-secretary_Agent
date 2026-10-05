@@ -151,6 +151,11 @@ class HardwareManager:
                 raise RuntimeError(self.stt_error) from exc
 
     def _load_stt_model(self):
+        from core.local_inference import local_inference
+        with local_inference():
+            return self._load_stt_model_serialized()
+
+    def _load_stt_model_serialized(self):
         if self.stt_engine == "faster-whisper":
             compute_type = Config.WHISPER_COMPUTE_TYPE if self.device == "cuda" else "int8"
             print(
@@ -364,6 +369,11 @@ class HardwareManager:
 
     def _transcribe_audio_unqueued(self, audio: np.ndarray) -> dict:
         self.ensure_stt_model()
+        from core.local_inference import local_inference
+        with local_inference():
+            return self._transcribe_loaded_audio(audio)
+
+    def _transcribe_loaded_audio(self, audio: np.ndarray) -> dict:
         normalized = self._normalize_audio(audio)
         if self.stt_engine == "faster-whisper":
             hotwords = self._whisper_hotwords()

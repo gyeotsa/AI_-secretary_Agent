@@ -5,7 +5,7 @@ Core Permission Manager & Capability Registry
 - 권한 요청 UI 연동 준비
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Callable
@@ -36,6 +36,7 @@ class Permission:
     decision: PermissionDecision = PermissionDecision.UNDECIDED
     granted_at: Optional[datetime] = None
     last_used: Optional[datetime] = None
+    persist_decision: bool = True
 
 
 @dataclass
@@ -137,6 +138,7 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "windows_accessibility_tree": "windows_api",
     "windows_automation_policy": "windows_api",
     "windows_coordinate_click": "coordinate_control",
+    "computer_use_run": "screen_read",
     "interruption_status": "proactive_read",
     "interruption_update": "proactive_manage",
     "proactive_pending_notifications": "proactive_read",
@@ -199,6 +201,9 @@ class PermissionManager:
                        level=PermissionLevel.SYSTEM),
             Permission(id="coordinate_control", name="화면 좌표 제어",
                        description="API·CLI·COM·UI Automation으로 처리할 수 없을 때 좌표 클릭",
+                       level=PermissionLevel.CONFIRM),
+            Permission(id="computer_control", name="Computer Use 행동 승인",
+                       description="관찰한 앱의 클릭·입력·키 조작을 이번 행동에 한해 승인",
                        level=PermissionLevel.CONFIRM),
             Permission(id="proactive_read", name="선제 알림 조회",
                        description="보류 알림·근거·제안·Scheduler 상태 조회",
@@ -284,6 +289,15 @@ class PermissionManager:
             return granted
         # 콜백이 없으면 CONFIRM은 거부, SYSTEM은 거부
         return False
+
+    def request_once(self, permission_id: str, description: str) -> bool:
+        """Confirm this exact UI action without inheriting or persisting an allow."""
+        permission = self.permissions.get(permission_id)
+        if (permission is None or permission.level == PermissionLevel.DENIED
+                or permission.decision == PermissionDecision.BLOCK or not self._request_callback):
+            return False
+        return self._request_callback(replace(permission, description=description,
+                                              persist_decision=False, granted=False)) is True
 
     def grant_scoped(self, permission_id: str, scope_type: str, scope_value: str,
                      lifetime: str = "always", decision: str = "allow"):

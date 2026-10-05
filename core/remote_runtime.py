@@ -5,10 +5,12 @@ import base64
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -204,7 +206,7 @@ class OAuthCoordinator:
             "token": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
             "client_id": "MICROSOFT_OAUTH_CLIENT_ID",
             "client_secret": "MICROSOFT_OAUTH_CLIENT_SECRET",
-            "scopes": ["openid", "profile", "offline_access", "Mail.ReadWrite", "Mail.Send",
+            "scopes": ["openid", "profile", "offline_access", "User.Read", "Mail.ReadWrite", "Mail.Send",
                        "Calendars.ReadWrite", "Files.Read", "ChannelMessage.Read.All",
                        "ChannelMessage.Send"],
         },
@@ -214,47 +216,198 @@ class OAuthCoordinator:
         self.vault = vault or SecureTokenVault()
         self.session = session or requests.Session()
         self._pending: Dict[str, Dict[str, Any]] = {}
+        self._inflight: Dict[str, Dict[str, Any]] = {}
+        self._oauth_lock = threading.RLock()
 
-    def begin(self, provider: str, account: str, redirect_uri: str) -> Dict[str, str]:
+    def begin(self, provider: str, account: str, redirect_uri: str, *,
+              client_id: Optional[str] = None, client_secret: Optional[str] = None,
+              expected_identity: str = "") -> Dict[str, str]:
         if provider not in self.SPECS:
             raise RemoteRuntimeError(f"지원하지 않는 OAuth Provider: {provider}")
+        SecureTokenVault._scope(provider, account)
+        try:
+            redirect = urlsplit(redirect_uri)
+            valid_redirect = (redirect.scheme == "http" and redirect.hostname == "127.0.0.1"
+                              and not redirect.username and not redirect.password
+                              and not redirect.query and not redirect.fragment
+                              and redirect.path.startswith("/") and "\\" not in redirect_uri
+                              and (redirect.port is None or 1 <= redirect.port <= 65535)
+                              and not any(ord(c) < 33 or ord(c) == 127 for c in redirect_uri))
+        except (ValueError, TypeError):
+            valid_redirect = False
+        if not valid_redirect:
+            raise RemoteRuntimeError("OAuth 콜백은 127.0.0.1 HTTP 주소여야 합니다.")
+        if expected_identity and not re.fullmatch(r"[^\s@]{1,160}@[^\s@]{1,160}", expected_identity):
+            raise RemoteRuntimeError("연결할 계정 이메일 형식이 올바르지 않습니다.")
         spec = self.SPECS[provider]
-        client_id = os.getenv(spec["client_id"], "").strip()
+        client_id = (os.getenv(spec["client_id"], "") if client_id is None else client_id).strip()
+        client_secret = os.getenv(spec["client_secret"], "") if client_secret is None else client_secret
         if not client_id:
             raise RemoteRuntimeError(f"{spec['client_id']} 설정이 필요합니다.")
+        if (len(client_id) > 2048 or len(client_secret) > 4096
+                or any(ord(c) < 32 or ord(c) == 127 for c in client_id + client_secret)):
+            raise RemoteRuntimeError("OAuth 앱 자격증명 형식이 올바르지 않습니다.")
         verifier, state = secrets.token_urlsafe(64), secrets.token_urlsafe(24)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-        self._pending[state] = {"provider": provider, "account": account,
-                                "redirect_uri": redirect_uri, "verifier": verifier,
-                                "created_at": time.time()}
+        with self._oauth_lock:
+            for old_state, old in list(self._pending.items()) + list(self._inflight.items()):
+                if (time.monotonic() >= old["deadline"]
+                        or (old["provider"], old["account"]) == (provider, account)):
+                    self.cancel(old_state)
+            if len(self._pending) + len(self._inflight) >= 32:
+                raise RemoteRuntimeError("진행 중인 OAuth 연결이 너무 많습니다.")
+            self._pending[state] = {"provider": provider, "account": account,
+                                    "redirect_uri": redirect_uri, "verifier": verifier,
+                                    "created_at": time.time(), "deadline": time.monotonic() + 600,
+                                    "client_id": client_id, "client_secret": client_secret,
+                                    "expected_identity": expected_identity,
+                                    "cancelled": threading.Event()}
         params = {"client_id": client_id, "redirect_uri": redirect_uri, "response_type": "code",
                   "scope": " ".join(spec["scopes"]), "state": state,
                   "code_challenge": challenge, "code_challenge_method": "S256"}
         if provider == "google":
-            params.update({"access_type": "offline", "prompt": "consent"})
+            params.update({"access_type": "offline", "prompt": "consent select_account"})
+        else:
+            params["prompt"] = "select_account"
+        if expected_identity:
+            params["login_hint"] = expected_identity
         return {"authorization_url": spec["authorize"] + "?" + urlencode(params), "state": state}
 
-    def complete(self, state: str, code: str) -> Dict[str, Any]:
-        pending = self._pending.pop(state, None)
-        if not pending or time.time() - pending["created_at"] > 600:
-            raise RemoteRuntimeError("OAuth state가 없거나 만료되었습니다.")
-        provider, spec = pending["provider"], self.SPECS[pending["provider"]]
-        payload = {"grant_type": "authorization_code", "code": code,
-                   "client_id": os.getenv(spec["client_id"], ""),
-                   "redirect_uri": pending["redirect_uri"], "code_verifier": pending["verifier"]}
-        if os.getenv(spec["client_secret"]):
-            payload["client_secret"] = os.environ[spec["client_secret"]]
-        response = self.session.post(spec["token"], data=payload, timeout=30)
-        self._raise(response)
-        token = response.json()
-        token["expires_at"] = time.time() + float(token.get("expires_in", 3600))
-        self.vault.save(provider, pending["account"], token)
-        return {"provider": provider, "account": pending["account"], "expires_at": token["expires_at"]}
+    def cancel(self, state: str) -> bool:
+        with self._oauth_lock:
+            pending = self._pending.pop(state, None) or self._inflight.get(state)
+            if pending is None:
+                return False
+            pending["cancelled"].set()
+            return True
+
+    @staticmethod
+    def _token_payload(payload: Any) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise RemoteRuntimeError("OAuth 토큰 응답 형식이 올바르지 않습니다.")
+        access = payload.get("access_token")
+        if (not isinstance(access, str) or not access or len(access) > 32768
+                or any(ord(c) < 33 or ord(c) == 127 for c in access)
+                or str(payload.get("token_type", "")).casefold() != "bearer"):
+            raise RemoteRuntimeError("OAuth Bearer 토큰을 확인하지 못했습니다.")
+        expires = payload.get("expires_in")
+        if isinstance(expires, bool):
+            raise RemoteRuntimeError("OAuth 토큰 만료 정보를 확인하지 못했습니다.")
+        try:
+            seconds = float(expires)
+        except (ValueError, TypeError):
+            seconds = 0
+        if not math.isfinite(seconds) or not 0 < seconds <= 31536000:
+            raise RemoteRuntimeError("OAuth 토큰 만료 정보를 확인하지 못했습니다.")
+        scope = payload.get("scope")
+        if scope is not None and (not isinstance(scope, str) or len(scope) > 16384
+                                  or any(ord(c) < 32 or ord(c) == 127 for c in scope)):
+            raise RemoteRuntimeError("OAuth 허용 범위를 확인하지 못했습니다.")
+        token = dict(payload)
+        refresh = token.get("refresh_token")
+        if refresh is not None and (not isinstance(refresh, str) or not refresh or len(refresh) > 32768
+                                    or any(ord(c) < 33 or ord(c) == 127 for c in refresh)):
+            raise RemoteRuntimeError("OAuth 갱신 토큰 형식이 올바르지 않습니다.")
+        token["expires_at"] = time.time() + seconds
+        token["granted_scopes"] = sorted(set(scope.split())) if scope is not None else []
+        token["scopes_verified"] = scope is not None
+        return token
+
+    def _identity(self, provider: str, access: str) -> tuple[str, str, List[str]]:
+        url = ("https://openidconnect.googleapis.com/v1/userinfo" if provider == "google"
+               else "https://graph.microsoft.com/v1.0/me")
+        kwargs = {"headers": {"Authorization": f"Bearer {access}"},
+                  "timeout": 15, "allow_redirects": False}
+        if provider == "microsoft":
+            kwargs["params"] = {"$select": "id,mail,userPrincipalName"}
+        response = self.session.get(url, **kwargs)
+        self._oauth_raise(response)
+        identity = response.json()
+        if not isinstance(identity, dict):
+            raise RemoteRuntimeError("OAuth 계정 신원을 확인하지 못했습니다.")
+        subject = identity.get("sub" if provider == "google" else "id")
+        emails = [identity.get("email")] if provider == "google" else [identity.get("mail"), identity.get("userPrincipalName")]
+        emails = [value for value in emails if isinstance(value, str)
+                  and re.fullmatch(r"[^\s@]{1,160}@[^\s@]{1,160}", value)]
+        if (not isinstance(subject, str) or not subject or len(subject) > 512 or not emails
+                or any(ord(c) < 32 or ord(c) == 127 for c in subject)
+                or (provider == "google" and identity.get("email_verified") is not True)):
+            raise RemoteRuntimeError("OAuth 계정 신원을 확인하지 못했습니다.")
+        return subject, emails[0], emails
+
+    def complete(self, state: str, code: str, *, check_cancelled=None) -> Dict[str, Any]:
+        with self._oauth_lock:
+            pending = self._pending.pop(state, None)
+            if (not pending or time.time() - pending["created_at"] > 600
+                    or time.monotonic() >= pending["deadline"]):
+                raise RemoteRuntimeError("OAuth state가 없거나 만료되었습니다.")
+            self._inflight[state] = pending
+        def checkpoint():
+            if check_cancelled is not None:
+                check_cancelled()
+            if pending["cancelled"].is_set():
+                from core.plugin import ToolCancelledError
+                raise ToolCancelledError("OAuth 연결이 취소되었습니다.")
+            if time.monotonic() >= pending["deadline"]:
+                raise RemoteRuntimeError("OAuth 연결 시간이 만료되었습니다.")
+        try:
+            checkpoint()
+            if (not isinstance(code, str) or not code or len(code) > 8192
+                    or any(ord(c) < 33 or ord(c) == 127 for c in code)):
+                raise RemoteRuntimeError("OAuth 인증 코드 형식이 올바르지 않습니다.")
+            provider, spec = pending["provider"], self.SPECS[pending["provider"]]
+            payload = {"grant_type": "authorization_code", "code": code,
+                       "client_id": pending["client_id"], "redirect_uri": pending["redirect_uri"],
+                       "code_verifier": pending["verifier"]}
+            if pending["client_secret"]:
+                payload["client_secret"] = pending["client_secret"]
+            response = self.session.post(spec["token"], data=payload, timeout=15, allow_redirects=False)
+            self._oauth_raise(response)
+            token = self._token_payload(response.json())
+            checkpoint()
+            subject, email, emails = self._identity(provider, token["access_token"])
+            checkpoint()
+            expected = pending["expected_identity"]
+            if expected and expected.casefold() not in {value.casefold() for value in emails}:
+                raise RemoteRuntimeError("로그인한 계정이 연결하려는 계정과 다릅니다. 저장하지 않았습니다.")
+            with self._oauth_lock:
+                checkpoint()
+                current_exists = (not isinstance(self.vault, SecureTokenVault)
+                                  or (self.vault.directory / f"{self.vault._name(provider, pending['account'])}.dpapi").is_file())
+                old = self.vault.load(provider, pending["account"]) if current_exists else None
+                if old and old.get("remote_subject") and old["remote_subject"] != subject:
+                    raise RemoteRuntimeError("기존 연결과 다른 계정입니다. 먼저 로컬 연결을 해제하세요.")
+                token.update(remote_subject=subject, identity_email=email, identity_verified_at=time.time(),
+                             requested_scopes=list(spec["scopes"]), oauth_client_id=pending["client_id"],
+                             oauth_client_secret=pending["client_secret"])
+                self.vault.save(provider, pending["account"], token)
+            return self.status(provider, pending["account"])
+        except RemoteRuntimeError:
+            raise
+        except Exception as exc:
+            from core.plugin import ToolCancelledError
+            if isinstance(exc, ToolCancelledError):
+                raise
+            raise RemoteRuntimeError("OAuth 연결을 완료하지 못했습니다. 저장소와 네트워크를 확인하세요.") from None
+        finally:
+            with self._oauth_lock:
+                self._inflight.pop(state, None)
 
     def status(self, provider: str, account: str) -> Dict[str, Any]:
+        if provider not in self.SPECS:
+            raise RemoteRuntimeError("지원하지 않는 OAuth 제공자입니다.")
         token = self.vault.load(provider, account)
-        return {"provider": provider, "account": account, "authenticated": bool(token),
-                "expires_at": token.get("expires_at") if token else None}
+        expires = token.get("expires_at", 0) if token else 0
+        valid_expiry = isinstance(expires, (int, float)) and math.isfinite(expires)
+        return {"provider": provider, "account": account, "configured": bool(token),
+                "authenticated": bool(token and token.get("remote_subject") and token.get("access_token")
+                                      and valid_expiry and expires > time.time()),
+                "expires_at": expires if valid_expiry and token else None,
+                "identity_email": token.get("identity_email", "") if token else "",
+                "identity_verified_at": token.get("identity_verified_at") if token else None,
+                "refresh_available": bool(token and token.get("refresh_token")),
+                "granted_scopes": token.get("granted_scopes", []) if token else [],
+                "scopes_verified": bool(token and token.get("scopes_verified") is True)}
 
     def access_token(self, provider: str, account: str) -> str:
         token = self.vault.load(provider, account)
@@ -266,17 +419,26 @@ class OAuthCoordinator:
                 raise RemoteRuntimeError("OAuth refresh token이 없습니다. 다시 인증하세요.")
             spec = self.SPECS[provider]
             payload = {"grant_type": "refresh_token", "refresh_token": refresh,
-                       "client_id": os.getenv(spec["client_id"], "")}
-            if os.getenv(spec["client_secret"]):
-                payload["client_secret"] = os.environ[spec["client_secret"]]
-            response = self.session.post(spec["token"], data=payload, timeout=30)
-            self._raise(response)
-            updated = response.json()
+                       "client_id": token.get("oauth_client_id") or os.getenv(spec["client_id"], "")}
+            secret = token.get("oauth_client_secret") or os.getenv(spec["client_secret"], "")
+            if secret:
+                payload["client_secret"] = secret
+            response = self.session.post(spec["token"], data=payload, timeout=15, allow_redirects=False)
+            self._oauth_raise(response)
+            updated = self._token_payload(response.json())
             updated.setdefault("refresh_token", refresh)
-            updated["expires_at"] = time.time() + float(updated.get("expires_in", 3600))
+            if "scope" not in updated:
+                updated["granted_scopes"] = token.get("granted_scopes", [])
+                updated["scopes_verified"] = token.get("scopes_verified", False)
             token.update(updated)
             self.vault.save(provider, account, token)
         return str(token["access_token"])
+
+    @staticmethod
+    def _oauth_raise(response) -> None:
+        if not 200 <= response.status_code < 300:
+            # OAuth error bodies can echo authorization codes/client secrets.
+            raise RemoteRuntimeError(f"OAuth 요청을 완료하지 못했습니다 (HTTP {response.status_code}).")
 
     @staticmethod
     def _raise(response) -> None:

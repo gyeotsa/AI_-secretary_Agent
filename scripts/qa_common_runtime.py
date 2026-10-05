@@ -202,6 +202,65 @@ def check_local_model_cancellation() -> int:
     return 0 if answer.strip() else 1
 
 
+def exact_fixture_read(outcome, target: Path, before: bytes) -> bool:
+    """A partial match is not proof of an exclusive first-line request."""
+    import hashlib
+    result = outcome.tool_result
+    expected = before.decode("utf-8").splitlines(keepends=True)[0]
+    try:
+        value = json.loads(result.raw_output) if result is not None else {}
+        return bool(
+            outcome.status == "completed" and result.tool_name == "filesystem_read_file"
+            and result.succeeded and target.read_bytes() == before
+            and Path(value.get("path", "")).resolve() == target.resolve()
+            and any(item.kind == "file_content" and item.data == value for item in result.evidence)
+            and value.get("content") == expected
+            and value.get("start_line") == value.get("end_line") == 1
+            and value.get("sha256") == hashlib.sha256(before).hexdigest()
+            and value.get("truncated") is False
+            and expected in outcome.response
+            and all(line not in outcome.response for line in before.decode("utf-8").splitlines()[1:])
+        )
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
+def restrict_fixture_reads(executor, target: Path) -> None:
+    """Guard the actual dispatch, including recovery plans, before permissions."""
+    from core.plugin import ToolCancelledError
+    dispatch = executor.tool_executor.execute_tool
+
+    def fixture_read_only(tool_name, tool_input):
+        if (tool_name != "filesystem_read_file" or not isinstance(tool_input, dict)
+                or tool_input.get("filename") != target.name
+                or any(type(tool_input.get(key)) is not int or tool_input[key] != 1
+                       for key in ("start_line", "end_line"))):
+            raise ToolCancelledError("QA blocks tools or bounds outside the approved synthetic read")
+        return dispatch(tool_name, tool_input)
+
+    executor.tool_executor.execute_tool = fixture_read_only
+
+
+def semantic_fixture_passed(decision, expected: str) -> bool:
+    if expected == "conversation":
+        return bool(decision.grounded and decision.relation == "conversation"
+                    and decision.operation == "conversation" and not decision.tool_names)
+    contracts = {
+        "read": ("read", "filesystem_read_file", {"filename": "QA 기록.txt", "start_line": 1, "end_line": 1}),
+        "inbox": ("read", "mail_list_inbox", {"limit": 5, "unread_only": True}),
+        "site_search": ("execute", "browser_site_search", {"provider": "youtube", "query": "빗소리"}),
+    }
+    if expected in contracts:
+        operation, tool, slots = contracts[expected]
+        return bool(decision.grounded and decision.operation == operation
+                    and decision.tool_names == (tool,) and not decision.needs_clarification
+                    and all(type(decision.slots.get(key)) is type(value)
+                            and decision.slots[key] == value for key, value in slots.items()))
+    return bool(expected == "unsupported" and decision.relation == "new"
+                and not decision.tool_names and decision.reason == "no_supported_tool"
+                and decision.confidence >= .85)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--gui", action="store_true")
@@ -332,6 +391,9 @@ def _run_qa(args, root: Path, sandbox: Path, settings) -> int:
             ("실행하지 말고 재귀 함수가 뭔지 설명해줘.", "conversation"),
             ("그 설명은 취소하고 지금은 짧게 인사만 해줘.", "conversation"),
             ("QA 기록.txt 파일의 첫 번째 줄만 그대로 알려줘", "read"),
+            ("실제로 보내지는 말고 '형택에게 카톡 보내줘'라는 문장의 뜻만 설명해줘.", "conversation"),
+            ("읽지 않은 받은편지함 메일을 최신순으로 5개만 조회해줘. 본문은 읽지 마.", "inbox"),
+            ("유튜브에서 '빗소리'를 검색해서 결과 화면을 열어줘. 재생하지는 마.", "site_search"),
             ("실제 우주선을 조종해서 화성에 착륙시켜줘", "unsupported"),
         ]
         original = client.chat_structured
@@ -349,13 +411,7 @@ def _run_qa(args, root: Path, sandbox: Path, settings) -> int:
                 calls.clear()
                 started = time.monotonic()
                 decision = executor.semantic_interpreter.interpret(request)
-                ok = (decision.grounded and decision.relation == "conversation"
-                      and not decision.tool_names) if expected == "conversation" else (
-                    decision.grounded and decision.operation == "read"
-                    and decision.tool_names == ("filesystem_read_file",)
-                    and decision.slots.get("start_line") == decision.slots.get("end_line") == 1
-                    if expected == "read" else
-                    decision.relation != "conversation" and not decision.tool_names)
+                ok = semantic_fixture_passed(decision, expected)
                 passed += bool(ok)
                 print(json.dumps({"event": "semantic_matrix", "request": request,
                                   "expected": expected, "passed": bool(ok),
@@ -385,18 +441,17 @@ def _run_qa(args, root: Path, sandbox: Path, settings) -> int:
         target = fixture_workspace / "QA 기록.txt"
         before = target.read_bytes()
         started = time.monotonic()
+        restrict_fixture_reads(executor, target)
         try:
             outcome = executor.execute_turn(
-                "QA 기록.txt 파일에 작성되어 있는 첫 번째 줄 내용을 알려줘",
-                allowed_tool_names=["filesystem_read_file"],
+                "QA 기록.txt 파일의 첫 번째 줄만 그대로 알려줘",
                 turn_context=TurnExecutionContext("qa-read", "qa-local", str(fixture_workspace)),
+                allowed_tool_names=[c.name for c in executor.tool_executor.plugin_registry.get_capabilities()],
             )
-            passed = (outcome.status == "completed" and "x = [1, 2] 🙂\r\n" in outcome.response
-                      and target.read_bytes() == before and outcome.tool_result is not None
-                      and outcome.tool_result.tool_name == "filesystem_read_file"
-                      and bool(outcome.tool_result.evidence))
+            passed = exact_fixture_read(outcome, target, before)
             print(json.dumps({"event": "runtime_read", "passed": passed, "status": outcome.status,
                               "response": outcome.response, "task_id": outcome.task_id,
+                              "catalogue": "all_registered_tools",
                               "elapsed_seconds": round(time.monotonic()-started, 2)}, ensure_ascii=False), flush=True)
             return 0 if passed else 1
         finally:

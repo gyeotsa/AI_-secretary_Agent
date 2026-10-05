@@ -186,13 +186,16 @@ class SpecialistTeamRuntime:
             from core.task_contracts import AcceptanceCriterion, ResourceBudget, RetryPolicy
             from core.model_registry import get_model_registry
             profile = get_model_registry().resolve(role.model_role)
+            from core.auxiliary_models import selection, coding_timeout_seconds
+            auxiliary_coding = run.workspace_key == "coding" and selection() == ("kimi_k3", True)
             contract = self.supervisor.create_contract(
                 goal=f"{role.label}: {run.instruction}", specialist=role.key,
                 input_contract={name: type(run.artifacts.get(name)).__name__ for name in role.input_artifacts},
                 output_contract={"artifact": role.output_artifact},
                 acceptance_criteria=(AcceptanceCriterion(role.output_artifact, role.output_artifact, "artifact"),)
                 if role.output_artifact else (), resource_budget=ResourceBudget(
-                    timeout_seconds=180, vram_mb=int(profile.vram_mb),
+                    timeout_seconds=coding_timeout_seconds() if auxiliary_coding else 180,
+                    vram_mb=int(profile.vram_mb),
                     ram_mb=int(profile.ram_mb), max_parallel=1,
                 ),
                 retry_policy=RetryPolicy(max_attempts=2, escalate_after=2), parent_id=run.run_id,

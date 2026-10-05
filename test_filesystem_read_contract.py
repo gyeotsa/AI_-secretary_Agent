@@ -79,3 +79,23 @@ def test_requested_line_range_and_display_limit_are_explicit(tmp_path):
         assert '요청한 줄이 없습니다' in plugin.present_result('filesystem_read_file', missing.raw_output)
     finally:
         registry.shutdown()
+
+
+@pytest.mark.parametrize('bounds,expected', [
+    ({}, '1\n2\n3\n'),
+    ({'start_line': 2}, '2\n3\n'),
+    ({'start_line': 2, 'end_line': 2}, '2\n'),
+])
+def test_optional_range_contract_matches_real_reading(tmp_path, bounds, expected):
+    (tmp_path / 'note.txt').write_bytes(b'1\n2\n3\n')
+    plugin, registry = surface(tmp_path)
+    try:
+        contract = registry.get_capability('filesystem_read_file').input_schema['properties']
+        assert all(field.get('description') for field in contract.values())
+        assert '파일 끝까지' in contract['end_line']['description']
+        assert '같은 번호' in contract['end_line']['description']
+        result = registry.execute_tool('filesystem_read_file', {'filename': 'note.txt', **bounds})
+        assert result.succeeded
+        assert json.loads(result.raw_output)['content'] == expected
+    finally:
+        registry.shutdown()

@@ -62,6 +62,11 @@ def _safe_contract_value(value: Any) -> Any:
 
 
 def _local_answer_draft_client(contract):
+    if contract.requires_code:
+        from core.auxiliary_models import selection
+        if selection() == ("kimi_k3", True):
+            from core.llm import get_coding_llm_client
+            return get_coding_llm_client()
     client = OllamaClient("code" if contract.requires_code else "document")
     # Release this request's model after the phase; never unload arbitrary
     # models belonging to another app/session in order to make room.

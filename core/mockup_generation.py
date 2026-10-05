@@ -9,6 +9,7 @@ import stat
 from pathlib import Path
 
 from PIL import Image, ImageOps
+from core.local_inference import serialized_inference, remember_idle_model
 
 
 class IPAdapterGenerationBackend:
@@ -140,10 +141,12 @@ class IPAdapterGenerationBackend:
             sheet.paste(tile, ((index % columns) * cell_w, (index // columns) * cell_h))
         return sheet
 
+    @serialized_inference
     def generate_background(self, *, reference_paths: list[str], prompt: str,
                             orientation: str, seed: int = 42) -> Image.Image:
         import torch
 
+        remember_idle_model(("image_generation", id(self)), self.unload)
         pipe = self._load()
         width, height = (
             (768, 512) if orientation == "landscape" else
@@ -552,9 +555,11 @@ class SDXLGenerationBackend:
         pipe.enable_model_cpu_offload(); pipe.vae.enable_slicing(); self._pipe = pipe
         return pipe
 
+    @serialized_inference
     def generate_background(self, *, reference_paths: list[str], prompt: str,
                             orientation: str, seed: int = 42) -> Image.Image:
         import torch
+        remember_idle_model(("image_generation", id(self)), self.unload)
         pipe = self._load()
         width, height = ((768, 512) if orientation == "landscape" else
                          (512, 768) if orientation == "portrait" else (640, 640))

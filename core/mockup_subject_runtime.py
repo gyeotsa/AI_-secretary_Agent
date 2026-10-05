@@ -330,6 +330,12 @@ class SubjectAnalysisRuntime:
         return result, quality
 
     def _segment_birefnet(self, image: Image.Image) -> Image.Image:
+        from core.local_inference import local_inference, remember_idle_model
+        with local_inference():
+            remember_idle_model(("birefnet", id(self)), self.release)
+            return self._segment_birefnet_serialized(image)
+
+    def _segment_birefnet_serialized(self, image: Image.Image) -> Image.Image:
         import numpy as np
         import torch
         from torchvision import transforms

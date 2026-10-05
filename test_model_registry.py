@@ -1,5 +1,17 @@
+import pytest
+
+from config import APIConfig
 from core import llm as llm_module
 from core.model_registry import ModelRegistry, ModelRoleRouter
+
+
+@pytest.mark.parametrize("configured", [None, "http://localhost:11434", "https://model.example:8443/base"])
+def test_ollama_default_avoids_ipv6_fallback_without_rewriting_explicit_urls(monkeypatch, configured):
+    if configured is None:
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("OLLAMA_BASE_URL", configured)
+    assert APIConfig().OLLAMA_BASE_URL == (configured or "http://127.0.0.1:11434")
 
 
 def test_model_registry_assigns_specialized_models():

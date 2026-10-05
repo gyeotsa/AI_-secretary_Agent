@@ -10,7 +10,7 @@ from core.semantic_request import (
     select_conversation_history,
 )
 from test_semantic_request import registry
-from test_semantic_response_mode import _interpreter, _mode
+from test_semantic_response_mode import _conversation, _interpreter, _mode
 
 
 PROBLEM = ("문제 설명\n라이언의 화살 n발을 배분하는 solution 함수를 완성해 주세요.\n"
@@ -132,9 +132,9 @@ def test_real_pending_does_not_consume_ambiguous_feedback_or_explicit_new_solve(
     pending = {"intent_name": "messaging.send", "task_id": "send", "original_request": "메시지를 보내줘",
                "slots": {"provider": "kakaotalk", "recipient": "김하이"}}
     original = deepcopy(pending)
-    interpreter, model = _interpreter(registry, _mode())
+    interpreter, model = _interpreter(registry, _conversation(), _mode())
     result = interpreter.interpret("이상한데", history(), pending)
-    assert result.source == "semantic_response_mode" and len(model.calls) == 1
+    assert result.source == "semantic_response_mode" and len(model.calls) == 2
     assert pending == original and not result.tool_names
     solved = SemanticRequestInterpreter(None, registry).interpret("풀어줘", history(), pending)
     assert solved.is_grounded_conversation and solved.answer_kind == "code"

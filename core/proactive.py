@@ -95,6 +95,14 @@ class ProactiveNotificationPolicy:
         if context.suppresses_noncritical and not force:
             return None
         records = self.store.pending(limit)
+        validator = getattr(self, "continuity_validator", None)
+        if callable(validator):
+            invalid = [record for record in records if record.get("evidence", {}).get("continuity")
+                       and not validator(record)]
+            if invalid:
+                self.store.dismiss([record["notification_id"] for record in invalid])
+                invalid_ids = {record["notification_id"] for record in invalid}
+                records = [record for record in records if record["notification_id"] not in invalid_ids]
         if not records:
             return None
         lines = [f"보류된 알림 {len(records)}건을 묶어서 알려드립니다."]

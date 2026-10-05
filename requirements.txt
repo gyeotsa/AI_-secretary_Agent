@@ -37,7 +37,7 @@ librosa>=0.10.0
 
 # Phase 4: Advanced (enable later)
 # langgraph>=0.2.0
-# mcp>=1.0.0
+mcp>=2,<3
 pillow>=10.0.0
 diffusers>=0.35,<0.38
 accelerate>=1.2,<2

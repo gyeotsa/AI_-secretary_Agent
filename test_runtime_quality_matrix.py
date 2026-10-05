@@ -33,10 +33,12 @@ from test_specialist_acceptance import contract, payload
     pytest.param("~~~", "취소하지 마\n다음 줄도 저장", "취소하지 마", id="tilde-fence"),
 ])
 def test_incomplete_multiline_payload_cannot_reach_execution(make_executor, delimiter, body, lossy):
-    executor = make_executor(model=_ScriptedModel(_model_output(
+    executor = make_executor(model=_ScriptedModel(
+        {"request_kind": "action", "tool_names": ["filesystem_create_file"], "confidence": .99}, _model_output(
         operation="change", tool_names=["filesystem_create_file"],
         slots={"filename": "memo.txt", "content": lossy},
     )))
+    executor.semantic_interpreter.SINGLE_PASS_CATALOG_CHARS = 0
     reached = []
 
     def stop_before_effect(plan, **_kwargs):
@@ -57,10 +59,12 @@ def test_incomplete_multiline_payload_cannot_reach_execution(make_executor, deli
     pytest.param("```", "value = [1,  2]\nprint(value)", id="complete-fenced-code"),
 ])
 def test_complete_multiline_payload_reaches_boundary_unchanged(make_executor, delimiter, body):
-    executor = make_executor(model=_ScriptedModel(_model_output(
+    executor = make_executor(model=_ScriptedModel(
+        {"request_kind": "action", "tool_names": ["filesystem_create_file"], "confidence": .99}, _model_output(
         operation="change", tool_names=["filesystem_create_file"],
         slots={"filename": "memo.txt", "content": body},
     )))
+    executor.semantic_interpreter.SINGLE_PASS_CATALOG_CHARS = 0
     reached = []
 
     def stop_before_effect(plan, **_kwargs):
@@ -75,10 +79,12 @@ def test_complete_multiline_payload_reaches_boundary_unchanged(make_executor, de
 
 
 def test_quoted_superseded_recipient_does_not_block_valid_correction(make_executor):
-    executor = make_executor(model=_ScriptedModel(_model_output(
+    executor = make_executor(model=_ScriptedModel(
+        {"request_kind": "action", "tool_names": [SEND_TOOL], "confidence": .99}, _model_output(
         relation="correct", tool_names=[SEND_TOOL], slots={
             "provider": "kakaotalk", "recipient": "김하", "message": "내일  만나",
         })))
+    executor.semantic_interpreter.SINGLE_PASS_CATALOG_CHARS = 0
     pending = _pending_send(executor)
 
     result = executor.execute_turn('"김하이"가 아니라 "김하"에게 "내일  만나"라고 보내줘', SESSION)
@@ -95,19 +101,33 @@ def test_long_completed_context_does_not_supply_new_request_filename(make_execut
     rejected = _model_output(operation="read", tool_names=[READ_TOOL], slots={"filename": "old-secret.txt"})
     model = _ScriptedModel(rejected, rejected)
     executor = make_executor(model=model)
+    pending = _pending_send(executor)
+    before = executor.dialogue_state.get_intent_state(pending.task_id)
+    dialogue_before = executor.dialogue_state.get(SESSION, pending.task_id, executor._workspace_scope())
     history = [
         {"role": "user", "content": "old-secret.txt 파일을 읽어줘"},
         {"role": "assistant", "content": "완료된 예전 메모입니다. " * 800},
     ]
+    original_history = deepcopy(history)
+    raw = "이번에는 current.txt 파일을 읽어줘"
 
-    result = executor.execute_turn("이번에는 current.txt 파일을 읽어줘", SESSION, conversation_history=history)
+    decision = executor.semantic_interpreter.interpret(raw, history=history)
+    assert decision.reason.endswith(":context_saturated") and not decision.grounded
+    result = executor.execute_turn(raw, SESSION, conversation_history=history)
 
     assert result.status == "failed"
-    assert "ungrounded_literal:filename" in result.response
-    assert executor.dialogue_state.get(SESSION) is None
+    assert model.prompts == []
+    assert executor.dialogue_state.get_intent_state(pending.task_id) == before
+    assert executor.dialogue_state.get(SESSION, pending.task_id, executor._workspace_scope()) == dialogue_before
+    assert executor.dialogue_state.get_task(SESSION, pending.task_id).status == "awaiting_user"
     assert not executor.plan_calls
     assert executor.test_surface.calls == []
-    assert model.prompts[0]["current_user_input"] == "이번에는 current.txt 파일을 읽어줘"
+    assert history == original_history
+    # Keep the literal-origin boundary independently covered when preflight
+    # correctly refuses to send this same oversized transcript to the model.
+    literal = executor.semantic_interpreter._validate(raw, history, {}, json.dumps(rejected), {READ_TOOL})
+    assert not literal.grounded and literal.reason == "ungrounded_literal:filename"
+    assert literal.raw_text == raw and model.prompts == []
 
 
 def test_long_quoted_command_explanation_leaves_pending_send_unchanged(make_executor):
@@ -182,10 +202,12 @@ def test_planner_cannot_count_json_field_name_as_preserved_user_body(make_execut
 
 
 def test_correction_does_not_remove_the_new_literal_requirement(make_executor):
-    executor = make_executor(model=_ScriptedModel(_model_output(
+    executor = make_executor(model=_ScriptedModel(
+        {"request_kind": "action", "tool_names": [SEND_TOOL], "confidence": .99}, _model_output(
         relation="correct", tool_names=[SEND_TOOL], slots={
             "provider": "kakaotalk", "recipient": "김하이", "message": "내일  만나",
         })))
+    executor.semantic_interpreter.SINGLE_PASS_CATALOG_CHARS = 0
     _pending_send(executor)
 
     result = executor.execute_turn('"김하이"가 아니라 "박나래"에게 "내일  만나"라고 보내줘', SESSION)

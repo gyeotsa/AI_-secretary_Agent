@@ -1,5 +1,6 @@
 """Interactive, offline Knowledge Graph workspace backed by the Obsidian Vault."""
 from __future__ import annotations
+from .theme import set_widget_style, theme_manager, theme_color
 
 import html
 import math
@@ -38,9 +39,9 @@ class GraphNodeItem(QGraphicsEllipseItem):
                       self.GraphicsItemFlag.ItemSendsGeometryChanges)
         self.setAcceptHoverEvents(True)
         self.setBrush(QBrush(QColor(NODE_COLORS.get(node.get("type"), "#7693aa"))))
-        self.setPen(QPen(QColor("#142b3e"), 2)); self.setToolTip(node.get("label", ""))
+        self.setPen(QPen(theme_color("border"), 2)); self.setToolTip(node.get("label", ""))
         label = QGraphicsSimpleTextItem(str(node.get("label", ""))[:26], self)
-        label.setBrush(QBrush(QColor("#dcecf7"))); label.setPos(-label.boundingRect().width() / 2, size / 2 + 5)
+        label.setBrush(QBrush(theme_color("text"))); label.setPos(-label.boundingRect().width() / 2, size / 2 + 5)
 
     def mousePressEvent(self, event):
         self.dragging = True; self.owner.wake_simulation(0.55)
@@ -72,14 +73,14 @@ class GraphNodeItem(QGraphicsEllipseItem):
 class GraphEdgeItem(QGraphicsLineItem):
     def __init__(self, source: GraphNodeItem, target: GraphNodeItem):
         super().__init__(); self.source, self.target = source, target
-        self.setPen(QPen(QColor("#29475c"), 1.15)); self.setZValue(0)
+        self.setPen(QPen(theme_color("border"), 1.15)); self.setZValue(0)
         source.edges.append(self); target.edges.append(self); self.update_position()
 
     def update_position(self):
         self.setLine(self.source.x(), self.source.y(), self.target.x(), self.target.y())
 
     def set_emphasis(self, active: bool, faded: bool = False):
-        color = QColor("#67e8f9" if active else "#29475c")
+        color = theme_color("accent" if active else "border")
         color.setAlpha(235 if active else 35 if faded else 175)
         self.setPen(QPen(color, 2.15 if active else 1.15))
 
@@ -89,13 +90,31 @@ class NativeGraphView(QGraphicsView):
         super().__init__(); self.owner = owner; self.setScene(QGraphicsScene(self))
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.setBackgroundBrush(QBrush(QColor("#08101b")))
+        self.setBackgroundBrush(QBrush(theme_color("window")))
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate)
         self.nodes, self.edges, self.velocities, self.adjacency = {}, [], {}, {}
         self.alpha = 0.0; self.motion_enabled = True; self._frame = 0
         self.physics_timer = QTimer(self); self.physics_timer.setInterval(24)
         self.physics_timer.timeout.connect(self._physics_step)
+        theme_manager().changed.connect(self._apply_theme)
+
+    def _apply_theme(self, _mode):
+        self.setBackgroundBrush(QBrush(theme_color("window")))
+        for item in self.scene().items():
+            if isinstance(item, QGraphicsSimpleTextItem):
+                item.setBrush(QBrush(theme_color("text")))
+            elif hasattr(item, 'setDefaultTextColor'):
+                item.setDefaultTextColor(theme_color("muted"))
+            elif isinstance(item, GraphEdgeItem):
+                pen = item.pen()
+                pen.setColor(theme_color("border"))
+                item.setPen(pen)
+            elif isinstance(item, GraphNodeItem):
+                pen = item.pen()
+                pen.setColor(theme_color("accent" if item.isSelected() else "border"))
+                item.setPen(pen)
+        self.viewport().update()
 
     def show_note(self, relative_path: str):
         self.owner.show_note(relative_path)
@@ -119,7 +138,7 @@ class NativeGraphView(QGraphicsView):
         self.adjacency = {node["id"]: set() for node in nodes}
         if not nodes:
             text = scene.addText("표시할 기억이 없습니다. 필터를 조정해 보세요.")
-            text.setDefaultTextColor(QColor("#7891a7")); return
+            text.setDefaultTextColor(theme_color("muted")); return
         ordered = sorted(nodes, key=lambda n: (-n.get("degree", 0), -n.get("importance", 0)))
         for index, node in enumerate(ordered):
             position = self._seeded_position(node["id"], index, len(ordered))
@@ -195,14 +214,14 @@ class NativeGraphView(QGraphicsView):
         for current_id, item in self.nodes.items():
             active = current_id in related
             item.setOpacity(1.0 if active else .18)
-            item.setPen(QPen(QColor("#e9fbff" if current_id == node_id else "#142b3e"),
+            item.setPen(QPen(theme_color("accent" if current_id == node_id else "border"),
                              3 if current_id == node_id else 2))
         for edge in self.edges:
             active = edge.source.node["id"] == node_id or edge.target.node["id"] == node_id
             edge.set_emphasis(active, faded=not active)
 
     def clear_highlight(self):
-        for item in self.nodes.values(): item.setOpacity(1.0); item.setPen(QPen(QColor("#142b3e"), 2))
+        for item in self.nodes.values(): item.setOpacity(1.0); item.setPen(QPen(theme_color("border"), 2))
         for edge in self.edges: edge.set_emphasis(False)
 
     def wheelEvent(self, event):
@@ -221,7 +240,7 @@ class KnowledgeGraphWindow(QMainWindow):
         self.setWindowTitle("JARVIS · Knowledge Graph")
         self.resize(1380, 820)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
-        self.setStyleSheet(STYLE)
+        set_widget_style(self, STYLE)
         self._build()
         self._watch_vault()
         self.refresh_graph()
@@ -263,7 +282,7 @@ class KnowledgeGraphWindow(QMainWindow):
         side = QFrame(); side.setObjectName("panel"); side_layout = QVBoxLayout(side)
         title = QLabel("기억 미리보기"); title.setObjectName("section"); side_layout.addWidget(title)
         self.preview = QTextBrowser(); self.preview.setOpenExternalLinks(False)
-        self.preview.setHtml("<p style='color:#7f96aa'>노드를 선택하면 원문과 메타데이터가 표시됩니다.</p>")
+        self.preview.setHtml("<p>노드를 선택하면 원문과 메타데이터가 표시됩니다.</p>")
         side_layout.addWidget(self.preview, 1)
         buttons = QHBoxLayout()
         self.open_button = QPushButton("Obsidian에서 열기"); self.open_button.setEnabled(False)
@@ -334,7 +353,7 @@ class KnowledgeGraphWindow(QMainWindow):
         rows = "".join(f"<tr><td><b>{html.escape(str(key))}</b></td><td>{html.escape(str(value))}</td></tr>"
                        for key, value in meta.items())
         self.preview.setHtml(
-            f"<h2>{html.escape(note['title'])}</h2><p style='color:#7f96aa'>{html.escape(note['relative_path'])}</p>"
+            f"<h2>{html.escape(note['title'])}</h2><p>{html.escape(note['relative_path'])}</p>"
             f"<table cellspacing='7'>{rows}</table><hr><pre style='white-space:pre-wrap'>{html.escape(note['body'])}</pre>"
         )
         if self.local_toggle.isChecked(): self.refresh_graph()

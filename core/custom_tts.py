@@ -13,6 +13,7 @@ import time
 import unicodedata
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from core.local_inference import serialized_inference, remember_idle_model
 
 
 VOICE_ROOT = Path("data/voices")
@@ -142,7 +143,9 @@ class GPTSoVITSClient:
         )
         return process_env
 
+    @serialized_inference
     def ensure_running(self, timeout: float = 60.0) -> None:
+        remember_idle_model(("tts", self.base_url), self.release_idle)
         if self._shutdown_requested.is_set():
             raise RuntimeError("GPT-SoVITS 종료가 요청되어 새 음성 서버를 시작하지 않습니다.")
         if self._ready():
@@ -232,6 +235,20 @@ class GPTSoVITSClient:
         except OSError:
             pass
 
+    def release_idle(self):
+        """Stop only our idle server; allow lazy restart on the next TTS request."""
+        with self._startup_lock:
+            process = self.process
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+            self.process = None
+
+    @serialized_inference
     def synthesize(self, text: str) -> str:
         self.ensure_running()
         payload = self._build_payload(text)
@@ -280,6 +297,7 @@ class GPTSoVITSClient:
             "speed_factor": float(self.profile.get("speed_factor", 1.0)),
         }
 
+    @serialized_inference
     def stream_pcm(self, text: str):
         """Yield streamed PCM as (sample_rate, channels, sample_width, bytes)."""
         self.ensure_running()

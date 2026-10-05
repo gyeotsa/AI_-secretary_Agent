@@ -386,7 +386,7 @@ def test_long_chat_is_scrollable_without_growing_window_or_hiding_input():
             app.processEvents()
             assert window.size() == initial
             assert window.assistant_text_label.text() == sample
-            assert window.user_text_label.text() == "> " + sample
+            assert window.user_text_label.text() == sample
             assert window.rect().contains(window.text_input.mapTo(
                 window, QPoint(window.text_input.width()-1, window.text_input.height()-1)))
             if "매우 긴" in sample or "```" in sample:
@@ -419,7 +419,8 @@ def test_long_chat_is_scrollable_without_growing_window_or_hiding_input():
         window.show_user_text("새 질문 " * 1000)
         for _ in range(3):
             app.processEvents()
-        assert window.message_scroll.verticalScrollBar().value() == 0
+        assert window.message_scroll.verticalScrollBar().value() > 0
+        assert not window._follow_reply
     finally:
         window._allow_close = True
         window.close()

@@ -70,6 +70,8 @@ class ModelRegistry:
             "code": profile("code", code, 0.15, 4096, "5m"),
             "document": profile("document", code, 0.3, 4096, "5m"),
             "vision": profile("vision", vision, 0.2, 1024, "2m", ("text", "image")),
+            "computer_use": profile("computer_use", Config.OLLAMA_COMPUTER_USE_MODEL,
+                                    0.0, 1024, "2m", ("text", "image")),
             "image_editing": profile("image_editing", vision, 0.25, 2048, "3m", ("text", "image")),
             "mockup_design": profile("mockup_design", vision, 0.2, 3072, "5m", ("text", "image")),
             "style_vision": profile("style_vision", design_vision, 0.1, 3072, "0", ("text", "image")),

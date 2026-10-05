@@ -40,6 +40,10 @@ def desktop(request):
     global _APP
     _APP = QApplication.instance() or QApplication([])
     app = _APP
+    from ui.theme import theme_manager
+    manager = theme_manager()
+    original_mode = manager.mode
+    manager.set_mode("dark", persist=False)
     original_palette, original_style, original_qss = QPalette(app.palette()), app.style().objectName(), app.styleSheet()
     original_font = QFont(app.font())
     loaded_fonts = []
@@ -78,6 +82,7 @@ def desktop(request):
         return dialog
 
     yield app, create, parent, request.param
+    manager.set_mode(original_mode, persist=False)
     for dialog in reversed(dialogs):
         dialog.close()
         dialog.deleteLater()

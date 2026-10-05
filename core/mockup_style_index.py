@@ -88,6 +88,12 @@ class VisualStyleIndex:
         return [value / norm for value in values]
 
     def _clip_vector(self, path: Path) -> list[float] | None:
+        from core.local_inference import local_inference, remember_idle_model
+        with local_inference():
+            remember_idle_model(("clip", id(self)), self.release)
+            return self._clip_vector_serialized(path)
+
+    def _clip_vector_serialized(self, path: Path) -> list[float] | None:
         if not (self.model_dir / "config.json").is_file():
             return None
         try:

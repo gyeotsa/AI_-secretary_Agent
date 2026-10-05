@@ -203,7 +203,8 @@ def test_model_questions_collect_partial_answers_across_restart_before_approval(
     assert first_executor.plan_calls == []
     assert first_executor.dialogue_state.get_intent_state(first.task_id)["slots"] == {"provider": "kakaotalk"}
 
-    next_model = Model(_model_output(relation="continue", slots={"recipient": "김하이"},
+    next_model = Model({"request_kind": "action", "tool_names": [SEND_TOOL], "confidence": .98},
+                      _model_output(relation="continue", slots={"recipient": "김하이"},
                                     needs_clarification=True, clarification_question=next_question))
     next_executor = make_executor(model=next_model)
     second = next_executor.execute_turn("김하이", SESSION)
@@ -215,7 +216,8 @@ def test_model_questions_collect_partial_answers_across_restart_before_approval(
     assert next_executor.plan_calls == []
 
     body = "내일  학교에서 만나"
-    final_model = Model(_model_output(relation="continue", slots={"message": body}))
+    final_model = Model({"request_kind": "action", "tool_names": [SEND_TOOL], "confidence": .98},
+                       _model_output(relation="continue", slots={"message": body}))
     final_executor = make_executor(model=final_model)
     third = final_executor.execute_turn(body, SESSION)
     assert third.status == "awaiting_approval" and third.task_id == first.task_id
