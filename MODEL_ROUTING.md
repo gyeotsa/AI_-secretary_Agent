@@ -8,6 +8,9 @@ Coding Agent 폐쇄 루프입니다. 더 강한 모델은 복잡한 계획과 �
 ## 공급자 선택과 오류 계약
 
 - 기본값은 `LLM_PROVIDER=ollama`이며 API 키 없이 로컬 역할 모델만 사용합니다.
+- 로컬 Ollama 기본 주소는 `http://127.0.0.1:11434`입니다. 이 Windows에서 `localhost`의
+  IPv6 연결 실패 후 IPv4 재연결이 호출마다 약 2초를 더해 숫자 loopback을 기본으로 삼습니다.
+  명시적으로 설정한 다른 URL이나 TLS hostname은 자동 변경하지 않습니다.
 - Anthropic은 향후 선택적 하이브리드 경로입니다. 실제 키와 역할 목록을 사용자가 명시한
   경우에만 `anthropic` 또는 `hybrid`로 활성화합니다. 예제 placeholder 키는 설정된 키로
   간주하지 않습니다.
@@ -30,7 +33,19 @@ Coding Agent 폐쇄 루프입니다. 더 강한 모델은 복잡한 계획과 �
 | TTS | `GPT-SoVITS Anis` | 선택 음성 합성 | 기존 구성 |
 | RAG | `bge-m3` | 기억·문서 검색 | 기존 구성 |
 
-`core/model_registry.py`가 역할과 실행 정책의 단일 진실 공급원이다.
+기본 역할과 실행 정책은 `core/model_registry.py`가 관리한다.
+채팅바 보조 모델은 `core/auxiliary_models.py`가 관리한다. Kimi K3는 사용자의 요청으로
+현재 연결을 보류한다. 목록은 유지하지만 UI의 ON 전환은 비활성화하며 설치·실행하지 않는다.
+기존 K3 어댑터 코드는 재개용으로 남아 있고, 기본 도구 선택·Vision 모델을 교체하지 않는다.
+설치와 안전 제한, 기존 성능 설명의 정정, ON/OFF 슬라이더의 향후 변경 계약은
+[KIMI_K3_INTEGRATION.md](KIMI_K3_INTEGRATION.md)를 참조한다.
+모델 버튼은 **목록만** 먼저 열며, 모델을 선택해야 해당 모델의 ON/OFF 설정 화면이 열린다.
+Jev 설정 최상단의 TypeSafe Console 링크와 별도 계정/API 키 관리 화면을 제공한다.
+Jev 키는 기존 Windows DPAPI 저장소에 암호화 저장하고 공식 API로 인증을 확인한다.
+Jev ON은 공통 도구 계약으로 검증된 대화의 답변 스타일 선택만 클라우드로 보내며
+도구 탐색/실행 권한이나 기본 대화·코드 생성 모델을 대체하지 않는다.
+다른 모델을 선택하면 이전 보조 모델도 OFF로 전환된다. 실제 호출·취소·폴백·데이터 전송 범위는
+[JEV_INTEGRATION.md](JEV_INTEGRATION.md)를 참조한다.
 일반 Vision과 시안 전용 Vision은 별도 설정이다. `mockup_design` 호환 라우팅 역할은
 일반 Vision 값을 유지하지만, 시안 팀의 스타일 분석/최종 검수는 전용 역할을 사용한다.
 모델 이름이 기본값에 있다는 것만으로 해당 PC에 설치·로드·품질 수락됐다고 판정하지 않는다.
@@ -40,6 +55,9 @@ Coding Agent 폐쇄 루프입니다. 더 강한 모델은 복잡한 계획과 �
 P10부터 STT와 Vision 추론은 `core/gpu_scheduler.py`의 process-wide admission queue를
 공유한다. STT가 Vision보다 높은 우선순위를 가지며 합산 예약량이 예산을 넘으면 대기한다.
 기본 예산은 CUDA VRAM의 82%이고 `.env`의 `GPU_VRAM_BUDGET_MB`로 낮출 수 있다.
+로컬 모델 추론은 `core/local_inference.py`의 공통 잠금으로 직렬화한다.
+이는 모든 모델의 동시 메모리 상주를 없애는 기능은 아니다. K3 호출 직전에
+해제 가능한 기존 모델을 내리고 별도의 가용 RAM 검사를 적용한다.
 Ollama는 요청된 모델만 로드하고 역할별 `keep_alive` 이후 자동으로 메모리에서
 내린다. RTX 4060 Laptop 8GB에서 여러 생성 모델을 동시에 상주시켜 발생하는
 VRAM 부족을 피하기 위한 정책이다.

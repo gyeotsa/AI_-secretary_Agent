@@ -1,4 +1,133 @@
-# 공통 에이전트 런타임 개선 — 2026-09-08~29
+# 공통 에이전트 런타임 개선 — 2026-09-08~10-05
+
+## 2026-10-05 입력 예산·탐색 권한·실제 읽기 범위
+
+- 후속 배치별 후보는 전체 후보를 보존한 한 번의 계약 재선택으로 중복 대안을 제거한다.
+  각 배치와 최종 선택의 16개 한도, 전체 16회 탐색 한도, 취소·입력 예산은 유지한다.
+  복합 요청의 필수 조회/전송 단계를 잘라내거나 후보 앞 16개만 고르는 방식이 아니다.
+  관련 fixture까지 포함한 11파일 집중 검사는 **326 passed, 25 deselected (42.20초)**다.
+- 숫자 loopback 설정 후에도 게임 실행 중 실제 모델 검사는 실패했다. cold load는
+  **120.03초 / 완료 호출 0개**, 다음 warm 검사도 **128.05초 / 완료 호출 1개**에서 timeout.
+  별도 최소 readiness는 **36.92초**(모델 load 33.874초)에 완료했다. timeout 표본은 지우지 않는다.
+  사용자가 게임을 종료한 뒤 최신 9-case matrix는 **8/9**, `Temp/anis-common-qa-mad9vvpj`다.
+  인사는 결정적 경로로 **0.02초 / 모델 호출 0개**이며 나머지 사례와 구분한다.
+  감정 13.14초, 설명 9.02초, 취소 후 인사 7.06초, 파일 분류 13.73초,
+  인용 설명 8.03초, 메일 제한 조회 3.78초, 검색/재생 구분 3.56초였다.
+  이는 해석 검사이며 메일·유튜브·카톡 도구를 실행한 증거가 아니다. 게임 종료·설정·캐시/
+  load 상태가 함께 달라졌으므로 게임만이 원인이라고 단정하지 않는다.
+- 미지원 우주선 요청은 전체 계약 검토 뒤 지원 불가라고 판단했지만 확신도 **.7**로
+  엄격한 **.85** oracle를 못 넘었다. 점수를 올리려고 기준이나 모델 확신도를 바꾸지 않았다.
+  별도 코드 결함은 미지원 판정을 설명 부족으로 표시하는 것이었다. `no_supported_tool`은
+  새 작업의 지원 범위 안내이며 재질문/이전 작업 이어가기 권한이 없다. 복구 출력 스키마도
+  이 상태에서는 `relation=new / needs_clarification=false`만 허용한다. 낮은 확신도와
+  비실행 상태는 보존한다. 집중 **127 passed, 8 deselected (15.04초)**다.
+- 전체 등록 목록을 명시한 실제 Executor/로컬 모델/파일 도구 읽기는 **21.74초 통과**,
+  `Temp/anis-common-qa-2j3kiw3o`다. 정확한 합성 파일의 1–1줄, CRLF, 원본 hash,
+  성공 receipt/file_content 증거, 표시 범위 및 원본 보존을 함께 검사했다.
+  이는 이전 shortlist 1.81초와 다른 검사이며 실제 GUI 입력 수락을 대신하지 않는다.
+- 전체 회귀 C는 **3590 passed, 17 skipped, 34 deselected (251.34초)**였다.
+  그 뒤 미지원 재질문 경계를 수정한 D는 **2 failed, 3590 passed, 17 skipped,
+  34 deselected (235.95초)**였다. 두 실패는 과거 테스트가 미지원에도 재질문을 요구한
+  기대값이며, 새 계약과 비실행 검증으로 수정했다. 최종 E는 **3592 passed, 17 skipped,
+  34 deselected (233.41초)**, `tmp/qa-oct05-final-e.xml`이다. skip/deselect는 통과가 아니다.
+  소스·테스트 95개를 `da2a85fb45590fad95338d6b31d2b69c6155e7bb`로 로컬 커밋했다.
+  마지막 테스트 파일의 EOF 빈 줄만 제거했으며 기능 코드는 검사 후 변경하지 않았다.
+  skip 17개는 Windows 심볼릭 링크 생성 권한 부족 8개와 대화에 Tool Intent가 없는
+  분류 변형 9개다. 실제 계정/장치 수락과 34개 integration 제외는 이 skip과 별도로 남는다.
+- 실제 격리 GUI를 다시 실행해 음성 OFF/마이크 미로드/채팅 진입을 관찰했다. 전면 활성화
+  전에는 화면 캡처가 다른 창과 불일치해 입력하지 않았고, 이후에도 입력칸 클릭의 초점이
+  확인되지 않아 타이핑을 중단했다. 사용자에게 합성 파일 첫 줄 요청의 직접 입력을 부탁했다.
+  입력 성공이나 응답 표시를 관찰 전부터 통과로 기록하지 않는다.
+  일반 Chrome 캘린더 탭 연결은 공식 Playwright 확장 경로로 사용자 승인을 받았다.
+  설치 페이지 조작이 차단돼 직접 설치를 요청했으며, 실제 설치/ANIS 어댑터 연결은 미확인이다.
+  개인 DB/.env/brain/tmp/QA 산출물은 커밋하지 않았고 배포·push·실계정 쓰기는 하지 않았다.
+
+- SemanticRequestInterpreter는 입력/최근 대화 역할을 보존한 실제 messages 전체를
+  context8192 및 호출별 출력 공간과 함께 검사한다. UTF-8 bytes는 별도 tokenizer 없는
+  보수적 상한이며 긴 요청/이력이 들어갈 수 없으면 명시적 context_saturated로 중단한다.
+  202개 도구/36개 Plugin의 인덱스는 한 번의 예산 내 포함하며, 선택된 그룹의 상세 계약을
+  동일 탐색 경로로 확인한다. Registry 소유권을 사용하고 발화 키워드로 목록을 누락하지 않는다.
+- 발견한 별도 결함: 그룹 이름/짧은 설명만 본 `.95 conversation + []`가 상세 조회 없이
+  grounded 대화로 확정됐다. 파일 후보는 실제 본문이 아니라는 공통 정보 출처 지침과
+  `conversation/unsupported → 빈 목록`, `action → 최소 하나`인 oneOf 출력 계약만으로는
+  충분하지 않았다. coarse index의 조기 음성 결론을 제거하고 상세 계약 경로를 재사용한다.
+- 이전 실제 6-case matrix 두 번은 모두 **5/6**이다. 첫 번째는 감정 대화와 nonempty
+  groups의 모순, 두 번째는 파일 첫 줄 요청의 high-confidence conversation 오분류였다.
+  두 번째 작업 폴더는 `Temp/anis-common-qa-xa_709xh`. 개념 설명 **38.97초**,
+  첫 번째 파일 분류 **40.09초**로 전체 상세 탐색의 지연 ceiling이 드러났다. 실패와 지연은
+  JSON 구문 통과나 모델 자신감으로 완료 처리하지 않는다.
+- 실제 생산 shortlist의 Executor/로컬 모델/파일 플러그인 읽기는 **1.81초 통과**,
+  `Temp/anis-common-qa-nys9y35a`다. 당시 catalogue 라벨이 전체 목록이라고 잘못 적혔지만
+  Executor가 shortlist로 좁혔으므로 전체 202개 검증 증거로 사용하지 않는다. 최신 script는
+  전체 `allowed_tool_names`를 명시해 차이를 제거했다. GUI 입력 시험의 대체 증거는 아니다.
+- 읽기 oracle는 경로·1–1 포함 범위·원본 전체 SHA-256·정확한 본문·성공 receipt·일치하는
+  file_content 증거·원본 보존·최종 표시 범위를 함께 검사한다. 실제 leaf dispatch guard는
+  재계획도 포함하며 다른 파일/범위/도구를 실행 전에 차단한다. 미지원 oracle도 schema 오류나
+  unresolved를 정답으로 세지 않는다. 집중 **56 passed (6.12초)**,
+  `tmp/qa-oct05-read-oracle-d`; 다른 실행과 합산하지 않는다.
+- 후속 실제 matrix는 인사/감정/설명/취소 후 인사/파일 부분 조회/인용 명령/메일 제한 조회/
+  검색과 재생 구분/미지원 작업 9개 중 **7/9**, `Temp/anis-common-qa-rsmgiggn`이다.
+  메일 5개/본문 제외와 검색/재생 금지는 정확하게 해석했지만 실제 서비스는 실행하지 않았다.
+  파일 상세에서 올바른 filesystem_read_file을 찾은 뒤 legacy 배치의 불필요한 선택까지
+  합쳐져 16개 한도를 초과했다. 미지원 우주선은 지원 불가라고 답했지만 확신도 .8로
+  보수적 .85 oracle를 못 넘었다. 점수를 올리려고 oracle를 낮추지 않는다.
+- 전체 지정 회귀 첫 시도는 **5 failed, 633 passed, 34 deselected (79.16초)**에서 중단됐다.
+  파일 생성 fixture가 새 discovery 호출을 고려하지 않았고, 긴 이력의 pre-send 예산 거부가
+  기존 literal-origin 오류보다 먼저 실행됐다. fixture 호출을 맞추고 같은 긴 원문 그대로
+  전송 전 거부 + 직접 literal 검증을 분리했다. 관련 2파일 **49 passed (20.17초)**다.
+  승인·원문·leaf 보호는 약화하지 않았다. 최종 전체 재검사는 별도다.
+- Windows loopback 합성 서버에서 localhost/숫자주소를 비교했다. ::1 connect 실패에
+  **2.024초**, IPv4 numeric 요청 전체에 **0.00164초**였다. proxy나 SSL 초기화는 이 비용을
+  재현하지 못했다. config 기본값과 .env.example, 현재 .env의 정확한 로컬 주소 한 줄만
+  `http://127.0.0.1:11434`로 바꿨다. 다른 명시 URL/TLS/transport 취소 계약은 유지한다.
+  설정·전송 경계 **24 passed**. 이미 실행 중인 앱은 재시작해야 설정이 반영된다.
+- 저장된 MCP 재연결의 실제 성공/실패 수를 집계하고, 부분/전체 실패는 UI 경고로 표시한다.
+  실패한 서버를 “연결 완료”로 알리는 오표시를 수정했고 기존 승인/취소/rollback은 유지한다.
+  원격 오류 원문은 고정 코드로 대체한다. 집중 **34 passed, 1 deselected (3.44초)**,
+  `tmp/qa-oct05-mcp-result-a`. 실제 외부 서버 수락을 대신하지 않는다.
+
+재현은 저장소 루트 PowerShell과 실행 중인 loopback Ollama에서 다음과 같이 한다.
+사용자 DB를 복사하지 않고 매번 새 임시 작업공간을 만들며 TTS/마이크/카메라는 OFF다.
+
+```powershell
+$env:PYTHON_DOTENV_DISABLED = '1'
+$env:HF_HUB_OFFLINE = '1'
+.\.venv\Scripts\python.exe -X utf8 -B scripts/qa_common_runtime.py --semantic-matrix --model-trace
+.\.venv\Scripts\python.exe -X utf8 -B scripts/qa_common_runtime.py --runtime-read --model-trace
+```
+
+계정·일정·메시지 쓰기, K3 가중치, 코딩 정답률 개선, 강화학습, 배포와 push는 수행하지 않는다.
+
+## 2026-10-04 통합 회귀와 실제 도구 카탈로그 실패
+
+- 기존 미커밋 UI·보조 모델·continuity·MCP·OAuth·클라우드 본문/요약을 포함한 전체 작업 트리
+  검사에서 **3509 passed, 17 skipped, 33 deselected (244.43초)**였다.
+  `tmp/qa-oct04-final.xml`, 고유 basetemp `tmp/qa-oct04-final-d` 사용. pytest.ini에 지정된
+  파일을 명시해 과거 ACL 제한 임시 폴더를 재귀 수집하지 않았다. 아래 입력 예산 후속 수정 전
+  결과이므로 최종 revision의 전체 회귀로 취급하지 않는다.
+- CU/K3/Plugin Hub/테마 집중 **103 passed, 3 deselected (27.30초)**와 headless Chromium
+  합성 페이지 실제 loop/stale DOM 검사 **1 passed (4.05초)**도 실행했다. 중복 통과 수는 합산하지 않는다.
+  Chromium의 계획은 대역이고 외부 사이트 계정·native Windows 어댑터의 업무 수락은 아니다.
+- 첫 전체 회귀의 두 실패는 CU 전체 값 hash를 갖추지 않은 시험 fixture와 K3 시험 worker의
+  PID 파일 읽기/쓰기 경합이었다. fixture 보강 및 원자적 PID 게시로 수정했다. 프로세스 Job
+  할당/소유 handle/후손 정리/원래 오류 보존과 다운로드 보관 전용/닫기 경계는 별도로 검사했다.
+- 실앱 Qwen에서 파일 첫 줄 요청을 코드 작성으로 오분류했다. 독립 답변 스타일 분류가
+  도구 탐색을 선행 차단하던 경계를 제거하고, 검증된 대화에만 답변 스타일을 적용한다.
+  집중 관련 **270 passed, 24 deselected (28.09초)**는 모델 정확도 표본이 아닌 대역 계약 검사다.
+- 추가 실제 `--semantic-matrix --model-trace`는 **5/6**, 파일 조건 미보존 실패다.
+  `read_file(path)`만 골라 `end_line=1`을 표현하지 못했다. 도구 실행을 하지 않은 분류 시험이며
+  파일 조회 성공으로 표시하지 않는다. emotion/개념 설명/짧은 후속 인사/미지원 요청도 포함한다.
+- 전체 202도구/36KB 설명은 클라이언트가 보내지만, Ollama 0.35.1 context8192가 앞선
+  도구 메시지를 통째로 잘랐다. 출력 token 포화 검사만으로는 감지하지 못했다. 두 계약만
+  보존한 대비 시험도 넓은 legacy 읽기를 선택해, 입력 보존과 조건 보존은 독립 문제임을 확인했다.
+  공통 사전 예산 검사·Plugin 기반 계층 탐색·범위/필터/개수 계약 지침을 수정 중이다.
+- GUI 새 검증 창의 입력은 Windows helper의 `foreground window did not report a process id`로
+  차단됐다. 사용자의 입력칸 클릭을 요청했고, 다른 native 자동화로 우회하거나 GUI 성공을
+  만들지 않았다. 실제 파일/Executor 읽기는 별도의 격리 합성 작업 폴더에서 검사한다.
+- 네이버는 로그인된 캘린더를 Codex 브라우저로 읽기 관찰했으나 ANIS 자체 어댑터 수락은 아니다.
+  실제 계정 전송/등록·장치/미감 수락·K3 가중치·코딩 정답률 개선·강화학습·배포·push는 하지 않았다.
+  최신 클라우드 지원 범위는 [CLOUD_INTEGRATION.md](CLOUD_INTEGRATION.md), 전체 열린 게이트는
+  [완료 원장](QA_COMPLETION_LEDGER.md)에 구분한다.
 
 ## 2026-09-29 문맥 기반 대화와 안전한 정보 수집
 

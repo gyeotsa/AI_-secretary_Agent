@@ -1,6 +1,6 @@
 # ANIS 전 영역 완료 원장
 
-기준일: 2026-09-29. 이 문서는 **현재 PC에서 소스로 실행하는 ANIS 전체 제품**의 완료 조건을 추적한다. 공통 런타임 한 배치의 진척, 테스트 통과 개수, 모델 설치 상태를 전체 제품 완성도로 환산하지 않는다.
+기준일: 2026-10-05. 이 문서는 **현재 PC에서 소스로 실행하는 ANIS 전체 제품**의 완료 조건을 추적한다. 공통 런타임 한 배치의 진척, 테스트 통과 개수, 모델 설치 상태를 전체 제품 완성도로 환산하지 않는다.
 
 ## 1. 범위와 현재 결론
 
@@ -37,6 +37,34 @@ R17의 생성 코드 의미 정확도나 실제 계정·장치·전체 사용자
 
 ## 3. 최신 증거와 알려진 반례
 
+10월 5일 공통 입력 사전 예산/계층 탐색/정보 출처 계약을 보강했다. 두 실모델 초안은
+각각 **5/6**이었다. 출력 oneOf가 모순된 분류/목록을 막아도 coarse index의 `.95 conversation`
+판단만으로 실제 파일 요청을 버리는 결함이 남아, index의 조기 음성 결론과 미검토 그룹
+누락을 수정했다. 실제 전체 카탈로그의 부정 탐색은 모형 측정상 index1+detail12이며
+16회 ceiling을 유지한다. 각 호출의 timeout이 남아 있어 장기 대기 가능성은 별도 성능 한계다.
+읽기 oracle는 정확한 경로/본문/줄 범위/hash/실행 receipt/증거/원본·표시 보존과 실제 leaf
+dispatch guard로 보강했다. 집중 **56 passed (6.12초)**는 전역 모델 이해 능력의 증거가 아니다.
+실제 생산 shortlist 파일 읽기 **1.81초**는 통과했지만 당시 전체 목록 라벨은 잘못돼
+202개 도구 수락으로 인정하지 않는다. 이후 전체 허용 목록의 실제 Executor/합성 파일
+1–1줄 읽기는 **21.74초 통과**했다. 게임 종료 후 실제 9-case 해석은 **8/9**이며
+미지원 요청의 확신도 .7(.85 oracle 미달)는 실패로 남긴다. 인사는 결정적 0호출이다.
+입력/후보 재선택 후 전체 C는 **3590 passed, 17 skipped, 34 deselected (251.34초)**다.
+뒤이어 미지원 판정을 설명 부족과 분리했고 집중 **127 passed, 8 deselected (15.04초)**다.
+전체 D의 구 기대값 2개 실패를 수정한 최종 E는 **3592 passed, 17 skipped, 34 deselected
+(233.41초)**다. 소스·테스트 95개는 `da2a85fb45590fad95338d6b31d2b69c6155e7bb`로 커밋했다.
+실제 GUI 입력·계정·장치·모든 전문가 수락이나 전체 완료로 환산하지 않는다.
+[공통 QA](QA_COMMON_RUNTIME.md)를 따른다.
+
+10월 4일 기존 미커밋 기능을 포함한 작업 트리 전체 회귀는 **3509 passed, 17 skipped,
+33 deselected (244.43초)**였다. 입력 예산 후속 수정 전 결과이며 최종 revision 수락은 별도다.
+집중 CU/K3/Plugin Hub/테마 103개와 실제 Chromium 합성 loop/DOM stale 1개는 합산하지 않는다.
+실제 GUI의 파일 조회를 코드 답변으로 오분류한 경계를 수정한 뒤, 전체 카탈로그 실모델은
+**5/6**으로 파일 범위 조건 누락이 남았다. Ollama가 36KB 도구 설명 메시지를 통째로
+절단한 것과, 겹치는 도구의 생략 의미가 불명확한 것을 확인해 공통 입력/탐색 계약을 보강 중이다.
+별도 읽기 QA도 첫 줄 포함만 검사해 두 줄 반환을 통과시키는 oracle 결함이 있어 정확한
+본문·범위·hash·변경 없음·표시 범위로 강화했다. 이전 passed=true를 실제 부분 조회 성공으로
+인정하지 않는다. [공통 QA](QA_COMMON_RUNTIME.md)의 최신 표본/제한을 따른다.
+
 9월 29일에는 고정 검증 실패 응답 대신 문맥 기반 질문 수집과 공통 상태 응답 생성 경계를
 연결했다. 작업 트리 관련 회귀 **752 passed / 24 deselected**, 실제 로컬 Ollama의 생산
 shortlist·이전 오류 이력·다중 턴 수집 → 승인 대기 표본 **1 passed / 13 deselected**다.
@@ -65,13 +93,13 @@ Windows 화면 조작 도구가 초기화 ACL 오류로 실패해 실제 UI 조�
 
 | 증거 | 확인한 범위 | 아직 증명하지 못한 범위 |
 | --- | --- | --- |
-| [공통 런타임 QA](QA_COMMON_RUNTIME.md), [최신 인수인계](Agent%20인수인계.txt) | 2026-09-13 기록의 전체 자동 회귀 **2,368 passed, 17 skipped, 11 deselected (167.68s)**. 앞선 겹치는 집중 검사는 합산하지 않는다. | 이번 병행 변경 이후 전체 회귀, skip된 실제 계정/장치, 모든 기능의 내용 정확도 |
+| [공통 런타임 QA](QA_COMMON_RUNTIME.md), [최신 인수인계](Agent%20인수인계.txt) | 2026-10-05 전체 자동 회귀 **3,592 passed, 17 skipped, 34 deselected (233.41초)**; 소스 `da2a85f`. 전체 목록 Executor/합성 파일 1–1줄 읽기 21.74초 통과. 겹치는 집중 검사는 합산하지 않는다. | 실제 해석 matrix 8/9의 미지원 확신도 실패, GUI 직접 입력 재검증, 건너뛴 심볼릭 링크/대화 분류 변형, 별도의 실제 계정/장치 수락 및 모든 기능의 내용 정확도 |
 | [실제 GUI와 모델 품질](QA_COMMON_RUNTIME.md#실제-gui와-모델-품질) | 격리 JarvisApp의 첫 줄 원문/CRLF 읽기, TTS OFF, 빈 작업공간 전환, 장문 내부 스크롤·접기/복원. 재귀 예제 10개 응답 표시, 800×700 창/입력창 유지, 정상 종료 | 동일 답변의 **print_stairs 출력 순서 설명 오류, count_char 종료값 오류, count_pattern의 긴 패턴 종료 조건 누락**. 생성 코드는 실행하지 않았으며, 개수 준수는 코드 정확도가 아니다. 부분 응답 안내의 실앱 재현도 별도 필요 |
 | [모델 취소·지연 기록](QA_COMMON_RUNTIME.md) | 실제 Ollama 요청 본문 전송 뒤 취소 0.016초, worker 종료, 이후 인사 5.12초. 각 1회 관측 | Anthropic 전송 중 취소, DNS 지연, 서버 GPU 즉시 반환, 롤백을 보장하지 않음. 동일 장문 요청의 직전 120초 read timeout은 해결되지 않은 표본 |
 | [최신 요구사항 재감사](QA_REQUIREMENTS_MATRIX.md#117-2026-09-01-구현-후-재검증), [9월 7일 후속 QA](QA_MASTER_AUDIT.md#2026-09-07-후속-qa-최종-정리) | Photoshop 타입 편집·복사 저장, 일부 Office process 격리, 시안 revision/문구/렌더 결과 검증, 원격 read-back·uncertain 전이, 증거 무결성·만료 방어의 구현/자동 계약 | 실제 설치 전문 앱, 실계정 도착, 실제 사진·장치·미감 수락. 과거 GAP-01/02/05/06/14/16 전체를 계속 미구현으로 나열하지 않되 남은 하위 범위는 유지 |
 | [답변 검수 코드](core/answer_verification.py), [회귀](test_answer_verification.py), [연결 검사](test_answer_review_integration.py) | 실제 모델에서 중첩 목록 코드 펜스 오인식과 제목 뒤 본문 잘림을 발견해 수정. 허위 진행 주장과 개수/원문/정적 Python 구문 검사·최대 1회 답변 교정 연결 | 배열 기준 ID 중복을 keyed schema로 수정한 뒤 실제 검수 요청이 120초 timeout. 전체 139.17초, 3개 초안 보존/unverified. 일반 정확도·지연 해결이 아니며 실모델 검수의 안정성 잔여 |
-| [클라우드 런타임](core/remote_runtime.py), [동기화 검사](test_cloud_catalog_sync.py) | 제한된 다중 페이지/취소/부분 결과 보존/계정별 revision 충돌 방어. 계정 저장소 v2 식별과 구형 인증정보의 추정 이관 금지, 가짜 DPAPI 검사 33개 통과 | 실계정 미검증. 부분/재개 목록은 merge-only이고 완전 증거가 있는 전체 조회만 교체. 파일 본문/RAG 및 일반 사용자 OAuth UX는 별개 |
-| [네이버 메일](NAVER_INTEGRATION.md), [메일 검사](test_mail_read_runtime.py) | 받은편지함/선택 본문, 읽기 전용 IMAP, STARTTLS 발송. 가짜 IMAP+MIME 79개 통과 | 실제 계정 연결 UI, 네이버 접속·수신 수락과 캘린더 조회/작성 미완. SMTP 접수만으로 도착 완료를 기록하지 않음 |
+| [클라우드 런타임](core/remote_runtime.py), [클라우드 지원](CLOUD_INTEGRATION.md) | 제한된 다중 페이지/부분 결과 보존/계정 격리, PKCE OAuth UI/신원·scope·만료·DPAPI, 명시 Drive 본문/RAG 구현·자동 계약 | 실계정 미검증. 부분/재개 목록은 merge-only, 본문/형식 지원은 제한적. 검색 결과의 최종 답변 사용·사용자 수락은 미확인 |
+| [네이버 메일](NAVER_INTEGRATION.md), [메일 검사](test_mail_read_runtime.py) | 받은편지함/선택 본문, 읽기 전용 IMAP, STARTTLS 발송, DPAPI 계정 UI·취소/해제 자동 계약 | 실제 네이버 인증·수신 수락과 ANIS 캘린더 조회/등록 미완. Codex의 로그인된 브라우저 관찰·SMTP 접수로 업무 완료를 기록하지 않음 |
 
 과거 문서의 `packaged_runtime=passed`/`OK` 파일이나 12개 실환경 key의 `not_run` 스냅샷은 [당시 원장 해석](QA_REQUIREMENTS_MATRIX.md#6-현재-실환경-원장의-의미와-부족한-근거)과 함께만 사용한다. 이 문서 작성 중 현재 `AcceptanceRuntime`을 실행하지 않았으므로 과거 스냅샷을 현재 상태로 복제하지 않는다.
 
@@ -111,7 +139,7 @@ Windows 화면 조작 도구가 초기화 ACL 오류로 실패해 실제 UI 조�
 | R16 프로젝트 증분 인덱싱 | 구현 근거 | 과거 계약 | 부분 실증: 빈 폴더 0건 | 미연결 | [인덱서](core/project_indexer.py), [검사](test_p4_workspace_intelligence.py). 대형 시험 저장소에서 rename/delete burst·수정 경합·비밀 제외·namespace 분리와 시간/메모리/반응성 측정. |
 | R17 Coding Agent·자체 수정 | 구현 근거; 생성 의미 정확도 잔존 | 과거 계약; 신규 검수 미검증 | 부분 실증: 답변 예제 3개 결함 확인 | 미연결 | [코딩 검사](test_coding_agent.py), [QA](QA_COMMON_RUNTIME.md). 별도 시험 저장소에서 기능 추가/버그 수정/ANIS UI 수정→테스트→diff→복구 확인. 재귀 예제 반례를 포함하되 함수명 특례가 아닌 일반 정확도 oracle·안전한 검증으로 평가. |
 | R18 기억 통합·정정·삭제 | 구현 근거 | 과거 계약 | 미연결 | 미연결 | [기억 검사](test_memory_pipeline.py), [통합 검사](test_memory_consolidation.py). 며칠간 유휴/종료 통합·동시 namespace·민감정보·정정/삭제 전파를 실증하고 기억/잊기 결과를 사용자 확인. |
-| R19 근거형 RAG·Obsidian | 로컬 구현; 클라우드 본문 경로 공백 | 과거 계약 | 미연결 | 미연결 | [RAG 검사](test_p7_memory_rag.py), [Obsidian 검사](test_obsidian_integration.py). 실제 허용된 vault의 수정/삭제→재색인→검색→인용 사용과 held-out 관련성 평가. 검색 후보·프롬프트 포함·실제 답변 사용을 구분하며 cloud metadata를 본문 RAG로 계산하지 않음. |
+| R19 근거형 RAG·Obsidian | 로컬 구현; 2026-10-04 Drive 명시 파일 본문 RAG 연결, 제공자/형식 제한 | 과거 로컬 계약; 본문/hash/계정 격리/버전·철회 자동 계약 추가 | 로컬 최신 미연결; Drive 실계정 본문·답변 수락 미실행 | 미연결 | [RAG 검사](test_p7_memory_rag.py), [Obsidian 검사](test_obsidian_integration.py), [클라우드 범위](CLOUD_INTEGRATION.md), [본문 검사](test_cloud_content.py), [도구 연결 검사](test_cloud_knowledge.py). Drive 명시 ID의 UTF-8 plain/markdown/csv·Google Docs 본문만 지원하며 PDF/Office/Sheets/Slides/바로가기는 미지원. 실제 허용 vault/계정의 수정·삭제·권한 회수→재색인→검색→최종 답변 인용 사용과 held-out 관련성을 확인. 검색 후보·프롬프트 포함·실제 답변 사용을 구분하며 metadata를 본문으로 계산하지 않음. |
 | R20 조사·브라우저·실시간 정보 | 구현 근거; 사이트별 범위 제한 | 과거 계약 | 미연결 | 미연결 | [조사 검사](test_p8_research_agent.py), [브라우저 검사](test_p8_browser_plugin.py). 실제 한국어 자료/기업·제품/YouTube 자막에서 본문·최신성·상충·출처를 대조한 분석을 제공. 검색창/재생 페이지를 여는 것만으로 조사나 실제 재생 완료로 처리하지 않음. |
 
 ### 문서·외부 연동·멀티모달·운영
@@ -119,7 +147,7 @@ Windows 화면 조작 도구가 초기화 ACL 오류로 실패해 실제 UI 조�
 | ID / 범위 | I 구현 | A 자동 | L 실앱 | U 사용자 | 근거와 다음 닫힘 조건 |
 | --- | --- | --- | --- | --- | --- |
 | R21 Office/HWP·PDF | 생성/편집/렌더 구현; 형식별 수락 잔존 | 과거 계약 | 과거 파일 재열기 기록; 현재 설치 앱 미연결 | 미연결 | [Office 검사](test_p9_office_runtime.py), [9월 QA](QA_MASTER_AUDIT.md). 합성 시험 문서로 실제 Word/Excel/PowerPoint/HWP 편집→저장→앱 재열기·PDF/PNG 전 페이지 검수. 표/수식/차트/폰트/레이아웃 보존과 사용자 가독성 확인. |
-| R22 클라우드·메일·일정·메신저 | read-back 구현; OAuth UX/본문 RAG/요약 공백; pagination 진행 | 과거 계약; 동기화 변경 미검증 | 실계정 증거 미연결 | 미연결 | [원격 런타임](core/remote_runtime.py), [원격 검사](test_remote_readback_contract.py), [클라우드 검사](test_cloud_catalog_sync.py). 6절의 서비스별 구현·실계정 게이트를 각각 닫음. ID/HTTP 성공을 전달·내용 일치로 확장하지 않음. |
+| R22 클라우드·메일·일정·메신저 | 2026-10-04 read-back·bounded pagination·Google/Microsoft OAuth UI/PKCE/DPAPI·Drive 제한 본문·Slack/Teams 인용형 요약 구현 | 과거 계약; 오프라인/loopback OAuth·본문·요약 자동 계약 추가, 최신 실행 기록은 공통 QA와 대조 | 실제 클라이언트/계정 인증·본문 답변·요약 수락 미실행 | 미연결 | [원격 런타임](core/remote_runtime.py), [원격 검사](test_remote_readback_contract.py), [클라우드 검사](test_cloud_catalog_sync.py), [지원 범위](CLOUD_INTEGRATION.md). 6절의 서비스·형식별 구현/실계정 게이트를 각각 닫음. 메타데이터·명시 파일 본문·제한 메시지 묶음 요약을 전체 클라우드 수집으로 확대하지 않고, ID/HTTP/원문 인용 일치만으로 도착·의미 정확도·사용자 수락을 주장하지 않음. |
 | R23 Windows·카카오톡 실제 작업 | UIA/포커스/원문 방어 구현 | 과거 모의 계약 | 실제 도착·중복 여부 미연결 | 미연결 | [카카오톡 검사](test_desktop_messaging_uia_hardening.py), [재감사](QA_REQUIREMENTS_MATRIX.md). 이미 승인된 수신자 **형택**의 기존 시험 전송 상태부터 확인. 새 시험이 필요할 때 승인된 내용·정확 창·실제 도착·중복 없음 증거를 연결. 미확인을 무전송으로 추정해 재전송하지 않음. |
 | R24 Vision·OCR·영상·참조 | 구현 근거; 모델/입력별 품질 잔존 | 과거 계약 | 실제 현재 모델 품질 미연결 | 미연결 | [Vision](core/vision_runtime.py), [멀티모달 검사](test_p10_runtime.py). 다중 이미지/문서/화면/영상의 참조 역할·시간·중요 텍스트/숫자·관계를 실모델 정답셋으로 평가. 시안 편집은 U03–U06 별도 게이트. |
 | R25 STT·호출·마이크 복구 | 구현 근거; 지연 로딩 반영 | 과거 계약 | 부분 실증: large-v3 CUDA 로딩, 발화 아님 | 미연결 | [장치 검사](test_hardware_devices.py), [지연 로딩 검사](test_stt_lazy_initialization.py), [QA](QA_COMMON_RUNTIME.md). 실제 마이크의 호출/미호출·TV/에코·무음·정정·ON/OFF·절전/장치 재연결에서 오탐/지연 기록. |
@@ -159,16 +187,16 @@ Windows 화면 조작 도구가 초기화 ACL 오류로 실패해 실제 UI 조�
 
 R22/R19/U11은 하나의 “클라우드 연결 완료”로 닫지 않는다. 아래는 같은 상위 ID의 하위 체크이며 고정 ID 총수를 늘리거나 별도 성공 개수로 중복 집계하지 않는다.
 
-### 주 사용 서비스 실체 감사 (2026-09-14, 계정 미접속)
+### 주 사용 서비스 실체 감사 (2026-10-04 갱신)
 
 | 서비스 | 현재 실행 경로 | 다음 구현/검증 경계 |
 | --- | --- | --- |
-| 네이버 | `core/mail_runtime.py`, `plugins/mail.py`: 읽기 전용 받은편지함/본문 + 승인 SMTP/STARTTLS. `core/mail_accounts.py`, `ui/mail_account_dialog.py`: DPAPI 단일 계정 UI/인증 전용 검사/로컬 해제와 실제 실행 연결 | 메일·캘린더 우선. UI/서비스 오프라인 계약 검증, 실제 로그인·도착은 미검증. 캘린더 공식 API/CalDAV 제약과 다음 작업은 NAVER_INTEGRATION.md 참조 |
-| 구글 | `plugins/cloud_communication.py`, `core/remote_runtime.py`: OAuth 백엔드, 승인 Gmail 전송, Calendar 생성/읽기, Drive 메타데이터 | 일반 연결 UI/callback, Gmail 받은편지함/검색, Calendar 다중 페이지, Drive 본문/RAG와 실제 계정 검증 필요 |
+| 네이버 | `core/mail_runtime.py`, `plugins/mail.py`: 읽기 전용 IMAP 받은편지함/본문 + 승인 SMTP/STARTTLS. `core/mail_accounts.py`, `ui/mail_account_dialog.py`: DPAPI 단일 메일 계정 UI/인증 전용 검사/로컬 해제와 실행 연결. 캘린더는 별도 로그인된 브라우저 방식 | 메일·캘린더 우선. Google/Microsoft OAuth와 구분하며, 실제 메일 인증·도착과 캘린더 화면 조회/승인 등록·재조회 수락은 미실행. [범위/제약](NAVER_INTEGRATION.md) 참조 |
+| 구글 | 2026-10-04 `ui/oauth_account_dialog.py`, `core/oauth_connection.py`, `core/remote_runtime.py`: 기본 브라우저 OAuth UI·PKCE·loopback callback·계정 신원/scope/만료 확인·DPAPI 저장. 승인 Gmail 전송, Calendar 생성/읽기, Drive 메타데이터와 `plugins/cloud_knowledge.py`의 명시 plain/markdown/csv·Google Docs 본문 RAG | 실제 Client 등록·선택 계정 로그인/동의/갱신 수락 미실행. Gmail 받은편지함/검색·Calendar 다중 페이지는 잔여이며, Drive PDF/Office/Sheets/Slides/바로가기·전체 수집은 지원하지 않음. 본문 변경/철회→검색→최종 답변 실제 사용은 실계정으로 별도 수락. [지원 계약](CLOUD_INTEGRATION.md) 참조 |
 | 깃허브 | `plugins/git.py`: 로컬 저장소 Git status/diff/log/commit/push/pull | GitHub 계정 상태·Issues/PR/CI 전용 API/CLI 경로 없음. 기존 Git 인증을 GitHub 연결 검증으로 간주하지 않음 |
 | 카카오톡 | `core/desktop_messaging.py`: Windows 대상/입력창 확인, 승인 전송, 새 발신 말풍선 비교 | 형택 실제 도착 수락, 비전송 준비 상태 진단. 대화 기록 검색·첨부·그룹·서버 수신 영수증은 현재 계약과 별개 |
 
-- 계정 저장소 충돌 수정: v2는 provider/account 정확한 튜플의 SHA-256 파일명과 암호화 payload의 계정 결합을 검증한다. 구형 자격증명은 자동 복호화/이관/삭제하지 않으며 재연결이 필요하다. 원격 신원·scope·토큰 만료 검증과 OAuth status 개선은 여전히 남아 있다.
+- 계정 저장소 v2는 provider/account 정확한 튜플의 SHA-256 파일명과 암호화 payload의 계정 결합을 검증한다. 구형 자격증명은 자동 복호화/이관/삭제하지 않으며 재연결이 필요하다. 10월 4일 연결 UI와 원격 신원·반환 scope·로컬 만료 상태 검증을 반영했다. 실제 제공자 로그인·동의·갱신 왕복 수락은 여전히 남아 있다.
 - 클라우드 플러그인이 인증 불필요/로컬 연결이라고 표시하던 기본 probe는 이번 작업에서 `unchecked`로 바로잡았다. 이 표시 수정은 실제 계정 인증이나 위 보안 작업 완료를 뜻하지 않는다.
 - Codex에 설치하는 플러그인과 ANIS 자체 `core/plugin.py`가 로드하는 Python 플러그인은 별개다. Codex 플러그인 설치만으로 ANIS 연동이 완성됐다고 기록하지 않는다.
 
@@ -176,11 +204,11 @@ R22/R19/U11은 하나의 “클라우드 연결 완료”로 닫지 않는다. �
 
 | 하위 업무 | 현재 경계 | 구현/자동 검증의 다음 작업 | 실계정/사용자 수락 |
 | --- | --- | --- | --- |
-| Drive/OneDrive/Notion 메타데이터 | pagination·기존 목록 보존 변경 진행/최종 결과 미연결 | 페이지 경계·cursor 반복/만료·bounded partial·delta/삭제·중단 재개·계정 격리·부분 실패 뒤 기존 항목 보존을 테스트하고 지원 범위를 표시 | 선택 계정에서 여러 페이지·수정/삭제·권한 회수 후 앱 목록과 원격 목록 대조 |
-| 클라우드 파일 본문/RAG | metadata 목록과 다른 미완 경로 | 본문 fetch/export·문서 파싱·hash·source URL·namespace·변경/삭제 재색인·접근 철회 반영·답변 인용까지 실제 연결 | 허용된 파일의 원격 변경→검색→답변이 최신 본문을 실제 사용함을 확인. 제목/snippet만으로 본문을 읽었다고 하지 않음 |
-| 일반 사용자 OAuth 연결 | PKCE/token/DPAPI 기반 코드와 연결 UX는 별개 | 연결 UI·안전한 callback transaction·state 만료/중복·취소/동의 거부·재시작 복귀·계정/scope 결합 | 사용자가 선택한 provider/account로 로그인·동의·갱신·로그아웃/철회를 완료. 실제 자격증명은 사용자가 직접 입력 |
+| Drive/OneDrive/Notion 메타데이터 | 2026-10-04 bounded pagination·계정별 revision 충돌/취소·기존 목록 보존 구현. 본문/RAG가 아니며 부분/필터/재개는 merge-only | [자동 계약](test_cloud_catalog_sync.py)과 최신 QA를 대조. 첫 페이지부터 필터 없이 끝까지 확인한 전체 스냅샷만 교체하고 페이지 크기/예산·cursor·delta/삭제·부분 실패 범위를 유지 | 실계정 미실행. 선택 계정에서 여러 페이지·수정/삭제·권한 회수 후 앱 목록과 원격 목록 대조 |
+| 클라우드 파일 본문/RAG | 2026-10-04 Drive 명시 ID 1~10개의 UTF-8 plain/markdown/csv·Google Docs 본문 fetch/export→계정별 기존 RAG→근거 검색 구현. PDF/Office/Sheets/Slides/바로가기·전체 수집 미지원 | [본문 검사](test_cloud_content.py), [도구 검사](test_cloud_knowledge.py): 본문/hash/출처 URL·ID/namespace·원격 버전/접근 재확인·철회 제외·부분/취소 계약. 다른 제공자/파서는 지원 확대 시 별도 구현·검증 | 실제 계정 본문/답변 수락 미실행. 허용 파일의 원격 변경/철회→검색→최종 답변이 최신 본문을 실제 사용함을 확인. 제목/snippet·검색 결과만으로 실제 답변 사용을 주장하지 않음 |
+| 일반 사용자 OAuth 연결 | 2026-10-04 Google/Microsoft 직접 입력 UI·기본 브라우저·PKCE S256·일회성 loopback callback·신원/허용 scope/만료 상태·DPAPI v2 저장 구현. 고정 묶음 scope 요청, 토큰 저장은 기능 실행 성공이 아님 | [콜백/계정 검사](test_oauth_connection.py), [Qt 검사](test_oauth_account_dialog.py): state/Host/경로/중복·만료·취소/거부·worker 정리·신원 불일치·임시 DPAPI/재시작 갱신 계약. scope 응답 누락을 허용으로 추측하지 않고 구형 파일은 보존 | 실제 클라이언트 등록·선택 계정 로그인/동의/갱신 수락 미실행. 사용자가 직접 입력하며 로컬 해제는 해당 토큰만 삭제, 제공자 권한 철회·기존 RAG 본문 삭제는 별도 |
 | Gmail/Outlook/Calendar/Slack/Teams 변경 | 대상/본문/시간/채널 read-back와 uncertain 방어 구현 | 첨부 hash·provider idempotency·crash 뒤 applying/uncertain reconciliation을 실제 지원 범위별 검증. 불명확 상태 재전송 차단 유지 | 승인된 초안과 정확한 계정/수신자/본문/시간을 서버 재조회 및 도착/반영 증거와 대조 |
-| Slack/Teams 종합 요약 | snippet 배열/미리보기는 실제 요약이 아님 | 출처 ID를 유지하는 종합 요약·결정/할 일 추출 단계와 누락/오인용 oracle 구현, 또는 UI 지원명을 미리보기로 정확히 제한 | 실제 허용 채널의 대화에 대한 요약 정확도·주요 결정·담당자·근거를 사용자 확인 |
+| Slack/Teams 종합 요약 | 2026-10-04 조회한 메시지 묶음의 핵심/결정/할 일을 loopback Ollama로 선별하는 인용 근거 추출형 요약 구현. 기본 50/최대 100개·본문 16,000자 제한, 전체 채널/답글/첨부 수집 아님 | [요약 검사](test_communication_summary.py): 실제 입력의 출처 ID/원문 인용·항목 문구 일치, 담당자/기한 원문 또는 null, 크기/취소/시간 제한·원격 모델 거부. 인용 일치는 의미 분류 정확도 검증이 아니며 생략/생성 실패는 부분 결과 | 실제 Slack/Teams 계정·요약 수락 미실행. Slack은 환경변수 bot token, Teams는 Microsoft OAuth이며 선택 채널에서 주요 내용/결정·담당자·근거·누락을 사용자 확인 |
 | 추가 계획 서비스 | 전용 실행/검증 경로 없는 범위 존재 | 서비스·업무별 지원/미지원/계정 필요를 명시하고 진입점→권한→실행→검증을 연결 | 게시/결제/새 계정·조직 변경은 사용자 범위 확정 후에만 실검증. 이미 있는 로컬 기능을 대체 증거로 사용하지 않음 |
 
 ## 7. 증거 연결 양식과 수락 운영
@@ -205,9 +233,9 @@ R22/R19/U11은 하나의 “클라우드 연결 완료”로 닫지 않는다. �
 
 ## 8. 다음 작업 순서
 
-1. **현재 병행 변경의 결과를 먼저 연결**한다. 답변 검수와 cloud pagination의 최종 소스·집중/전체 회귀를 받은 뒤 해당 I/A만 갱신한다. 결과를 받기 전 완료로 표시하지 않는다.
-2. **이미 실앱에서 발견한 공통 품질 결함을 재검증**한다. 코드 예제/출력·설명·종료 조건, 요구 개수, 무근거 진행 주장, 말투, 장문 timeout/부분 응답 안내를 분리한 실패 corpus로 평가한다. 모델·전체 회귀를 동시에 과부하시켜 원인이 섞이지 않게 실행 조건을 기록한다.
-3. **계정 없이 가능한 구현 공백을 닫는다.** OAuth 연결 UX, cloud 본문/RAG, 진짜 요약, 상태 보유 네이티브 도구의 안전한 timeout/복구, 미지원 생성 편집·계획 서비스의 정직한 지원 계약을 처리한다. 범위 확대나 비용이 필요할 때만 사용자 선택을 구한다.
+1. **현재 공통 해석 반례를 먼저 닫는다.** 입력 한도 때문에 카탈로그를 숨기지 않는 탐색·조건 보존과 QA oracle 수정 뒤 전체 카탈로그 실모델/실제 합성 파일 실행 및 최종 회귀를 연결한다. 실패를 스타일 분류나 정보 부족으로 돌리지 않는다.
+2. **이미 실앱에서 발견한 공통 품질 결함을 재검증**한다. 요구 조건·원문·무근거 진행 주장·말투·장문 timeout/부분 응답 안내를 분리한 실패 corpus로 평가한다. 모델과 회귀를 동시에 과부하시켜 원인이 섞이지 않게 하지 않는다. 모델 한계에 따른 코딩 정답률/교체 실험은 사용자 보류를 유지한다.
+3. **구현된 하위 범위와 남은 공백을 구분한다.** OAuth UX·명시 Drive 본문/RAG·근거 추출 요약·native 상태/수명주기 보강을 전체 미구현으로 반복 나열하지 않는다. ANIS 자체 네이버 브라우저 세션/캘린더 어댑터, 미지원 생성 편집·계획 서비스의 실제 실행 계약을 계속 처리하고 범위/계정/비용만 필요 시 사용자 확정한다.
 4. **현재 PC의 실제 기능을 묶음별 수락**한다. 모든 전문가 산출물 재열기, 시안 연속 편집/실모델, 실제 음성/손 동작/장치, 허용된 계정의 전달·변경·동기화, 승인된 카카오톡 시험, 장기 운영을 서로 다른 보고서로 남긴다.
 5. **사용자 평가를 연결하고 닫힘을 재감사**한다. 43개 활성 ID에 필요한 네 게이트와 유효 증거가 모두 연결됐는지 확인한다. 미지원/미검증을 숨기지 않으며 O04는 그대로 보류한다. 공통 비교 과제·조건·독립 평가 없이 Codex 수준 동등성이나 전 영역 백분율을 만들지 않는다.
 

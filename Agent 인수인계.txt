@@ -1,5 +1,121 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
 
+## 2026-10-05 입력 보존·도구 탐색 권한과 읽기 QA 보강
+
+- 전 영역 완성 요청을 이어서 처리한다. 코딩 모델 정답률/K3/Graphify/강화학습/배포/push
+  보류는 유지한다. 브랜치 codex/mockup-design-agent-v2, 시작 HEAD 1eac16a. 개인 DB와
+  brain/graphify-out/tmp/QA 산출물은 커밋하지 않는다. 커밋 규칙은 전일 항목과 동일하다.
+- 공통 해석 경계에서 실제 전송할 user/assistant 역할·최신 입력을 보존하고 UTF-8 기반
+  보수적인 사전 예산, 호출별 context/output 한도, Plugin 소유권 기반 전체 도구 계층 탐색을
+  적용했다. 부족한 문맥/탐색 예산은 명시적 실패이며 키워드 대체 실행이나 대화 성공으로
+  덮지 않는다. 짧은 응답 스타일 분류는 검증된 대화 뒤에만 사용하며 작업 권한이 없다.
+- 초안 두 차례의 실모델 6-case matrix는 모두 5/6이었다. 첫 번째는 감정 대화가
+  conversation+nonempty groups로 모순됐고, oneOf 계약 이후 두 번째는 실제 파일 읽기를
+  group index에서 .95 conversation+[]로 확정했다. 마지막 표본은 Temp/anis-common-qa-xa_709xh.
+  개념 설명 탐색은 38.97초, 이전 정확한 파일 분류 표본도 40.09초로 지연 한계가 남았다.
+- group index의 음성 결론을 실제 상세 계약 검토 없이 grounded로 승격하던 조기 return을
+  제거하고 미검토 그룹 fallback을 구현했다. 파일 후보는 이름/위치 근거일 뿐
+  본문이나 실행 권한이 아니라는 공통 provenance 지침을 추가했다. 특정 파일/문장 예외는 없다.
+- 실제 Executor/로컬 모델/파일 플러그인의 생산 shortlist 읽기는 정확한 첫 줄/CRLF/
+  해시/증거/원본 보존으로 1.81초에 통과했다(Temp/anis-common-qa-nys9y35a). 당시 로그의
+  all_registered_tools 라벨은 실제 shortlist와 달라 전체 도구 검증으로 인정하지 않는다.
+  후속 runtime-read는 allowed_tool_names에 전체 등록 목록을 명시해 범위를 고정했다.
+- 읽기 QA의 leaf execute_tool 경계는 재계획도 포함하여 승인된 합성 파일 1–1줄 외에는
+  실행 전에 차단한다. 잘못된 경로·위조/불일치 증거·실패 receipt·응답 누출·원본 변경은
+  통과하지 않는다. 미지원 요청도 임의의 unresolved를 pass로 세지 않는다.
+- 집중 QA oracle/파일 계약 56 passed(6.12초), tmp/qa-oct05-read-oracle-d. 9-case 전체
+  도구 실모델 matrix는 7/9(Temp/anis-common-qa-rsmgiggn)였다. 메일 5개/본문 제외,
+  유튜브 검색/재생 금지, 인용 명령 설명은 올바르게 분류했으며 실제 도구는 실행하지 않았다.
+  파일은 올바른 상세 도구를 찾았지만 legacy 배치의 불필요한 선택이 합쳐져 16개 한도를
+  넘었다. 미지원 우주선은 지원 불가로 안내했으나 보수적 QA 확신도 .85에 못 미쳐 실패다.
+  전체 회귀는 5 failed/633 passed/34 deselected(79.16초)에서 중단됐다. 발견 호출을
+  고려하지 않은 오래된 대역과 긴 이력의 새 pre-send 거부 경계에 대한 fixture를 보강했다.
+  원문 보호/승인/leaf 차단을 약화하지 않았으며 해당 2파일 49 passed(20.17초)다.
+- localhost의 실제 비용을 numeric127.0.0.1 합성 서버와 비교했다. Windows의 ::1 connect
+  실패에 2.024초, numeric IPv4 전체에는 0.00164초였다(proxy/TLS가 원인은 아님).
+  config 기본값/.env.example 및 현재 .env의 정확한 로컬 한 줄만 127.0.0.1로 변경했다.
+  명시적인 다른 URL·remote/TLS·취소 경계는 그대로이며 .env는 커밋하지 않는다.
+  기존 앱은 재시작해야 반영된다. 설정/전송 회귀 24 passed다.
+- 저장된 MCP 재연결 결과의 실제 성공/실패 수를 반환해 전부 실패도 성공 알림으로 보이던
+  결함을 수정했다. 부분/전체 실패는 경고, 원격 오류 내용 대신 고정 코드, 기존 승인은 유지.
+  MCP/UI 집중 34 passed/1 deselected(3.44초), tmp/qa-oct05-mcp-result-a. 실계정 연결은 아니다.
+- 후속 다중 후보는 전체 후보 계약을 보존한 한 번의 최소 재선택으로 정리했다. 배치/최종
+  16도구·총 16호출·입력 예산·취소 경계는 유지하고 복합 단계는 보존한다. 11파일 집중
+  326 passed/25 deselected(42.20초). 전체 C 3590 passed/17 skipped/34 deselected(251.34초).
+- 숫자주소 변경 후에도 cold load 120.03초(완료 호출 0개), warm 재시도 128.05초(1개) timeout.
+  최소 readiness 36.92초 중 load 33.874초였다. 사용자 명조 종료 후 실제 9-case matrix
+  8/9(Temp/anis-common-qa-mad9vvpj). 인사는 결정적 0.02초/모델 0호출, 감정 13.14초,
+  설명 9.02초, 취소 후 인사 7.06초, 파일 분류 13.73초, 인용 설명 8.03초, 메일 3.78초,
+  검색/재생 구분 3.56초. 게임·설정·캐시/load 상태 변화가 섞여 게임 단독 원인으로 단정하지 않는다.
+- 남은 실제 matrix 실패는 미지원 요청의 확신도 .7(.85 oracle 미달)이다. 기준/확신도를
+  올리지 않았다. 공통 코드에서 미지원=설명 부족으로 처리하던 별도 결함을 수정해
+  no_supported_tool 복구는 새 작업 지원 범위 안내만 허용하고 재질문/기존 작업 상속은 막았다.
+  집중 127 passed/8 deselected(15.04초). 후속 전체 D 2 failed/3590 passed/17 skipped/
+  34 deselected(235.95초)는 구 테스트의 재질문 기대값 2개이며 비실행 검증을 추가해 수정했다.
+- 실제 전체 도구 허용 목록 Executor/파일 읽기는 21.74초 통과(Temp/anis-common-qa-2j3kiw3o).
+  정확한 경로/1–1줄/CRLF/전체 원본 hash/receipt/증거/최종 표시/원본 보존을 대조했다.
+  메일/유튜브/카톡을 실제 실행하지 않았으며 GUI 입력 수락과도 구분한다.
+- 사용자는 기존 일반 Chrome 연결과 공식 Playwright 확장의 캘린더 탭 연결을 승인했다.
+  공식 설치 페이지는 브라우저 도구에서 차단돼 직접 설치를 요청했다. 설치/영구 접근/
+  ANIS 자체 어댑터 수락은 아직 확인되지 않았다. 쿠키/profile 복사·보안 설정 자동 변경은 안 한다.
+- 격리 QA GUI의 음성 OFF/마이크 미로드/채팅 진입을 관찰했다. 화면 불일치 후 전면
+  활성화로 대상을 확인했지만 입력 초점은 확인되지 않아 타이핑하지 않고 직접 입력을 요청했다.
+- 최종 전체 E: 3592 passed/17 skipped/34 deselected(233.41초), tmp/qa-oct05-final-e.xml.
+  EOF 빈 줄 한 개 외에는 검사 뒤 기능 코드를 바꾸지 않았다. 지정 소스·테스트 95개를
+  da2a85fb45590fad95338d6b31d2b69c6155e7bb로 로컬 커밋했다. 제목은 [Feat] 한국어이며
+  author/committer 모두 gyeotsa <gyeotsa@users.noreply.github.com>. 개인 DB/.env/brain/tmp/
+  QA 산출물은 제외했다. pip check 및 staged diff check 통과. 배포·push하지 않았다.
+- 다음: 이 문서와 지원/QA 문서 12개 기록 커밋 → 사용자 직접 GUI 입력/확장 설치 결과
+  확인 → ANIS 자체 캘린더 조회·승인 등록 어댑터 구현/수락. 실제 matrix 마지막 미지원
+  확신도 표본, 초기 load/긴 추론 timeout, 실계정/장치/전문가 품질 수락은 남아 있다.
+  전체 제품 완성도/Codex 동등성이나 계정·전송 수락은 자동 검사로 대체하지 않는다.
+- GUI 입력 도구 실패, ANIS 자체 네이버 캘린더 어댑터, 실계정 전송/도착, 장치 및 전문가
+  사용자 수락은 여전히 열려 있다. 자동 통과나 Codex 브라우저 관찰로 전체 완료를 선언하지 않는다.
+
+## 2026-10-04 통합 기능 검토·실모델 공통 요청 재감사
+
+- 사용자 요청은 전 영역 QA/완성까지 계속 작업이다. 코딩 모델 정답률 개선·Kimi K3는
+  보류, 강화학습·Graphify·배포 패키지·원격 push는 하지 않는다. 현재 브랜치는
+  codex/mockup-design-agent-v2, 시작 HEAD는 1eac16a이다. 커밋은 [Fix]/[Feat]/[Update]
+  태그와 gyeotsa <gyeotsa@users.noreply.github.com> author/committer 규칙을 따른다.
+- 기존 미커밋 기능 묶음을 통합 점검했다: 탭/사이드바·라이트/다크·창 리사이즈,
+  Jev 계정/선택 및 보류된 K3 UI, 공통 로컬 추론 직렬화, 로컬 기록 증분 리마인더,
+  MCP 2.2 HTTP 스키마·취소·명시적 재연결, Google/Microsoft PKCE 계정 UI와 DPAPI,
+  Drive 명시 파일 본문/RAG, Slack/Teams 인용 근거 기반 요약. 각각의 실제 지원 범위는
+  CLOUD_INTEGRATION.md / MCP_INTEGRATION.md / COMPUTER_USE.md / CONTINUITY_REMINDER.md /
+  JEV_INTEGRATION.md / KIMI_K3_INTEGRATION.md에 기록했다. 계정 없이 빈 성공을 만들지 않는다.
+- Computer Use는 모델에 노출하는 짧은 값과 별개로 원본 전체 SHA-256을 내부 상태에
+  보존해 suffix 변경도 감지한다. 입력 전후 대상·focus·최종 상태를 검증한다.
+  K3 실행은 Windows Job Object와 소유 handle로 후손 정리, 할당 실패 시 재개 금지,
+  원래 timeout/취소 원인 보존을 보강했다. 작은 실제 자식 프로세스 검사이며 가중치 실행은 아니다.
+- 자동 회귀 첫 실패 두 건은 CU hash fixture 누락과 K3 시험 worker PID 파일 쓰기 경합이었다.
+  집중 103 passed / 3 deselected(27.30초), 이후 전체 3509 passed / 17 skipped /
+  33 deselected(244.43초). XML tmp/qa-oct04-final.xml. 이 수치는 아래의 추가 입력 예산
+  수정 전 작업 트리이며 최종 revision 전체 통과로 재사용하지 않는다. skip/deselect는 통과가 아니다.
+- 실제 headless Chromium loop/DOM stale 검사 1 passed(4.05초). 합성 페이지·대역 계획이며
+  외부 계정이나 native Windows 어댑터 수락을 대신하지 않는다. pip check / diff check 통과.
+- 실제 GUI에서 'QA 기록.txt 파일의 첫 번째 줄만 그대로 알려줘'를 코드 답변으로
+  오분류한 반례가 나왔다. 도구 계약 판단 전에 독립 답변 스타일 분류가 실행을 막던 경계를
+  제거했다. 답변 스타일 분류는 검증된 대화 뒤에만 실행하며 권한/도구 선택을 바꾸지 못한다.
+- 후속 실제 로컬 모델 전체 202도구 QA는 5/6이며 파일 범위 실패가 남았다. legacy read_file의
+  path만 선택해 '첫 줄만'이 누락됐다. 별도 조사에서 36KB 도구 목록 메시지가 Ollama 0.35.1의
+  context8192 절단으로 통째로 사라짐을 확인했다(렌더 28,980자→860자). 두 도구만 보존해도
+  부분 범위가 누락돼 전송 예산/계층 탐색과 계약 의미를 함께 수정 중이다. 파일 도구의 시작/끝
+  포함 번호, 끝 줄 생략=EOF, 문자 한도는 줄 범위 대체 아님을 스키마에 명시했다.
+- 정상 종료 후 다시 띄운 격리 ANIS QA 창은 Windows 입력 도구가
+  'foreground window did not report a process id'로 입력을 거부했다. 좌표/다른 자동화로
+  우회하지 않고 사용자에게 입력칸 클릭을 요청했다. 현재 창 id7474806, 실행 session55223,
+  격리 작업 폴더 Temp/anis-common-qa-e3k4ya_s. 답변 전 상태를 성공으로 기록하지 않는다.
+- 네이버 캘린더는 복구한 Chrome에서 로그인된 2026년 10월 화면을 읽기 관찰했다.
+  일정 입력/저장/변경은 하지 않았다. ANIS 자체 세션 연결·계정/기간/캘린더 바인딩·구조화
+  조회/승인 등록/상세 재조회 어댑터는 여전히 필요하며 Codex 관찰로 완료 처리하지 않는다.
+- 실계정 OAuth 왕복·Drive 본문 답변 사용·메일/카톡 실제 도착, 실제 손/음성 장치,
+  모든 전문가/시안의 사용자 품질 수락과 장기 운영은 미완이다. 44 고정 ID 중 배포 O04만
+  보류하며 나머지 43개를 자동 통과 수나 임의 진행률로 완료 처리하지 않는다.
+- 다음: 공통 입력 예산/계층 탐색 변경 → 전체 도구 실모델 범위 재시험 → 실제 파일/Executor
+  읽기와 GUI 재검증 → 최종 전체 회귀 → 개인 DB/brain/tmp/QA 산출물을 제외한 명시 소스
+  범위 커밋 및 이 항목의 최종 결과/해시 갱신. 계정/시험 일정이 필요할 때만 정확한 범위를 요청.
+
 ## 2026-09-29 문맥 기반 대화 복구·질문 수집 인수인계
 
 - 요청: 고정 실패 답변/고정 질문 대신 LLM이 현재 요청·대화·확정된 정보를 보고 부족한
