@@ -1,5 +1,24 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
 
+## 2026-10-06 Git 변경 목록의 로컬 산출물 제외
+
+- Fork의 Local Changes 101,579개는 미추적 로컬 파일 101,578개와 기존 추적 개인 DB 변경
+  1개였다. tmp/의 반복 QA fixture 100,852개, graphify-out/의 기존 분석 산출물 424개,
+  .pytest-tmp-* 281개가 대부분이며 개발 코드 변경 10만 건을 의미하지 않는다.
+- 사용자의 승인에 따라 .gitignore에 루트 기준 tmp/, .pytest-tmp-*/, .playwright-mcp/,
+  graphify-out/, data/qa/와 기존 커밋 제외 대상 brain/, architecture_inspect.png,
+  greeting.pptx, tmpdozr9d5t/만 추가한다. 전체 data/, 모든 이미지/DB 또는 tmp* 같은
+  광범위한 제외 규칙은 추가하지 않는다. 기존 파일 삭제·이동·Git 이력 재작성은 하지 않는다.
+- data/chroma_db/chroma.sqlite3는 이미 추적 중이라 .gitignore만으로 숨겨지지 않는다.
+  이 DB는 수정·삭제·stage하거나 추적 해제하지 않고 사용자 변경으로 보존한다.
+  소스·테스트·문서는 계속 Git에 표시되어야 하며 한국어 [Update] 및 지정된
+  author/committer 규칙으로 이번 제외 설정과 인수인계 기록만 커밋한다.
+- 검증: git ls-files --others --exclude-standard는 101,578개에서 0개로 감소했다.
+  추가 규칙에 해당하는 기존 tracked 파일은 0개이며 기존 DB 제외 상태만 유지한다.
+  Git check-ignore로 제외 규칙 9개와 개발 경로 7개의 비제외를 확인했고 대표 산출물
+  6개의 파일 존재 및 git diff --check도 통과했다. 이번 변경은 Git 제외 설정뿐이므로
+  전체 앱 QA를 재실행하지 않는다. 원격 push·배포는 하지 않는다.
+
 ## 2026-10-06 공통 조건 검수·공식 확장 캘린더 제한 조회
 
 - 전체 QA/완성 요청을 이어서 수행한다. 시작 HEAD는 628a56a,

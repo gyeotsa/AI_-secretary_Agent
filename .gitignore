@@ -81,3 +81,15 @@ assets/jarvis_icon_v2.png
 assets/jarvis_icon_final.png
 # MediaPipe Tasks 모델은 제스처 기능을 처음 명시적으로 켤 때 내려받습니다.
 data/models/mediapipe/*.task
+
+# 로컬 QA·브라우저·분석 산출물 (파일은 보존하고 Git 목록에서만 제외)
+/tmp/
+/.pytest-tmp-*/
+/.playwright-mcp/
+/graphify-out/
+/data/qa/
+# 인수인계서에서 커밋 제외로 지정한 개인 볼트·로컬 산출물
+/brain/
+/architecture_inspect.png
+/greeting.pptx
+/tmpdozr9d5t/
