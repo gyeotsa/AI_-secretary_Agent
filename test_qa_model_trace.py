@@ -281,16 +281,36 @@ def test_read_qa_guard_covers_every_dispatch_including_replans(tmp_path, tool_na
     assert calls == [('filesystem_read_file', allowed)]
 
 
-@pytest.mark.parametrize('reason,confidence,relation,passed', [
-    ('no_supported_tool', .95, 'new', True),
-    ('semantic_discovery_invalid', 0.0, 'unknown', False),
-    ('semantic_schema_or_confidence_invalid', .99, 'new', False),
-    ('no_supported_tool', .7, 'new', False),
-    ('no_supported_tool', .99, 'conversation', False),
+@pytest.mark.parametrize('confidence', [0.0, .2, .7, .849, .85, .95, 1.0])
+def test_semantic_qa_unsupported_requires_a_limited_response_not_confidence(confidence):
+    decision = SemanticDecision('synthetic', relation='new', operation='unknown',
+                                grounded=False, tool_names=(), needs_clarification=False,
+                                confidence=confidence, reason='no_supported_tool',
+                                dialogue_response='현재 연결된 도구로는 요청한 작업을 수행할 수 없습니다.')
+    assert qa.semantic_fixture_passed(decision, 'unsupported')
+
+
+@pytest.mark.parametrize('fault', [
+    {'reason': ''},
+    {'reason': 'semantic_discovery_invalid'},
+    {'reason': 'semantic_schema_or_confidence_invalid'},
+    {'relation': 'unknown'},
+    {'relation': 'conversation'},
+    {'operation': 'read'},
+    {'operation': 'conversation'},
+    {'grounded': True},
+    {'tool_names': ('filesystem_read_file',)},
+    {'needs_clarification': True},
+    {'dialogue_response': ''},
+    {'dialogue_response': ' \n\t '},
 ])
-def test_semantic_qa_does_not_count_unresolved_requests_as_unsupported(reason, confidence, relation, passed):
-    decision = SemanticDecision('synthetic', relation=relation, confidence=confidence, reason=reason)
-    assert qa.semantic_fixture_passed(decision, 'unsupported') is passed
+def test_semantic_qa_does_not_count_unresolved_or_executable_requests_as_unsupported(fault):
+    from dataclasses import replace
+    decision = SemanticDecision('synthetic', relation='new', operation='unknown',
+                                grounded=False, tool_names=(), needs_clarification=False,
+                                confidence=.99, reason='no_supported_tool',
+                                dialogue_response='현재 연결된 도구로는 요청한 작업을 수행할 수 없습니다.')
+    assert not qa.semantic_fixture_passed(replace(decision, **fault), 'unsupported')
 
 
 @pytest.mark.parametrize('expected,operation,tool,slots', [

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from dataclasses import asdict
 import itertools
 import json
 import math
@@ -258,7 +259,8 @@ def semantic_fixture_passed(decision, expected: str) -> bool:
                             and decision.slots[key] == value for key, value in slots.items()))
     return bool(expected == "unsupported" and decision.relation == "new"
                 and not decision.tool_names and decision.reason == "no_supported_tool"
-                and decision.confidence >= .85)
+                and decision.operation == "unknown" and not decision.grounded
+                and not decision.needs_clarification and decision.dialogue_response.strip())
 
 
 def main() -> int:
@@ -415,7 +417,7 @@ def _run_qa(args, root: Path, sandbox: Path, settings) -> int:
                 passed += bool(ok)
                 print(json.dumps({"event": "semantic_matrix", "request": request,
                                   "expected": expected, "passed": bool(ok),
-                                  "decision": decision.__dict__, "calls": calls,
+                                  "decision": asdict(decision), "calls": calls,
                                   "seconds": round(time.monotonic()-started, 2)},
                                  ensure_ascii=False), flush=True)
                 if decision.reason.endswith((":timeout", ":connection", ":inference_deadline_exceeded")):

@@ -141,6 +141,45 @@ def test_tools_without_intent_are_discoverable_and_validated(registry):
     assert decision.to_resolution(registry).ready
 
 
+@pytest.mark.parametrize("raw", [
+    "실제로 보내지는 말고 '형택에게 카톡 보내줘'라는 문장의 뜻만 설명해줘.",
+    "실행하지 말고 재귀 함수가 뭔지 설명해줘.",
+    "'파일을 삭제해줘'라는 명령은 어떤 의미야?",
+    "'앱을 켜줘'라는 문장을 번역만 해줘.",
+])
+@pytest.mark.parametrize("pending", [{}, {
+    "intent_name": "messaging.send", "task_id": "pending-send",
+    "question": "누구에게 보낼까요?", "slots": {"provider": "kakaotalk"},
+}])
+def test_shared_discussion_scope_never_reclassifies_embedded_commands(registry, raw, pending):
+    class NoModel:
+        def chat(self, messages):
+            raise AssertionError("Shared discussion authority must precede tool discovery")
+    decision = SemanticRequestInterpreter(NoModel(), registry, classify_response_mode=True).interpret(
+        raw, pending=pending)
+    assert decision.is_grounded_conversation
+    assert decision.source == "utterance_scope"
+    assert decision.raw_text == raw and not decision.slots
+    assert not decision.tool_names and not decision.needs_clarification
+    assert not decision.to_resolution(registry).matched
+
+
+def test_discussion_continuation_inherits_user_scope_not_pending_send(registry):
+    history = [{"role": "user", "content": "'파일을 삭제해줘'라는 명령을 설명해줘."},
+               {"role": "assistant", "content": "파일을 삭제하라는 요청입니다."}]
+    decision = SemanticRequestInterpreter(None, registry).interpret(
+        "더 자세히 해줘", history=history, pending={"intent_name": "messaging.send", "task_id": "pending-send"})
+    assert decision.is_grounded_conversation and not decision.to_resolution(registry).matched
+    assert decision.reason == "discussion_continuation_not_execution"
+
+
+def test_external_source_explanation_still_requires_observation(registry):
+    raw = "Agent 인수인계.txt 파일의 첫 줄을 읽고 내용을 설명해줘."
+    decision, model = _interpret(registry, raw, _data())
+    assert decision.grounded and decision.operation == "read" and model.calls
+    assert decision.tool_names == ("read_note",)
+
+
 def test_allowed_scope_is_hard_boundary(registry):
     decision, model = _interpret(registry, "서울 날씨 알려줘", _data(
         intent_name="", tool_names=["weather_lookup"], slots={"location": "서울"}), allowed_tools=["read_note"])
@@ -298,6 +337,39 @@ def test_unsupported_action_is_not_conversation(registry):
     assert result.relation == "new" and not result.needs_clarification
     assert result.reason == "no_supported_tool" and not result.tool_names
     assert len(model.calls) == 1
+
+
+@pytest.mark.parametrize("reason", ["no_supported_tool", "ungrounded_literal:filename"])
+def test_dialogue_recovery_never_presents_lexical_candidates_as_full_capabilities(registry, monkeypatch, reason):
+    from core.llm import OllamaClient
+    from core.semantic_request import SemanticDecision
+    from core.tool_loadout import ToolLoadoutSelector
+    model = OllamaClient.__new__(OllamaClient)
+    model.base_url = "http://localhost:11434"
+    interpreter = SemanticRequestInterpreter(model, registry)
+    selected = []
+    def shortlist(self, request, **kwargs):
+        selected.append(request)
+        return SimpleNamespace(tool_names=("read_note",))
+    monkeypatch.setattr(ToolLoadoutSelector, "select", shortlist)
+    captured = []
+    response = "이 요청은 현재 연결된 도구로 직접 수행할 수 없습니다. 이번 요청으로 도구를 실행하지 않았습니다."
+    def reply(messages, schema):
+        captured.append((messages, schema))
+        return json.dumps({"relation": "new", "needs_clarification": False, "response": response}, ensure_ascii=False)
+    monkeypatch.setattr(interpreter, "_model_call", reply)
+    raw = "요청한 작업을 수행해줘"
+    result = interpreter._recover_dialogue(raw, (), {}, None, SemanticDecision(raw, reason=reason))
+    payload = json.loads(captured[0][0][1]["content"])
+    assert "available_tools" not in payload
+    assert payload["capability_context"] == {"scope": "current_request", "catalogue_complete": False}
+    assert payload["executed_tools"] == []
+    assert len(selected) == (0 if reason == "no_supported_tool" else 1)
+    assert [tool["name"] for tool in payload["reference_tool_candidates"]] == (
+        [] if reason == "no_supported_tool" else ["read_note"])
+    assert "전체 기능 목록이 아닌" in captured[0][0][0]["content"]
+    assert result.source == "dialogue_recovery" and result.reason == reason
+    assert not result.grounded and not result.tool_names and result.dialogue_response == response
 
 
 @pytest.mark.parametrize("kind,tools,confidence", [
@@ -612,7 +684,7 @@ def test_candidate_refinement_shares_discovery_call_cap_and_cancellation(registr
 
 
 @pytest.mark.parametrize("orphan", [False, True])
-@pytest.mark.parametrize("index_kind", ["action", "conversation", "unsupported", "wrong_group", "unknown"])
+@pytest.mark.parametrize("index_kind", ["action", "conversation", "unsupported", "wrong_group", "unknown", "unknown_hints"])
 def test_grouped_discovery_covers_last_group_and_pluginless_capabilities(orphan, index_kind):
     value = _many_tools()
     target = value.get_capabilities()[-1].name
@@ -624,9 +696,10 @@ def test_grouped_discovery_covers_last_group_and_pluginless_capabilities(orphan,
         if "available_tool_groups" in payload:
             groups = payload["available_tool_groups"]
             seen.update(name for names in groups.values() for name in names)
-            chosen = ([group for group in groups if group == "group_0"] if index_kind == "wrong_group"
+            chosen = ([group for group in groups if group == "group_0"] if index_kind in {"wrong_group", "unknown_hints"}
                       else [group for group, names in groups.items() if target in names] if index_kind == "action" else [])
-            kind = "action" if chosen else "unsupported" if index_kind in {"action", "wrong_group"} else index_kind
+            kind = ("unknown" if index_kind == "unknown_hints" else
+                    "action" if chosen else "unsupported" if index_kind in {"action", "wrong_group"} else index_kind)
             return {"request_kind": kind, "group_names": chosen, "confidence": 0.0 if kind == "unknown" else .95}
         if "request_kind" in schema["properties"]:
             detailed.update(entry["tool"] for entry in payload["available_tools"])
@@ -660,6 +733,39 @@ def test_mixed_index_batches_refine_all_groups_before_global_unsupported(later_k
     model = _RoutingModel(respond)
     result = SemanticRequestInterpreter(model, value).interpret("실제 위성의 궤도를 바꿔줘")
     assert result.reason == "no_supported_tool" and not result.is_grounded_conversation
+    assert detailed == {c.name for c in value.get_capabilities()}
+
+
+def test_low_confidence_group_hints_cannot_hide_contracts_or_decide_unsupported():
+    value = _many_tools()
+    detailed = set()
+    def respond(payload, schema, call):
+        if "available_tool_groups" in payload:
+            return {"request_kind": "unknown", "group_names": [
+                group for group in payload["available_tool_groups"] if group == "group_0"], "confidence": .1}
+        detailed.update(entry["tool"] for entry in payload["available_tools"])
+        return {"request_kind": "unsupported", "tool_names": [], "confidence": .99}
+    result = SemanticRequestInterpreter(_RoutingModel(respond), value).interpret("우주선을 화성에 착륙시켜줘")
+    assert result.reason == "no_supported_tool" and not result.grounded
+    assert detailed == {c.name for c in value.get_capabilities()}
+
+
+def test_uncertain_index_hit_still_checks_other_groups():
+    value = _many_tools()
+    target = value.get_capabilities()[0].name
+    detailed = set()
+    def respond(payload, schema, call):
+        if "available_tool_groups" in payload:
+            return {"request_kind": "unknown", "group_names": [
+                group for group, names in payload["available_tool_groups"].items() if target in names], "confidence": .1}
+        if "request_kind" in schema["properties"]:
+            detailed.update(entry["tool"] for entry in payload["available_tools"])
+            selected = [target] if target in detailed and any(
+                entry["tool"] == target for entry in payload["available_tools"]) else []
+            return {"request_kind": "action" if selected else "unsupported", "tool_names": selected, "confidence": .99}
+        return _data(intent_name="", tool_names=[target], slots={})
+    result = SemanticRequestInterpreter(_RoutingModel(respond), value).interpret("현재 측정값 알려줘")
+    assert result.grounded and result.tool_names == (target,)
     assert detailed == {c.name for c in value.get_capabilities()}
 
 
@@ -699,7 +805,7 @@ def test_invalid_later_index_batch_never_reaches_contract_or_execution():
 @pytest.mark.parametrize("key,kind,names,confidence,valid", [
     ("group_names", "unknown", [], 0, True),
     ("group_names", "unknown", [], .64, True),
-    ("group_names", "unknown", ["candidate"], .64, False),
+    ("group_names", "unknown", ["candidate"], .64, True),
     ("group_names", "action", ["candidate"], .64, False),
     ("group_names", "unsupported", [], .64, False),
     ("tool_names", "unknown", [], .64, False),
@@ -890,6 +996,315 @@ def test_compound_effect_cannot_hide_mutation_behind_read_tool(registry, operati
         operation=operation, tool_names=["read_note", "write_note"]))
     assert decision.grounded is grounded
     assert not decision.to_resolution(registry).ready
+
+
+def _constraint_verdict(payload, authorized, prohibited, **changes):
+    # The generation grammar selects whole source clauses, not free-form quotes.
+    def evidence(fragment):
+        return [clause for clause in payload["source_clauses"] if fragment in clause] or [fragment]
+    return {"binding": payload["binding"], "verdict": "allowed", "confidence": .99,
+            "authorized_evidence": evidence(authorized), "prohibited_evidence": evidence(prohibited), **changes}
+
+
+@pytest.mark.parametrize("discovery", [False, True])
+@pytest.mark.parametrize("raw,authorized,prohibited,good,bad,effects,slots", [
+    ("유튜브에서 빗소리 검색해줘. 재생하지 마.", "유튜브에서 빗소리 검색해줘", "재생하지 마",
+     "search_media", "play_media", ("execute", "execute"), {"query": "빗소리"}),
+    ("유튜브에서 '빗소리'를 검색해서 결과 화면을 열어줘. 재생하지는 마.",
+     "유튜브에서 '빗소리'를 검색해서 결과 화면을 열어줘", "재생하지는 마",
+     "search_media", "play_media", ("execute", "execute"), {"query": "빗소리"}),
+    ("재생하지 말고 유튜브에서 빗소리 검색해줘.", "유튜브에서 빗소리 검색해줘", "재생하지 말고",
+     "search_media", "play_media", ("execute", "execute"), {"query": "빗소리"}),
+    ("Agent 인수인계.txt 읽어줘. 수정하지 마.", "Agent 인수인계.txt 읽어줘", "수정하지 마",
+     "read_note", "write_note", ("read", "change"), {"filename": "Agent 인수인계.txt"}),
+    ("메시지를 전송하지 말고 초안을 저장해줘.", "초안을 저장해줘", "전송하지 말고",
+     "save_draft", "send_draft", ("change", "external_send"), {"body": "메시지"}),
+])
+def test_mixed_action_review_reconsiders_full_scope_and_never_substitutes_equal_effect(
+        raw, authorized, prohibited, good, bad, effects, slots, discovery):
+    class Actions(_Surface):
+        def get_tools(self):
+            return [ToolSchema(name, description, {"type": "object", "properties": {
+                key: {"type": "string", "description": "사용자가 지정한 대상"} for key in slots},
+                "required": list(slots)}, side_effect=effect)
+                for name, effect, description in ((good, effects[0], authorized), (bad, effects[1], prohibited))]
+
+        def get_intents(self):
+            return []
+
+    value = PluginRegistry()
+    value.register_plugin(Actions())
+    proposals, reviews = [], []
+
+    def respond(payload, schema, call):
+        if "binding" in schema["properties"]:
+            chosen = payload["selected_tools"][0]
+            # Full capability metadata and exact provided slots reach the reviewer.
+            assert chosen["input_schema"]["properties"] and "required_permissions" in chosen
+            assert "output_schema" in chosen and payload["first_tool_slots"] == slots
+            reviews.append(chosen["name"])
+            return _constraint_verdict(payload, authorized, prohibited,
+                                       verdict="prohibited" if chosen["name"] == bad else "allowed")
+        chosen = good if payload.get("validation_feedback") else bad
+        if "request_kind" in schema["properties"]:
+            assert {entry["tool"] for entry in payload["available_tools"]} == {good, bad}
+            return {"request_kind": "action", "tool_names": [chosen], "confidence": .99}
+        proposals.append(chosen)
+        if payload.get("validation_feedback"):
+            assert payload["validation_feedback"]["reason"] == "semantic_action_constraint_prohibited"
+            assert "rejected_proposal" not in payload["validation_feedback"]
+        return _data(intent_name="", operation=effects[0] if chosen == good else effects[1],
+                     tool_names=[chosen], slots=slots)
+
+    model = _RoutingModel(respond)
+    interpreter = SemanticRequestInterpreter(model, value)
+    if discovery:
+        interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    decision = interpreter.interpret(raw)
+    assert decision.grounded and decision.tool_names == (good,)
+    assert proposals == reviews == [bad, good]
+    assert decision.action_constraints.permits(raw, decision.tool_names, slots, value)
+    assert all(messages[-1]["content"] == raw for *_, messages in model.calls)
+
+
+@pytest.mark.parametrize("corruption", [
+    {"binding": "not_this_proposal"}, {"confidence": True}, {"confidence": .6},
+    {"confidence": float("nan")}, {"authorized_evidence": ["invented permission"]},
+    {"authorized_evidence": ["수정하지 마"]}, {"prohibited_evidence": ["읽어줘"]},
+    {"verdict": "unknown"}, {"verdict": "prohibited"},
+])
+def test_invalid_or_uncertain_constraint_review_never_grants_execution(registry, corruption):
+    raw = "Agent 인수인계.txt 읽어줘. 수정하지 마."
+    def respond(payload, schema, call):
+        return (_constraint_verdict(payload, "Agent 인수인계.txt 읽어줘", "수정하지 마", **corruption)
+                if "binding" in schema["properties"] else _data())
+    model = _RoutingModel(respond)
+    decision = SemanticRequestInterpreter(model, registry).interpret(raw)
+    assert not decision.grounded and decision.action_constraints is None
+    assert not decision.to_resolution(registry).ready
+    assert decision.reason.startswith("semantic_action_constraint") and len(model.calls) == 4
+
+
+@pytest.mark.parametrize("separator", [", ", ", 그리고 ", "; ", "； ", "\n", "\r\n"])
+def test_complete_positive_command_can_precede_separated_prohibition(registry, separator):
+    raw = "Agent 인수인계.txt 읽어줘" + separator + "수정하지 마."
+    model = _RoutingModel(lambda payload, schema, call: (
+        _constraint_verdict(payload, "Agent 인수인계.txt 읽어줘", "수정하지 마")
+        if "binding" in schema["properties"] else _data()))
+    decision = SemanticRequestInterpreter(model, registry).interpret(raw)
+    assert decision.grounded and decision.tool_names == ("read_note",)
+    assert decision.action_constraints.permits(raw, decision.tool_names, decision.slots, registry)
+    assert len(model.calls) == 2
+
+
+@pytest.mark.parametrize("separator", [", ", "; ", "\n"])
+def test_complete_command_boundary_cannot_erase_condition(registry, separator):
+    raw = "승인하면 Agent 인수인계.txt 읽어줘" + separator + "수정하지 마."
+    decision = SemanticRequestInterpreter(_Model(_data()), registry).interpret(raw)
+    assert not decision.grounded and decision.action_constraints is None
+    assert decision.reason == "semantic_action_constraint_condition_required"
+
+
+@pytest.mark.parametrize("separator", [", ", "; ", "\n"])
+def test_quoted_complete_command_separator_is_only_message_data(registry, separator):
+    body = "재생해줘" + separator + "수정하지 마"
+    raw = '형택에게 "' + body + '"라고 보내줘'
+    decision, model = _interpret(registry, raw, _data(
+        operation="external_send", intent_name="messaging.send", tool_names=["desktop_send_message"],
+        slots={"provider": "kakaotalk", "recipient": "형택", "message": body}))
+    assert decision.grounded and decision.action_constraints is None
+    assert decision.slots["message"] == body and len(model.calls) == 1
+
+
+def test_complete_command_repeated_inside_prohibited_quote_is_not_permission(registry):
+    raw = 'Agent 인수인계.txt 읽어줘, 수정하지 마. "Agent 인수인계.txt 읽어줘,"라는 문구를 삭제하지 마.'
+    model = _RoutingModel(lambda payload, schema, call: (
+        _constraint_verdict(payload, "Agent 인수인계.txt 읽어줘", "수정하지 마")
+        if "binding" in schema["properties"] else _data()))
+    decision = SemanticRequestInterpreter(model, registry).interpret(raw)
+    assert not decision.grounded and decision.action_constraints is None
+    assert decision.reason == "semantic_action_constraint_evidence_invalid"
+
+
+@pytest.mark.parametrize("corruption", ["none", "metadata", "both_roles"])
+@pytest.mark.parametrize("raw", [
+    "네이버 메일에서 안 읽은 것만 5개 보여줘. 읽음으로 표시하지 마.",
+    "읽지 않은 받은편지함 메일을 최신순으로 5개만 조회해줘. 본문은 읽지 마.",
+])
+def test_constraint_evidence_grammar_selects_source_role_not_mail_contract(raw, corruption):
+    description = "설정된 IMAP 받은편지함을 읽습니다. 읽음 표시를 바꾸지 않으며 본문은 포함하지 않습니다."
+    class Mail(_Surface):
+        def get_tools(self):
+            return [ToolSchema("mail_list_inbox", description, {"type": "object", "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+                "unread_only": {"type": "boolean", "default": False}}, "required": []}, side_effect="read")]
+        def get_intents(self):
+            return []
+    value = PluginRegistry()
+    value.register_plugin(Mail())
+    slots = {"limit": 5, "unread_only": True}
+    def respond(payload, schema, call):
+        if "binding" not in schema["properties"]:
+            return _data(intent_name="", tool_names=["mail_list_inbox"], slots=slots)
+        assert model.calls[-1][3][-1] == {"role": "user", "content": raw}
+        assert payload["first_tool_slots"] == slots
+        assert payload["source_clauses"] == [clause.strip() for clause in raw.rstrip(".").split(".")]
+        for key in ("authorized_evidence", "prohibited_evidence"):
+            expected = payload["source_clauses"][0 if key == "authorized_evidence" else 1]
+            assert schema["properties"][key]["items"]["enum"] == [expected]
+            assert schema["properties"][key]["maxItems"] == 1
+            assert description not in schema["properties"][key]["items"]["enum"]
+        return _constraint_verdict(payload, payload["source_clauses"][0], payload["source_clauses"][1], **(
+            {"authorized_evidence": [description], "prohibited_evidence": [description]} if corruption == "metadata" else
+            {"authorized_evidence": payload["source_clauses"], "prohibited_evidence": payload["source_clauses"]}
+            if corruption == "both_roles" else {}))
+    model = _RoutingModel(respond)
+    result = SemanticRequestInterpreter(model, value).interpret(raw)
+    assert result.grounded is (corruption == "none")
+    if corruption != "none":
+        assert result.reason == "semantic_action_constraint_evidence_invalid" and result.action_constraints is None
+    else:
+        assert result.action_constraints.permits(raw, result.tool_names, slots, value)
+
+
+@pytest.mark.parametrize("prohibited", ["수정하지 마", "하지 마"])
+def test_prohibited_clause_fragment_cannot_be_permission_evidence(registry, prohibited):
+    raw = "Agent 인수인계.txt 읽어줘. 수정하지 마."
+    model = _RoutingModel(lambda payload, schema, call: (
+        _constraint_verdict(payload, "수정", prohibited)
+        if "binding" in schema["properties"] else _data(
+            operation="change", intent_name="notes.write", tool_names=["write_note"],
+            slots={"filename": "Agent 인수인계.txt", "instruction": "수정"})))
+    decision = SemanticRequestInterpreter(model, registry).interpret(raw)
+    assert not decision.grounded and decision.action_constraints is None
+    assert decision.reason == "semantic_action_constraint_evidence_invalid"
+    assert not decision.to_resolution(registry).ready
+
+
+@pytest.mark.parametrize("prohibited", [
+    ["삭제하지 마", "수정하지 마"],
+    ["삭제하지 마", "읽어줘 문구를 수정하지 마"],
+])
+def test_repeated_permission_fragment_must_be_safe_in_every_original_clause(registry, prohibited):
+    raw = "Agent 인수인계.txt 읽어줘. 삭제하지 마. 읽어줘 문구를 수정하지 마."
+    model = _RoutingModel(lambda payload, schema, call: (
+        _constraint_verdict(payload, "읽어줘", prohibited[0], prohibited_evidence=prohibited)
+        if "binding" in schema["properties"] else _data()))
+    decision = SemanticRequestInterpreter(model, registry).interpret(raw)
+    assert not decision.grounded and decision.action_constraints is None
+    assert decision.reason == "semantic_action_constraint_evidence_invalid"
+
+
+@pytest.mark.parametrize("separator", [", ", "\n", "; "])
+def test_permission_fragment_in_prohibited_enumeration_is_not_an_independent_clause(registry, separator):
+    raw = "날씨만 조회해줘. Agent 인수인계.txt 읽기" + separator + "삭제 모두 하지 마."
+    model = _RoutingModel(lambda payload, schema, call: (
+        _constraint_verdict(payload, "Agent 인수인계.txt 읽기", "삭제 모두 하지 마")
+        if "binding" in schema["properties"] else _data()))
+    decision = SemanticRequestInterpreter(model, registry).interpret(raw)
+    assert not decision.grounded and decision.action_constraints is None
+    assert decision.reason == "semantic_action_constraint_evidence_invalid"
+
+
+def test_constraint_reselection_shares_discovery_budget_and_resets_next_turn(registry):
+    raw = "Agent 인수인계.txt 읽어줘. 수정하지 마."
+    discovery_calls = []
+    def respond(payload, schema, call):
+        if "request_kind" in schema["properties"]:
+            discovery_calls.append(payload)
+            return {"request_kind": "action", "tool_names": ["write_note"], "confidence": .99}
+        if "binding" in schema["properties"]:
+            return _constraint_verdict(payload, "Agent 인수인계.txt 읽어줘", "수정하지 마",
+                                       verdict="prohibited")
+        return _data(operation="change", intent_name="notes.write", tool_names=["write_note"],
+                     slots={"filename": "Agent 인수인계.txt", "instruction": "수정"})
+    model = _RoutingModel(respond)
+    interpreter = SemanticRequestInterpreter(model, registry)
+    interpreter.SINGLE_PASS_CATALOG_CHARS = 0
+    interpreter.DISCOVERY_MAX_CALLS = 1
+    for turn in range(2):
+        decision = interpreter.interpret(raw)
+        assert not decision.grounded and decision.action_constraints is None
+        assert decision.reason.endswith(":discovery_budget_exhausted")
+        assert len(discovery_calls) == turn + 1
+        assert len(model.calls) == 3 * (turn + 1)  # discovery, proposal, review; no second discovery
+
+
+def test_quoted_prohibition_is_data_and_needs_no_scope_exception(registry):
+    raw = '형택에게 "재생하지 마"라고 보내줘'
+    decision, model = _interpret(registry, raw, _data(
+        operation="external_send", intent_name="messaging.send", tool_names=["desktop_send_message"],
+        slots={"provider": "kakaotalk", "recipient": "형택", "message": "재생하지 마"}))
+    assert decision.grounded and decision.action_constraints is None and len(model.calls) == 1
+
+
+def test_quoted_permission_cannot_bypass_real_prohibition(registry):
+    raw = '"Agent 인수인계.txt 읽어줘"라는 문장은 예시야. 수정하지 마.'
+    model = _RoutingModel(lambda payload, schema, call: (
+        _constraint_verdict(payload, "Agent 인수인계.txt 읽어줘", "수정하지 마")
+        if "binding" in schema["properties"] else _data()))
+    decision = SemanticRequestInterpreter(model, registry).interpret(raw)
+    assert decision.is_grounded_conversation and not decision.tool_names
+    assert decision.source == "utterance_scope" and not model.calls
+    assert not decision.to_resolution(registry).matched
+
+
+def test_constraint_exception_is_bound_to_input_slots_contract_and_deadline(registry):
+    from dataclasses import replace
+    raw = "Agent 인수인계.txt 읽어줘. 수정하지 마."
+    model = _RoutingModel(lambda payload, schema, call: (
+        _constraint_verdict(payload, "Agent 인수인계.txt 읽어줘", "수정하지 마")
+        if "binding" in schema["properties"] else _data()))
+    decision = SemanticRequestInterpreter(model, registry).interpret(raw)
+    review = decision.action_constraints
+    assert review.permits(raw, decision.tool_names, decision.slots, registry)
+    assert not review.permits(raw + " 다른 요청", decision.tool_names, decision.slots, registry)
+    assert not review.permits(raw, ("write_note",), decision.slots, registry)
+    assert not review.permits(raw, decision.tool_names, {"filename": "other.txt"}, registry)
+    assert not replace(review, expires_at=0).permits(raw, decision.tool_names, decision.slots, registry)
+    registry.get_capability("read_note").input_schema["properties"]["filename"]["default"] = "other.txt"
+    assert not review.permits(raw, decision.tool_names, decision.slots, registry)
+
+
+def test_mixed_negation_cannot_erase_unverified_condition(registry):
+    raw = "승인하면 Agent 인수인계.txt 읽어줘. 수정하지 마."
+    model = _Model(_data())
+    decision = SemanticRequestInterpreter(model, registry).interpret(raw)
+    assert not decision.grounded and decision.reason == "semantic_action_constraint_condition_required"
+    assert len(model.calls) == 2
+
+
+def test_mixed_multi_tool_proposal_cannot_bypass_guard_without_per_step_inputs(registry):
+    raw = "Agent 인수인계.txt 읽고 서울 날씨도 조회해줘. 수정하지 마."
+    model = _RoutingModel(lambda payload, schema, call: (
+        _constraint_verdict(payload, "Agent 인수인계.txt 읽고 서울 날씨도 조회해줘", "수정하지 마")
+        if "binding" in schema["properties"] else _data(tool_names=["read_note", "weather_lookup"])))
+    decision = SemanticRequestInterpreter(model, registry).interpret(raw)
+    assert not decision.grounded and decision.action_constraints is None
+    assert decision.reason == "semantic_action_constraint_plan_inputs_required"
+
+
+def test_constraint_review_timeout_or_cancellation_cannot_return_action(registry):
+    from core.local_inference import InferenceDeadlineError
+    from core.plugin import ToolCancelledError
+    from core.turn_context import TurnExecutionContext, bind_turn_context
+    raw = "Agent 인수인계.txt 읽어줘. 수정하지 마."
+    for cancelled in (False, True):
+        turn = TurnExecutionContext("mixed-cancel", "mixed-test", "")
+        def respond(payload, schema, call):
+            if "binding" in schema["properties"]:
+                if cancelled:
+                    turn.cancel()
+                raise InferenceDeadlineError("review expired")
+            return _data()
+        with bind_turn_context(turn):
+            interpreter = SemanticRequestInterpreter(_RoutingModel(respond), registry)
+            if cancelled:
+                with pytest.raises(ToolCancelledError):
+                    interpreter.interpret(raw)
+            else:
+                decision = interpreter.interpret(raw)
+                assert not decision.grounded and decision.reason.endswith(":inference_deadline_exceeded")
 
 
 @pytest.mark.integration

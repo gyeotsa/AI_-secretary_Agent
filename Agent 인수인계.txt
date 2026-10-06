@@ -1,5 +1,79 @@
 # 🤖 자비스 (Jarvis) Agent 인수인계서
 
+## 2026-10-06 공통 조건 검수·공식 확장 캘린더 제한 조회
+
+- 전체 QA/완성 요청을 이어서 수행한다. 시작 HEAD는 628a56a,
+  브랜치는 codex/mockup-design-agent-v2다. 코딩 정답률/K3·Graphify·강화학습·배포·push는
+  보류한다. 사용자 DB/.env/brain/tmp/QA 산출물과 무관한 변경은 보존하고 커밋하지 않는다.
+  커밋은 한국어 우선 [Fix]/[Feat]/[Update] 태그, author/committer 모두
+  gyeotsa <gyeotsa@users.noreply.github.com> 규칙을 지킨다. 이 항목과 해당 코드/테스트/문서는
+  같은 변경 범위로 커밋하며 실제 커밋 해시는 최종 응답으로 제공한다. 가짜 해시를 적지 않는다.
+- core/semantic_request.py 및 Executor의 공통 typed constraint 검수는 현재 입력·선택된
+  도구 전체 계약·슬롯 hash·기한에 묶인다. 혼합 허용/금지 요청의 검수와 단일 제한 재고려를
+  연결하고, 검수가 없거나 invalid/unknown/timeout이면 기존 실행 차단을 유지한다.
+  복구 응답은 현재 선택 후보를 전체 기능 목록처럼 설명하지 못하며 미지원 요청에는
+  후보 재선택 권한을 주지 않는다. 원문·승인·필수 복합 단계·공유 추론 예산은 유지한다.
+- 최신 실제 모델 9-case는 8/9(Temp/anis-common-qa-s8zmd0o6)에서 인용 명령 설명을
+  unknown으로 처리했다. 공통 utterance_scope의 discussion 판정을 SemanticRequestInterpreter에
+  재사용한 뒤 9/9(Temp/anis-common-qa-m_bb5q1_, qwen2.5:7b, model trace)다.
+  인용 설명 분류의 추가 모델 호출은 0회다. 미지원 응답의 근거 없는 기술 일반화 표현이 남아
+  있으므로 분류 9/9를 전체 답변 품질이나 Codex 동등성으로 쓰지 않는다. 외부 도구는 실행하지 않았다.
+- 쉼표/세미콜론/줄바꿈은 완결된 긍정 명령의 경계만 분리하고 금지/조건/인용 범위를 보존한다.
+  Executor가 lexical ToolLoadout을 hard allowed scope로 바꾸던 9줄을 제거했다.
+  사용자 명시 scope와 []는 유지하며 집중 295 passed/7 deselected(35.02초)다.
+- 현재 revision의 실제 전체 allowed 도구 목록 Executor/모델/합성 파일 1–1줄 읽기는
+  completed/8.12초 통과(Temp/anis-common-qa-7vg1vmem, cold load 3.919초 포함)다.
+  정확한 원문/CRLF·범위·원본 hash·receipt/evidence·표시·원본 보존을 확인했다.
+  앞선 3.22초 통과(Temp/anis-common-qa-lfke1gyr)는 soft shortlist 제거 전 표본이다.
+  이전 9/9(Temp/anis-common-qa-sna_whmf)/3.3초(Temp/anis-common-qa-asrk6le9)는 recovery
+  수정 전 기록이며 합산하지 않는다. GUI/다른 서비스 E2E 수락은 아니다. 이전 실패는 보존한다.
+- 미지원 QA는 임의 confidence 기준만으로 통과시키지 않는다. no_supported_tool/new/
+  unknown/ungrounded·빈 도구·재질문 없음·유효한 제한 설명 계약을 함께 검사한다.
+  unresolved나 내부 해석 오류를 정답으로 세지 않으며 긍정 도구 권한의 검증은 약화하지 않는다.
+- 마지막 전체 통과 3725 passed/17 skipped/34 deselected(239.11초)는 최신 변경 전이다.
+  전체 A 2 failed/3726 passed/17 skipped/34 deselected(246.56초)는 Qt fixture의 부모 busy/
+  캘린더 결과 알림 혼합 오류였으며 수정 집중 43 passed(3.34초)다. 전체 D 23 failed/
+  3734 passed/17 skipped/34 deselected(235.51초)는 설명 fastpath 뒤 optional response_mode
+  호출 fixture 기대값 불일치였다. 설명/인용 설명 3검사와 fixture 수정 후 4파일 집중
+  345 passed/23 deselected(32.04초)다. 최종 전체 E는 3765 passed/17 skipped/
+  34 deselected(237.18초), tmp/qa-oct06-final-all-e.xml로 통과했다. pip check는
+  No broken requirements found, diff check도 통과했다. A/D 실패와 수정 내역은 보존하고
+  겹치는 검사·skip/deselect·실계정/장치/사용자 수락은 합산하지 않는다.
+  XML tests=3782/errors=0/failures=0/skipped=17. skip은 Windows 심볼릭 링크 권한 8개와
+  Tool Intent 없는 대화 발화 변형 9개이며 integration 34개는 deselect다.
+- core/browser_extension.py는 설치된 공식 @playwright/mcp 0.0.83을 소유한 stdio로
+  실행한다. 사용자 선택 일반 Chrome 탭만 연결하며 쿠키/비밀번호/profile을 복사하지 않는다.
+  수동 Allow & select 대기는 300초, 일반 화면 작업은 90초다. 취소/해제/종료의 연결 정리와
+  늦은 startup 결과 차단을 적용하고 P 진단 연결/해제에 연결했다. 내부 고정 snippet용
+  browser_run_code_unsafe나 임의 코드를 모델 Registry에 노출하지 않는다.
+- plugins/naver_calendar.py의 공개 도구는 naver_calendar_read_view 하나다. origin/path,
+  선택 page nonce와 보이는 계정 표시명을 매 작업에 확인하며 해제 후 늦은 결과를 거부한다.
+  표시명/hash는 고유 계정 ID가 아니며 일반 조회는 visible_view/complete_account=false/
+  timezone=null/timezone_source=not_observed다. 전체 계정/기간/반복 일정 동기화가 아니다.
+- H/J의 실제 조회 실패 원인은 .calendar_list_container 클래스 selector와 실제 DOM의
+  #calendar_list_container ID 차이였다. ID·visible 조건·5초 대기로 수정한 K 검사에서
+  실제 ANIS Registry 조회 실행과 ToolVerifier 검수가 통과했다.
+  로컬 보고서 tmp/qa-oct05-naver-persistent-k.json. 같은 ANIS 세션에서 입력 컨트롤의
+  Asia/Seoul 및 기본 내 캘린더 선택을 관찰했지만 일반 조회의 시간대는 추정하지 않는다.
+  조회 payload/범위 검수는 별도 서버 API의 독립 검증이나 등록 성공이 아니다.
+- scripts/qa_naver_calendar.py --interactive는 같은 프로세스에서 read/editor/timezone/quit을
+  수행한다. EOF/종료/예외 시 연결을 정리하며 종료된 Welcome/relay 요청은 재사용하지 않는다.
+  지난 WebSocket Failed를 사용자 로그인 실패로 단정하지 않는다. 종료된 QA 프로세스의
+  세션이 계속 살아 있다고 안내하지 않는다.
+- 최신 연결 probe는 origin 검수에서 차단됐다. 사용자가 메인 캘린더 탭이 없거나 연결이
+  실패한다고 답해 QA 소유 대기 세션은 종료했고 재연결 요청을 반복하지 않는다.
+  CalendarScreenError는 login/calendar_other/other/unknown 고정 진단 코드로 안내하며
+  URL/토큰/페이지 본문을 오류에 넣지 않는다. 자동 회귀는 추가했지만 새 경로의 실제 화면
+  분류 성공은 미검증이다. K의 이전 조회 통과를 현재 연결 수락으로 재사용하지 않는다.
+- 승인된 절대 시험 일정은 2026-10-06 17:00–18:00 Asia/Seoul, 제목 '테스트 일정', 기본
+  캘린더다. 아직 값 입력/Save를 시도하지 않았고 초안·등록·apply 도구는 미구현이다.
+  '내일'을 현재 날짜 기준으로 다시 계산해 10월 7일로 바꾸지 않는다. 등록은 Codex가
+  독립 클릭하는 것이 아니라 ANIS의 승인 바인딩/중복 방어/등록/독립 재조회 경로로 수행한다.
+- 다음: 캘린더 화면 연결이 준비된 뒤 ANIS 자체 초안·승인 등록·read-back.
+  실계정/장치/전문가/장기 운영/사용자 수락의
+  열린 게이트는 QA_COMPLETION_LEDGER.md를 따른다. 100%/임의 전체 진행률/Codex 동등성은
+  선언하지 않으며, 코드 존재/자동 회귀/계정 연결/제한 조회 표본을 전체 수락으로 대체하지 않는다.
+
 ## 2026-10-05 공통 추론 전체 기한·취소 우선순위 보강
 
 - 이어서 작업 요청으로 공통 시간 제한의 원인을 재현했다. 시작 HEAD는 4768e79이며

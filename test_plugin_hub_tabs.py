@@ -3,6 +3,7 @@ import io
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -155,3 +156,113 @@ def test_busy_connection_keeps_tab_and_parent_alive_until_result(monkeypatch):
     window._request_close()
     assert closed == [True]
     window.close()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_calendar_tab_selection_wait_can_cancel_without_releasing_busy_tab(monkeypatch, cancelled):
+    import ui.plugin_hub as module
+    app = QApplication.instance() or QApplication([])
+    question = Mock(return_value=module.QMessageBox.StandardButton.Yes)
+    information, warning = Mock(), Mock()
+    monkeypatch.setattr(module.QMessageBox, "question", question)
+    monkeypatch.setattr(module.QMessageBox, "information", information)
+    monkeypatch.setattr(module.QMessageBox, "warning", warning)
+    entered, release, disconnected = threading.Event(), threading.Event(), threading.Event()
+    def connect():
+        entered.set()
+        assert release.wait(3)
+        if disconnected.is_set():
+            raise RuntimeError("QA 연결 취소")
+        return {"account": "QA 계정"}
+    service = SimpleNamespace(connect=Mock(side_effect=connect), observe=Mock(),
+                              disconnect=Mock(side_effect=disconnected.set))
+    registry = PluginRegistry()
+    monkeypatch.setattr(registry, "get_plugin", lambda name: (
+        SimpleNamespace(service=service) if name == "naver_calendar" else None))
+    window = JarvisMainWindow()
+    window.set_plugin_registry(registry)
+    hub = window.show_plugin_diagnostics()
+    closed = []
+    window.close_requested.connect(lambda: closed.append(True))
+    try:
+        hub.calendar_button.click()
+        assert entered.wait(2)
+        service.connect.assert_called_once_with()
+        assert "5분 안에 Allow & select" in question.call_args.args[2]
+        assert "시간 초과 후 남은 요청은 무효" in question.call_args.args[2]
+        assert "최대 5분" in hub.busy.text()
+        assert hub._running and hub._calendar_connecting
+        if cancelled:
+            hub.calendar_disconnect_button.click()
+            assert disconnected.wait(2)
+            service.disconnect.assert_called_once_with()
+            assert "연결 해제 중" in hub.busy.text()
+        # Even an already-requested cancellation must await the worker result.
+        hub.reject()
+        window.workspace_tabs.tabCloseRequested.emit(1)
+        window._request_close()
+        assert window.workspace_tabs.count() == 2 and not closed
+        assert not hub.can_close_workspace_tab()
+    finally:
+        release.set()
+        deadline = time.monotonic() + 3
+        while not hub.can_close_workspace_tab() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(.01)
+    assert not hub._running and not hub._calendar_connecting and not hub.busy.text()
+    # Closing the parent while busy emits its own information dialog, not a
+    # calendar success. Keep that guard checked separately from the hub result.
+    parent_notices = [call for call in information.call_args_list if call.args[0] is window]
+    calendar_notices = [call for call in information.call_args_list if call.args[0] is hub]
+    assert len(parent_notices) == 1
+    assert "연결 작업 진행 중" == parent_notices[0].args[1]
+    if cancelled:
+        service.observe.assert_not_called()
+        warning.assert_called_once()
+        assert not calendar_notices
+        assert "QA 연결 취소" in warning.call_args.args[2]
+    else:
+        service.observe.assert_called_once_with()
+        service.disconnect.assert_not_called()
+        assert len(calendar_notices) == 1
+        warning.assert_not_called()
+        assert "별도 승인" in calendar_notices[0].args[2]
+    window.workspace_tabs.tabCloseRequested.emit(1)
+    assert window.workspace_tabs.count() == 1
+    window._request_close()
+    assert closed == [True]
+    window.close()
+
+
+def test_calendar_disconnect_cannot_cancel_another_mcp_operation(hub, monkeypatch):
+    import ui.plugin_hub as module
+    app = QApplication.instance() or QApplication([])
+    service = SimpleNamespace(connect=Mock(), observe=Mock(), disconnect=Mock())
+    monkeypatch.setattr(hub.registry, "get_plugin", lambda name: SimpleNamespace(service=service))
+    question = Mock(return_value=module.QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(module.QMessageBox, "question", question)
+    monkeypatch.setattr(module.QMessageBox, "information", lambda *_args: None)
+    entered, release = threading.Event(), threading.Event()
+    def another_mcp():
+        entered.set()
+        assert release.wait(3)
+        return "다른 MCP 연결 완료"
+    try:
+        hub._run(another_mcp)
+        assert entered.wait(2)
+        busy = hub.busy.text()
+        hub.calendar_disconnect_button.click()
+        hub.calendar_button.click()
+        service.disconnect.assert_not_called()
+        service.connect.assert_not_called()
+        service.observe.assert_not_called()
+        question.assert_not_called()
+        assert hub._running and not hub._calendar_connecting
+        assert hub.busy.text() == busy and not hub.can_close_workspace_tab()
+    finally:
+        release.set()
+        deadline = time.monotonic() + 3
+        while not hub.can_close_workspace_tab() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(.01)
+    assert hub.can_close_workspace_tab() and not hub._calendar_connecting

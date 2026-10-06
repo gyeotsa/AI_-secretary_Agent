@@ -1,6 +1,6 @@
 # ANIS 전 영역 완료 원장
 
-기준일: 2026-10-05. 이 문서는 **현재 PC에서 소스로 실행하는 ANIS 전체 제품**의 완료 조건을 추적한다. 공통 런타임 한 배치의 진척, 테스트 통과 개수, 모델 설치 상태를 전체 제품 완성도로 환산하지 않는다.
+기준일: 2026-10-06. 이 문서는 **현재 PC에서 소스로 실행하는 ANIS 전체 제품**의 완료 조건을 추적한다. 공통 런타임 한 배치의 진척, 테스트 통과 개수, 모델 설치 상태를 전체 제품 완성도로 환산하지 않는다.
 
 ## 1. 범위와 현재 결론
 
@@ -36,6 +36,46 @@ R17의 생성 코드 의미 정확도나 실제 계정·장치·전체 사용자
 행을 닫으려면 필요한 네 게이트를 모두 충족해야 한다. 게이트를 적용하지 않는 경우에는 그 이유와 사용자 범위 결정을 남긴다. 증거가 삭제·변조·만료됐거나 관련 코드/모델/계정 조건이 바뀌면 영향받는 게이트만 다시 연다. R27과 O01–O06, 시각 영역 R24와 U03–U08은 상위/하위 연결이므로 표본이나 성공 수를 중복 합산하지 않는다.
 
 ## 3. 최신 증거와 알려진 반례
+
+10월 6일 갱신: 공통 typed constraint 검수·현재 입력에 묶인 제한 재고려·복구 경계를
+보강했다. 최신 실제 모델은 처음 **8/9**(`Temp/anis-common-qa-s8zmd0o6`)였고,
+인용 명령 설명을 unknown으로 처리했다. 공통 utterance_scope의 discussion 판정을
+SemanticRequestInterpreter에 재사용한 후 **9/9**(`Temp/anis-common-qa-m_bb5q1_`)다.
+미지원 응답의 근거 없는 기술 일반화 표현은 남아 있으므로 분류 표본 통과를 전체 답변
+품질로 해석하지 않는다. 외부 도구는 실행하지 않았다. Executor의 soft shortlist를 hard
+allowed scope로 바꾸던 경로를 제거하고 사용자 명시 scope/빈 목록은 유지했다. 현재
+revision의 실제 전체 도구 허용 Executor/합성 파일 1–1줄 읽기는 **8.12초 통과**
+(`Temp/anis-common-qa-7vg1vmem`, cold load 3.919초 포함)다. 앞선 3.22초 통과
+(`Temp/anis-common-qa-lfke1gyr`)는 해당 제거 전 표본이다. GUI/다른 서비스 수락이 아니다.
+
+마지막 전체 통과 **3725 passed, 17 skipped, 34 deselected (239.11초)**는 최신 변경 전이다.
+후속 전체 A **2 failed, 3726 passed, 17 skipped, 34 deselected (246.56초)**는 Qt fixture가
+부모 busy 알림과 캘린더 결과를 섞은 오류였으며 수정 후 집중 **43 passed (3.34초)**다.
+전체 D **23 failed, 3734 passed, 17 skipped, 34 deselected (235.51초)**의 optional
+response_mode 호출 fixture를 설명 fastpath 계약에 맞췄고 관련 4파일은 **345 passed,
+23 deselected (32.04초)**다. 최종 전체 **E는 3765 passed, 17 skipped, 34 deselected
+(237.18초)**(`tmp/qa-oct06-final-all-e.xml`)로 통과했다. `pip check`와 diff check도 통과했다.
+A/D 실패 표본과 수정 내역은 보존하며, 자동 통과를 실제 계정/장치/사용자 수락으로 대체하지 않는다.
+미지원 oracle는 임의 confidence 한계 대신 비실행·새 작업·미지원 계약과 유효한 설명을
+검사하며, unresolved/내부 해석 오류를 정답으로 집계하지 않는다. 과거 실패는 아래에 보존한다.
+
+ANIS의 공식 Playwright 확장 전용 stdio 어댑터와 P 연결/해제를 구현했다. 실제 DOM의
+`#calendar_list_container`로 수정한 **K 검사에서 Registry 제한 조회 실행과 ToolVerifier
+검수가 통과**했다(`tmp/qa-oct05-naver-persistent-k.json`). 같은 ANIS 세션에서 입력
+컨트롤의 **Asia/Seoul / 기본 내 캘린더**를 관찰했다. 일반 조회는 여전히
+`visible_view / complete_account=false / timezone=null / timezone_source=not_observed`이며
+계정 표시명/hash는 고유 계정 ID가 아니다. **승인된 2026-10-06 17:00–18:00 KST
+‘테스트 일정’은 미등록**이다. 초안·승인 등록·독립 재조회와 사용자 수락은 남아 있고,
+최신 연결 probe는 origin 검수에서 차단됐고 사용자가 메인 탭이 없거나 연결이 실패한다고
+답해 소유 대기 세션을 종료했다. 반복 재연결 요청은 하지 않는다. CalendarScreenError의
+고정 화면 코드와 자동 회귀를 추가했으나 새 분류 경로의 실제 화면 성공은 미검증이다.
+K의 이전 통과로 현재 연결 성공을 주장하지 않는다. 이 부분 증거로 R22/R19/U11 전체를
+닫거나 43개 활성 요구의 완료율/100%를 만들지 않는다. 코딩 정답률/K3·Graphify·강화학습·
+배포·push 보류는 유지한다. [공통 QA](QA_COMMON_RUNTIME.md)와
+[네이버 연동](NAVER_INTEGRATION.md)의 최신 상태를 따른다.
+
+이하 날짜별 문장은 당시 revision의 기록이다. 이후 표본으로 개선된 항목의 과거 실패를
+삭제하지 않으며, 과거의 ‘미확인/다음 작업’을 위 최신 상태로 대체해서 읽는다.
 
 10월 5일 후속 공통 기한/잠금/HTTP 정리/취소 및 coarse-index abstention을 수정했다.
 최종 지정 자동 회귀는 **3636 passed / 17 skipped / 34 deselected (243.98초)**다.
@@ -105,13 +145,13 @@ Windows 화면 조작 도구가 초기화 ACL 오류로 실패해 실제 UI 조�
 
 | 증거 | 확인한 범위 | 아직 증명하지 못한 범위 |
 | --- | --- | --- |
-| [공통 런타임 QA](QA_COMMON_RUNTIME.md), [최신 인수인계](Agent%20인수인계.txt) | 2026-10-05 전체 자동 회귀 **3,592 passed, 17 skipped, 34 deselected (233.41초)**; 소스 `da2a85f`. 전체 목록 Executor/합성 파일 1–1줄 읽기 21.74초 통과. 겹치는 집중 검사는 합산하지 않는다. | 실제 해석 matrix 8/9의 미지원 확신도 실패, GUI 직접 입력 재검증, 건너뛴 심볼릭 링크/대화 분류 변형, 별도의 실제 계정/장치 수락 및 모든 기능의 내용 정확도 |
+| [공통 런타임 QA](QA_COMMON_RUNTIME.md), [최신 인수인계](Agent%20인수인계.txt) | 최신 실제 분류 **9/9**, 현재 revision 전체 목록 Executor/합성 파일 1–1줄 읽기 **8.12초 통과**. 최종 전체 **E: 3765 passed, 17 skipped, 34 deselected (237.18초)**. A/D 실패·수정 내역은 상단에 보존하며 집중 검사나 과거 결과를 합산하지 않는다. | 미지원 응답의 기술 일반화/전체 답변 품질, GUI 직접 입력, 건너뛴 심볼릭 링크/대화 분류 변형, 별도의 계정/장치/전문가/장기/사용자 수락 |
 | [실제 GUI와 모델 품질](QA_COMMON_RUNTIME.md#실제-gui와-모델-품질) | 격리 JarvisApp의 첫 줄 원문/CRLF 읽기, TTS OFF, 빈 작업공간 전환, 장문 내부 스크롤·접기/복원. 재귀 예제 10개 응답 표시, 800×700 창/입력창 유지, 정상 종료 | 동일 답변의 **print_stairs 출력 순서 설명 오류, count_char 종료값 오류, count_pattern의 긴 패턴 종료 조건 누락**. 생성 코드는 실행하지 않았으며, 개수 준수는 코드 정확도가 아니다. 부분 응답 안내의 실앱 재현도 별도 필요 |
 | [모델 취소·지연 기록](QA_COMMON_RUNTIME.md) | 실제 Ollama 요청 본문 전송 뒤 취소 0.016초, worker 종료, 이후 인사 5.12초. 각 1회 관측 | Anthropic 전송 중 취소, DNS 지연, 서버 GPU 즉시 반환, 롤백을 보장하지 않음. 동일 장문 요청의 직전 120초 read timeout은 해결되지 않은 표본 |
 | [최신 요구사항 재감사](QA_REQUIREMENTS_MATRIX.md#117-2026-09-01-구현-후-재검증), [9월 7일 후속 QA](QA_MASTER_AUDIT.md#2026-09-07-후속-qa-최종-정리) | Photoshop 타입 편집·복사 저장, 일부 Office process 격리, 시안 revision/문구/렌더 결과 검증, 원격 read-back·uncertain 전이, 증거 무결성·만료 방어의 구현/자동 계약 | 실제 설치 전문 앱, 실계정 도착, 실제 사진·장치·미감 수락. 과거 GAP-01/02/05/06/14/16 전체를 계속 미구현으로 나열하지 않되 남은 하위 범위는 유지 |
 | [답변 검수 코드](core/answer_verification.py), [회귀](test_answer_verification.py), [연결 검사](test_answer_review_integration.py) | 실제 모델에서 중첩 목록 코드 펜스 오인식과 제목 뒤 본문 잘림을 발견해 수정. 허위 진행 주장과 개수/원문/정적 Python 구문 검사·최대 1회 답변 교정 연결 | 배열 기준 ID 중복을 keyed schema로 수정한 뒤 실제 검수 요청이 120초 timeout. 전체 139.17초, 3개 초안 보존/unverified. 일반 정확도·지연 해결이 아니며 실모델 검수의 안정성 잔여 |
 | [클라우드 런타임](core/remote_runtime.py), [클라우드 지원](CLOUD_INTEGRATION.md) | 제한된 다중 페이지/부분 결과 보존/계정 격리, PKCE OAuth UI/신원·scope·만료·DPAPI, 명시 Drive 본문/RAG 구현·자동 계약 | 실계정 미검증. 부분/재개 목록은 merge-only, 본문/형식 지원은 제한적. 검색 결과의 최종 답변 사용·사용자 수락은 미확인 |
-| [네이버 메일](NAVER_INTEGRATION.md), [메일 검사](test_mail_read_runtime.py) | 받은편지함/선택 본문, 읽기 전용 IMAP, STARTTLS 발송, DPAPI 계정 UI·취소/해제 자동 계약 | 실제 네이버 인증·수신 수락과 ANIS 캘린더 조회/등록 미완. Codex의 로그인된 브라우저 관찰·SMTP 접수로 업무 완료를 기록하지 않음 |
+| [네이버 연동](NAVER_INTEGRATION.md), [메일 검사](test_mail_read_runtime.py), [캘린더 검사](test_naver_calendar.py) | 메일의 읽기 전용 IMAP/승인 STARTTLS·DPAPI 자동 계약. 캘린더 공식 확장 전용 연결·제한 조회 구현과 실제 ANIS Registry/ToolVerifier K 표본 통과; 같은 세션 KST/기본 캘린더 입력 컨트롤 관찰 | 실제 메일 인증·수신 수락, 캘린더 초안·승인 등록·독립 재조회·기간/반복 일정 범위 및 사용자 수락. Codex 관찰·SMTP 접수·연결 성공·조회 1표본을 전체 업무 완료로 기록하지 않음 |
 
 과거 문서의 `packaged_runtime=passed`/`OK` 파일이나 12개 실환경 key의 `not_run` 스냅샷은 [당시 원장 해석](QA_REQUIREMENTS_MATRIX.md#6-현재-실환경-원장의-의미와-부족한-근거)과 함께만 사용한다. 이 문서 작성 중 현재 `AcceptanceRuntime`을 실행하지 않았으므로 과거 스냅샷을 현재 상태로 복제하지 않는다.
 
@@ -199,11 +239,11 @@ Windows 화면 조작 도구가 초기화 ACL 오류로 실패해 실제 UI 조�
 
 R22/R19/U11은 하나의 “클라우드 연결 완료”로 닫지 않는다. 아래는 같은 상위 ID의 하위 체크이며 고정 ID 총수를 늘리거나 별도 성공 개수로 중복 집계하지 않는다.
 
-### 주 사용 서비스 실체 감사 (2026-10-04 갱신)
+### 주 사용 서비스 실체 감사 (2026-10-06 갱신)
 
 | 서비스 | 현재 실행 경로 | 다음 구현/검증 경계 |
 | --- | --- | --- |
-| 네이버 | `core/mail_runtime.py`, `plugins/mail.py`: 읽기 전용 IMAP 받은편지함/본문 + 승인 SMTP/STARTTLS. `core/mail_accounts.py`, `ui/mail_account_dialog.py`: DPAPI 단일 메일 계정 UI/인증 전용 검사/로컬 해제와 실행 연결. 캘린더는 별도 로그인된 브라우저 방식 | 메일·캘린더 우선. Google/Microsoft OAuth와 구분하며, 실제 메일 인증·도착과 캘린더 화면 조회/승인 등록·재조회 수락은 미실행. [범위/제약](NAVER_INTEGRATION.md) 참조 |
+| 네이버 | 메일의 `core/mail_runtime.py`, `plugins/mail.py`, DPAPI 계정 UI. 캘린더의 `core/browser_extension.py`, `core/naver_calendar.py`, `plugins/naver_calendar.py`: 공식 확장으로 일반 Chrome의 사용자 선택 탭 연결·제한 조회, P 연결/해제. 실제 ANIS Registry/ToolVerifier 조회 K 표본 통과 | 메일·캘린더 우선. 실제 메일 인증·도착과 캘린더 초안·승인 등록·독립 재조회·기간/반복 일정·사용자 수락은 남음. 승인된 10월 6일 시험 일정은 미등록. [범위/제약](NAVER_INTEGRATION.md) 참조 |
 | 구글 | 2026-10-04 `ui/oauth_account_dialog.py`, `core/oauth_connection.py`, `core/remote_runtime.py`: 기본 브라우저 OAuth UI·PKCE·loopback callback·계정 신원/scope/만료 확인·DPAPI 저장. 승인 Gmail 전송, Calendar 생성/읽기, Drive 메타데이터와 `plugins/cloud_knowledge.py`의 명시 plain/markdown/csv·Google Docs 본문 RAG | 실제 Client 등록·선택 계정 로그인/동의/갱신 수락 미실행. Gmail 받은편지함/검색·Calendar 다중 페이지는 잔여이며, Drive PDF/Office/Sheets/Slides/바로가기·전체 수집은 지원하지 않음. 본문 변경/철회→검색→최종 답변 실제 사용은 실계정으로 별도 수락. [지원 계약](CLOUD_INTEGRATION.md) 참조 |
 | 깃허브 | `plugins/git.py`: 로컬 저장소 Git status/diff/log/commit/push/pull | GitHub 계정 상태·Issues/PR/CI 전용 API/CLI 경로 없음. 기존 Git 인증을 GitHub 연결 검증으로 간주하지 않음 |
 | 카카오톡 | `core/desktop_messaging.py`: Windows 대상/입력창 확인, 승인 전송, 새 발신 말풍선 비교 | 형택 실제 도착 수락, 비전송 준비 상태 진단. 대화 기록 검색·첨부·그룹·서버 수신 영수증은 현재 계약과 별개 |
@@ -245,9 +285,9 @@ R22/R19/U11은 하나의 “클라우드 연결 완료”로 닫지 않는다. �
 
 ## 8. 다음 작업 순서
 
-1. **현재 공통 해석 반례를 먼저 닫는다.** 입력 한도 때문에 카탈로그를 숨기지 않는 탐색·조건 보존과 QA oracle 수정 뒤 전체 카탈로그 실모델/실제 합성 파일 실행 및 최종 회귀를 연결한다. 실패를 스타일 분류나 정보 부족으로 돌리지 않는다.
+1. **남은 캘린더 등록·실계정 게이트를 마무리한다.** 최신 공통 변경은 전체 E와 실제 전체 허용 도구/파일 1–1줄 읽기 8.12초로 확인했다. 캘린더 화면 연결이 준비된 뒤 ANIS 자체 초안·승인 바인딩→정확한 시험 일정 등록→독립 재조회까지 연결하며, 이전 K 조회 표본을 현재 연결 성공으로 재사용하거나 불확실한 등록을 자동 반복하지 않는다. 실계정 업무·사용자 수락은 자동 회귀와 별도로 확인한다.
 2. **이미 실앱에서 발견한 공통 품질 결함을 재검증**한다. 요구 조건·원문·무근거 진행 주장·말투·장문 timeout/부분 응답 안내를 분리한 실패 corpus로 평가한다. 모델과 회귀를 동시에 과부하시켜 원인이 섞이지 않게 하지 않는다. 모델 한계에 따른 코딩 정답률/교체 실험은 사용자 보류를 유지한다.
-3. **구현된 하위 범위와 남은 공백을 구분한다.** OAuth UX·명시 Drive 본문/RAG·근거 추출 요약·native 상태/수명주기 보강을 전체 미구현으로 반복 나열하지 않는다. ANIS 자체 네이버 브라우저 세션/캘린더 어댑터, 미지원 생성 편집·계획 서비스의 실제 실행 계약을 계속 처리하고 범위/계정/비용만 필요 시 사용자 확정한다.
+3. **구현된 하위 범위와 남은 공백을 구분한다.** OAuth UX·명시 Drive 본문/RAG·근거 추출 요약·native 상태/수명주기 보강·ANIS 네이버 브라우저 연결/제한 조회를 전체 미구현으로 반복 나열하지 않는다. 캘린더 등록 및 미지원 생성 편집·계획 서비스의 실제 실행 계약을 계속 처리하고 범위/계정/비용만 필요 시 사용자 확정한다.
 4. **현재 PC의 실제 기능을 묶음별 수락**한다. 모든 전문가 산출물 재열기, 시안 연속 편집/실모델, 실제 음성/손 동작/장치, 허용된 계정의 전달·변경·동기화, 승인된 카카오톡 시험, 장기 운영을 서로 다른 보고서로 남긴다.
 5. **사용자 평가를 연결하고 닫힘을 재감사**한다. 43개 활성 ID에 필요한 네 게이트와 유효 증거가 모두 연결됐는지 확인한다. 미지원/미검증을 숨기지 않으며 O04는 그대로 보류한다. 공통 비교 과제·조건·독립 평가 없이 Codex 수준 동등성이나 전 영역 백분율을 만들지 않는다.
 

@@ -41,7 +41,7 @@ def _conversation():
 @pytest.mark.parametrize("utterance,answer_kind", [
     ("코딩테스트 문제 풀어줄 수 있어?", "conversation"),
     ("말을 전혀 이해 못하는구나?", "conversation"),
-    ("재귀 함수를 예시와 함께 설명해줘.", "conversation"),
+    ("재귀 함수에 관해 이야기하자.", "conversation"),
     ("간단한 반복문의 예시를 보여줄래?", "code"),
     ("제공한 비용 표를 계산해서 어떤 계획이 가장 효율적인지 분석해줘.", "reasoning"),
 ])
@@ -133,7 +133,7 @@ def test_action_keeps_two_stage_catalogue_discovery(registry):
 ])
 def test_optional_style_cannot_revoke_conversation_or_grant_tools(registry, mode, confidence):
     interpreter, model = _interpreter(registry, _conversation(), _mode(mode, confidence))
-    result = interpreter.interpret("재귀 함수를 설명해줘")
+    result = interpreter.interpret("재귀 함수에 관해 이야기하자")
     assert result.reason == "semantic_answer_style_uncertain"
     assert result.is_grounded_conversation and result.answer_kind == "conversation"
     assert not result.tool_names and not result.to_resolution(registry).matched
@@ -149,7 +149,7 @@ def test_optional_style_cannot_revoke_conversation_or_grant_tools(registry, mode
 ])
 def test_malformed_optional_style_preserves_validated_conversation(registry, output):
     interpreter, model = _interpreter(registry, _conversation(), output)
-    result = interpreter.interpret("재귀 함수를 설명해줘")
+    result = interpreter.interpret("재귀 함수에 관해 이야기하자")
     assert result.reason == "semantic_answer_style_invalid"
     assert result.is_grounded_conversation and result.answer_kind == "conversation"
     assert not result.tool_names and not result.to_resolution(registry).matched
@@ -247,7 +247,7 @@ def test_cancelled_optional_style_call_still_propagates(registry):
 
     interpreter = SemanticRequestInterpreter(CancellingModel(), registry, classify_response_mode=True)
     with bind_turn_context(context), pytest.raises(ToolCancelledError):
-        interpreter.interpret("재귀 함수를 설명해줘")
+        interpreter.interpret("재귀 함수에 관해 이야기하자")
     assert len(calls) == 2
 
 
@@ -257,7 +257,7 @@ def test_optional_style_transport_failure_keeps_validated_conversation(registry,
         code = failure_code
 
     interpreter, model = _interpreter(registry, _conversation(), TransportError("offline test"))
-    result = interpreter.interpret("설명해줘")
+    result = interpreter.interpret("재귀 함수에 관해 이야기하자")
     assert result.reason == f"semantic_answer_style_failed:TransportError:{failure_code}"
     assert result.is_grounded_conversation and result.answer_kind == "conversation"
     assert not result.tool_names and len(model.calls) == 2
@@ -306,6 +306,21 @@ def test_deterministic_smalltalk_still_skips_catalogue_and_style(registry, monke
     result = interpreter.interpret("안녕하세요!")
     assert result.is_grounded_conversation and result.source == "deterministic_conversation"
     assert not model.calls
+
+
+@pytest.mark.parametrize("utterance", [
+    "재귀 함수를 설명해줘",
+    "설명해줘",
+    "실제로 보내지는 말고 '형택에게 카톡 보내줘'라는 문장의 뜻만 설명해줘.",
+])
+def test_shared_discussion_scope_skips_optional_style_and_tool_discovery(registry, utterance, monkeypatch):
+    interpreter, model = _interpreter(registry)
+    monkeypatch.setattr(interpreter, "_file_candidates", lambda *_: pytest.fail("discussion needs no catalogue"))
+    result = interpreter.interpret(utterance)
+    assert result.raw_text == utterance and result.is_grounded_conversation
+    assert result.source == "utterance_scope" and result.reason == "explanation_not_execution"
+    assert not result.tool_names and result.slots == {} and not result.needs_clarification
+    assert not result.to_resolution(registry).matched and not model.calls
 
 
 def test_response_mode_is_opt_in_for_compatible_callers(registry):

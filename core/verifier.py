@@ -42,6 +42,7 @@ class ToolVerifier:
             "add_document": self._verify_add_document,
             "run_command": self._verify_run_command,
             "calendar_create_event": self._verify_calendar_create_event,
+            "naver_calendar_read_view": self._verify_naver_calendar_view,
             "excel_create_workbook": self._verify_create_excel_file,
             "excel_write_cells": self._verify_write_excel_cells,
             "word_create_document": self._verify_word_document,
@@ -61,6 +62,21 @@ class ToolVerifier:
         if isinstance(result, (dict, list)):
             return json.dumps(result, ensure_ascii=False, default=str)
         return str(result)
+
+    def _verify_naver_calendar_view(self, tool_input, result):
+        from core.naver_calendar import NaverCalendarService
+        payload = self._payload(result)
+        evidence = self._evidence_data(result, "calendar_visible_view")
+        try:
+            NaverCalendarService.validate_view(payload)
+        except (ValueError, TypeError):
+            return VerificationResult(False, "네이버 캘린더 조회 범위/계정 표시 증거가 유효하지 않습니다.")
+        if (evidence.get("scope") != "visible_view" or evidence.get("complete_account") is not False
+                or evidence.get("payload_sha256") != hashlib.sha256(self._raw_output(result).encode()).hexdigest()
+                or evidence.get("account_fingerprint") != hashlib.sha256(payload["account"].encode()).hexdigest()):
+            return VerificationResult(False, "캘린더 조회 본문과 실행 증거가 일치하지 않습니다.")
+        return VerificationResult(True, "현재 캘린더 표시 화면만 읽었음을 확인했습니다. 전체 일정 동기화는 아닙니다.",
+                                  {"scope":"visible_view", "complete_account":False})
 
     @staticmethod
     def _payload(result: Any) -> Dict[str, Any]:

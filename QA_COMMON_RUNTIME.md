@@ -1,6 +1,73 @@
-# 공통 에이전트 런타임 개선 — 2026-09-08~10-05
+# 공통 에이전트 런타임 개선 — 2026-09-08~10-06
 
-## 2026-10-05 전체 추론 기한·실모델 반례 후속
+## 2026-10-06 최신 상태 — 실제 표본 통과와 미검증 후속 구분
+
+- 최신 실제 전체 허용 도구의 9-case 의미 분류는 처음 **8/9**
+  (`Temp/anis-common-qa-s8zmd0o6`)였다. 인용 명령의 의미를 설명해 달라는 요청을 unknown으로
+  처리했다. 공통 `utterance_scope`의 discussion 판정을 SemanticRequestInterpreter에서도
+  재사용한 뒤 **9/9**(`Temp/anis-common-qa-m_bb5q1_`, 실제 qwen2.5:7b 및 model trace)다.
+  인용 설명 분류는 추가 모델 호출 0회다. 미지원 응답에 근거 없는 기술 일반화 표현이 남아
+  있으므로 **분류 표본 9/9이지 전체 답변 품질 통과가 아니다.** 외부 도구는 실행하지 않았다.
+- 최신 실제 Executor/로컬 모델/합성 파일 1–1줄 읽기는 **8.12초 통과 / completed**,
+  `Temp/anis-common-qa-7vg1vmem`다. soft shortlist 제거 후 전체 `allowed_tool_names`를
+  명시하고 정확한 원문/CRLF·범위·원본 hash·receipt/evidence·표시·원본 보존을 확인했다.
+  모델 cold load 3.919초를 포함한 1회 측정이며 평균 지연/속도 비교 근거가 아니다.
+  앞선 **3.22초 통과**(`Temp/anis-common-qa-lfke1gyr`)는 soft shortlist 제거 전이다.
+  GUI 입력이나 다른 서비스 E2E 수락을 대신하지 않는다. 이전 matrix 9/9
+  (`Temp/anis-common-qa-sna_whmf`)와 읽기 3.3초(`Temp/anis-common-qa-asrk6le9`)는
+  recovery 수정 전 기록으로 보존하고 최신 표본과 합산하지 않는다.
+- typed constraint 검수와 제한 재고려를 구현했고, 근거 없는 대화 복구 경로를 보강했다.
+  쉼표/세미콜론/줄바꿈은 완결된 긍정 명령의 경계만 분리하며 금지/조건/인용 범위를 보존한다.
+  Executor가 lexical ToolLoadout을 hard allowed scope로 좁히던 9줄을 제거했다. 사용자가
+  명시한 scope와 빈 목록 `[]`는 그대로 유지한다. 관련 집중은 **295 passed,
+  7 deselected (35.02초)**다. 이전 집중 95 passed(7.61초)와 합산하지 않는다.
+- 마지막 전체 통과 **3725 passed, 17 skipped, 34 deselected (239.11초)**는 최신 변경 전이다.
+  후속 전체 A는 **2 failed, 3726 passed, 17 skipped, 34 deselected (246.56초)**였고,
+  Qt fixture가 부모의 busy 알림을 캘린더 결과 알림과 섞은 오류를 수정한 집중 검사는
+  **43 passed (3.34초)**다. 전체 D는 **23 failed, 3734 passed, 17 skipped,
+  34 deselected (235.51초)**이며 설명 fastpath 뒤 response_mode 모델 호출 fixture의
+  기대값 불일치를 수정했다. 설명/인용 설명 fastpath 3개 및 optional response_mode fixture를
+  포함한 4파일 집중은 **345 passed, 23 deselected (32.04초)**다. 최종 전체 **E는
+  3765 passed, 17 skipped, 34 deselected (237.18초)**,
+  `tmp/qa-oct06-final-all-e.xml`로 통과했다. `pip check`는
+  `No broken requirements found`, diff check도 통과했다. A/D 실패와 수정 내역은 보존하며
+  skip/deselect·실계정·장치·사용자 수락을 통과에 합산하지 않는다.
+  XML은 tests=3782/errors=0/failures=0/skipped=17이다. skip 17개는 Windows 심볼릭 링크
+  생성 권한 8개와 Tool Intent 없는 대화 발화 변형 9개이며 integration 34개는 deselect다.
+- 미지원 QA 판정은 confidence 수치만으로 통과시키지 않는다. `no_supported_tool`,
+  `relation=new`, `operation=unknown`, `grounded=false`, 도구 없음, 재질문 없음, 비어 있지 않은
+  제한 설명이 함께 필요하다. 낮은 confidence라도 이 계약을 충족하면 통과하며 내부 분류
+  오류·unresolved·설명 누락을 정답으로 세지 않는다. 과거 .85 기준의 결과는 당시 기록이다.
+- 네이버의 자체 **고정 `@playwright/mcp` 0.0.83 stdio** 어댑터와 P 연결/해제를 구현했다.
+  수동 연결은 최대 300초, 일반 화면 작업은 90초다. 내부 고정 snippet용
+  `browser_run_code_unsafe`를 모델 Registry에 노출하지 않는다. 선택한 캘린더 page nonce·
+  origin/path·보이는 계정 표시명을 확인하지만 표시명은 고유 계정 ID가 아니다.
+  `visible_view`만 읽으며 일반 조회의 시간대는 `null/not_observed`다.
+- 실제 H/J Registry 조회는 실패했다. `.calendar_list_container` 클래스 대신 관찰한
+  `#calendar_list_container` ID·visible 조건·5초 대기로 수정한 후 **K에서 실제 ANIS Registry
+  조회 실행과 ToolVerifier 검수가 통과**했다. 로컬 보고서는
+  `tmp/qa-oct05-naver-persistent-k.json`이다. 같은 세션에서 입력 화면의 **Asia/Seoul**과
+  기본 **내 캘린더** 선택 표시를 관찰했다. 일반 조회의 시간대는 계속 `null/not_observed`이며
+  표시명/hash는 고유 계정 ID가 아니다. 조회 payload/범위 검수는 별도 서버 API의 독립 검증이나
+  기간 전체/반복 일정 수락이 아니다.
+  `--interactive` QA는 같은 프로세스에서 읽기 세션을 유지한다.
+  일정 초안·등록·apply 도구는 아직 없고, 승인받은 **2026-10-06 17:00–18:00 KST,
+  ‘테스트 일정’, 기본 캘린더**도 저장을 시도하지 않았다. 현재 날짜에서 ‘내일’을 다시 계산해
+  10월 7일로 바꾸지 않는다. 종료된 QA 프로세스의 연결이 계속 유지된다고 추정하지 않는다.
+  최신 연결 probe는 origin 검수에서 차단됐다. 사용자는 캘린더 메인 탭이 없거나 연결이
+  실패한다고 답했고 대기 중 QA 소유 세션은 종료했다. 반복 재연결 요청은 하지 않는다.
+  `CalendarScreenError`의 `login / calendar_other / other / unknown` 고정 진단 코드와
+  자동 회귀를 추가했지만, 새 분류 경로의 실제 화면 성공은 확인하지 않았다. K의 이전
+  제한 조회 통과를 현재 연결 상태나 최신 live 수락으로 재사용하지 않는다. Save는 누르지 않았다.
+  [네이버 연동 기록](NAVER_INTEGRATION.md)과 [MCP 경계](MCP_INTEGRATION.md)를 따른다.
+- 코딩 정답률·K3·Graphify·강화학습·배포 파일·원격 push는 보류한다. 실제 계정·장치·전문가
+  품질·장기 실행·사용자 수락 등은 [완료 원장](QA_COMPLETION_LEDGER.md)의 열린 요구로
+  남긴다. 전체 작업 완료나 100%를 주장하지 않는다.
+
+이하 날짜별 기록은 해당 revision과 실행 당시의 결과다. 같은 날의 과거 실패나
+‘다음 작업/미확인’ 문장을 최신 구현 상태로 해석하지 않으며 위 최신 상태를 우선한다.
+
+## 2026-10-05 전체 추론 기한·실모델 반례 후속 (이전 revision 기록)
 
 - 잠금 대기가 호출별 request_timeout에 포함되지 않고, 늦게 획득한 잠금도 모델 본문에
   진입하던 결함을 공통 추론 경계에서 수정했다. 기한은 ContextVar로 현재 요청에만
@@ -31,7 +98,7 @@
 - 이전 격리 GUI는 자동 종료됐다. 이번 GUI 입력/장문 표시 수락은 없고, 공식 확장의
   설치·일반 Chrome 세션의 ANIS 캘린더 어댑터 연결도 확인되지 않았다. 전 영역 완료는 아니다.
 
-## 2026-10-05 입력 예산·탐색 권한·실제 읽기 범위
+## 2026-10-05 입력 예산·탐색 권한·실제 읽기 범위 (이전 revision 기록)
 
 - 후속 배치별 후보는 전체 후보를 보존한 한 번의 계약 재선택으로 중복 대안을 제거한다.
   각 배치와 최종 선택의 16개 한도, 전체 16회 탐색 한도, 취소·입력 예산은 유지한다.
@@ -435,8 +502,9 @@ Codex와의 동등성을 의미하지 않는다. 실제 외부 전송과 장치 
 | 100% | 잔여 결함 재검증·증거·인수인계 | 진행 중 |
 
 단계 완료는 명시된 검사를 실행했다는 뜻이며 모든 표현이나 작업이 성공한다는 뜻이 아니다.
-현재 배치의 검증 단계 진행률은 90%이다. 제품 전체 완성률은 이 표로 산정하지 않는다.
-100%는 아직 아니다. 실앱에서 발견한 답변 정확도·지연 결함은 아래 남은 작업에 명시한다.
+이 과거 배치에서는 검증 단계 진행률을 90%로 기록했다. 현재 제품 전체 완성률은 이 표로
+산정하지 않는다. 최신 상태는 문서 상단과 완료 원장을 따른다. 당시 실앱에서 발견한
+답변 정확도·지연 결함은 아래 남은 작업의 이력으로 유지한다.
 
 ## 검증 실행
 

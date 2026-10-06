@@ -42,7 +42,7 @@ from core.task_contracts import (
 )
 from core.quality_metrics import get_quality_metric_store
 from core.utterance_scope import analyze_utterance_scope, allows_execution_follow_up
-from core.semantic_request import resolve_coding_context, SemanticDecision
+from core.semantic_request import ActionConstraintReview, resolve_coding_context, SemanticDecision
 from core.coding_experience import get_coding_experience_store, _code_text
 from core.turn_context import (
     TurnExecutionContext, bind_turn_context, current_turn_context, check_turn_cancelled,
@@ -630,7 +630,12 @@ class Executor:
         def execution_scope_guard():
             # Model confidence cannot confer authority denied by the current
             # utterance. Quoted payloads were masked by the shared scope parser.
-            if utterance_scope.negated:
+            review = semantic.action_constraints if semantic is not None else None
+            scoped_permission = (isinstance(review, ActionConstraintReview) and semantic.grounded
+                                 and len(semantic.tool_names) == 1
+                                 and review.permits(goal, semantic.tool_names, semantic.slots,
+                                                    self.intent_router.registry))
+            if (utterance_scope.negated or utterance_scope.reason == "explicit_corrective_clause") and not scoped_permission:
                 return terminal_outcome("요청하신 작업은 실행하지 않겠습니다.", "cancelled")
             if utterance_scope.conditional:
                 condition = " ".join(utterance_scope.condition.split())
@@ -651,19 +656,9 @@ class Executor:
         semantic = None
         interpreter = getattr(self, "semantic_interpreter", None)
         if interpreter is not None:
-            # Keep the local semantic model's catalogue small.  The registry
-            # remains the source of truth; this is only a task-scoped shortlist
-            # so a 7B model does not compare every unrelated capability.
-            semantic_allowed_tools = tool_scope
-            if semantic_allowed_tools is None:
-                loadout_selector = getattr(self, "tool_loadout", None)
-                if loadout_selector is not None:
-                    loadout = loadout_selector.select(goal)
-                    # Only narrow on a declared intent with a strong margin;
-                    # weak descriptor overlap stays on the full registry so a
-                    # heuristic shortlist cannot hide the correct capability.
-                    if loadout.reason.startswith("intent:") and loadout.confidence >= 0.75:
-                        semantic_allowed_tools = list(loadout.tool_names)
+            # Only the caller's explicit permission scope is a hard boundary.
+            # The interpreter already performs bounded registry discovery;
+            # lexical ranking must not hide a better registered capability.
             pending_semantic = self.dialogue_state.get(session_key, None, workspace_scope)
             pending_state = (self.dialogue_state.get_intent_state(pending_semantic.task_id)
                              if pending_semantic else None) or {}
@@ -679,7 +674,7 @@ class Executor:
                     # task. The interpreter decides new vs. continue explicitly.
                     pending_state = {"recent_completed": recent}
             semantic = interpreter.interpret(
-                goal, history=history, pending=pending_state, allowed_tools=semantic_allowed_tools,
+                goal, history=history, pending=pending_state, allowed_tools=tool_scope,
             )
             check_turn_cancelled()
             record_runtime_event("semantic_decision", relation=semantic.relation,
@@ -701,6 +696,11 @@ class Executor:
                 outcome = terminal_outcome(semantic.dialogue_response, "failed")
                 outcome.response_generated = True
                 return outcome
+            if semantic.reason.startswith("semantic_action_constraint"):
+                return terminal_outcome(
+                    "허용한 동작과 금지한 동작을 실행 명세에서 확실히 구분하지 못해 실행하지 않았습니다. "
+                    "실행된 도구: 0.", "failed",
+                )
             if not semantic.clarification_question and (semantic.reason in {
                 "semantic_response_mode_invalid", "semantic_discovery_invalid",
                 "semantic_clarification_invalid",

@@ -3,8 +3,9 @@
 앱의 **플러그인 → 링크 연결 / 파일 추가**에서 공개 HTTP MCP 서버의 도구 목록을 가져온다.
 원격 서버는 HTTPS, 로컬 시험 서버만 localhost/127.0.0.1/::1 HTTP를 허용한다.
 requirements는 `mcp>=2,<3`이며 현재 연결 코드는 SDK 2.2의 `Client` 인터페이스를 사용한다.
-stdio 명령 실행이나 Python 파일의 자동 실행은 지원하지 않는다.
+이 공개 연결 UI는 사용자 지정 stdio 명령 실행이나 Python 파일의 자동 실행을 지원하지 않는다.
 Python 파일은 사용자 확인 후 검토함에 보관하는 기능이지 설치 완료가 아니다.
+아래 네이버 캘린더의 고정 내장 stdio 어댑터는 별도 경로이며 범용 stdio 설치 기능이 아니다.
 
 매니페스트 예:
 
@@ -59,3 +60,39 @@ Plugin Hub·테마 집중 점검은 **103 passed, 3 deselected (27.30초)**였�
 
 Google/Microsoft 계정 UI가 추가되어도 이 MCP 브리지에 인증 헤더나 OAuth가 연결된 것은 아니다.
 내장 클라우드 기능의 범위는 [CLOUD_INTEGRATION.md](CLOUD_INTEGRATION.md)와 구분한다.
+
+## 2026-10-06 내장 네이버 캘린더 — 공식 확장 stdio 경로
+
+- `core/browser_extension.py`는 설치된 **`@playwright/mcp` 0.0.83**을 확인한 뒤 소유한
+  stdio 프로세스로 실행한다. 임의 패키지·명령·MCP 서버를 모델이 선택하는 경로가 아니다.
+  일반 Chrome의 사용자 선택 탭에만 연결하며 쿠키·비밀번호·profile을 복사하지 않는다.
+- 내부 `browser_run_code_unsafe`는 앱이 작성한 고정 화면 작업 snippet에만 사용한다.
+  이 범용 도구와 임의 코드 인자는 모델 Registry에 노출하지 않는다. 공개 네이버 도구는
+  `naver_calendar_read_view`뿐이며 초안·등록·apply는 미구현이다.
+- P 진단에서 연결·명시적 해제를 제공한다. 수동 Allow & select 대기는 최대 **300초**,
+  이후 일반 화면 작업 호출은 **90초**다. 취소·해제·앱 종료 시 소유 세션을 정리한다.
+  서버 시작/도구 목록 준비와 사용자가 캘린더 탭을 연결한 사실, 업무 검수 통과는 각각 다르다.
+- origin/path와 선택한 page nonce, 보이는 계정 표시명을 작업마다 확인한다. 표시명 hash는
+  고유 계정 ID가 아니며 전체 계정 신원·권한을 증명하지 않는다. 제한 조회만 제공하며
+  `scope=visible_view / complete_account=false / timezone=null / timezone_source=not_observed`다.
+- `scripts/qa_naver_calendar.py --interactive --report <새 로컬 보고서 경로>`는 같은 QA
+  프로세스의 세션을 유지한 채 `read / editor / timezone / quit` 검사를 지원한다.
+  일정 입력·저장 명령은 없으며 종료·EOF·예외 발생 시 해제한다. 종료된 단발 실행의 Welcome
+  요청은 만료되므로 예전 relay 오류를 새 연결 실패나 로그인 실패로 혼동하지 않는다.
+- 실제 H/J의 Registry 조회 실패는 잘못된 클래스 selector가 원인이었다. 실제 DOM의
+  `#calendar_list_container` ID·visible 조건·5초 대기로 수정한 뒤 **K 검사에서 ANIS
+  Registry 조회 실행과 ToolVerifier 검수가 통과**했다. 같은 세션에서 입력 컨트롤의
+  Asia/Seoul 및 기본 내 캘린더 선택을 관찰했다. 일반 조회 시간대는 추정하지 않는다.
+  승인된 **2026-10-06 17:00–18:00 KST ‘테스트 일정’**은 저장을 시도하지 않았다.
+  조회 표본 통과는 일정 등록·독립 재조회·전체 서비스 수락이 아니다. 종료된 QA 프로세스의
+  연결 요청을 재사용하거나 relay 오류를 로그인 실패로 단정하지 않는다.
+- 최신 probe는 origin 검수에서 차단됐으며 사용자가 메인 캘린더 탭이 없거나 연결이
+  실패한다고 답했다. QA 소유 대기 세션은 종료했고 재연결 승인을 반복 요청하지 않는다.
+  `CalendarScreenError`의 고정 화면 코드 `login / calendar_other / other / unknown` 안내와
+  자동 회귀를 추가했다. 새 경로의 실제 화면 분류 성공은 확인하지 않았으며 이전 K의
+  통과를 최신 연결 수락으로 쓰지 않는다. 일정 Save는 누르지 않았다.
+
+최신 서비스 범위와 남은 수락은 [NAVER_INTEGRATION.md](NAVER_INTEGRATION.md)에 기록한다.
+Git에 포함하지 않는 `data/tools/` 런타임의 고정 버전 수동 설치와 앱 재시작 방법은 같은
+문서의 **공식 확장 어댑터 재현 설치**를 따른다. 현재 PC에 이미 설치된 패키지를 재설치하지 않는다.
+코딩 정답률·K3·Graphify·강화학습·배포·원격 push는 이번 후속 범위에서 보류한다.

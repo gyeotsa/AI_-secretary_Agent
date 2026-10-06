@@ -387,6 +387,7 @@ def test_uncertain_cancel_never_executes_or_cancels_pending_send(make_executor, 
 
 @pytest.mark.parametrize("raw", [
     "note.txt 파일을 수정하지 마",
+    "note.txt 파일을 수정하지 말고 읽어줘",
     "내가 승인하면 note.txt 파일을 수정해줘",
 ])
 def test_negated_or_conditional_write_has_no_effect_even_with_grounded_decision(make_executor, raw):
@@ -396,6 +397,74 @@ def test_negated_or_conditional_write_has_no_effect_even_with_grounded_decision(
 
     assert outcome.status != "completed" or not outcome.tool_results
     assert executor.plan_calls == []
+    assert executor.test_surface.calls == []
+
+
+@pytest.mark.parametrize("tamper", ["none", "input", "slots", "contract", "expired"])
+def test_only_current_input_bound_constraint_review_can_allow_positive_branch(make_executor, tamper):
+    from dataclasses import replace
+    from test_semantic_request import _constraint_verdict
+    raw = "status.txt 읽어줘. 수정하지 마."
+    class MixedModel:
+        def chat_structured(self, messages, schema, **kwargs):
+            payload = json.loads(messages[1]["content"])
+            if "binding" in schema["properties"]:
+                return json.dumps(_constraint_verdict(payload, "status.txt 읽어줘", "수정하지 마"), ensure_ascii=False)
+            key = "group_names" if "group_names" in schema["properties"] else "tool_names"
+            if "request_kind" in schema["properties"]:
+                return json.dumps({"request_kind": "action", key: [READ_TOOL], "confidence": .99})
+            return json.dumps(_model_output(operation="read", tool_names=[READ_TOOL],
+                                            slots={"filename": "status.txt"}), ensure_ascii=False)
+    executor = make_executor(model=MixedModel())
+    real = executor.semantic_interpreter
+    decision = real.interpret(raw, allowed_tools=[READ_TOOL, WRITE_TOOL])
+    assert decision.grounded and decision.action_constraints is not None
+    if tamper == "input":
+        raw = "other.txt 읽어줘. 수정하지 마."
+    elif tamper == "slots":
+        decision = replace(decision, slots={"filename": "other.txt"})
+    elif tamper == "contract":
+        executor.intent_router.registry.get_capability(READ_TOOL).input_schema["properties"]["filename"]["default"] = "other.txt"
+    elif tamper == "expired":
+        decision = replace(decision, action_constraints=replace(decision.action_constraints, expires_at=0))
+    executor.semantic_interpreter = SimpleNamespace(interpret=lambda *_a, **_k: decision)
+
+    outcome = executor.execute_turn(raw, SESSION)
+
+    if tamper == "none":
+        assert outcome.status == "completed"
+        assert executor.test_surface.calls == [(READ_TOOL, {"filename": "status.txt"})]
+        assert executor.plan_calls[0].steps[0].tool_name == READ_TOOL
+    else:
+        assert outcome.status == "cancelled"
+        assert executor.test_surface.calls == executor.plan_calls == []
+
+
+def test_uncertain_mixed_action_never_starts_planner_or_consumes_pending_task(make_executor):
+    executor = make_executor({"reason": "semantic_action_constraint_unknown"})
+    pending = _pending_send(executor)
+    outcome = executor.execute_turn("검색해줘. 재생하지 마.", SESSION)
+    assert outcome.status == "failed" and "실행된 도구: 0" in outcome.response
+    assert executor.test_surface.calls == executor.plan_calls == []
+    assert executor.dialogue_state.get_task(SESSION, pending.task_id).status == "awaiting_user"
+
+
+def test_valid_mixed_action_review_is_not_external_send_approval(make_executor):
+    from test_semantic_request import _constraint_verdict
+    raw = "김하이에게 '안녕'이라고 카카오톡 보내줘. 파일을 수정하지 마."
+    class MixedSend:
+        def chat_structured(self, messages, schema, **kwargs):
+            payload = json.loads(messages[1]["content"])
+            if "binding" in schema["properties"]:
+                return json.dumps(_constraint_verdict(payload, "카카오톡 보내줘", "파일을 수정하지 마"), ensure_ascii=False)
+            if "request_kind" in schema["properties"]:
+                key = "group_names" if "group_names" in schema["properties"] else "tool_names"
+                return json.dumps({"request_kind": "action", key: [SEND_TOOL], "confidence": .99})
+            return json.dumps(_model_output(slots={"provider": "kakaotalk", "recipient": "김하이", "message": "안녕"}), ensure_ascii=False)
+    executor = make_executor(model=MixedSend())
+    outcome = executor.execute_turn(raw, SESSION, allowed_tool_names=[SEND_TOOL])
+    assert outcome.status == "awaiting_approval"
+    assert executor.plan_calls[0].steps[0].requires_approval
     assert executor.test_surface.calls == []
 
 
@@ -614,3 +683,51 @@ def test_semantic_compound_tools_are_mandatory_planning_requirements(make_execut
     assert planning_calls == [([READ_TOOL, WRITE_TOOL], [READ_TOOL, WRITE_TOOL])]
     assert executor.plan_calls == []
     assert executor.test_surface.calls == []
+
+
+@pytest.mark.parametrize("caller_scope,expected_scope", [
+    (None, None),
+    ([READ_TOOL], [READ_TOOL]),
+    ([READ_TOOL, READ_TOOL, "not_registered"], [READ_TOOL]),
+])
+def test_strong_lexical_candidate_never_becomes_semantic_permission_scope(
+        make_executor, caller_scope, expected_scope):
+    executor = make_executor(_decision(slots={"filename": "notes.txt"}))
+    lexical_calls = []
+    def lexical_candidate(*args, **kwargs):
+        lexical_calls.append((args, kwargs))
+        return SimpleNamespace(reason="intent:messaging.send", confidence=.99,
+                               tool_names=(SEND_TOOL,))
+    executor.tool_loadout = SimpleNamespace(select=lexical_candidate)
+
+    outcome = executor.execute_turn("notes.txt 파일 읽기: 첫 번째 줄만 알려줘", SESSION,
+                                    allowed_tool_names=caller_scope)
+
+    assert executor.semantic_interpreter.calls[0]["allowed_tools"] == expected_scope
+    assert lexical_calls == [], "Soft candidates must not hide registered semantic alternatives"
+    assert outcome.status == "completed"
+    assert executor.test_surface.calls == [(READ_TOOL, {"filename": "notes.txt"})]
+    assert len(executor.plan_calls) == 1  # Direct semantic execution, no legacy planner.
+
+
+def test_explicit_empty_permission_scope_reaches_semantic_intake_unchanged(make_executor):
+    executor = make_executor({"relation": "conversation", "operation": "conversation", "grounded": True})
+    executor.tool_loadout = SimpleNamespace(select=_forbidden)
+
+    outcome = executor.execute_turn("노트 읽기 작업을 할 수 있을까", SESSION, allowed_tool_names=[])
+
+    assert executor.semantic_interpreter.calls[0]["allowed_tools"] == []
+    assert outcome.grounded_conversation
+    assert executor.plan_calls == [] and executor.test_surface.calls == []
+
+
+def test_empty_permission_scope_cannot_execute_a_model_proposed_registered_tool(make_executor):
+    proposal = _model_output(operation="read", tool_names=[READ_TOOL], slots={"filename": "notes.txt"})
+    executor = make_executor(model=_ScriptedModel(proposal, proposal))
+    executor.tool_loadout = SimpleNamespace(select=_forbidden)
+
+    outcome = executor.execute_turn("notes.txt 파일을 읽어줘", SESSION, allowed_tool_names=[])
+
+    assert outcome.status == "failed" and "unknown_or_out_of_scope_tool" in outcome.response
+    assert executor.plan_calls == [] and executor.test_surface.calls == []
+    assert all(prompt["available_tools"] == [] for prompt in executor.semantic_interpreter.llm.prompts)

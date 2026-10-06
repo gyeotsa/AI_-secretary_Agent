@@ -32,6 +32,7 @@ class PluginHub(QDialog):
         super().__init__(parent)
         self.registry = registry
         self._running = False
+        self._calendar_connecting = False
         self.setWindowTitle("플러그인 및 MCP")
         self.resize(980, 680)
         set_widget_style(self, "")
@@ -88,6 +89,14 @@ class PluginHub(QDialog):
         self.oauth_account_button.setAutoDefault(False)
         self.oauth_account_button.clicked.connect(self.open_oauth_account)
         controls.addWidget(self.oauth_account_button)
+        self.calendar_button = QPushButton("네이버 캘린더 연결")
+        self.calendar_button.setAutoDefault(False)
+        self.calendar_button.clicked.connect(self.connect_calendar)
+        controls.addWidget(self.calendar_button)
+        self.calendar_disconnect_button = QPushButton("캘린더 연결 해제")
+        self.calendar_disconnect_button.setAutoDefault(False)
+        self.calendar_disconnect_button.clicked.connect(self.disconnect_calendar)
+        controls.addWidget(self.calendar_disconnect_button)
         controls.addStretch()
         self.busy = QLabel("")
         self.busy.setObjectName("muted")
@@ -100,6 +109,39 @@ class PluginHub(QDialog):
     def open_oauth_account(self):
         from ui.oauth_account_dialog import open_oauth_account_dialog
         open_oauth_account_dialog(self.registry, self)
+
+    def connect_calendar(self):
+        if self._running:
+            return
+        plugin = self.registry.get_plugin("naver_calendar")
+        if plugin is None:
+            QMessageBox.warning(self, "네이버 캘린더", "캘린더 플러그인을 등록하려면 앱을 다시 실행하세요.")
+            return
+        if QMessageBox.question(self, "현재 Chrome 캘린더 연결",
+                "공식 Playwright 확장 연결 화면에서 로그인된 캘린더 탭만 직접 선택하세요.\n"
+                "쿠키·프로필은 복사하지 않고 현재 화면을 조회합니다. 일정 저장은 하지 않습니다.\n"
+                "새 요청에서 5분 안에 Allow & select를 누르세요. 검사 종료/시간 초과 후 남은 요청은 무효입니다.\n"
+                "서버 설치가 없다면 NAVER_INTEGRATION.md의 설치 안내를 따르세요.\n연결할까요?") != QMessageBox.StandardButton.Yes:
+            return
+        def connect():
+            status = plugin.service.connect()
+            plugin.service.observe()
+            return f"캘린더 탭 연결·현재 화면 조회 확인: {status['account']}\n일정 등록은 별도 승인 후 진행합니다."
+        self._calendar_connecting = True
+        self._run(connect)
+        self.busy.setText("Chrome 탭 선택 대기 · 최대 5분 · 연결 해제로 취소")
+
+    def disconnect_calendar(self):
+        if self._running and not self._calendar_connecting:
+            return
+        plugin = self.registry.get_plugin("naver_calendar")
+        if plugin:
+            if self._calendar_connecting:
+                self.busy.setText("캘린더 연결 해제 중…")
+                threading.Thread(target=plugin.service.disconnect, daemon=True,
+                                 name="anis-calendar-disconnect").start()
+            else:
+                self._run(lambda: (plugin.service.disconnect(), "캘린더 연결을 해제했습니다.")[1])
 
     def refresh(self):
         self._statuses = list(self.registry.get_plugin_statuses())
@@ -279,6 +321,7 @@ class PluginHub(QDialog):
 
     def _done(self, message):
         self._running = False
+        self._calendar_connecting = False
         self.busy.clear()
         self.refresh()
         if isinstance(message, dict) and set(message) == {"connected", "failed"}:
@@ -292,6 +335,7 @@ class PluginHub(QDialog):
 
     def _failed(self, message):
         self._running = False
+        self._calendar_connecting = False
         self.busy.clear()
         self.refresh()
         QMessageBox.warning(self, "연결 실패", message)
