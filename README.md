@@ -7,6 +7,8 @@ JARVIS는 Windows PC에서 대화, 파일·문서 작업, 웹 조사, 앱 제어
 
 ## 화면 테마와 창 크기 조절
 
+Chrome에서 저장한 계정으로 웹사이트에 로그인하려면 [Chrome 로그인 안내](BROWSER_LOGIN.md)를 참고하세요.
+
 화면을 직접 조작하는 브라우저·Windows 작업은 [Computer Use 사용 안내](COMPUTER_USE.md)를 참고하세요.
 
 메인 화면 오른쪽 위의 **라이트 모드 / 다크 모드** 버튼으로 전체 앱의 테마를

@@ -5,31 +5,50 @@ import threading
 from core.assistant_settings import get_assistant_settings
 
 
-AUXILIARY_MODELS = {"kimi_k3": "Kimi K3", "jev": "Jev"}
+AUXILIARY_MODELS = {"default": "기존 모델", "kimi_k3": "Kimi K3", "jev": "Jev", "gpt": "GPT"}
 MODEL_DESCRIPTIONS = {
-    "kimi_k3": "로컬 코딩 보조 · 연결 보류",
-    "jev": "클라우드 응답 경로 분류 · 대화 / 코드 / 분석 / 작업",
+    "default": "기존 설정 모델 · 대화 / 판단 / 코드",
+    "kimi_k3": "메인 모델 · 연결 보류",
+    "jev": "보조 모델 · 대화 / 코드 / 분석 / 작업 분류",
+    "gpt": "ChatGPT 구독 · Codex 엔진 · 대화 / 판단 / 코드",
 }
 _state_lock = threading.RLock()
 _generation = 0
+_jev_generation = 0
 _shutdown = False
 _status = "대기"
+_jev_status = "대기"
+
+
+def _main_model(settings):
+    if settings.get("auxiliary_model_enabled_gpt") == "true":
+        return "gpt"
+    if (settings.get("auxiliary_model_enabled_kimi_k3") == "true"
+            or settings.get("auxiliary_model_enabled") == "true"):
+        return "kimi_k3"
+    return "default"
+
+
+def main_selection():
+    with _state_lock:
+        return _main_model(get_assistant_settings()), True
+
+
+def is_enabled(model):
+    with _state_lock:
+        settings = get_assistant_settings()
+        if model == "jev":
+            return settings.get("auxiliary_model_enabled_jev") == "true"
+        return model in AUXILIARY_MODELS and _main_model(settings) == model
 
 
 def selection():
-    settings = get_assistant_settings()
-    model = settings.get("auxiliary_model")
-    if model not in AUXILIARY_MODELS:
-        model = "kimi_k3"
-    if model == "kimi_k3":
-        # Migrate the existing single flag without making old settings unusable.
-        enabled = (
-            settings.get("auxiliary_model_enabled_kimi_k3") == "true"
-            or settings.get("auxiliary_model_enabled") == "true"
-        )
-    else:
-        enabled = settings.get(f"auxiliary_model_enabled_{model}") == "true"
-    return model, enabled
+    """Last selected list item; inference uses main_selection/is_enabled."""
+    with _state_lock:
+        model = get_assistant_settings().get("auxiliary_model")
+        if model not in AUXILIARY_MODELS:
+            model = "default"
+        return model, is_enabled(model)
 
 
 def coding_timeout_seconds():
@@ -47,52 +66,69 @@ def coding_timeout_seconds():
 def configure(model, enabled):
     if model not in AUXILIARY_MODELS or not isinstance(enabled, bool):
         raise ValueError("지원하지 않는 보조 모델 설정입니다.")
-    global _generation
     with _state_lock:
         settings = get_assistant_settings()
         settings.set("auxiliary_model", model)
-        # ponytail: one active auxiliary model keeps the laptop path simple;
-        # per-model concurrency can be added only when a real use case needs it.
-        for key in AUXILIARY_MODELS:
-            settings.set(
-                f"auxiliary_model_enabled_{key}",
-                "true" if enabled and key == model else "false",
-            )
-        settings.set("auxiliary_model_enabled", "true" if enabled and model == "kimi_k3" else "false")
-        _generation += 1  # OFF then ON must not revive an old queued/running call.
-        set_status("대기" if enabled else "OFF · 기본 모델 사용")
+        if model == "jev":
+            changed = is_enabled("jev") != enabled
+            settings.set("auxiliary_model_enabled_jev", "true" if enabled else "false")
+            if changed:
+                invalidate("jev")
+            set_status("대기" if enabled else "OFF · 기본 분류 사용", "jev")
+            return
+        previous = _main_model(settings)
+        if enabled:
+            for key in ("gpt", "kimi_k3"):
+                settings.set(f"auxiliary_model_enabled_{key}", "true" if key == model else "false")
+            settings.set("auxiliary_model_enabled", "true" if model == "kimi_k3" else "false")
+        elif model != "default":
+            settings.set(f"auxiliary_model_enabled_{model}", "false")
+            if model == "kimi_k3":
+                settings.set("auxiliary_model_enabled", "false")
+        if previous != _main_model(settings):
+            invalidate()  # OFF then ON must not revive an old queued/running call.
+            set_status("대기" if enabled else "OFF · 기본 모델 사용")
 
 
-def ticket():
+def ticket(model=None):
     with _state_lock:
-        return _generation
+        return _jev_generation if model == "jev" else _generation
 
 
-def invalidate():
+def invalidate(model=None):
     """Account changes invalidate already queued or running calls."""
-    global _generation
+    global _generation, _jev_generation
     with _state_lock:
-        _generation += 1
+        if model == "jev":
+            _jev_generation += 1
+        else:
+            _generation += 1
 
 
-def is_current(generation):
+def is_current(generation, model=None):
     with _state_lock:
-        return not _shutdown and generation == _generation
+        return not _shutdown and generation == ticket(model)
 
 
-def set_status(value):
-    global _status
+def set_status(value, model=None):
+    global _status, _jev_status
     with _state_lock:
-        _status = value
+        if model == "jev":
+            _jev_status = value
+        else:
+            _status = value
 
 
-def status():
+def status(model=None):
     with _state_lock:
-        return _status
+        return _jev_status if model == "jev" else _status
 
 
 def shutdown():
-    global _shutdown, _generation
+    global _shutdown, _generation, _jev_generation
     with _state_lock:
         _shutdown = True
         _generation += 1
+        _jev_generation += 1
+    from core.codex_client import get_codex_runtime
+    get_codex_runtime().shutdown()

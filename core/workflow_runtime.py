@@ -262,8 +262,16 @@ class WorkflowRuntime:
     @staticmethod
     def present_run(run: dict[str, Any]) -> str:
         """Build a concise user response from actual workflow step results."""
+        results = run.get("results", [])
+        if run.get("status") == "completed" and len(results) == 1:
+            item = results[0]
+            output = item.get("output")
+            presentation = output.get("presentation") if isinstance(output, dict) else None
+            if (item.get("action") == "tool" and item.get("status") == "completed"
+                    and isinstance(presentation, str) and presentation.strip()):
+                return presentation
         lines = [f"{run.get('label', run.get('preset', '워크플로'))} 워크플로: {run.get('status', 'unknown')}"]
-        for item in run.get("results", []):
+        for item in results:
             status = item.get("status", "unknown")
             label = item.get("step_id") or item.get("action") or "step"
             if status == "failed":
@@ -433,6 +441,10 @@ class WorkflowRuntime:
                 output = {"raw_output": result.raw_output,
                           "artifacts": [asdict(item) for item in result.artifacts],
                           "evidence": [asdict(item) for item in result.evidence]}
+                if step.get("present_result") is True:
+                    output["presentation"] = self.tool_executor.plugin_registry.present_result(
+                        result.tool_name, result.raw_output
+                    )
             elif action == "memory_maintenance":
                 if self.memory_maintenance is None:
                     raise RuntimeError("기억 통합 콜백이 연결되지 않았습니다.")

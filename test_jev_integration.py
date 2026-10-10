@@ -71,9 +71,9 @@ def test_account_lifecycle_masks_persists_rotates_and_disables(service, monkeypa
     service.verify(other)
     service.activate(other)
     selection.configure("jev", True)
-    generation = selection.ticket()
+    generation = selection.ticket("jev")
     service.save("두 번째", "", "jev-replacement-9100", other)
-    assert not selection.is_current(generation)
+    assert not selection.is_current(generation, "jev")
     assert selection.selection() == ("jev", False)
     assert service.list()[1]["verified_at"] == ""
     with pytest.raises(JevError):
@@ -117,6 +117,38 @@ def test_verification_failure_never_keeps_active_key_enabled(service, monkeypatc
     with pytest.raises(JevError):
         service.save("test", "", "test-secret-key")
     assert service.vault.data == {}
+
+
+def test_jev_classification_and_account_rotation_preserve_gpt_main(service, monkeypatch):
+    account_id = register(service, monkeypatch)
+    selection.configure("gpt", True)
+    selection.configure("jev", True)
+    main_generation, jev_generation = selection.ticket(), selection.ticket("jev")
+    selection.set_status("GPT 응답 중")
+    monkeypatch.setattr(jev, "_request", lambda *args, **kwargs: answer())
+    assert jev.classify_response_mode("코드 예시", [], {}, "분류") == ("answer", .98, "code")
+    assert selection.main_selection() == ("gpt", True)
+    assert selection.is_current(main_generation)
+    assert selection.status() == "GPT 응답 중"
+    assert selection.status("jev") == "Jev 분류 완료"
+    service.save("개인", "", "jev-replacement-1234", account_id)
+    assert selection.main_selection() == ("gpt", True)
+    assert selection.is_current(main_generation)
+    assert not selection.is_current(jev_generation, "jev")
+    assert not selection.is_enabled("jev")
+
+
+def test_main_model_change_during_jev_call_keeps_jev_result(service, monkeypatch):
+    register(service, monkeypatch)
+    selection.configure("jev", True)
+
+    def request(*args, **kwargs):
+        selection.configure("gpt", True)
+        return answer()
+
+    monkeypatch.setattr(jev, "_request", request)
+    assert jev.classify_response_mode("코드 예시", [], {}, "분류") == ("answer", .98, "code")
+    assert selection.main_selection() == ("gpt", True) and selection.is_enabled("jev")
 
 
 def test_real_interpreter_routes_answer_and_keeps_action_validation(service, monkeypatch, registry):
@@ -272,23 +304,26 @@ def test_two_step_picker_and_account_ui(service, monkeypatch):
     app = QApplication.instance() or QApplication([])
     selection.configure("kimi_k3", True)
     widget = ModelSelector()
+    def row(model):
+        return next(i for i in range(widget.models.count())
+                    if widget.models.item(i).data(Qt.ItemDataRole.UserRole) == model)
     dialog = JevAccountDialog(service)
     widget.show()
     try:
         widget.click(); app.processEvents()
         assert widget.models.isVisible() and not widget.slider.isVisible()
         assert selection.selection() == ("kimi_k3", False)
-        widget.models.setCurrentRow(0)
+        widget.models.setCurrentRow(row("kimi_k3"))
         QTest.keyClick(widget.models, Qt.Key.Key_Return)
         assert not widget.models.isVisible() and widget.slider.isVisible()
         assert not widget.slider.isEnabled() and "보류" in widget.detail.text()
         widget.back_button.click()
-        widget.models.setCurrentRow(1)
+        widget.models.setCurrentRow(row("jev"))
         QTest.keyClick(widget.models, Qt.Key.Key_Return)
         assert widget.jev_link.isVisible() and "console.typesafe.ai/login" in widget.jev_link.text()
         assert not widget.models.isVisible() and widget.slider.isEnabled()
         QTest.keyClick(widget.slider, Qt.Key.Key_Right)
-        assert selection.selection() == ("jev", False) and "ON 전환 불가" in widget.detail.text()
+        assert not selection.is_enabled("jev") and "ON 전환 불가" in widget.detail.text()
         widget.popup.hide()
         # Saving authenticates in a worker without placing keys in item data.
         monkeypatch.setattr(jev, "_request", lambda *a, **kw: {"models": [{"name": "jev-latest"}]})
@@ -314,7 +349,7 @@ def test_two_step_picker_and_account_ui(service, monkeypatch):
         dialog.hide()
         widget.click(); app.processEvents()
         assert widget.models.isVisible() and not widget.slider.isVisible()
-        widget._select(widget.models.item(1))
+        widget._select(widget.models.item(row("jev")))
         QTest.keyClick(widget.slider, Qt.Key.Key_Right)
         assert selection.selection() == ("jev", True)
         QTest.keyClick(widget.slider, Qt.Key.Key_Left)

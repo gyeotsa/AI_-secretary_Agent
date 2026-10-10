@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from jsonschema import Draft202012Validator
 
-from core.llm import OllamaClient
+from core.llm import OllamaClient, get_local_llm_client, is_gpt_enabled
 from core.plugin import BasePlugin, CancellationToken, PluginStateProbe, ToolCancelledError, ToolSchema
 from core.remote_runtime import (CatalogSyncResult, OAuthCoordinator, ProviderApi, RemoteActionStore,
                                  RemoteApplyReceipt, RemoteApplyRejected,
@@ -243,8 +243,7 @@ class CloudCommunicationPlugin(BasePlugin):
 
     @staticmethod
     def _summary_client():
-        # Account messages must never fall back to the configured cloud provider.
-        return OllamaClient("reasoning")
+        return get_local_llm_client("reasoning")
 
     @staticmethod
     def _validate_summary(payload, sources):
@@ -318,10 +317,10 @@ class CloudCommunicationPlugin(BasePlugin):
                 return ToolRunResult(tool, ToolRunStatus.PARTIAL if detail["input_truncated"] else ToolRunStatus.SUCCEEDED,
                                      raw, evidence=[Evidence("communication_empty_batch", raw, detail)])
             client = self._summary_client()
-            address = urlparse(client.base_url)
-            if (not isinstance(client, OllamaClient) or address.scheme not in {"http", "https"}
+            address = urlparse(getattr(client, "base_url", ""))
+            if (not is_gpt_enabled() and (not isinstance(client, OllamaClient) or address.scheme not in {"http", "https"}
                     or address.hostname not in {"localhost", "127.0.0.1", "::1"}
-                    or address.username or address.password):
+                    or address.username or address.password)):
                 raise ValueError("summary_requires_loopback_ollama")
             prompt = json.dumps({"untrusted_messages": sources}, ensure_ascii=False)
             if len(prompt) > 64000:
@@ -357,7 +356,8 @@ class CloudCommunicationPlugin(BasePlugin):
             payload = self._validate_summary(json.loads(response), {s["remote_id"]: s["text"] for s in sources})
             detail.update(payload)
             detail.update({"summary_generated": True, "source_quotes_verified": True,
-                           "model": client.model, "model_provider": "loopback_ollama"})
+                           "model": client.model,
+                           "model_provider": "codex" if is_gpt_enabled() else "loopback_ollama"})
             lines = [f"조회한 메시지 {detail['count']}개 범위의 근거 추출형 요약입니다."]
             for key, label in (("summary", "핵심 내용"), ("decisions", "결정"), ("actions", "할 일")):
                 if payload[key]:

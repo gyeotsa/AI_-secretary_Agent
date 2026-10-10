@@ -5,7 +5,7 @@ import re
 import threading
 import time
 
-from core.llm import get_llm_client, OllamaClient
+from core.llm import get_llm_client, get_local_llm_client, OllamaClient, is_gpt_enabled
 from core.answer_verification import AnswerVerificationService, _blocks
 from core.scratchpad import Scratchpad, Task
 from core.planner import Planner, PlanningError
@@ -62,12 +62,14 @@ def _safe_contract_value(value: Any) -> Any:
 
 
 def _local_answer_draft_client(contract):
+    if is_gpt_enabled():
+        return get_llm_client("code" if contract.requires_code else "document")
     if contract.requires_code:
-        from core.auxiliary_models import selection
-        if selection() == ("kimi_k3", True):
+        from core.auxiliary_models import is_enabled
+        if is_enabled("kimi_k3"):
             from core.llm import get_coding_llm_client
             return get_coding_llm_client()
-    client = OllamaClient("code" if contract.requires_code else "document")
+    client = get_local_llm_client("code" if contract.requires_code else "document")
     # Release this request's model after the phase; never unload arbitrary
     # models belonging to another app/session in order to make room.
     client.profile = replace(client.profile, keep_alive="0")
@@ -147,9 +149,7 @@ class Executor:
         self.verifier = get_tool_verifier()
         self.recovery_manager = get_recovery_manager()
         self.context_resolver = ConversationContextResolver(self.llm)
-        # Additional context-aware presentation is local-only; ResponseRealizer
-        # also rejects non-loopback Ollama hosts before any model call.
-        self.response_realizer = ResponseRealizer(OllamaClient("conversation"))
+        self.response_realizer = ResponseRealizer(get_local_llm_client("conversation"))
 
         # decide_next_action()에서 잠깐 system_prompt를 바꿔 쓰고 나서 복원하기 위한 원본 보관
         # (generate_response() 등 다른 메서드가 Jarvis 페르소나 프롬프트를 계속 쓸 수 있어야 함)

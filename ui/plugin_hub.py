@@ -106,6 +106,37 @@ class PluginHub(QDialog):
         controls.addWidget(refresh)
         root.addLayout(controls)
 
+        login_controls = QHBoxLayout()
+        self.browser_login_button = QPushButton("Chrome 로그인")
+        self.browser_login_button.setAutoDefault(False)
+        self.browser_login_button.clicked.connect(self.open_browser_login)
+        login_controls.addWidget(self.browser_login_button)
+        self.mail_button = QPushButton("Gmail · 네이버 메일 조회")
+        self.mail_button.setAutoDefault(False)
+        self.mail_button.clicked.connect(self.open_mail_inbox)
+        login_controls.addWidget(self.mail_button)
+        login_controls.addStretch()
+        root.addLayout(login_controls)
+
+    def open_mail_inbox(self):
+        window = self.parentWidget()
+        if window is not None and hasattr(window, "show_mail_inbox"):
+            return window.show_mail_inbox()
+        from core.browser_mail import get_browser_mail_service
+        from ui.mail_inbox_dialog import MailInboxDialog
+        from ui.browser_login_dialog import open_browser_login_dialog
+        dialog = MailInboxDialog(get_browser_mail_service(), self)
+        dialog.login_requested.connect(
+            lambda url: open_browser_login_dialog(self.registry, dialog, url=url)
+        )
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.show()
+        return dialog
+
+    def open_browser_login(self):
+        from ui.browser_login_dialog import open_browser_login_dialog
+        return open_browser_login_dialog(self.registry, self)
+
     def open_oauth_account(self):
         from ui.oauth_account_dialog import open_oauth_account_dialog
         open_oauth_account_dialog(self.registry, self)

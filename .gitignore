@@ -55,6 +55,8 @@ data/browser_profiles/
 data/tools/
 data/computer_use/
 data/oauth_tokens/
+data/mail_analysis/
+data/mail_brief/
 data/AnisKnowledgeVault/
 data/obsidian_settings.json
 
@@ -82,8 +84,9 @@ assets/jarvis_icon_final.png
 # MediaPipe Tasks 모델은 제스처 기능을 처음 명시적으로 켤 때 내려받습니다.
 data/models/mediapipe/*.task
 
-# 로컬 QA·브라우저·분석 산출물 (파일은 보존하고 Git 목록에서만 제외)
+# 로컬 QA·브라우저·분석 산출물
 /tmp/
+/.test_artifacts/
 /.pytest-tmp-*/
 /.playwright-mcp/
 /graphify-out/

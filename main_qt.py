@@ -21,6 +21,7 @@ from core.state_machine import StateMachine, State
 from core.mode_manager import ModeManager
 from core.memory import get_memory
 from core.llm import ModelCallError, get_llm_client
+from core.local_inference import InferenceDeadlineError
 from core.tools import get_tool_executor
 from core.user_profile import get_user_profile
 from core.rag import get_rag_manager
@@ -33,6 +34,7 @@ from core.executor import get_executor, ExecutionOutcome
 from core.turn_context import TurnExecutionContext, bind_turn_context
 from core.semantic_request import select_conversation_history
 from core.plugin import ToolCancelledError
+from core.mail_brief import MailBriefError, get_mail_brief_service
 from core.scheduler import get_automation_engine
 from core.proactive import ProactiveNotificationPolicy
 from core.continuity import ContinuityService, is_continuity_query
@@ -175,6 +177,8 @@ class AppSignals(QObject):
     permission_response = pyqtSignal(bool)
     progress_update = pyqtSignal(object)
     proactive_message = pyqtSignal(object)
+    mail_brief_ready = pyqtSignal(object)
+    mail_brief_progress = pyqtSignal(object)
     control_response_ready = pyqtSignal(object)
     voice_text_detected = pyqtSignal(str)
     microphone_status = pyqtSignal(str)
@@ -349,6 +353,10 @@ class JarvisApp:
         self.signals.ai_response_ready.connect(self._on_ai_response)
         self.signals.progress_update.connect(self._on_progress_update)
         self.signals.proactive_message.connect(self._on_proactive_message)
+        self.mail_brief = get_mail_brief_service()
+        self._mail_startup_context = None
+        self.signals.mail_brief_ready.connect(self._on_startup_mail_brief)
+        self.signals.mail_brief_progress.connect(self._on_startup_mail_progress)
         self.signals.control_response_ready.connect(self._on_control_response)
         self.signals.voice_text_detected.connect(self._on_user_input)
         self.signals.microphone_status.connect(self._on_microphone_status)
@@ -396,6 +404,7 @@ class JarvisApp:
         self.memory_maintenance_timer.start(60000)
         
         self._init_ui()
+        QTimer.singleShot(1500, self._start_startup_mail_brief)
         self.window.set_voice_output_enabled(self.assistant_settings.tts_enabled)
         if self.assistant_settings.tts_enabled:
             threading.Thread(target=self.tool_executor.prepare_selected_tts, daemon=True).start()
@@ -767,14 +776,22 @@ class JarvisApp:
                     )
                     execution.checkpoint()
                 response_text = workflow_runtime.present_run(run)
-                with bind_turn_context(execution):
-                    response_text = self.executor.render_outcome(
-                        ExecutionOutcome(response_text, str(getattr(run, "status", "completed")), text),
-                        text, conversation_history, envelope.session_id,
-                    ).response
+                status = str(run.get("status", "completed"))
+                # An opted-in tool presenter already supplies the verified counts.
+                presented_tool = any(
+                    item.get("status") == "completed" and item["output"].get("presentation")
+                    for item in run.get("results", []) if isinstance(item.get("output"), dict)
+                )
+                if not presented_tool:
+                    with bind_turn_context(execution):
+                        response_text = self.executor.render_outcome(
+                            ExecutionOutcome(response_text, status, text),
+                            text, conversation_history, envelope.session_id,
+                        ).response
+                execution.checkpoint()
                 print("[DEBUG] WorkflowRuntime returned:", response_text)
                 self.signals.ai_response_ready.emit(TurnResult(
-                    envelope, response_text, str(getattr(run, "status", "completed"))
+                    envelope, response_text, status
                 ))
                 return
             # Executor로 목표 실행!
@@ -817,20 +834,14 @@ class JarvisApp:
             if isinstance(e, ModelCallError):
                 error_response = e.user_message()
                 error_code = e.code
+            elif isinstance(e, InferenceDeadlineError):
+                error_response = "요청 처리 제한시간을 초과했습니다. 후속 모델 호출을 중단했습니다."
+                error_code = e.code
             else:
                 error_response = "작업을 처리하는 중 내부 오류가 발생했습니다. 진단 로그를 확인해 주세요."
                 error_code = type(e).__name__
-            if not isinstance(e, ModelCallError):
-                try:
-                    with bind_turn_context(execution):
-                        error_response = self.executor.render_outcome(
-                            ExecutionOutcome(error_response, "failed", text),
-                            text, conversation_history, envelope.session_id,
-                        ).response
-                except ToolCancelledError:
-                    return
-            else:
-                error_response = f"[시스템 상태: {error_code}]\n{error_response}"
+            # An inference failure must not start another inference to rewrite it.
+            error_response = f"[시스템 상태: {error_code}]\n{error_response}"
             self.signals.ai_response_ready.emit(TurnResult(
                 envelope, error_response, "failed", error_code
             ))
@@ -845,6 +856,74 @@ class JarvisApp:
                 return
             message = message.message
         self.window.show_assistant_text(self._personalize_address(message))
+
+    def _start_startup_mail_brief(self):
+        if self._runtime_shutdown_started or self._mail_startup_context is not None:
+            return
+        context = TurnExecutionContext(turn_id=uuid.uuid4().hex, session_id="startup-mail")
+        self._mail_startup_context = context
+
+        def collect():
+            boot_id = None
+            try:
+                with bind_turn_context(context):
+                    boot_id = self.mail_brief.claim_startup()
+                    if boot_id is None:
+                        self.signals.mail_brief_ready.emit({"context": context, "skipped": True})
+                        return
+                    result = self.mail_brief.collect(
+                        checkpoint=context.checkpoint, wait=True,
+                        progress=lambda value: self.signals.mail_brief_progress.emit(
+                            {"context": context, "progress": value}),
+                    )
+                    context.checkpoint()
+                    self.signals.mail_brief_ready.emit(
+                        {"context": context, "boot_id": boot_id, "summary": result["summary"]})
+            except Exception as exc:
+                if boot_id is not None:
+                    self.mail_brief.cancel_startup()
+                message = ("시작 메일 수집이 취소되었습니다." if isinstance(exc, ToolCancelledError)
+                           else str(exc) if isinstance(exc, MailBriefError)
+                           else "시작 메일 수집을 완료하지 못했습니다. 메일 현황 수집에서 다시 확인하세요.")
+                self.signals.mail_brief_ready.emit({"context": context, "error": message})
+
+        threading.Thread(target=collect, daemon=True).start()
+
+    def _on_startup_mail_progress(self, payload):
+        context = payload["context"]
+        if (self._runtime_shutdown_started or context is not self._mail_startup_context
+                or context.cancelled or self._is_processing_ai):
+            return
+        progress = payload["progress"]
+        name = {"naver": "네이버", "gmail": "Gmail"}.get(progress.get("provider"), "메일")
+        phase = progress.get("phase")
+        done = sum(progress.get(key, 0) for key in ("processed", "partial", "skipped", "failed"))
+        text = f"시작 메일 확인: {name} "
+        text += (f"본문 분석 {done}/{progress.get('total', 0)}"
+                 if phase == "analysis" else "수집 완료" if phase == "completed" else "받은편지함 수집 중")
+        self.window.status_label.setText(text)
+
+    def _on_startup_mail_brief(self, payload):
+        context = payload["context"]
+        if context is not self._mail_startup_context:
+            return
+        self._mail_startup_context = None
+        if self._runtime_shutdown_started or context.cancelled:
+            self.mail_brief.cancel_startup()
+            return
+        if payload.get("skipped"):
+            return
+        if payload.get("error"):
+            self.window.status_label.setText(payload["error"])
+            return
+        try:
+            # Deliver fixed counts in the current chat, even if sessions changed during collection.
+            self._on_proactive_message({"session_id": self.session_id, "text": payload["summary"]})
+            self.mail_brief.finish_startup(payload["boot_id"], delivered=True)
+            self.window.status_label.setText("시작 메일 확인 완료 · 이번 부팅의 알림 전달됨")
+        except Exception:
+            self.mail_brief.cancel_startup()
+            self.window.status_label.setText("시작 메일 알림 또는 전달 기록 저장을 완료하지 못했습니다.")
 
     def notify_user(self, message: str, *, request: str = "", status: str = "completed"):
         """Observer·Scheduler 등이 사용자에게 먼저 말을 걸 수 있는 공개 진입점."""
@@ -1507,6 +1586,10 @@ class JarvisApp:
             return
         self._runtime_shutdown_started = True
         self._shutdown_errors = []
+        context = getattr(self, "_mail_startup_context", None)
+        if context is not None:
+            context.cancel()
+            self.mail_brief.cancel_startup()
         from core.auxiliary_models import shutdown as shutdown_auxiliary_models
         shutdown_auxiliary_models()
         cleanup = (

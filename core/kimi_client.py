@@ -271,7 +271,7 @@ class KimiClient(BaseLLMClient):
         if self._cancellation_check:
             self._cancellation_check()
         if (not auxiliary_models.is_current(self._generation)
-                or auxiliary_models.selection() != ("kimi_k3", True)):
+                or not auxiliary_models.is_enabled("kimi_k3")):
             raise self._error("disabled", "설정 변경 또는 앱 종료로 Kimi K3 실행을 중단했습니다.")
 
     check_cancelled = _check

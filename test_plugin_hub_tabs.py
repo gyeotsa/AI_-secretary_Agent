@@ -48,6 +48,23 @@ def hub(tmp_path, monkeypatch):
     instance.close()
 
 
+def test_standalone_mail_login_settings_opens_existing_login_flow(hub, monkeypatch):
+    import ui.browser_login_dialog as login_module
+    import core.browser_mail as mail_module
+    opener = Mock()
+    monkeypatch.setattr(login_module, "open_browser_login_dialog", opener)
+    monkeypatch.setattr(mail_module, "BrowserMailService", lambda: Mock())
+    dialog = hub.open_mail_inbox()
+    try:
+        dialog.login_button.click()
+        opener.assert_called_once_with(hub.registry, dialog, url="https://accounts.google.com/")
+    finally:
+        dialog.reject()
+        if dialog._worker is not None:
+            assert dialog._worker.wait(3000)
+        QApplication.instance().processEvents()
+
+
 @pytest.mark.parametrize("url", ["file:///C:/secret.py", "http://example.org/plugin.py",
                                   "https://user:password@example.org/plugin.py",
                                   "https://example.org/plugin.py?api_key=secret"])

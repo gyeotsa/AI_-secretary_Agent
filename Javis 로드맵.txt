@@ -122,10 +122,8 @@ Downloads 새 PDF → Event → Observer → Indexer → Memory Update → UI Up
 **목표**: RAG 기반의 지식 엔진을 구축합니다.
 
 **구현 내용**:
-- [core/knowledge_updater.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/knowledge_updater.py)
-  - Observer → Event Bus → RAG 자동 인덱싱
-  - Project Indexer 연동
-  - Action Journal 연동
+- 초기 KnowledgeUpdater는 런타임에 연결되지 않아 2026-10-06 정리에서 제거했다.
+  Observer 이벤트 기반 자동 인덱싱은 현재 실행 경로에 포함되지 않는다.
 - [core/rag.py](file:///c:/Users/ice31/lepo/AI_-secretary_Agent/core/rag.py): RAG 시스템 (ChromaDB 기반)
 
 **지식 범위**: File → Project → Preference → History → Calendar → Conversation → Browser → Mail → Windows
@@ -302,7 +300,6 @@ AI_-secretary_Agent/
 │   ├── hardware.py
 │   ├── harness.py
 │   ├── knowledge_graph.py
-│   ├── knowledge_updater.py
 │   ├── llm.py
 │   ├── memory.py
 │   ├── mode_manager.py

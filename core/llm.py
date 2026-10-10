@@ -34,6 +34,8 @@ class ModelCallError(RuntimeError):
         super().__init__(f"{self.provider}/{self.model} {self.code}: {self.detail}")
 
     def user_message(self) -> str:
+        if self.provider == "codex":
+            return f"GPT · Codex: {self.detail}"
         if self.provider == "kimi_k3":
             return f"Kimi K3: {self.detail}"
         if self.code == "connection":
@@ -471,7 +473,8 @@ class OllamaClient(BaseLLMClient):
     def chat_structured(self, messages: List[Dict], json_schema: Optional[Dict] = None,
                         *, context_window: Optional[int] = None,
                         request_timeout: Optional[float] = None,
-                        max_output_tokens: Optional[int] = None) -> str:
+                        max_output_tokens: Optional[int] = None,
+                        local_only: bool = False) -> str:
         """Call-local limits; never mutate the shared role profile.
 
         Explicit request_timeout includes queue wait and owned HTTP polling.
@@ -479,13 +482,15 @@ class OllamaClient(BaseLLMClient):
         Nested calls cannot extend an enclosing inference deadline.
         """
         return self._chat(messages, json_schema, context_window=context_window,
-                          request_timeout=request_timeout, max_output_tokens=max_output_tokens)
+                          request_timeout=request_timeout, max_output_tokens=max_output_tokens,
+                          local_only=local_only)
 
     @serialized_inference
     def _chat(self, messages: List[Dict], json_schema: Optional[Dict] = None,
               *, context_window: Optional[int] = None, prose: bool = False,
               request_timeout: Optional[float] = None,
-              max_output_tokens: Optional[int] = None) -> str:
+              max_output_tokens: Optional[int] = None,
+              local_only: bool = False) -> str:
         metric_started = time.perf_counter()
         check_inference_deadline()
         remember_idle_model((self.base_url, self.model), self.release)
@@ -553,7 +558,8 @@ class OllamaClient(BaseLLMClient):
             response = post_json(
                 f"{self.base_url}/api/chat",
                 json=payload,
-                timeout=120 if request_timeout is None else request_timeout
+                timeout=120 if request_timeout is None else request_timeout,
+                **({"local_only": True} if local_only else {}),
             )
             # Transport aborts active turn requests on cancellation. Retain the
             # checkpoint for a cancellation concurrent with successful return.
@@ -611,6 +617,9 @@ class OllamaClient(BaseLLMClient):
             ) from exc
         except requests.exceptions.HTTPError as e:
             check_inference_deadline()
+            if local_only:
+                raise ModelCallError("ollama", self.model, "local_http",
+                                     "로컬 AI 서버 응답을 확인하지 못했습니다.", retryable=False) from None
             # 오류 응답 자세히 보기
             try:
                 error_detail = e.response.json()
@@ -757,30 +766,94 @@ class HybridLLMClient(BaseLLMClient):
 
 
 def get_coding_llm_client(*, cancellation_check=None) -> BaseLLMClient:
-    """Opt-in for code generation only; never changes tool/vision routing."""
-    from core.auxiliary_models import selection
-    if selection() == ("kimi_k3", True):
+    """Use the selected engine while retaining the coding task's cancellation."""
+    from core.auxiliary_models import is_enabled
+    if is_enabled("gpt") and cancellation_check is not None:
+        return SelectedLLMClient("coding", cancellation_check=cancellation_check)
+    if is_enabled("kimi_k3"):
         from core.kimi_client import KimiClient
         return KimiClient(cancellation_check=cancellation_check)
     return get_llm_client("coding")
+
+
+def is_gpt_enabled() -> bool:
+    from core.auxiliary_models import is_enabled
+    return is_enabled("gpt")
+
+
+def _configured_llm_client(role: str) -> BaseLLMClient:
+    if Config.LLM_PROVIDER == "anthropic":
+        return AnthropicClient()
+    if Config.LLM_PROVIDER == "ollama":
+        return OllamaClient(role)
+    if Config.LLM_PROVIDER == "hybrid":
+        return HybridLLMClient() if role in Config.HYBRID_CLAUDE_ROLES else OllamaClient(role)
+    raise ValueError(f"지원되지 않는 LLM 제공자: {Config.LLM_PROVIDER}")
+
+
+class SelectedLLMClient(BaseLLMClient):
+    """Held runtime clients follow the user's GPT switch on every model call."""
+
+    def __init__(self, role: str, *, local: bool = False, cancellation_check=None):
+        super().__init__()
+        self.role = role
+        self._local = local
+        self._cancellation_check = cancellation_check
+        self._base = None
+        self._codex = None
+        if not is_gpt_enabled():
+            self._base = OllamaClient(role) if local else _configured_llm_client(role)
+            self.system_prompt = getattr(self._base, "system_prompt", self.system_prompt)
+            self.tools = getattr(self._base, "tools", self.tools)
+
+    def _active_client(self):
+        if is_gpt_enabled():
+            if self._codex is None:
+                from core.codex_client import CodexClient
+                self._codex = CodexClient(self.role, cancellation_check=self._cancellation_check)
+            client = self._codex
+        else:
+            if self._base is None:
+                self._base = OllamaClient(self.role) if self._local else _configured_llm_client(self.role)
+            client = self._base
+        client.set_system_prompt(self.system_prompt)
+        client.tools = self.tools
+        return client
+
+    @property
+    def __class__(self):
+        # Existing callers use provider types to apply Ollama-only limits.
+        return type(self._active_client())
+
+    def __getattr__(self, name):
+        return getattr(self._active_client(), name)
+
+    def __setattr__(self, name, value):
+        if name.startswith("_") or name in {"role", "system_prompt", "tools"}:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._active_client(), name, value)
+
+    def chat(self, messages, **kwargs):
+        return self._active_client().chat(messages, **kwargs)
+
+    def chat_prose(self, messages, **kwargs):
+        return self._active_client().chat_prose(messages, **kwargs)
+
+    def chat_with_tools(self, messages, allowed_tool_names=None):
+        return self._active_client().chat_with_tools(messages, allowed_tool_names)
+
+
+def get_local_llm_client(role: str = "default") -> BaseLLMClient:
+    """Keep dedicated local clients local until GPT is explicitly selected."""
+    return SelectedLLMClient(role, local=True)
 
 
 def get_llm_client(role: str = "default") -> BaseLLMClient:
     normalized_role = role.strip().lower() or "default"
     cache_key = f"{Config.LLM_PROVIDER}:{normalized_role}"
     if cache_key not in _llm_clients:
-        if Config.LLM_PROVIDER == "anthropic":
-            client = AnthropicClient()
-        elif Config.LLM_PROVIDER == "ollama":
-            client = OllamaClient(normalized_role)
-        elif Config.LLM_PROVIDER == "hybrid":
-            if normalized_role in Config.HYBRID_CLAUDE_ROLES:
-                client = HybridLLMClient()
-            else:
-                client = OllamaClient(normalized_role)
-        else:
-            raise ValueError(f"지원되지 않는 LLM 제공자: {Config.LLM_PROVIDER}")
-        _llm_clients[cache_key] = client
+        _llm_clients[cache_key] = SelectedLLMClient(normalized_role)
     return _llm_clients[cache_key]
 
 

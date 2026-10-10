@@ -16,7 +16,7 @@ class SettingDefinition:
 
 
 SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
-    "auxiliary_model": SettingDefinition("auxiliary_model", "보조 모델", "kimi_k3", 40),
+    "auxiliary_model": SettingDefinition("auxiliary_model", "모델", "default", 40),
     "auxiliary_model_enabled": SettingDefinition("auxiliary_model_enabled", "보조 모델 사용", "false", 5),
     "auxiliary_model_enabled_kimi_k3": SettingDefinition(
         "auxiliary_model_enabled_kimi_k3", "Kimi K3 사용", "false", 5
@@ -24,6 +24,10 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     "auxiliary_model_enabled_jev": SettingDefinition(
         "auxiliary_model_enabled_jev", "Jev 사용", "false", 5
     ),
+    "auxiliary_model_enabled_gpt": SettingDefinition(
+        "auxiliary_model_enabled_gpt", "GPT 사용", "false", 5
+    ),
+    "codex_model": SettingDefinition("codex_model", "GPT 모델", "auto", 100),
     "assistant_name": SettingDefinition("assistant_name", "비서 이름", "자비스", 30),
     "wake_word": SettingDefinition("wake_word", "음성 호출어", "자비스", 30),
     "user_address": SettingDefinition("user_address", "사용자 호칭", "", 30),

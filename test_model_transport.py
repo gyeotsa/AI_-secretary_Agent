@@ -32,6 +32,13 @@ def local_http():
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
             state.requests.append((self.path, json.loads(body)))
+            if self.path == "/redirect":
+                self.send_response(307)
+                self.send_header("Location", state.url + "/forwarded")
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                return
             if self.path == "/trickle":
                 self.send_response(200)
                 self.send_header("Content-Length", "4096")
@@ -280,3 +287,100 @@ def test_turn_cancelled_during_deadline_cleanup_still_has_priority(monkeypatch):
     assert released.is_set() and context.cancelled
     assert current_inference_deadline() is None
     assert not any(t.name == transport._HELPER_THREAD_NAME for t in threading.enumerate())
+
+
+@pytest.mark.parametrize("mode", ["direct", "deadline", "event_loop"])
+def test_local_only_ignores_environment_proxies_and_keeps_response_contract(local_http, monkeypatch, mode):
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.setenv(key, "http://127.0.0.1:1")
+        monkeypatch.setenv(key.lower(), "http://127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("no_proxy", "")
+
+    def call():
+        return transport.post_json(local_http.url.replace("127.0.0.1", "localhost") + "/ok",
+                                   json={"prompt": "private fixture"}, timeout=2, local_only=True)
+
+    async def async_call():
+        return call()
+
+    if mode == "direct":
+        response = call()
+    else:
+        with inference_deadline(2):
+            response = asyncio.run(async_call()) if mode == "event_loop" else call()
+    assert isinstance(response, requests.Response)
+    assert response.json()["echo"] == {"prompt": "private fixture"}
+    assert response.request.url.startswith(local_http.url)
+    assert len(local_http.requests) == 1
+
+
+@pytest.mark.parametrize("mode", ["direct", "deadline", "event_loop"])
+def test_local_only_rejects_redirect_without_forwarding_mail_payload(local_http, mode):
+    def call():
+        return transport.post_json(local_http.url + "/redirect", json={"prompt": "private fixture"},
+                                   timeout=2, local_only=True)
+
+    async def async_call():
+        return call()
+
+    with pytest.raises(requests.HTTPError) as error:
+        if mode == "direct":
+            call()
+        else:
+            with inference_deadline(2):
+                asyncio.run(async_call()) if mode == "event_loop" else call()
+    assert [path for path, _payload in local_http.requests] == ["/redirect"]
+    assert error.value.response is None
+    assert "private fixture" not in str(error.value)
+    assert local_http.url not in str(error.value)
+
+
+@pytest.mark.parametrize("url", [
+    "https://cloud.example/api/chat", "http://127.0.0.2/api/chat", "http://127.1/api/chat",
+    "http://2130706433/api/chat", "http://localhost.example/api/chat", "file:///api/chat",
+    "http://user:secret@127.0.0.1/api/chat", "http://127.0.0.1:0/api/chat",
+    "http://127.0.0.1:/api/chat", "http://localhost:/api/chat",
+    "http://127.0.0.1:65536/api/chat", "http://127.0.0.1:secret/api/chat",
+    "http://127.0.0.1/api/chat?secret", "http://127.0.0.1/api/chat#secret",
+    "http://127.0.0.1/api/chat?", "http://127.0.0.1/api/chat#",
+    "http://127.0.0.1\\@cloud.example/api/chat", "\nhttp://127.0.0.1/api/chat",
+    "http://127.0.0.1 /api/chat", None,
+])
+def test_local_only_refuses_non_loopback_or_ambiguous_url_before_dispatch(monkeypatch, url):
+    monkeypatch.setattr(transport.requests, "Session", lambda: pytest.fail("HTTP client created"))
+    monkeypatch.setattr(transport.httpx, "AsyncClient", lambda **_: pytest.fail("HTTP client created"))
+    with pytest.raises(requests.RequestException) as error:
+        transport.post_json(url, json={"prompt": "private fixture"}, timeout=1, local_only=True)
+    assert "secret" not in str(error.value)
+    assert "private fixture" not in str(error.value)
+
+
+def test_local_only_accepts_explicit_ipv6_loopback():
+    assert transport._local_url("http://[::1]:11434/api/chat") == "http://[::1]:11434/api/chat"
+
+
+def test_ollama_local_only_flag_reaches_transport_and_does_not_expose_http_response(monkeypatch):
+    from core.llm import ModelCallError, OllamaClient
+    from core.model_registry import get_model_registry
+    import core.llm as llm
+
+    client = OllamaClient.__new__(OllamaClient)
+    client.base_url, client.model, client.system_prompt = "http://127.0.0.1:11434", "fixture", ""
+    client.profile = get_model_registry().resolve("tool_selection")
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append((url, kwargs))
+        response = requests.Response()
+        response.status_code = 500
+        response._content = b'{"error":"private fixture mail body"}'
+        return response
+
+    monkeypatch.setattr(llm, "post_json", post)
+    with pytest.raises(ModelCallError) as error:
+        client.chat_structured([{"role": "user", "content": "private fixture mail body"}],
+                               {"type": "object"}, local_only=True)
+    assert calls[0][1]["local_only"] is True
+    assert "private fixture" not in str(error.value)
+    assert error.value.__cause__ is None

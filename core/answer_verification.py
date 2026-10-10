@@ -413,11 +413,12 @@ def _static_check(contract: AnswerContract, draft: str, original: str) -> tuple[
 
 
 def _local_client(role: str):
-    from core.llm import OllamaClient
-    client = OllamaClient(role)
+    from core.llm import OllamaClient, get_local_llm_client
+    client = get_local_llm_client(role)
     # This private client's requests release their model; do not mutate the
     # shared role registry or unload unrelated applications' models.
-    client.profile = replace(client.profile, keep_alive="0")
+    if isinstance(client, OllamaClient):
+        client.profile = replace(client.profile, keep_alive="0")
     return client
 
 
@@ -468,11 +469,12 @@ class AnswerVerificationService:
         keyed_schema = {"type": "object", "additionalProperties": False,
             "properties": {"criteria": {"type": "object", "additionalProperties": False,
                 "properties": {key: keyed_row for key in criteria},
-                "required": list(criteria), "minProperties": len(criteria), "maxProperties": len(criteria)}},
+                "required": list(criteria)}},
             "required": ["criteria"]}
         budget.remaining()
         client = self.reviewer_factory()
         from core.llm import OllamaClient
+        from core.codex_client import CodexClient
         options = {"json_schema": keyed_schema}
         if isinstance(client, OllamaClient):
             options["context_window"] = 8192
@@ -493,7 +495,7 @@ class AnswerVerificationService:
                 "execution_evidence": [], "code_executed": False}, ensure_ascii=False)},
         ]
         remaining = budget.before_call("critique")
-        if isinstance(client, OllamaClient):
+        if isinstance(client, (OllamaClient, CodexClient)):
             options.update(request_timeout=remaining, max_output_tokens=self.policy.critique_max_tokens)
         try:
             raw = client.chat_structured(messages, **options)
@@ -561,11 +563,12 @@ class AnswerVerificationService:
                 "immutable_sources": [] if contract.correction_authorized else list(contract.source_segments)}, ensure_ascii=False)},
         ]
         from core.llm import OllamaClient
+        from core.codex_client import CodexClient
         remaining = budget.before_call("repair")
         try:
             raw = (client.chat_structured(messages, context_window=8192,
                     request_timeout=remaining, max_output_tokens=self.policy.repair_max_tokens)
-                   if isinstance(client, OllamaClient) else client.chat(messages))
+                   if isinstance(client, (OllamaClient, CodexClient)) else client.chat(messages))
         except ToolCancelledError:
             raise
         except Exception as exc:

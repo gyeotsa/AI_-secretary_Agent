@@ -122,7 +122,7 @@ class JevAccounts:
             self.vault.save("jev", "accounts", data)
         except Exception:
             raise JevError("Windows 암호화 저장소에 Jev 계정을 저장하지 못했습니다.") from None
-        auxiliary_models.invalidate()
+        auxiliary_models.invalidate("jev")
 
     def list(self):
         with _accounts_lock:
@@ -158,7 +158,7 @@ class JevAccounts:
 
     @staticmethod
     def _disable():
-        if auxiliary_models.selection()[0] == "jev":
+        if auxiliary_models.is_enabled("jev"):
             auxiliary_models.configure("jev", False)
 
     def delete(self, account_id):
@@ -245,13 +245,13 @@ def _choice(answer, options):
 
 def classify_response_mode(raw_text, transcript, pending, instructions):
     """High-confidence routing only; existing local interpreter is the fallback."""
-    if auxiliary_models.selection() != ("jev", True):
+    if not auxiliary_models.is_enabled("jev"):
         return None
-    generation = auxiliary_models.ticket()
+    generation = auxiliary_models.ticket("jev")
     def checkpoint():
         check_inference_deadline()
-        if (not auxiliary_models.is_current(generation)
-                or auxiliary_models.selection() != ("jev", True)):
+        if (not auxiliary_models.is_current(generation, "jev")
+                or not auxiliary_models.is_enabled("jev")):
             raise JevError("Jev 설정이 변경되어 분류 결과를 사용하지 않았습니다.")
     # ponytail: cap complete context at 16KB; fall back locally instead of silently
     # truncating a long request or dropping the context needed for references.
@@ -259,7 +259,7 @@ def classify_response_mode(raw_text, transcript, pending, instructions):
              "pending_request": {k: pending[k] for k in
                  ("original_request", "intent_name", "question") if k in pending}}
     if len(json.dumps(state, ensure_ascii=False).encode("utf-8")) > 16384:
-        auxiliary_models.set_status("Jev 입력 예산 초과 · 기본 분류 사용")
+        auxiliary_models.set_status("Jev 입력 예산 초과 · 기본 분류 사용", "jev")
         return None
     modes = {"answer": "채팅 답변만 요청: 대화, 코드 작성, 분석. 실제 외부 작업 없음.",
              "action": "조회·검색·수정·저장·실행·전송 등 실제 작업 요청. 매개변수 미정도 포함.",
@@ -270,7 +270,7 @@ def classify_response_mode(raw_text, transcript, pending, instructions):
     try:
         checkpoint()
         _, key = JevAccounts().credentials()
-        auxiliary_models.set_status("Jev 분류 중")
+        auxiliary_models.set_status("Jev 분류 중", "jev")
         result = _request("POST", "/systemone", key, checkpoint=checkpoint, body={
             "model": JEV_MODEL, "state": state, "questions": {
                 "mode": {"type": "choice", "instructions": instructions, "criteria": modes},
@@ -288,12 +288,12 @@ def classify_response_mode(raw_text, transcript, pending, instructions):
         else:
             kind = "conversation"
         if confidence < .85 or mode == "uncertain":
-            auxiliary_models.set_status("Jev 판단 불확실 · 기본 분류 사용")
+            auxiliary_models.set_status("Jev 판단 불확실 · 기본 분류 사용", "jev")
             return None
-        auxiliary_models.set_status("Jev 분류 완료")
+        auxiliary_models.set_status("Jev 분류 완료", "jev")
         return mode, confidence, kind
     except (ToolCancelledError, InferenceDeadlineError):
         raise
     except (JevError, OSError, ValueError, TypeError, AttributeError):
-        auxiliary_models.set_status("Jev 미사용 · 연결/설정 확인 필요 · 기본 분류 사용")
+        auxiliary_models.set_status("Jev 미사용 · 연결/설정 확인 필요 · 기본 분류 사용", "jev")
         return None

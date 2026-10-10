@@ -97,11 +97,8 @@ class MockupDesignRuntime:
         # legacy single-adapter contract unless a planner is explicitly given.
         if self.vision is not None:
             return None
-        # Scene JSON must remain local and schema-constrained even when the
-        # application's global provider is hybrid. HybridLLMClient exposes a
-        # conversational surface, while OllamaClient exposes format/schema.
-        from core.llm import OllamaClient
-        self.scene_planner = OllamaClient("reasoning")
+        from core.llm import get_local_llm_client
+        self.scene_planner = get_local_llm_client("reasoning")
         return self.scene_planner
 
     @staticmethod

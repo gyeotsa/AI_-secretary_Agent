@@ -15,10 +15,12 @@ class Reviewer:
     def __init__(self, *responses):
         self.responses = iter(responses)
         self.calls = []
+        self.schemas = []
 
     def chat_structured(self, messages, json_schema):
         payload = json.loads(messages[-1]["content"])
         self.calls.append(payload)
+        self.schemas.append(json_schema)
         value = next(self.responses, "passed")
         if isinstance(value, Exception):
             raise value
@@ -436,6 +438,7 @@ def test_already_cancelled_turn_never_constructs_clients():
 def test_local_critic_and_repair_use_bounded_context_and_private_release_profiles(monkeypatch):
     from core.llm import OllamaClient
     from core.model_registry import ModelProfile
+    monkeypatch.setattr("core.llm.is_gpt_enabled", lambda: False)
 
     shared = {role: ModelProfile(role, "test-only", 0.1, 2048, "5m")
               for role in ("reasoning", "code")}
@@ -471,7 +474,35 @@ def test_local_critic_and_repair_use_bounded_context_and_private_release_profile
     assert all(0 < call[4] <= 45 for call in calls)
     assert [call[5] for call in calls] == [1536, 4096, 1536]
     assert calls[1][3] is None
-    assert calls[0][3]["properties"]["criteria"]["maxProperties"] == 2
+    assert len(calls[0][3]["properties"]["criteria"]["required"]) == 2
+
+
+def test_codex_critic_and_repair_receive_remaining_review_timeout(monkeypatch):
+    from core.codex_client import CodexClient
+
+    now, calls = [0.0], []
+    reviewer = Reviewer("failed", "passed")
+    repaired = examples(1).replace("else n", "else n + 1")
+
+    class FakeCodex(CodexClient):
+        def __init__(self, role):
+            self.role = role
+
+        def chat_structured(self, messages, json_schema=None, **limits):
+            calls.append((self.role, limits))
+            now[0] += 3
+            return repaired if self.role == "code" else reviewer.chat_structured(messages, json_schema)
+
+        def chat(self, messages):
+            raise AssertionError("Codex review must use its bounded structured call")
+
+    monkeypatch.setattr("core.llm.get_local_llm_client", FakeCodex)
+    text, review = AnswerVerificationService(clock=lambda: now[0]).verify(
+        build_answer_contract("코드 설명해줘"), examples(1))
+    assert text == repaired and review.status == "passed"
+    assert [role for role, _ in calls] == ["reasoning", "code", "reasoning"]
+    assert [limits["request_timeout"] for _, limits in calls] == [45, 42, 39]
+    assert [limits["max_output_tokens"] for _, limits in calls] == [1536, 4096, 1536]
 
 
 def test_keyed_criteria_constrains_every_requirement_without_duplicate_ids():
@@ -481,8 +512,19 @@ def test_keyed_criteria_constrains_every_requirement_without_duplicate_ids():
                                             else payload["evidence_quotes"][0])}
                              for key in payload["criteria"]}}
     draft = examples(3)
-    _, review = service(Reviewer(keyed)).verify(build_answer_contract("예시 3개를 코드와 설명해줘"), draft)
+    reviewer = Reviewer(keyed)
+    _, review = service(reviewer).verify(build_answer_contract("예시 3개를 코드와 설명해줘"), draft)
     assert review.status == "passed" and len(review.criteria_results) == 5
+    schema = reviewer.schemas[0]
+    assert "minProperties" not in schema["properties"]["criteria"]
+    assert "maxProperties" not in schema["properties"]["criteria"]
+    from jsonschema import Draft202012Validator
+    validator = Draft202012Validator(schema)
+    valid = keyed(reviewer.calls[0])
+    assert validator.is_valid(valid)
+    assert not validator.is_valid({"criteria": {key: row for key, row in valid["criteria"].items()
+                                               if key != "requirements"}})
+    assert not validator.is_valid({"criteria": {**valid["criteria"], "unexpected": valid["criteria"]["requirements"]}})
 
 
 def test_duplicate_json_object_keys_never_silently_override_a_review():

@@ -151,7 +151,8 @@ def install_shell(w):
     side.addWidget(brand)
     w.new_chat_btn = button('＋   새 대화', lambda: w.session_created.emit('새 대화'))
     for control, text in ((w.new_chat_btn, '＋   새 대화'), (w.task_btn, '☷   작업 및 리마인더'),
-                          (w.specialist_btn, '◇   전문가 작업공간'), (w.plugin_btn, '⊞   플러그인')):
+                          (w.specialist_btn, '◇   전문가 작업공간'), (w.mail_btn, '✉   메일 조회'),
+                          (w.plugin_btn, '⊞   플러그인')):
         control.setText(text)
         control.setObjectName('nav')
         control.setMinimumSize(0, 0)

@@ -1,7 +1,7 @@
 # 루트 진단 스크립트 분류
 
 이 문서는 `pytest.ini`의 명시적 수집 목록에서 빠져 있던 레거시 `test_*.py`
-12개를 자동 회귀 테스트와 수동 진단으로 구분한다. 파일명이 `test_`로
+10개를 자동 회귀 테스트와 수동 진단으로 구분한다. 파일명이 `test_`로
 시작하더라도 실제 장치·네트워크·사용자 데이터를 만지는 진단은 pytest 테스트가
 아니다. 모든 수동 진단은 이제 import/수집 시 아무 작업도 하지 않고 명시적인
 `main()` 실행에서만 동작한다.
@@ -27,9 +27,7 @@
 | `test_simple_llm.py` | 라이브 네트워크/모델 | 실제 LLM 한 턴 호출 | `python -X utf8 test_simple_llm.py` |
 | `test_tools.py` | 파일 생성 | 폴더와 Excel 파일 생성 | `python -X utf8 test_tools.py --output-dir <새-전용-경로>` |
 | `test_tts_integration.py` | 실제 오디오 | 음성 장치 재생 | `python -X utf8 test_tts_integration.py --live` |
-| `test_tts_simple.py` | 실제 오디오 | 음성 장치 재생 | `python -X utf8 test_tts_simple.py --live` |
 | `test_tts.py` | 실제 오디오/드라이버 | pyttsx3 엔진과 음성 장치 사용 | `python -X utf8 test_tts.py --live` |
-| `test_ui_input.py` | 수동 GUI | 창 표시와 사용자 입력이 필요 | `python -X utf8 test_ui_input.py` |
 
 `test_full_flow.py`는 기본적으로 대화를 저장하지 않고 음성을 재생하지 않는다.
 실제 저장은 `--persist-memory`, 실제 음성은 `--speak`를 각각 명시해야 한다.

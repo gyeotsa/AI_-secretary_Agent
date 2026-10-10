@@ -13,7 +13,7 @@ from core.korean_naturalizer import korean_writing_guidance, light_polish_korean
 from core.response_integrity import preserves_sources, protected_segments
 from core.plugin import ToolCancelledError
 from core.turn_context import check_turn_cancelled
-from core.llm import OllamaClient
+from core.llm import OllamaClient, is_gpt_enabled
 
 
 _EMAIL = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
@@ -72,7 +72,7 @@ class ResponseRealizer:
         history: Iterable[dict] = (),
     ) -> str:
         fallback = str(canonical or "").strip()
-        if status is not None and (not isinstance(self.llm, OllamaClient)
+        if status is not None and not is_gpt_enabled() and (not isinstance(self.llm, OllamaClient)
                 or urlparse(self.llm.base_url).hostname not in {"localhost", "127.0.0.1", "::1"}):
             return self._fallback(fallback, status)
         if not fallback or tool_name in self.EXCLUDED_TOOLS or self.llm is None:

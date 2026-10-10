@@ -248,6 +248,20 @@ def test_model_sends_image_and_schema_without_native_identity():
             assert variant["properties"]["target"]["enum"] == ["e1"]
 
 
+def test_codex_vision_bypasses_local_gpu_admission():
+    from core.codex_client import CodexClient
+
+    screen = Screen().observe()
+    client = Mock(spec=CodexClient)
+    client.chat_structured.return_value = json.dumps({"observation_id": screen.id, "reason": "test", **CLICK})
+    with patch("core.gpu_scheduler.get_gpu_resource_queue", side_effect=AssertionError("cloud needs no GPU")) as queue:
+        model = ComputerUseModel(client)
+        assert validate_decision(model.decide("검색", screen, [], 20), screen)["action"] == "click"
+        queue.assert_not_called()
+    assert 0 < client.chat_structured.call_args.kwargs["request_timeout"] <= 20
+    assert client.chat_structured.call_args.kwargs["json_schema"]
+
+
 def test_windows_revalidates_identity_value_and_foreground_before_input():
     from core.computer_use_backends import WindowsComputerBackend, _png
     backend = WindowsComputerBackend("테스트 메모장")

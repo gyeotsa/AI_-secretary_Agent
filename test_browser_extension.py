@@ -10,6 +10,20 @@ import pytest
 import core.browser_extension as extension
 
 
+@pytest.mark.parametrize("marker,expected", [
+    ("Playwright Extension not found", extension.BrowserExtensionUnavailableError),
+    ("Playwright extension did not connect", RuntimeError),
+])
+def test_error_classification_never_exposes_server_content(marker, expected):
+    result = SimpleNamespace(is_error=True, content=[SimpleNamespace(
+        type="text", text=f"{marker}: private-token-placeholder")])
+    with pytest.raises(expected) as raised:
+        extension.decode_result(result)
+    assert type(raised.value) is expected
+    assert "private-token-placeholder" not in str(raised.value)
+    assert marker not in str(raised.value)
+
+
 def test_finished_future_timeout_preserves_the_original_failure(monkeypatch):
     future = Future()
     error = TimeoutError("source-timeout")

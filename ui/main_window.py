@@ -10,7 +10,6 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel,
 from PyQt6.QtWidgets import QTextEdit, QInputDialog
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect, QRectF, QEvent
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush, QPainterPath
-from .visualizer import AudioVisualizer
 from core.state_machine import State
 from core.specialist_workspaces import get_specialist_workspace_registry
 from .specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindow, MockupWorkspaceWindow
@@ -1016,6 +1015,7 @@ class JarvisMainWindow(QWidget):
         self.dialogue_state_store = None
         self.plugin_registry = None
         self.plugin_hub = None
+        self.mail_inbox_dialog = None
         self.command_center_runtime = None
         self.command_center_services = {}
         self.command_center_dialog = None
@@ -1131,6 +1131,14 @@ class JarvisMainWindow(QWidget):
         self.plugin_btn.setToolTip("Plugin 상태 및 진단")
         self.plugin_btn.clicked.connect(self.show_plugin_diagnostics)
         tab_layout.addWidget(self.plugin_btn)
+
+        self.mail_btn = QPushButton("메일")
+        self.mail_btn.setObjectName("toolbarButton")
+        set_widget_style(self.mail_btn, button_style)
+        self.mail_btn.setFixedSize(42, 35)
+        self.mail_btn.setToolTip("Gmail · 네이버 메일 조회")
+        self.mail_btn.clicked.connect(self.show_mail_inbox)
+        tab_layout.addWidget(self.mail_btn)
 
         self.specialist_btn = QPushButton("S")
         self.specialist_btn.setObjectName("toolbarButton")
@@ -2010,6 +2018,9 @@ class JarvisMainWindow(QWidget):
     def open_interface_surface(self, key: str):
         """Open only surfaces that are backed by a real window or dialog."""
         surface = str(key or "").casefold()
+        if surface.startswith("browser_login:"):
+            from ui.browser_login_dialog import open_browser_login_dialog
+            return open_browser_login_dialog(self.plugin_registry, self, url=str(key).split(":", 1)[1])
         actions = {
             "command_center": self.show_command_center,
             "continuity": self.show_continuity_reminder,
@@ -2017,6 +2028,7 @@ class JarvisMainWindow(QWidget):
             "permissions": self.show_permission_settings,
             "sessions": self.show_session_manager,
             "plugins": self.show_plugin_diagnostics,
+            "mail": self.show_mail_inbox,
             "voice": self.show_tts_voice_settings,
             "specialists": self.show_specialist_hub,
             "gesture": self.show_gesture_settings,
@@ -2080,6 +2092,16 @@ class JarvisMainWindow(QWidget):
             self.plugin_hub = PluginHub(self.plugin_registry, self)
         self.plugin_hub.refresh()
         return open_tab(self, self.plugin_hub, "플러그인 및 MCP", "plugins")
+
+    def show_mail_inbox(self):
+        from core.browser_mail import get_browser_mail_service
+        from ui.mail_inbox_dialog import MailInboxDialog
+        if self.mail_inbox_dialog is None:
+            self.mail_inbox_dialog = MailInboxDialog(get_browser_mail_service(), self)
+            self.mail_inbox_dialog.login_requested.connect(
+                lambda url: self.open_interface_surface("browser_login:" + url)
+            )
+        return open_tab(self, self.mail_inbox_dialog, "메일 조회", "mail")
 
     def show_specialist_hub(self):
         dialog = SpecialistHubDialog(self.specialist_registry.all(), self)

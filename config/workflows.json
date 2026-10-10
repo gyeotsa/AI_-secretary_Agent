@@ -2,6 +2,33 @@
   "version": 1,
   "presets": [
     {
+      "id": "mail_brief",
+      "label": "메일 현황",
+      "description": "Gmail과 네이버 메일을 새로 수집하여 신규 수신·회신 검토·미발송 초안을 따로 집계합니다.",
+      "trigger": ["메일 현황 알려줘", "네이버와 구글 메일을 새로 수집해서 현황 알려줘"],
+      "steps": [
+        {"id": "mail_counts", "action": "tool", "tool": "browser_mail_collect_summary", "input": {"providers": ["naver", "gmail"]}, "present_result": true}
+      ]
+    },
+    {
+      "id": "naver_mail_brief",
+      "label": "네이버 메일 현황",
+      "description": "네이버 메일을 새로 수집하여 확인된 현황을 알려줍니다.",
+      "trigger": ["네이버 메일 현황 알려줘", "네이버 메일을 새로 수집해서 현황 알려줘"],
+      "steps": [
+        {"id": "mail_counts", "action": "tool", "tool": "browser_mail_collect_summary", "input": {"providers": ["naver"]}, "present_result": true}
+      ]
+    },
+    {
+      "id": "gmail_mail_brief",
+      "label": "Gmail 현황",
+      "description": "Gmail을 새로 수집하여 확인된 현황을 알려줍니다.",
+      "trigger": ["구글 메일 현황 알려줘", "구글 메일을 새로 수집해서 현황 알려줘", "Gmail 현황 알려줘"],
+      "steps": [
+        {"id": "mail_counts", "action": "tool", "tool": "browser_mail_collect_summary", "input": {"providers": ["gmail"]}, "present_result": true}
+      ]
+    },
+    {
       "id": "work_start",
       "label": "업무 시작",
       "description": "실제 시각·날씨·작업·승인·자동화 상태를 출처와 함께 브리핑합니다.",

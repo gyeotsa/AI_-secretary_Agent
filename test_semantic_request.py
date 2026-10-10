@@ -453,10 +453,16 @@ def test_production_catalog_is_complete_without_tool_execution(tmp_path, monkeyp
     prompts = [json.loads(call[1]["content"]) for call in model.calls]
     indexes = [prompt for prompt in prompts if "available_tool_groups" in prompt]
     details = [prompt for prompt in prompts if "available_tool_groups" not in prompt]
-    assert len(indexes) == 1  # Entire index fits one call; it does not grant a no-tool disposition.
+    assert indexes
+    assert all(set(prompt["group_descriptions"]) == set(prompt["available_tool_groups"])
+               for prompt in indexes)
     expected = {c.name for c in value.get_capabilities()} - SemanticRequestInterpreter.RUNTIME_ONLY_TOOLS
-    assert {name for prompt in indexes for names in prompt["available_tool_groups"].values()
-            for name in names} == expected
+    expected_groups = {plugin.name: len([tool for tool in plugin.get_tools() if tool.name in expected])
+                       for plugin in value.plugins.values()}
+    expected_groups = {name: count for name, count in expected_groups.items() if count}
+    assert {name: count for prompt in indexes for name, count in prompt["available_tool_groups"].items()} == expected_groups
+    assert sum(expected_groups.values()) == len(expected)
+    assert len(indexes) == 1  # Compact ownership metadata fits the production index in one request.
     assert all(prompt["available_tools"] == [] for prompt in indexes)
     assert {entry["tool"] for prompt in details for entry in prompt["available_tools"]} == expected
     assert 1 < len(model.calls) <= SemanticRequestInterpreter.DISCOVERY_MAX_CALLS
@@ -537,9 +543,10 @@ class _ManyToolSurface(BasePlugin):
     def __init__(self, number):
         super().__init__()
         self.name = f"group_{number}"
+        self.tool_prefix = self.name
 
     def get_tools(self):
-        return [ToolSchema(f"{self.name}_inspect_{'x' * 90}_{i}", "Inspection contract " * 12,
+        return [ToolSchema(f"{self.tool_prefix}_inspect_{'x' * 90}_{i}", "Inspection contract " * 12,
                            {"type": "object", "properties": {"limit": {
                                "type": "integer", "description": "Exact requested quantity " * 6}}},
                            side_effect="read") for i in range(10)]
@@ -548,10 +555,13 @@ class _ManyToolSurface(BasePlugin):
         raise AssertionError("Discovery must not execute a tool")
 
 
-def _many_tools():
+def _many_tools(*, long_group_names=False):
     value = PluginRegistry()
     for number in range(8):
-        value.register_plugin(_ManyToolSurface(number))
+        plugin = _ManyToolSurface(number)
+        if long_group_names:
+            plugin.name += "_" + "x" * 400
+        value.register_plugin(plugin)
     return value
 
 
@@ -690,14 +700,20 @@ def test_grouped_discovery_covers_last_group_and_pluginless_capabilities(orphan,
     target = value.get_capabilities()[-1].name
     if orphan:
         value.plugins.pop("group_7")  # Capability remains registered without group ownership metadata.
-    seen, detailed = set(), set()
+    expected_tools = {c.name for c in value.get_capabilities()}
+    expected_groups = {f"group_{number}": 10 for number in range(8)}
+    if orphan:
+        expected_groups["__ungrouped__"] = expected_groups.pop("group_7")
+    target_group = "__ungrouped__" if orphan else "group_7"
+    seen, detailed = {}, set()
 
     def respond(payload, schema, call):
         if "available_tool_groups" in payload:
             groups = payload["available_tool_groups"]
-            seen.update(name for names in groups.values() for name in names)
+            assert all(type(count) is int and count == expected_groups[group] for group, count in groups.items())
+            seen.update(groups)
             chosen = ([group for group in groups if group == "group_0"] if index_kind in {"wrong_group", "unknown_hints"}
-                      else [group for group, names in groups.items() if target in names] if index_kind == "action" else [])
+                      else [group for group in groups if group == target_group] if index_kind == "action" else [])
             kind = ("unknown" if index_kind == "unknown_hints" else
                     "action" if chosen else "unsupported" if index_kind in {"action", "wrong_group"} else index_kind)
             return {"request_kind": kind, "group_names": chosen, "confidence": 0.0 if kind == "unknown" else .95}
@@ -710,9 +726,9 @@ def test_grouped_discovery_covers_last_group_and_pluginless_capabilities(orphan,
     model = _RoutingModel(respond)
     decision = SemanticRequestInterpreter(model, value).interpret("현재 측정값 알려줘")
     assert decision.grounded and decision.tool_names == (target,)
-    assert seen == {c.name for c in value.get_capabilities()}
-    assert detailed == ({name for name in seen if name.startswith("group_7_")} if index_kind == "action" else seen)
-    assert sum("available_tool_groups" in p for p, *_ in model.calls) >= 2
+    assert seen == expected_groups and sum(seen.values()) == len(expected_tools)
+    assert detailed == ({name for name in expected_tools if name.startswith("group_7_")}
+                        if index_kind == "action" else expected_tools)
     assert [entry["tool"] for entry in model.calls[-1][0]["available_tools"]] == [target]
     for _, schema, options, messages in model.calls:
         reserve = 512 if "request_kind" in schema["properties"] else 1024
@@ -722,7 +738,7 @@ def test_grouped_discovery_covers_last_group_and_pluginless_capabilities(orphan,
 
 @pytest.mark.parametrize("later_kind", ["conversation", "unknown"])
 def test_mixed_index_batches_refine_all_groups_before_global_unsupported(later_kind):
-    value = _many_tools()
+    value = _many_tools(long_group_names=True)
     detailed = set()
     def respond(payload, schema, call):
         if "available_tool_groups" in payload:
@@ -757,7 +773,7 @@ def test_uncertain_index_hit_still_checks_other_groups():
     def respond(payload, schema, call):
         if "available_tool_groups" in payload:
             return {"request_kind": "unknown", "group_names": [
-                group for group, names in payload["available_tool_groups"].items() if target in names], "confidence": .1}
+                group for group in payload["available_tool_groups"] if group == "group_0"], "confidence": .1}
         if "request_kind" in schema["properties"]:
             detailed.update(entry["tool"] for entry in payload["available_tools"])
             selected = [target] if target in detailed and any(
@@ -791,7 +807,7 @@ def test_selected_group_no_hit_checks_remainder_and_mixed_negative_is_not_unsupp
 
 
 def test_invalid_later_index_batch_never_reaches_contract_or_execution():
-    value = _many_tools()
+    value = _many_tools(long_group_names=True)
     def respond(payload, schema, call):
         assert "available_tool_groups" in payload
         return {"request_kind": "unsupported" if call == 1 else "action",
@@ -886,6 +902,67 @@ def test_whole_prompt_and_uncapped_provider_output_are_budgeted_before_send(regi
     assert result.reason.endswith(":context_saturated") and not result.grounded
     assert model.calls == []
     assert history[0]["content"] == "preserved history " * 500
+
+
+def test_budget_removes_only_old_complete_turns_and_preserves_exact_active_sources(registry):
+    model = _Model({})
+    interpreter = SemanticRequestInterpreter(model, registry)
+    current = '"새 본문  🙂\nx = [1, 2]"라고 보내줘'
+    latest_turn = [{"role": "user", "content": "민수에게 보낼 내용을 정할게."},
+                   {"role": "assistant", "content": "어떤 내용을 보낼까요?"}]
+    dialogue = [{"role": "assistant", "content": "오래된 안내 " * 1500},
+                {"role": "user", "content": "지난 자료를 조회해줘."},
+                {"role": "assistant", "content": "지난 결과 " * 1500}, *latest_turn]
+    pending = {"intent_name": "messaging.send", "task_id": "fictional-send",
+               "original_request": "민수에게 카톡 보내줘", "question": "어떤 내용을 보낼까요?",
+               "slots": {"recipient": "민수", "provider": "kakaotalk", "message": "확정  값\n[1, 2] 🙂"}}
+    envelope = [{"role": "system", "content": "원문과 확정된 값을 그대로 보존하세요."},
+                {"role": "user", "content": json.dumps({"current_user_input": current,
+                    "recent_dialogue": dialogue, "pending_request": pending}, ensure_ascii=False)}]
+    before = json.loads(json.dumps(envelope))
+    assert interpreter._prompt_fits(envelope, 1024)
+    interpreter._model_call(envelope, {})
+    assert model.messages[2:] == [*latest_turn, {"role": "user", "content": current}]
+    assert json.loads(model.messages[1]["content"])["pending_request"] == pending
+    assert envelope == before
+    assert sum(len(m["content"].encode("utf-8")) for m in model.messages) + len(model.messages) * 64 + 256 + 1024 <= 8192
+
+
+def test_oversized_confirmed_pending_is_never_trimmed_to_fit(registry):
+    from core.llm import ModelCallError
+
+    model = _Model({})
+    pending = {"original_request": "확정된 원문 " * 1500,
+               "slots": {"recipient": "민수", "message": "확정  본문\n🙂"}}
+    envelope = [{"role": "system", "content": "확정된 값을 보존하세요."},
+                {"role": "user", "content": json.dumps({"current_user_input": "그 작업 이어줘",
+                    "recent_dialogue": [{"role": "assistant", "content": "오래된 안내 " * 1500}],
+                    "pending_request": pending}, ensure_ascii=False)}]
+    before = json.loads(json.dumps(envelope))
+    with pytest.raises(ModelCallError) as error:
+        SemanticRequestInterpreter(model, registry)._model_call(envelope, {})
+    assert error.value.code == "context_saturated"
+    assert not model.calls and envelope == before
+
+
+@pytest.mark.parametrize("literal_source", ["old_user", "retained_assistant"])
+def test_history_budget_cannot_grant_old_or_assistant_literals_to_a_new_send(registry, literal_source):
+    old_user = "민수에게 지난 본문이라고 보내줘" if literal_source == "old_user" else "지난 자료를 조회해줘."
+    latest_assistant = ("민수에게 지난 본문이라고 보낼까요?"
+                        if literal_source == "retained_assistant" else "지난 이야기를 마쳤어요.")
+    history = [{"role": "user", "content": old_user},
+               {"role": "assistant", "content": "오래된 결과 " * 1500},
+               {"role": "user", "content": "다른 주제로 이야기할게."},
+               {"role": "assistant", "content": latest_assistant}]
+    before = json.loads(json.dumps(history))
+    decision, model = _interpret(registry, "카톡 하나 보내줘", _data(
+        operation="external_send", intent_name="messaging.send", tool_names=["desktop_send_message"],
+        slots={"provider": "kakaotalk", "recipient": "민수", "message": "지난 본문"}), history=history)
+    assert not decision.grounded and decision.reason == "ungrounded_literal:recipient"
+    assert not decision.to_resolution(registry).ready
+    assert model.calls and all(old_user not in [m["content"] for m in call[2:]] for call in model.calls)
+    assert all(history[-2:] == call[-3:-1] for call in model.calls)
+    assert history == before
 
 
 def test_pending_tool_group_is_refined_even_after_index_conversation(registry):

@@ -51,8 +51,10 @@ def isolated(monkeypatch):
     settings = AssistantSettings(profile)
     monkeypatch.setattr(selection, "get_assistant_settings", lambda: settings)
     monkeypatch.setattr(selection, "_generation", 0)
+    monkeypatch.setattr(selection, "_jev_generation", 0)
     monkeypatch.setattr(selection, "_shutdown", False)
     monkeypatch.setattr(selection, "_status", "대기")
+    monkeypatch.setattr(selection, "_jev_status", "대기")
     monkeypatch.setattr(gate, "_idle_releases", {})
     for key in tuple(os.environ):
         if key.startswith("KIMI_K3_"):
@@ -96,7 +98,7 @@ def engine(tmp_path, monkeypatch, isolated):
 
 
 def test_selection_defaults_off_persists_and_invalidates_old_requests(isolated):
-    assert selection.selection() == ("kimi_k3", False)
+    assert selection.selection() == ("default", True)
     client = KimiClient()
     selection.configure("kimi_k3", True)
     assert isolated.get("auxiliary_model_enabled") == "true"
@@ -112,6 +114,19 @@ def test_missing_configuration_never_launches(monkeypatch, isolated):
     assert not configuration_status()[0]
     with pytest.raises(ModelCallError, match="KIMI_K3_EXECUTABLE"):
         KimiClient().chat([{"role": "user", "content": "hello"}])
+
+
+def test_jev_changes_keep_active_kimi_ticket_and_main_status(isolated):
+    selection.configure("kimi_k3", True)
+    client = KimiClient()
+    selection.set_status("Kimi K3 실행 중")
+    selection.configure("jev", True)
+    selection.set_status("Jev 분류 중", "jev")
+    client._check()
+    assert selection.main_selection() == ("kimi_k3", True)
+    assert selection.is_enabled("jev")
+    assert selection.status() == "Kimi K3 실행 중"
+    assert selection.status("jev") == "Jev 분류 중"
 
 
 def test_bad_optional_timeout_does_not_break_base_tool_registration(engine, monkeypatch):
