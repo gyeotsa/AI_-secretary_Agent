@@ -1904,6 +1904,9 @@ class JarvisMainWindow(QWidget):
                 return False
             timer.timeout.connect(lambda: dialog.reject() if cancel_event.is_set() else None)
             timer.start(100)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
         dialog.exec()
         timer.stop()
         return bool(dialog.result_value and (cancel_event is None or not cancel_event.is_set()))

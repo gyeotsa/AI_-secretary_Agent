@@ -290,6 +290,7 @@ class PlanCoordinator:
                     result = future.result()
                     results[step.id] = result
                     if (step.status == StepStatus.FAILED and result.status != ToolRunStatus.UNVERIFIED and replan is not None
+                            and step.tool_name != "computer_use_run"
                             and replan_count < self.max_replans):
                         replacement = replan(plan, step, result)
                         if replacement is not None:
@@ -337,6 +338,9 @@ class PlanCoordinator:
     def _run_step(self, plan: PlanDAG, step: PlanStep,
                   execute: Callable[[PlanStep, str], ToolRunResult],
                   verify: Callable[[PlanStep, ToolRunResult], ToolRunResult]) -> ToolRunResult:
+        # A planner retry must not repeat physical input with uncertain side effects.
+        if step.tool_name == "computer_use_run":
+            step.retry_budget = 0
         step.status = StepStatus.RUNNING
         strategies = step.retry_strategies or ["retry"]
         last = ToolRunResult.failed(tool_name=step.tool_name or step.id, error="실행되지 않았습니다.")

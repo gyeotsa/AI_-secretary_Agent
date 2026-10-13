@@ -166,6 +166,36 @@ def test_uncertain_action_is_not_retried_and_repeated_screen_stops():
     assert result.status == ToolRunStatus.UNVERIFIED and len(screen.actions) == 1
 
 
+@pytest.mark.parametrize("hidden_value_changes", [False, True])
+def test_native_repeat_detection_survives_target_reordering(hidden_value_changes):
+    screen = Screen()
+    def observe():
+        pairs = [("other", "Open"), ("arrow", "Next tab")]
+        if screen.actions:
+            pairs.reverse()
+        targets = {f"e{i + 1}": {"name": name, "actions": ["click"],
+                                  "control_identity": {"token": token, "stable": True}}
+                   for i, (token, name) in enumerate(pairs)}
+        document_hash = str(len(screen.actions)) if hidden_value_changes else "same"
+        return Observation(str(len(screen.actions)), b"same screenshot",
+                           "\n".join(name for _, name in pairs), targets,
+                           {"backend": "windows", "width": 100, "height": 100},
+                           host_state={"value_hashes": {key: document_hash
+                                                       for key, value in targets.items()
+                                                       if value["name"] == "Open"}})
+    screen.observe = observe
+    screen.execute = lambda decision, check: screen.actions.append(decision)
+    model = ScriptedModel()
+    def decide(goal, observation, history, remaining):
+        target = next(key for key, value in observation.targets.items() if value["name"] == "Next tab")
+        return {"observation_id": observation.id, "action": "click", "target": target, "reason": "test"}
+    model.decide = decide
+    result = ComputerUseRuntime(screen, model, lambda *a: True).run("새 문서", max_steps=2)
+    assert len(screen.actions) == (2 if hidden_value_changes else 1)
+    assert result.status == (ToolRunStatus.PARTIAL if hidden_value_changes else ToolRunStatus.UNVERIFIED)
+    assert result.evidence[0].data["steps"][0]["changed"] is hidden_value_changes
+
+
 def test_step_budget_still_allows_final_verification_but_no_extra_action():
     screen = Screen()
     result = ComputerUseRuntime(screen, ScriptedModel(CLICK, DONE), lambda *a: True).run("아니스 검색", max_steps=1)
@@ -241,8 +271,10 @@ def test_model_sends_image_and_schema_without_native_identity():
     assert "private-native-token" not in json.dumps(call.args)
     assert "private-whole-value-hash" not in json.dumps(call.args)
     assert "private-focused-token" not in json.dumps(call.args)
+    assert "matching substring or preview alone does not" in call.args[0][0]["content"]
     for variant in call.kwargs["json_schema"]["oneOf"]:
         fields = list(variant["properties"])
+        assert fields[0] == "reason"
         if "target" in fields:
             assert fields.index("action") < fields.index("target")
             assert variant["properties"]["target"]["enum"] == ["e1"]
@@ -484,6 +516,15 @@ def test_real_chromium_loop_and_stale_dom(use_live_model):
             snapshot = backend.observe()
             with pytest.raises(ValueError, match="선택지"):
                 backend.validate_action(snapshot, {**decision, "text": "관찰하지 않은 선택지"})
+            page.set_content('<textarea aria-label="본문"></textarea><input type="password" value="private-password">')
+            full_value = "A" * 1000 + "💠private suffix"
+            page.locator("textarea").evaluate("(el, value) => el.value = value", full_value)
+            snapshot = backend.observe()
+            field = snapshot.payload()["targets"]["e1"]
+            assert len(field["value"]) == 240 and field["value_length"] == len(full_value)
+            assert "private suffix" not in json.dumps(snapshot.payload())
+            assert "private-password" not in json.dumps(snapshot.payload())
+            assert len(snapshot.targets) == 1
             backend._dispose_elements()
         finally:
             browser.close()

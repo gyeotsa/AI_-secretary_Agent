@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+from ctypes import wintypes
 import json
 import os
 import re
@@ -25,6 +26,42 @@ class WindowInfo:
 
 class WindowsAutomationRuntime:
     STRATEGY_ORDER = ("api", "cli", "com", "uia", "coordinate")
+
+    @staticmethod
+    def is_owned_window(handle: int, owner: int) -> bool:
+        if user32 is None:
+            return False
+        user32.GetWindow.argtypes = (wintypes.HWND, wintypes.UINT)
+        user32.GetWindow.restype = wintypes.HWND
+        for _ in range(16):
+            handle = int(user32.GetWindow(int(handle), 4) or 0)  # GW_OWNER
+            if handle == int(owner):
+                return True
+            if not handle:
+                break
+        return False
+
+    @staticmethod
+    def verify_pointer_target(handle: int, x: int, y: int) -> None:
+        if user32 is None:
+            raise RuntimeError("Windows 마우스 대상 검증을 사용할 수 없습니다.")
+        user32.WindowFromPoint.argtypes = (wintypes.POINT,)
+        user32.WindowFromPoint.restype = wintypes.HWND
+        user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+        user32.GetAncestor.restype = wintypes.HWND
+        hit = user32.WindowFromPoint(wintypes.POINT(int(x), int(y)))
+        top = int(user32.GetAncestor(hit, 2) or 0) if hit else 0  # GA_ROOT
+        if top == int(handle):
+            return
+        if top and WindowsAutomationRuntime.is_owned_window(top, handle):
+            user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+            user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+            target_pid, popup_pid = wintypes.DWORD(), wintypes.DWORD()
+            user32.GetWindowThreadProcessId(int(handle), ctypes.byref(target_pid))
+            user32.GetWindowThreadProcessId(top, ctypes.byref(popup_pid))
+            if target_pid.value and target_pid.value == popup_pid.value:
+                return
+        raise RuntimeError("마우스 대상 위치가 다른 창에 가려져 있습니다.")
 
     def list_windows(self) -> List[WindowInfo]:
         if user32 is None:
@@ -65,7 +102,8 @@ class WindowsAutomationRuntime:
     def focus(self, handle: int) -> WindowInfo:
         if user32 is None or not user32.IsWindow(int(handle)):
             raise LookupError("유효하지 않은 창 Handle입니다.")
-        user32.ShowWindow(int(handle), 9)  # SW_RESTORE
+        if user32.IsIconic(int(handle)):
+            user32.ShowWindow(int(handle), 9)  # SW_RESTORE
         user32.SetForegroundWindow(int(handle))
         time.sleep(0.05)
         foreground = int(user32.GetForegroundWindow())
@@ -219,6 +257,7 @@ class WindowsAutomationRuntime:
     def _accessibility_candidates(
         self, handle: int, *, names=(), automation_id_keywords=(), control_types=(),
         excluded_names=(), exact_name: bool = False, allow_type_only: bool = False,
+        include_disabled: bool = False,
     ):
         root = self._accessibility_root(handle)
         wrappers = [root, *root.descendants()]
@@ -251,7 +290,7 @@ class WindowsAutomationRuntime:
                     continue
                 if not exact_name and not (exact_match or partial_match or id_match or allow_type_only):
                     continue
-                if not wrapper.is_visible() or not wrapper.is_enabled():
+                if not wrapper.is_visible() or (not include_disabled and not wrapper.is_enabled()):
                     continue
                 score = (120 if exact_match else 0) + (70 if partial_match else 0) + (80 if id_match else 0)
                 try:
@@ -278,6 +317,17 @@ class WindowsAutomationRuntime:
         return [metadata for _score, _wrapper, metadata in self._accessibility_candidates(
             handle, allow_type_only=True,
         )]
+
+    @staticmethod
+    def _activation_pattern(wrapper):
+        for name, method in (("iface_invoke", "invoke"), ("iface_selection_item", "select")):
+            try:
+                interface = getattr(wrapper, name, None)
+            except Exception:
+                continue
+            if interface is not None:
+                return method, interface
+        return "", None
 
     def activate_accessibility_control(
         self, handle: int, *, names=(), automation_id_keywords=(), control_types=(),
@@ -313,8 +363,14 @@ class WindowsAutomationRuntime:
         identity = metadata.get("control_identity") or self._control_identity(handle, wrapper, metadata)
         metadata = {**metadata, "control_identity": identity}
         method = "focus"
+        pattern = None
+        if invoke:
+            method, pattern = self._activation_pattern(wrapper)
+            if pattern is None:
+                raise RuntimeError("이 UI 요소는 InvokePattern 또는 SelectionItemPattern을 지원하지 않습니다.")
         try:
-            wrapper.set_focus()
+            if not invoke or require_keyboard_focus:
+                wrapper.set_focus()
             if require_foreground:
                 self.verify_foreground(handle)
             if require_keyboard_focus:
@@ -325,12 +381,10 @@ class WindowsAutomationRuntime:
                 if not focused:
                     raise RuntimeError("검증한 UIA Control이 키보드 포커스를 얻지 못했습니다.")
             if invoke:
-                if hasattr(wrapper, "invoke"):
-                    wrapper.invoke()
-                    method = "invoke"
-                elif hasattr(wrapper, "select"):
-                    wrapper.select()
-                    method = "select"
+                if method == "invoke":
+                    pattern.Invoke()
+                else:
+                    pattern.Select()
         except Exception as exc:
             raise RuntimeError(f"접근성 Control 활성화 실패: {exc}") from exc
         time.sleep(0.08)
@@ -416,7 +470,7 @@ class WindowsAutomationRuntime:
 
     @staticmethod
     def _read_wrapper_value(wrapper) -> str:
-        """Read an Edit value through UIA ValuePattern, never from screen OCR."""
+        """Read the entire Edit/Document value through UIA, never from screen OCR."""
         try:
             if hasattr(wrapper, "get_value"):
                 return str(wrapper.get_value())
@@ -426,6 +480,12 @@ class WindowsAutomationRuntime:
             iface = getattr(wrapper, "iface_value", None)
             if iface is not None:
                 return str(iface.CurrentValue)
+        except Exception:
+            pass
+        try:
+            iface = getattr(wrapper, "iface_text", None)
+            if iface is not None:
+                return str(iface.DocumentRange.GetText(-1))
         except Exception:
             pass
         raise RuntimeError("접근성 입력 Control의 현재 값을 읽을 수 없습니다.")

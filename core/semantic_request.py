@@ -430,7 +430,7 @@ class SemanticRequestInterpreter:
         if (not decision.grounded and not decision.clarification_question
                 and self.llm is not None and not decision.reason.startswith(
                     ("semantic_interpretation_failed", "semantic_model_unavailable", "semantic_discovery_invalid",
-                     "semantic_action_constraint"))):
+                     "semantic_action_constraint", "ungrounded_literal:", "semantic_user_content_omitted"))):
             return self._recover_dialogue(raw_text, history, pending or {}, allowed_tools, decision)
         return decision
 
@@ -664,6 +664,8 @@ class SemanticRequestInterpreter:
             "본문·코드·공백·조사·파일명·이름은 원문 그대로 보존하세요. 본문 밖 명령 어미만 제외하며 명령문 전체를 본문으로 쓰지 마세요. "
             "파일 후보가 하나면 그 경로를 쓰고, 여러 개면 대상을 질문하세요. 경로를 지어내지 마세요. service는 enum으로 정규화하세요. "
             "intent는 tool에서 정하므로 출력하지 않습니다. intent 없는 도구도 가능하며 복합 작업에 필요한 모든 단계만 선택하세요. "
+            "앱 GUI 작업은 computer_use_run 하나에 맡깁니다. 전용 도구가 요청 앱을 지원하지 않으면 다른 앱으로 대체하지 마세요. "
+            "이 도구의 goal은 전체 요청 원문, app은 요청 앱, Windows backend는 windows입니다. 명시된 저장 경로·전체 내용은 verify_file·expected_text에 보존하세요. "
             "대안은 동시에 고르지 마세요. operation은 최대 부작용(external_send > execute > change > read), slots는 첫 도구 입력만입니다. "
             "지원 도구가 없으면 relation=new, tool_names=[]. 추측이 필요한 대상은 질문하세요. JSON만 반환하세요: "
             '{"relation":"new|continue|correct|cancel|approve|conversation|unknown",'
@@ -741,7 +743,7 @@ class SemanticRequestInterpreter:
                     "reason": decision.reason or "missing_clarification_question",
                     "missing_fields": missing,
                 }
-                if decision.reason.startswith("semantic_action_constraint"):
+                if decision.reason.startswith(("semantic_action_constraint", "semantic_user_content_omitted")):
                     # The rejected tool may have hidden the permitted operation
                     # in discovery. Reconsider the complete caller scope once.
                     retry_prompt = {**prompt, "available_tools": catalogue, "validation_feedback": feedback}
@@ -1103,6 +1105,7 @@ class SemanticRequestInterpreter:
             "새 요청은 이전 작업과 분리하고, 후속 답변/정정이면 pending 또는 recent_completed의 작업을 참고합니다. "
             "본문에 포함된 명령 단어가 아니라 사용자가 실제로 요청한 동작을 판단하세요. "
             "동일 기능의 대안들을 모두 고르지 마세요. 복합 요청이면 필요한 모든 단계의 도구를 포함하세요. "
+            "요청 앱을 지원하는 전용 도구를 우선하고 GUI 작업은 computer_use_run에 맡깁니다. 지원하지 않는 앱을 다른 앱으로 대체하지 마세요. "
             "각 도구의 fields는 실제 입력 계약이며 설명·기본값을 포함합니다. "
             "request_kind는 도구 없이 답하는 인사·감정 대화·개념 설명·제공된 정보의 분석·문제 풀이·채팅 코드 작성이면 conversation, "
             "실제 도구 작업이면 action, 실행 요청이지만 지원 도구가 없으면 unsupported, 판단 불가면 unknown입니다. "
@@ -1391,6 +1394,35 @@ class SemanticRequestInterpreter:
             user_sources.extend(m["content"] for m in history if m["role"] == "user")
             if related.get("original_request"):
                 user_sources.append(str(related["original_request"]))
+        if names and names[0] == "computer_use_run":
+            app = slots.get("app")
+            if isinstance(app, str) and not any(app in source for source in user_sources):
+                from plugins.windows_control import WindowsControlPlugin
+                aliases = WindowsControlPlugin._aliases()
+                canonical = aliases.get(app.casefold(), app).casefold().replace("/", "\\").removesuffix(".exe")
+                for alias, target in aliases.items():
+                    if (target.casefold().replace("/", "\\").removesuffix(".exe") == canonical
+                            and any(alias in source.casefold() for source in user_sources)):
+                        slots["app"] = alias
+                        break
+            for key in ("app", "window_title", "verify_file", "expected_text"):
+                value = slots.get(key)
+                if isinstance(value, str) and not any(
+                        value in source or (key == "app" and value.casefold() in source.casefold())
+                        for source in user_sources):
+                    return SemanticDecision(raw, reason=f"ungrounded_literal:{key}")
+            if any(not any(value in source for source in user_sources)
+                   for value in slots.get("app_arguments", [])):
+                return SemanticDecision(raw, reason="ungrounded_literal:app_arguments")
+            expected_text = slots.get("expected_text")
+            if isinstance(expected_text, str) and expected_text:
+                from core.utterance_scope import required_quoted_literals
+                literals = [value for source in user_sources for value in required_quoted_literals(source)]
+                if any(expected_text in value and expected_text != value for value in literals):
+                    return SemanticDecision(raw, reason="ungrounded_literal:expected_text")
+            if relation == "new":
+                # The screen agent receives the user's scope, never a model's rewritten goal.
+                slots["goal"] = raw
         established = related.get("slots") or {}
         for key, value in slots.items():
             if key in self.LITERAL_KEYS and isinstance(value, str):
@@ -1420,6 +1452,11 @@ class SemanticRequestInterpreter:
             # A changed confirmed value is a correction by definition. This
             # preserves the model's grounded values, never invents a new action.
             relation = "correct"
+        if len(names) == 1 and operation == "execute":
+            from core.intent_router import IntentResolution, IntentRouter
+            if not IntentRouter(self.registry).resolution_preserves_user_content(
+                    raw, IntentResolution(tool_name=names[0], slots=slots)):
+                return SemanticDecision(raw, reason="semantic_user_content_omitted")
         return SemanticDecision(raw, relation, operation, name, tuple(dict.fromkeys(names)),
                                 dict(slots), confidence, clarification, question,
                                 grounded=True, source="model")

@@ -1,6 +1,7 @@
 import json
 import threading
 from types import SimpleNamespace
+from unittest.mock import Mock
 import pytest
 
 import core.scheduler as scheduler_module
@@ -11,7 +12,7 @@ import core.tools as tools_module
 import core.recovery as recovery_module
 from core.executor import Executor
 from core.scratchpad import Task
-from core.tool_result import Evidence
+from core.tool_result import Artifact, Evidence
 from core.tool_result import ToolRunResult, ToolRunStatus
 from core.tools import ToolExecutor
 from core.user_profile import UserProfile
@@ -149,6 +150,83 @@ def test_executor_downgrades_direct_success_without_evidence():
     )
     assert result.status == ToolRunStatus.UNVERIFIED
     assert not result.succeeded
+
+
+def _dag_executor(tmp_path, result):
+    from core.plan_runtime import PlanCoordinator, PlanExecutionStore
+    from core.task_contracts import SupervisorRuntime, TaskContractStore
+
+    executor = Executor.__new__(Executor)
+    registry = SimpleNamespace(get_capability=lambda _name: None)
+    executor.current_agent_task_id = ""
+    executor.intent_router = SimpleNamespace(registry=registry)
+    executor.tool_executor = SimpleNamespace(plugin_registry=registry, execute_tool=Mock(return_value=result))
+    executor.verifier = Mock()
+    executor.supervisor = SupervisorRuntime(TaskContractStore(tmp_path / "contracts.db"))
+    executor.plan_coordinator = PlanCoordinator(PlanExecutionStore(str(tmp_path / "plans.db")), max_parallel=1)
+    return executor
+
+
+@pytest.mark.parametrize("status", [ToolRunStatus.FAILED, ToolRunStatus.PARTIAL,
+                                   ToolRunStatus.UNVERIFIED, ToolRunStatus.CANCELLED])
+def test_executor_dag_preserves_negative_typed_status_and_receipt(tmp_path, status):
+    from core.plan_runtime import PlanDAG, PlanStep
+
+    failure = "Computer Use 중단 (InferenceDeadlineError): 모델 시간 초과"
+    receipt = ToolRunResult(
+        "computer_use_run", status, failure, duration_ms=61000,
+        error=failure if status == ToolRunStatus.FAILED else None,
+        evidence=[Evidence("computer_use", "이미 실행한 행동", {"steps": [{"action": "fill"}]})],
+        artifacts=[Artifact("file", "observed.txt")],
+    )
+    executor = _dag_executor(tmp_path, receipt)
+    executor.verifier.verify.side_effect = AssertionError("typed negative must not become a legacy string")
+    executor.planner = Mock()
+    executor.planner.replan_from_observation.side_effect = AssertionError("screen input must not be blindly replanned")
+    plan = PlanDAG("화면 조작", [PlanStep("ui", tool_name="computer_use_run", retry_budget=3)])
+    run = executor.execute_plan_dag(plan)
+    observed = run.results["ui"]
+    assert observed is receipt
+    assert observed.status == status and observed.error == receipt.error
+    assert observed.evidence == receipt.evidence and observed.artifacts == receipt.artifacts
+    assert observed.duration_ms == 61000
+    assert run.status == ("cancelled" if status == ToolRunStatus.CANCELLED else "failed")
+    executor.verifier.verify.assert_not_called()
+    executor.tool_executor.execute_tool.assert_called_once()
+    executor.planner.replan_from_observation.assert_not_called()
+    assert plan.steps[0].retry_budget == 0
+    assert plan.steps[0].attempts == 1
+
+
+def test_executor_dag_legacy_failure_still_uses_registered_verifier(tmp_path):
+    from core.plan_runtime import PlanDAG, PlanStep
+
+    executor = _dag_executor(tmp_path, "오류: 파일이 존재하지 않습니다.")
+    executor.verifier.verify.return_value = VerificationResult(False, "실제 파일 없음", {"method": "path_exists"})
+    plan = PlanDAG("파일 읽기", [PlanStep("read", tool_name="legacy_read", retry_budget=0)])
+    run = executor.execute_plan_dag(plan, replan_callback=lambda *_args: None)
+    observed = run.results["read"]
+    assert run.status == "failed" and observed.status == ToolRunStatus.FAILED
+    assert observed.error == "실제 파일 없음"
+    assert observed.evidence[0].data["method"] == "path_exists"
+    executor.verifier.verify.assert_called_once_with("legacy_read", {}, "오류: 파일이 존재하지 않습니다.")
+
+
+def test_executor_dag_other_tool_keeps_retry_and_default_replan_policy(tmp_path):
+    from core.plan_runtime import PlanDAG, PlanStep
+
+    receipt = ToolRunResult.failed(tool_name="demo", error="validation mismatch")
+    executor = _dag_executor(tmp_path, receipt)
+    executor.planner = SimpleNamespace(replan_from_observation=Mock(return_value=None))
+    executor.build_context = lambda: "observed context"
+    executor._allowed_tools_for_goal = lambda _goal: ["demo"]
+    plan = PlanDAG("demo goal", [PlanStep("demo", tool_name="demo", retry_budget=1)])
+    run = executor.execute_plan_dag(plan)
+    assert run.status == "failed" and run.results["demo"] is receipt
+    assert executor.tool_executor.execute_tool.call_count == 2
+    assert plan.steps[0].attempts == 2 and plan.steps[0].retry_budget == 1
+    executor.planner.replan_from_observation.assert_called_once_with(
+        plan, plan.steps[0], receipt.raw_output, "observed context", ["demo"])
 
 
 def test_legacy_file_mutations_return_verified_typed_results(tmp_path):

@@ -747,6 +747,7 @@ class Executor:
                 "unknown_or_out_of_scope_tool", "invalid_slots", "conversation_cannot_execute",
                 "invalid_action_operation", "unknown_slot", "slot_type_invalid",
                 "operation_tool_mismatch", "message_literal_changed",
+                "semantic_user_content_omitted",
                 "filename_not_verified_candidate",
             } or semantic.reason.startswith("ungrounded_literal:")):
                 # A rejected model contract is not missing user information or
@@ -781,9 +782,9 @@ class Executor:
                     # literal completeness contract to every direct execution.
                     # Validate the current utterance so an explicit correction
                     # is not forced to retain a superseded old literal.
-                    semantic_resolution.question = (
-                        "인용하신 원문이나 본문 일부가 실행 명세에서 누락되어 실행하지 않았습니다. "
-                        "사용할 파일명과 본문을 확인해 주세요."
+                    return terminal_outcome(
+                        "인용하신 원문이나 본문 일부가 실행 명세에서 누락되어 실행하지 않았습니다. 실행된 도구: 0.",
+                        "failed",
                     )
                 if semantic_resolution.question:
                     task = task or (self.dialogue_state.get_task(session_key, existing_task_id, workspace_scope)
@@ -1475,11 +1476,8 @@ class Executor:
             )
 
         def verify(step: PlanStep, candidate: ToolRunResult) -> ToolRunResult:
-            # Tool이 구조적으로 UNVERIFIED를 반환했다면 범용 문자열 verifier로
-            # 다시 해석해 성공으로 승격하지 않는다. 특히 외부 메시지는 Enter가
-            # 전달됐지만 새 발신 말풍선을 보지 못한 상태가 있을 수 있으며, 이를
-            # 성공으로 바꾸면 실제 미전송/중복 전송을 구별할 수 없게 된다.
-            if candidate.status == ToolRunStatus.UNVERIFIED:
+            # 문자열 재검증으로 실패·부분 결과의 상태와 실제 실행 근거를 덮어쓰지 않는다.
+            if not candidate.succeeded:
                 verified = candidate
             elif candidate.succeeded and candidate.evidence:
                 verified = candidate
@@ -2291,7 +2289,7 @@ class Executor:
             domain_error = self._tool_domain_error(action)
             if domain_error:
                 action = {"action_type": "error", "simple_result": domain_error}
-            print(f"[Executor] Action 결정: {action}")
+            print(f"[Executor] Action 결정: {action.get('action_type', 'unknown')}")
 
             if action.get("action_type") == "error":
                 self.terminal_error = action.get("simple_result", "요청을 실행할 수 없습니다.")
@@ -2301,7 +2299,7 @@ class Executor:
             if action.get("action_type") == "use_tool":
                 tool_name = action["tool_name"]
                 tool_input = action.get("tool_input", {})
-                print(f"[Executor] Tool 선택: {tool_name}, 입력: {tool_input}")
+                print(f"[Executor] Tool 선택: {tool_name}")
                 self._emit_progress(f"도구 실행 중: {tool_name}")
 
                 if not self._wait_for_task_control():
@@ -2310,7 +2308,7 @@ class Executor:
                 # 5~6. ToolExecutor가 중앙 권한 검사 후 실행
                 started_at = time.perf_counter()
                 result = self.execute_tool(tool_name, tool_input)
-                print(f"[Executor] Tool 실행 결과: {result}")
+                print(f"[Executor] Tool 실행 결과: {getattr(result, 'status', 'legacy')}")
 
                 # 7. 실행 결과 검증
                 tool_run = self.build_tool_run_result(

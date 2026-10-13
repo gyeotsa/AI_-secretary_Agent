@@ -56,6 +56,7 @@ class ResponseRealizer:
         "local_calendar_create_event",
         "local_calendar_delete_event",
         "set_alarm",
+        "computer_use_run",
     }
 
     def __init__(self, llm):

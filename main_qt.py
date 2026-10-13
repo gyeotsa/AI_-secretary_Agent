@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from datetime import datetime
 from PyQt6.QtWidgets import QApplication, QDialog
-from PyQt6.QtCore import QDate, QTimer, QObject, pyqtSignal
+from PyQt6.QtCore import QDate, QTimer, QObject, Qt, pyqtSignal
 from PyQt6.QtGui import QIcon
 from config import Config, request_windows_permissions
 from core.state_machine import StateMachine, State
@@ -62,6 +62,7 @@ from core.interface_control import get_interface_control_bridge
 from core.observer import get_observer_layer
 from ui.command_center import FirstRunWizard
 from ui.calendar_notification import CalendarNotificationManager
+from ui.computer_use_control import EmergencyStopHotkey
 
 
 def strip_leading_wake_word(text: str, wake_word: str) -> str:
@@ -191,6 +192,8 @@ class AppSignals(QObject):
     gesture_motion = pyqtSignal(object)
     gesture_status = pyqtSignal(object)
     interface_surface = pyqtSignal(str)
+    computer_use_event = pyqtSignal(object)
+    emergency_stop_requested = pyqtSignal()
 
 
 class JarvisApp:
@@ -357,6 +360,7 @@ class JarvisApp:
         self.console_reader.input_received.connect(self._on_console_input)
         self.signals.ai_response_ready.connect(self._on_ai_response)
         self.signals.progress_update.connect(self._on_progress_update)
+        self._install_computer_use_controls()
         self.signals.proactive_message.connect(self._on_proactive_message)
         self.mail_brief = get_mail_brief_service()
         self._mail_startup_context = None
@@ -595,6 +599,82 @@ class JarvisApp:
     
     def _on_state_changed(self, old_state: State, new_state: State):
         self.window.update_state(new_state)
+        if getattr(self, "_computer_use_progress_text", ""):
+            self.window.status_label.setText(self._computer_use_progress_text)
+
+    def _install_computer_use_controls(self):
+        from core.runtime.event_bus import get_event_bus
+        self._computer_use_progress_text = ""
+        self._computer_use_turn_id = ""
+        self._computer_use_active = False
+        self.window.status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.signals.computer_use_event.connect(self._on_computer_use_event)
+        self.signals.emergency_stop_requested.connect(self._on_emergency_stop)
+        self._computer_use_event_bus = get_event_bus()
+        self._computer_use_event_callback = self.signals.computer_use_event.emit
+        for event_type in ("computer_use.started", "computer_use.step", "computer_use.finished"):
+            self._computer_use_event_bus.subscribe(event_type, self._computer_use_event_callback)
+        self._emergency_stop_hotkey = EmergencyStopHotkey(self.app, self.signals.emergency_stop_requested.emit)
+        if not self._emergency_stop_hotkey.registered:
+            self.window.status_label.setToolTip("전역 중지 단축키 Ctrl+Shift+F11를 등록하지 못했습니다. 취소 명령을 사용하세요.")
+
+    def _on_computer_use_event(self, event):
+        if getattr(self, "_runtime_shutdown_started", False):
+            return
+        data = event.data
+        turn_id = str(data.get("turn_id", ""))
+        active_turn_id = getattr(self, "_active_turn_id", "")
+        if active_turn_id and turn_id != active_turn_id:
+            return
+        if event.type == "computer_use.finished":
+            if turn_id != getattr(self, "_computer_use_turn_id", ""):
+                return
+            self._computer_use_active = False
+            self._computer_use_progress_text = ""
+            self.window.update_state(self.state_machine.state)
+            return
+        context = getattr(self, "_active_turn_context", None)
+        if context is not None and context.cancelled:
+            return
+        self._computer_use_turn_id = turn_id
+        self._computer_use_active = True
+        target = str(data.get("target", "대상 앱")).replace("\n", " ")[:45]
+        step = data.get("step")
+        stage = f"{step + 1}단계" if type(step) is int else "화면 확인"
+        actions = {"click": "클릭", "double_click": "더블 클릭", "right_click": "우클릭",
+                   "type_text": "입력", "fill": "입력", "press": "키 입력", "hotkey": "단축키", "scroll": "스크롤",
+                   "drag": "드래그", "move": "마우스 이동", "select": "선택", "switch_tab": "탭 전환",
+                   "launch_app": "앱 열기", "switch_window": "창 전환",
+                   "wait": "대기", "verify": "결과 확인", "coordinate_click": "클릭"}
+        action = actions.get(data.get("action"), "화면 조작")
+        stop = ("중지 Ctrl+Shift+F11" if self._emergency_stop_hotkey.registered
+                else "중지 단축키 등록 실패 · 취소 명령 사용")
+        stage = f"{stage} {action}" if type(step) is int else stage
+        self._computer_use_progress_text = f"{target} · {stage} · {stop}"
+        self.window.status_label.setText(self._computer_use_progress_text)
+
+    def _on_emergency_stop(self):
+        if getattr(self, "_runtime_shutdown_started", False):
+            return
+        self._interrupt_for_new_input()
+        self._is_processing_ai = False
+        self._computer_use_active = False
+        self._computer_use_progress_text = ""
+        permission_event = getattr(self, "_permission_event", None)
+        if permission_event is not None and not permission_event.is_set():
+            self._permission_result = False
+            permission_event.set()
+        self._reset_all()
+        self.window.status_label.setText("작업 중지 요청 · 이미 실행한 동작은 되돌리지 않습니다")
+
+    def _shutdown_computer_use_controls(self):
+        hotkey = getattr(self, "_emergency_stop_hotkey", None)
+        if hotkey is not None:
+            hotkey.close()
+        bus = getattr(self, "_computer_use_event_bus", None)
+        if bus is not None:
+            for event_type in ("computer_use.started", "computer_use.step", "computer_use.finished"):
+                bus.unsubscribe(event_type, self._computer_use_event_callback)
     
     def _on_user_input(self, text: str, existing_task_id=None, specialist_payload=None):
         self._last_user_activity = time.time()
@@ -609,7 +689,7 @@ class JarvisApp:
             self.memory.save_message(self.session_id, "user", text)
             self.notify_user(response, request=text)
             return
-        print("[DEBUG] _on_user_input called with:", text)
+        print(f"[Turn] UI input received: {len(text)} characters")
         explicit_queue = text.strip().lower().startswith(("새 작업:", "새 작업："))
         if existing_task_id is None and not explicit_queue:
             self._cancel_speech_only()
@@ -629,7 +709,7 @@ class JarvisApp:
             stripped = strip_leading_wake_word(text, wake_word)
             if stripped != str(text).strip():
                 text = stripped
-                print("[WakeWord] 실행 요청에서 호출어 제거:", text)
+                print("[WakeWord] 실행 요청에서 호출어 제거됨")
 
         workspace_registry = getattr(self, "specialist_workspaces", None)
         specialist = workspace_registry.match_open_command(text) if workspace_registry else None
@@ -768,22 +848,23 @@ class JarvisApp:
             ))
         execution = envelope.execution
         if execution.cancelled:
+            self.signals.ai_response_ready.emit(TurnResult(envelope, "", "cancelled"))
             return
         def report_progress(message):
             if not execution.cancelled:
                 self.signals.progress_update.emit(TurnProgress(envelope, str(message)))
-        print("[DEBUG] _process_ai called with:", text)
+        print(f"[Turn] executor input received: {len(text)} characters")
         
         # RAG로 문서 검색
         try:
             # ContextManager performs the authoritative retrieval once.  This
             # path is debug-only and must not duplicate embeddings/search.
             rag_context = []
-            print("[DEBUG] RAG context:", rag_context)
+            print(f"[RAG] Context passages: {len(rag_context)}")
             # 검색 결과는 Executor의 ContextManager가 다시 조립한다. 여기서 사용자
             # 발화 자체를 RAG 문자열로 바꾸면 대화 기록과 확인 질문 재개가 오염된다.
         except Exception as e:
-            print(f"[RAG] 검색 오류: {e}")
+            print(f"[RAG] 검색 오류: {type(e).__name__}")
         
         # AI 호출: Planner → Executor → Reflection 파이프라인 사용!
         print("[DEBUG] Calling Executor.execute_goal...")
@@ -843,7 +924,7 @@ class JarvisApp:
                             text, conversation_history, envelope.session_id,
                         ).response
                 execution.checkpoint()
-                print("[DEBUG] WorkflowRuntime returned:", response_text)
+                print(f"[Workflow] response status={status}, characters={len(response_text)}")
                 self.signals.ai_response_ready.emit(TurnResult(
                     envelope, response_text, status
                 ))
@@ -864,7 +945,7 @@ class JarvisApp:
                 with bind_turn_context(execution):
                     response_text = self.executor.execute_goal(text, envelope.session_id, conversation_history)
             execution.checkpoint()
-            print("[DEBUG] Executor.execute_goal returned:", response_text)
+            print(f"[Turn] executor response received: {len(response_text)} characters")
 
             if existing_task_id:
                 task = self.executor.dialogue_state.get_task(
@@ -880,11 +961,12 @@ class JarvisApp:
                 getattr(outcome, "status", "completed") if 'outcome' in locals() else "completed",
             ))
         except ToolCancelledError:
+            self.signals.ai_response_ready.emit(TurnResult(envelope, "", "cancelled"))
             return
         except Exception as e:
-            print(f"[Executor] 오류: {e}")
+            print(f"[Executor] 오류: {type(e).__name__}")
             import traceback
-            traceback.print_exc()
+            traceback.print_tb(e.__traceback__)
             if isinstance(e, ModelCallError):
                 error_response = e.user_message()
                 error_code = e.code
@@ -1052,24 +1134,30 @@ class JarvisApp:
         if active_turn_id and turn.turn_id != active_turn_id:
             print(f"[Turn] superseded response ignored: {turn.turn_id}")
             return
-        if (turn.execution is not None and turn.execution.cancelled) or (
-            active_turn_id and turn.session_id != self.session_id
-        ):
+        if active_turn_id and turn.session_id != self.session_id:
+            return
+        if turn_status == "cancelled" or (turn.execution is not None and turn.execution.cancelled):
+            if not active_turn_id:
+                return
+            self._is_processing_ai = False
+            self._computer_use_active = False
+            self._computer_use_progress_text = ""
+            self.window.show_assistant_text("요청이 취소되어 후속 실행을 중단했습니다.")
+            self._reset_all()
             return
         if hasattr(self.window, "set_assistant_identity"):
             self.window.set_assistant_identity(get_assistant_settings().assistant_name)
         channels = present_channels(response_text, turn.user_text)
-        print("[DEBUG] _on_ai_response technical result:", channels.technical_text)
+        print(f"[Response] technical output: {len(channels.technical_text)} characters")
         response_text = channels.screen_text
         response_text = self._personalize_address(response_text)
         response_text = light_polish_korean(response_text)
-        print("[DEBUG] User-facing response:", response_text)
+        print(f"[Response] screen output: {len(response_text)} characters")
         # Screen output is source data. Never strip code/quotes/operators in an
         # emoji filter; speech-specific cleanup belongs to the TTS channel.
         
         # 마지막 응답 저장
         self.last_response = response_text
-        print(f"[DEBUG] self.last_response 설정됨: {self.last_response}")
         
         print("[DEBUG] Calling window.show_assistant_text")
         self.window.show_assistant_text(response_text)
@@ -1090,14 +1178,14 @@ class JarvisApp:
             self.messages.append({"role": "assistant", "content": clean_text})
             self.mode_manager.activate_game_mode()
             self.last_response = clean_text
-            print(f"[DEBUG] [GAME] 모드, self.last_response 업데이트: {self.last_response}")
+            print("[Mode] GAME activated")
         elif response_text.startswith("[WORK]"):
             clean_text = response_text[6:].strip()
             self.window.show_assistant_text(clean_text)
             self.messages.append({"role": "assistant", "content": clean_text})
             self.mode_manager.activate_work_mode()
             self.last_response = clean_text
-            print(f"[DEBUG] [WORK] 모드, self.last_response 업데이트: {self.last_response}")
+            print("[Mode] WORK activated")
         else:
             self.messages.append({"role": "assistant", "content": response_text})
         
@@ -1121,7 +1209,7 @@ class JarvisApp:
             )
         
         # 자동으로 음성 응답 (RESPONDING 상태로)
-        print(f"[DEBUG] TTS 스레드 시작 전, self.last_response: {self.last_response}")
+        print("[TTS] Preparing response playback")
         self.state_machine.start_responding()  # RESPONDING 상태로 변경
         spoken_text = self._personalize_address(
             getattr(channels, "speech_text", self.last_response)
@@ -1150,6 +1238,8 @@ class JarvisApp:
 
     def _cancel_pending_work(self):
         """Ask the active executor turn to stop and discard superseded queued turns."""
+        self._computer_use_active = False
+        self._computer_use_progress_text = ""
         context = getattr(self, "_active_turn_context", None)
         if context is not None:
             context.cancel()
@@ -1360,21 +1450,21 @@ class JarvisApp:
             return
         if speech_generation is None:
             speech_generation = getattr(self, "_speech_generation", 0)
-        print(f"[DEBUG] _speak_with_check 호출됨: {text}")
+        print(f"[TTS] Playback requested: {len(text)} characters")
         hardware = getattr(self, "hardware_manager", None)
         if hardware is not None:
             hardware.set_output_active(True)
         try:
             print(f"[DEBUG] tool_executor.speak_text 호출 전")
             result = self.tool_executor.speak_text(text, self.audio_processor)
-            print(f"[DEBUG] tool_executor.speak_text 반환값: {result}")
+            print(f"[TTS] Speaker result: {len(result)} characters")
             if result.lstrip().startswith("TTS 오류:"):
-                print(f"[TTS] 오류: {result}")
+                print("[TTS] Speaker reported an error")
                 print("[TTS] pyttsx3를 설치하세요: pip install pyttsx3")
         except Exception as e:
-            print(f"[TTS] 오류: {e}")
+            print(f"[TTS] 오류: {type(e).__name__}")
             import traceback
-            traceback.print_exc()
+            traceback.print_tb(e.__traceback__)
             print("[TTS] pyttsx3를 설치하세요: pip install pyttsx3")
         finally:
             if hardware is not None:
@@ -1494,7 +1584,7 @@ class JarvisApp:
                    "event": threading.Event(), "cancelled": threading.Event(), "result": False}
         self.signals.permission_action_request.emit(request)
         try:
-            for _ in range(300):  # 30 seconds, while allowing turn cancellation.
+            for _ in range(1200):  # 120 seconds, while allowing turn cancellation.
                 check_turn_cancelled()
                 if request["event"].wait(0.1):
                     return request["result"] is True
@@ -1646,6 +1736,7 @@ class JarvisApp:
         if getattr(self, "_runtime_shutdown_started", False):
             return
         self._runtime_shutdown_started = True
+        self._shutdown_computer_use_controls()
         self._shutdown_errors = []
         engine = getattr(self, "automation_engine", None)
         if engine is not None:
