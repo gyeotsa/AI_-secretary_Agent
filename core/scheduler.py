@@ -82,6 +82,10 @@ class AutomationEngine:
             if job_id in self._running_jobs:
                 print(f"[Automation] 중복 실행 억제: {job_id}")
                 return
+            if action_type == "alarm":
+                record = self.get_job_record(job_id)
+                if not record or not record["enabled"]:
+                    return
             self._running_jobs.add(job_id)
         print(f"[Automation] 작업 실행 중: {description} (ID: {job_id})")
         result_text = ""
@@ -117,9 +121,11 @@ class AutomationEngine:
             
         finally:
             # 결과 저장
-            self._save_job_result(job_id, result_text, error_text, action_type, description)
-            with self._job_lock:
-                self._running_jobs.discard(job_id)
+            try:
+                self._save_job_result(job_id, result_text, error_text, action_type, description)
+            finally:
+                with self._job_lock:
+                    self._running_jobs.discard(job_id)
             
     def _save_job_result(self, job_id: int, result: str, error: str,
                          action_type: str = "llm", description: str = ""):
@@ -143,6 +149,8 @@ class AutomationEngine:
         
         conn.commit()
         conn.close()
+        if action_type == "alarm":
+            self.scheduled_jobs = [job for job in self.scheduled_jobs if job["id"] != job_id]
         
         # 메모리에 결과 저장
         self.job_results[job_id] = {
@@ -167,7 +175,15 @@ class AutomationEngine:
                       schedule_value: str, prompt: str, action_type: str = "llm"):
         """스케줄 작업 등록"""
         def job():
-            self._execute_job(job_id, prompt, description, action_type)
+            if action_type == "alarm":
+                self._execute_job(job_id, prompt, description, action_type)
+            else:
+                # 모델 응답을 기다리는 동안에도 알람 시간을 확인해야 한다.
+                threading.Thread(
+                    target=self._execute_job,
+                    args=(job_id, prompt, description, action_type),
+                    daemon=True,
+                ).start()
             if schedule_type == "once_at":
                 return schedule.CancelJob
             
@@ -233,21 +249,18 @@ class AutomationEngine:
 
     def add_alarm(self, delay_seconds: int, message: str = "알람 시간입니다.") -> str:
         """한 번만 실행되는 상대 시간 알람을 등록하고 엔진을 보장해 시작한다."""
-        try:
-            delay_seconds = int(delay_seconds)
-            if delay_seconds <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return "알람 등록 오류: 알람 시간은 1초 이상이어야 합니다."
+        if isinstance(delay_seconds, bool) or not isinstance(delay_seconds, int) or delay_seconds <= 0:
+            return "알람 등록 오류: 알람 시간은 1초 이상의 정수여야 합니다."
         if not SCHEDULE_AVAILABLE:
             return "오류: schedule 라이브러리가 설치되지 않았습니다."
         if not self.running:
             started = self.start()
-            if started.startswith("오류:"):
-                return started
-        target = datetime.now().astimezone() + timedelta(seconds=delay_seconds)
-        description = f"{delay_seconds}초 뒤 알람"
+            if not self.running:
+                return f"알람 등록 오류: {started}"
+        job_id = None
         try:
+            target = datetime.now().astimezone() + timedelta(seconds=delay_seconds)
+            description = f"{delay_seconds}초 뒤 알람"
             with sqlite3.connect(self.scheduler_db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -264,6 +277,11 @@ class AutomationEngine:
                 "fire_at": target.isoformat(), "message": message,
             }, ensure_ascii=False)
         except Exception as exc:
+            if job_id is not None:
+                self.scheduler.clear(job_id)
+                self.scheduled_jobs = [job for job in self.scheduled_jobs if job["id"] != job_id]
+                with sqlite3.connect(self.scheduler_db_path) as conn:
+                    conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
             return f"알람 등록 오류: {exc}"
             
     def _load_jobs_from_db(self):
@@ -281,9 +299,12 @@ class AutomationEngine:
             conn.close()
             
             for row in rows:
-                self._schedule_job(row[0], row[1], row[2], row[3], row[4], row[5])
-            self._restored_jobs = len(rows)
-            self._write_state("last_restore", json.dumps({"count": len(rows), "at": datetime.now().astimezone().isoformat()}))
+                try:
+                    self._schedule_job(row[0], row[1], row[2], row[3], row[4], row[5])
+                except (TypeError, ValueError, OverflowError) as exc:
+                    print(f"[Automation] 작업 ID {row[0]} 복원 오류: {exc}")
+            self._restored_jobs = len(self.scheduled_jobs)
+            self._write_state("last_restore", json.dumps({"count": self._restored_jobs, "at": datetime.now().astimezone().isoformat()}))
                 
         except Exception as e:
             print(f"DB에서 작업 로드 오류: {e}")
@@ -408,12 +429,14 @@ class AutomationEngine:
             
             if enabled:
                 # 스케줄러에 다시 등록
+                self.scheduler.clear(job_id)
+                self.scheduled_jobs = [j for j in self.scheduled_jobs if j["id"] != job_id]
                 with sqlite3.connect(self.scheduler_db_path) as lookup_conn:
                     cursor = lookup_conn.cursor()
-                    cursor.execute("SELECT description, schedule_type, schedule_value, prompt FROM jobs WHERE id = ?", (job_id,))
+                    cursor.execute("SELECT description, schedule_type, schedule_value, prompt, action_type FROM jobs WHERE id = ?", (job_id,))
                     row = cursor.fetchone()
                 if row:
-                    self._schedule_job(job_id, row[0], row[1], row[2], row[3])
+                    self._schedule_job(job_id, row[0], row[1], row[2], row[3], row[4])
             else:
                 # 스케줄러에서 제거
                 self.scheduler.clear(job_id)
@@ -475,7 +498,7 @@ class AutomationEngine:
                         }))
                     except Exception as exc:
                         print(f"[Automation] scheduler tick 오류: {exc}")
-                    time.sleep(1)
+                    self.stop_event.wait(1)
                     
             self.scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
             self.scheduler_thread.start()

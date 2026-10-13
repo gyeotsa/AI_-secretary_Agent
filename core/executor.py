@@ -310,10 +310,12 @@ class Executor:
         """One local-only presentation boundary; it cannot alter execution state."""
         if outcome.response_generated:
             return outcome
+        results = outcome.tool_results or ((outcome.tool_result,) if outcome.tool_result else ())
+        if self._append_calendar_comment(outcome, results, session_id):
+            return outcome
         realizer = getattr(self, "response_realizer", None)
         if realizer is None:
             return outcome
-        results = outcome.tool_results or ((outcome.tool_result,) if outcome.tool_result else ())
         tool_name = results[0].tool_name if len(results) == 1 else ""
         state = getattr(self, "dialogue_state", None)
         task = state.get_task(session_id, outcome.task_id, self._workspace_scope()) if state and outcome.task_id else None
@@ -361,6 +363,41 @@ class Executor:
             state.update_task(task.task_id, result=outcome.response,
                               pending_question=outcome.question or None)
         return outcome
+
+    def _append_calendar_comment(self, outcome, results, session_id):
+        if outcome.status != "completed" or len(results) != 1 or not results[0].succeeded:
+            return False
+        result = results[0]
+        change, kind = {
+            "local_calendar_create_event": ("added", "local_calendar_event"),
+            "local_calendar_delete_event": ("deleted", "local_calendar_deleted_event"),
+        }.get(result.tool_name, (None, None))
+        evidence = next((item for item in result.evidence if item.kind == kind), None)
+        if change is None or evidence is None or not isinstance(evidence.data.get("event"), dict):
+            return False
+        fallback = "현재 모델의 AI 코멘트를 받지 못했습니다. 모델 연결 상태를 확인하고 다시 시도해주세요."
+        try:
+            service = getattr(self, "calendar_comment_service", None)
+            if service is None:
+                client = getattr(self, "llm", None)
+                if client is None:
+                    raise RuntimeError("메인 모델이 초기화되지 않았습니다.")
+                from core.calendar_comment import CalendarCommentService
+                service = CalendarCommentService(client)
+            plugin = self.intent_router.registry.plugins.get("local_calendar")
+            comment = service.comment(change, dict(evidence.data["event"]), store=getattr(plugin, "store", None))
+            text = str(comment.get("text") or fallback).strip()
+            if comment.get("facts"):
+                outcome.response += "\n\n" + str(comment["facts"])
+        except Exception:
+            # This read-only model phase must not undo or retry verified CRUD.
+            text = fallback
+        outcome.response += "\n\nAI 코멘트: " + text
+        outcome.response_generated = True
+        state = getattr(self, "dialogue_state", None)
+        if state and outcome.task_id:
+            state.update_task(outcome.task_id, result=outcome.response)
+        return True
 
     def _record_turn_quality(self, goal: str, outcome: ExecutionOutcome,
                              started_at: float,

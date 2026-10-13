@@ -52,6 +52,10 @@ class ResponseRealizer:
         # Grounded summaries already pair exact quotations with source IDs.
         "communication_read_summary",
         "cloud_search_evidence", "cloud_sync_documents",
+        # Keep the saved schedule's exact times and default duration visible immediately.
+        "local_calendar_create_event",
+        "local_calendar_delete_event",
+        "set_alarm",
     }
 
     def __init__(self, llm):

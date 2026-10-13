@@ -360,6 +360,7 @@ class SemanticRequestInterpreter:
     LITERAL_KEYS = {"recipient", "recipient_id", "message", "filename", "file_path", "path",
                     "url", "email", "body", "content", "channel", "channel_id", "account"}
     RUNTIME_ONLY_TOOLS = {"speak_text", "listen", "execute_multi_agent", "get_task_history"}
+    DETERMINISTIC_ONLY_TOOLS = {"local_calendar_delete_event"}
     SINGLE_PASS_CATALOG_CHARS = 10000
     DISCOVERY_MAX_TOOLS = 16
     DISCOVERY_MAX_CALLS = 16
@@ -540,6 +541,58 @@ class SemanticRequestInterpreter:
                    if allowed is None or i.tool_name in allowed]
         selected = next((i for _, i in intents if i.name == pending.get("intent_name")), None)
         prior_slots = dict(pending.get("slots") or {})
+        alarm = next(((p, i) for p, i in intents if i.name == "alarm.set_relative"), None)
+        if (alarm and not speech_scope.negated and not speech_scope.conditional
+                and not re.search(r"그리고|동시에|그다음|그\s*다음", speech_scope.routing_text)):
+            plugin, intent = alarm
+            is_new = plugin.is_registration_request(speech_scope.action_text)
+            continuation = (selected is not None and selected.name == intent.name
+                            and plugin.is_slot_reply(speech_scope.action_text, prior_slots))
+            if is_new or continuation:
+                from core.intent_router import IntentRouter
+
+                resolution = IntentRouter(self.registry).resolve(
+                    speech_scope.action_text, intent.name, {} if is_new else prior_slots,
+                )
+                return SemanticDecision(
+                    raw_text, "new" if is_new else "continue", "change",
+                    intent.name, (intent.tool_name,), resolution.slots, 1.0,
+                    needs_clarification=bool(resolution.question),
+                    clarification_question=resolution.question, grounded=True,
+                    source="alarm_contract",
+                )
+        calendars = [(p, i) for p, i in intents
+                     if i.name in {"local_calendar.create_event", "local_calendar.delete_event"}]
+        if (not speech_scope.negated and not speech_scope.conditional
+                and not re.search(r"그리고|동시에|그다음|그\s*다음", speech_scope.routing_text)):
+            for plugin, intent in calendars:
+                is_new = (plugin.is_registration_request(speech_scope.action_text)
+                          if intent.name == "local_calendar.create_event"
+                          else plugin.is_deletion_request(speech_scope.action_text))
+                continuation = (selected is not None and selected.name == intent.name
+                                and plugin.is_slot_reply(speech_scope.action_text, prior_slots))
+                if not is_new and not continuation:
+                    continue
+                from core.intent_router import IntentRouter
+
+                resolution = IntentRouter(self.registry).resolve(
+                    speech_scope.action_text, intent.name,
+                    {} if is_new else prior_slots,
+                )
+                if intent.name == "local_calendar.delete_event" and not resolution.question:
+                    resolution.question = plugin.deletion_question(resolution.slots)
+                # Dates and deletion targets come from explicit input and the DB.
+                return SemanticDecision(
+                    raw_text, "new" if is_new else "continue", "change",
+                    intent.name, (intent.tool_name,), resolution.slots, 1.0,
+                    needs_clarification=bool(resolution.question),
+                    clarification_question=resolution.question, grounded=True,
+                    source="local_calendar_contract",
+                )
+        # Destructive local calendar targeting uses the bounded parser above.
+        # A semantic model must never choose an ID or invent a selector date.
+        allowed.difference_update(self.DETERMINISTIC_ONLY_TOOLS)
+        intents = [(p, i) for p, i in intents if i.tool_name in allowed]
         reply = literal_reply(raw_text)
         if selected and selected.name == "messaging.send" and reply is not None:
             if prior_slots.get("recipient") and not prior_slots.get("message"):

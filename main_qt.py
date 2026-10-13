@@ -13,8 +13,9 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
+from datetime import datetime
 from PyQt6.QtWidgets import QApplication, QDialog
-from PyQt6.QtCore import QTimer, QObject, pyqtSignal
+from PyQt6.QtCore import QDate, QTimer, QObject, pyqtSignal
 from PyQt6.QtGui import QIcon
 from config import Config, request_windows_permissions
 from core.state_machine import StateMachine, State
@@ -36,6 +37,8 @@ from core.semantic_request import select_conversation_history
 from core.plugin import ToolCancelledError
 from core.mail_brief import MailBriefError, get_mail_brief_service
 from core.scheduler import get_automation_engine
+from core.local_calendar import CALENDAR_TIMEZONE, LocalCalendarStore
+from core.calendar_comment import CalendarCommentService
 from core.proactive import ProactiveNotificationPolicy
 from core.continuity import ContinuityService, is_continuity_query
 from core.response_presenter import present_channels
@@ -58,6 +61,7 @@ from core.gesture_runtime import (
 from core.interface_control import get_interface_control_bridge
 from core.observer import get_observer_layer
 from ui.command_center import FirstRunWizard
+from ui.calendar_notification import CalendarNotificationManager
 
 
 def strip_leading_wake_word(text: str, wake_word: str) -> str:
@@ -177,6 +181,7 @@ class AppSignals(QObject):
     permission_response = pyqtSignal(bool)
     progress_update = pyqtSignal(object)
     proactive_message = pyqtSignal(object)
+    automation_result = pyqtSignal(object)
     mail_brief_ready = pyqtSignal(object)
     mail_brief_progress = pyqtSignal(object)
     control_response_ready = pyqtSignal(object)
@@ -361,7 +366,8 @@ class JarvisApp:
         self.signals.voice_text_detected.connect(self._on_user_input)
         self.signals.microphone_status.connect(self._on_microphone_status)
         self.signals.tts_finished.connect(self._reset_all)
-        self.automation_engine.set_result_callback(self._on_automation_result)
+        self.signals.automation_result.connect(self._on_automation_result)
+        self.automation_engine.set_result_callback(self.signals.automation_result.emit)
         print(f"[Automation] 시작 상태: {self.automation_engine.start()}")
         self.proactive_policy = ProactiveNotificationPolicy(self.notify_user)
         self.proactive_policy.start()
@@ -402,6 +408,16 @@ class JarvisApp:
         self.memory_maintenance_timer = QTimer()
         self.memory_maintenance_timer.timeout.connect(self._run_idle_memory_maintenance)
         self.memory_maintenance_timer.start(60000)
+
+        self.calendar_reminder_store = None
+        self.calendar_notifications = CalendarNotificationManager(self.window, self._open_reminder_calendar)
+        self.window.set_calendar_comment_service(CalendarCommentService(self.llm))
+        self.window.calendar_schedule_changed.connect(self._on_calendar_schedule_changed)
+        self.calendar_reminder_timer = QTimer(self.window)
+        self.calendar_reminder_timer.timeout.connect(self._check_calendar_reminders)
+        # shortcut: 앱 실행 중에만 알림, 앱 종료 후 알림이 필요하면 OS 백그라운드 서비스로 전환.
+        self.calendar_reminder_timer.start(5000)
+        QTimer.singleShot(0, self._check_calendar_reminders)
         
         self._init_ui()
         QTimer.singleShot(1500, self._start_startup_mail_brief)
@@ -414,6 +430,44 @@ class JarvisApp:
             QTimer.singleShot(700, self._show_first_run_wizard)
         else:
             self._schedule_gesture_autostart()
+
+    def _check_calendar_reminders(self):
+        if self._runtime_shutdown_started:
+            return
+        try:
+            if self.calendar_reminder_store is None:
+                self.calendar_reminder_store = LocalCalendarStore()
+            card = self.calendar_notifications.notification
+            if (card.isVisible() and card.current_event
+                    and card.current_event.get("action_type") != "alarm"
+                    and self.calendar_reminder_store.get_event(card.current_event["id"]) is None):
+                self.calendar_notifications.discard_event(card.current_event["id"])
+            if self.calendar_notifications.is_busy:
+                return
+            for event in self.calendar_reminder_store.take_due_reminders(datetime.now(CALENDAR_TIMEZONE)):
+                self.calendar_notifications.enqueue(event)
+            self._calendar_reminder_error = False
+        except Exception as exc:
+            if not getattr(self, "_calendar_reminder_error", False):
+                print(f"[Calendar] 일정 알림 확인 실패: {type(exc).__name__}")
+            self._calendar_reminder_error = True
+
+    def _on_calendar_schedule_changed(self, change):
+        if change["change"] == "deleted":
+            self.calendar_notifications.discard_event(change["event"]["id"])
+
+    def _open_reminder_calendar(self, event):
+        if self.window.isMinimized():
+            self.window.showNormal()
+        else:
+            self.window.show()
+        self.window.show_local_calendar()
+        if self.window.calendar_dialog is None:
+            raise RuntimeError("캘린더 저장소를 열 수 없습니다.")
+        start = datetime.fromtimestamp(event["start_at"], CALENDAR_TIMEZONE)
+        self.window.calendar_dialog.calendar.setSelectedDate(QDate(start.year, start.month, start.day))
+        self.window.raise_()
+        self.window.activateWindow()
 
     def _command_center_context(self):
         return {
@@ -943,10 +997,14 @@ class JarvisApp:
             threading.Thread(target=render, daemon=True).start()
 
     def _on_automation_result(self, event):
+        if self._runtime_shutdown_started:
+            return
         if event.get("error"):
             message = f"보스, 예약 작업 실행 중 문제가 생겼습니다: {event['error']}"
         elif event.get("action_type") == "alarm":
-            message = f"보스, {event.get('result') or '알람 시간입니다.'}"
+            # A due alarm must not wait for model inference or a spoken response.
+            self.calendar_notifications.enqueue_alarm(event)
+            return
         else:
             message = f"보스, 예약 작업을 완료했습니다. {event.get('result', '')}"
         self.notify_user(message, status="failed" if event.get("error") else "completed")
@@ -1015,6 +1073,9 @@ class JarvisApp:
         
         print("[DEBUG] Calling window.show_assistant_text")
         self.window.show_assistant_text(response_text)
+        calendar = getattr(self.window, "calendar_dialog", None)
+        if calendar is not None:
+            calendar.refresh()
         if hasattr(self.window, "show_specialist_result"):
             self.window.show_specialist_result(response_text, turn.specialist_key)
         workspace_manager = getattr(self, "workspace_manager", None)
@@ -1586,13 +1647,21 @@ class JarvisApp:
             return
         self._runtime_shutdown_started = True
         self._shutdown_errors = []
+        engine = getattr(self, "automation_engine", None)
+        if engine is not None:
+            engine.set_result_callback(None)
         context = getattr(self, "_mail_startup_context", None)
         if context is not None:
             context.cancel()
             self.mail_brief.cancel_startup()
+        from ui.calendar_dialog import shutdown_calendar_comments
+        shutdown_calendar_comments()
         from core.auxiliary_models import shutdown as shutdown_auxiliary_models
         shutdown_auxiliary_models()
         cleanup = (
+            ("calendar_reminder_timer", "stop"),
+            ("calendar_notifications", "shutdown"),
+            ("automation_engine", "stop"),
             ("continuity_service", "stop"),
             ("hardware_manager", "shutdown"),
             ("gesture_runtime", "stop"),

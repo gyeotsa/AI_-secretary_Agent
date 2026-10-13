@@ -996,6 +996,7 @@ class JarvisMainWindow(QWidget):
     gesture_camera_requested = pyqtSignal(bool)
     gesture_settings_requested = pyqtSignal(object)
     voice_output_toggled = pyqtSignal(bool)
+    calendar_schedule_changed = pyqtSignal(object)
     
     def __init__(self, audio_processor=None):
         super().__init__()
@@ -1016,6 +1017,8 @@ class JarvisMainWindow(QWidget):
         self.plugin_registry = None
         self.plugin_hub = None
         self.mail_inbox_dialog = None
+        self.calendar_dialog = None
+        self.calendar_comment_service = None
         self.command_center_runtime = None
         self.command_center_services = {}
         self.command_center_dialog = None
@@ -1139,6 +1142,14 @@ class JarvisMainWindow(QWidget):
         self.mail_btn.setToolTip("Gmail · 네이버 메일 조회")
         self.mail_btn.clicked.connect(self.show_mail_inbox)
         tab_layout.addWidget(self.mail_btn)
+
+        self.calendar_btn = QPushButton("달력")
+        self.calendar_btn.setObjectName("toolbarButton")
+        set_widget_style(self.calendar_btn, button_style)
+        self.calendar_btn.setFixedSize(42, 35)
+        self.calendar_btn.setToolTip("아니스 내부 캘린더")
+        self.calendar_btn.clicked.connect(self.show_local_calendar)
+        tab_layout.addWidget(self.calendar_btn)
 
         self.specialist_btn = QPushButton("S")
         self.specialist_btn.setObjectName("toolbarButton")
@@ -2015,6 +2026,28 @@ class JarvisMainWindow(QWidget):
         open_tab(self, self.command_center_dialog, "Command Center", "command_center")
         return self.command_center_dialog
 
+    def set_calendar_comment_service(self, service):
+        self.calendar_comment_service = service
+        if self.calendar_dialog is not None:
+            self.calendar_dialog.comment_service = service
+
+    def show_local_calendar(self):
+        if self.calendar_dialog is None:
+            import sqlite3
+            from core.local_calendar import LocalCalendarStore
+            from .calendar_dialog import CalendarDialog
+            try:
+                self.calendar_dialog = CalendarDialog(
+                    LocalCalendarStore(), parent=self,
+                    comment_service=self.calendar_comment_service,
+                )
+                self.calendar_dialog.schedule_changed.connect(self.calendar_schedule_changed.emit)
+            except (OSError, sqlite3.Error) as exc:
+                QMessageBox.warning(self, "내 캘린더", f"캘린더 저장소를 열 수 없습니다.\n{exc}")
+                return None
+        self.calendar_dialog.refresh()
+        return open_tab(self, self.calendar_dialog, "내 캘린더", "calendar")
+
     def open_interface_surface(self, key: str):
         """Open only surfaces that are backed by a real window or dialog."""
         surface = str(key or "").casefold()
@@ -2029,6 +2062,7 @@ class JarvisMainWindow(QWidget):
             "sessions": self.show_session_manager,
             "plugins": self.show_plugin_diagnostics,
             "mail": self.show_mail_inbox,
+            "calendar": self.show_local_calendar,
             "voice": self.show_tts_voice_settings,
             "specialists": self.show_specialist_hub,
             "gesture": self.show_gesture_settings,

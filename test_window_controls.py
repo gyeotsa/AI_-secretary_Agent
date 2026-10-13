@@ -25,6 +25,59 @@ def test_main_window_is_taskbar_window_not_tool(app):
     window.close()
 
 
+def test_calendar_sidebar_opens_one_tab_and_preserves_date_on_reopen(app, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QDate
+    from PyQt6.QtWidgets import QCalendarWidget
+    from config import Config
+    from ui.codex_shell import close_tab
+
+    monkeypatch.setattr(Config.API_CONFIG, "DB_PATH", str(tmp_path / "assistant.db"))
+    window = JarvisMainWindow()
+    try:
+        window.calendar_btn.click()
+        page = window.calendar_dialog
+        assert page.store.db_path == tmp_path / "calendar.db"
+        assert window.workspace_tabs.currentWidget() is page
+        assert window.workspace_tabs.count() == 2
+        calendar = page.findChild(QCalendarWidget)
+        calendar.setSelectedDate(QDate(2026, 10, 25))
+        window.open_interface_surface("calendar")
+        assert window.workspace_tabs.count() == 2
+
+        close_tab(window, window.workspace_tabs.indexOf(page))
+        assert window.workspace_tabs.count() == 1
+        window.calendar_btn.click()
+        assert window.workspace_tabs.currentWidget() is page
+        assert calendar.selectedDate() == QDate(2026, 10, 25)
+    finally:
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
+def test_calendar_store_failure_does_not_open_a_tab(app, monkeypatch):
+    import sqlite3
+    from PyQt6.QtWidgets import QMessageBox
+    from core.local_calendar import LocalCalendarStore
+
+    def fail(_self, *args, **kwargs):
+        raise sqlite3.DatabaseError("database is unavailable")
+
+    warnings = []
+    monkeypatch.setattr(LocalCalendarStore, "__init__", fail)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+    window = JarvisMainWindow()
+    try:
+        assert window.show_local_calendar() is None
+        assert window.calendar_dialog is None
+        assert window.workspace_tabs.count() == 1
+        assert "저장소를 열 수 없습니다" in warnings[0]
+    finally:
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
 def test_both_minimize_buttons_use_standard_minimize(app):
     window = JarvisMainWindow()
     assert window.minimize_btn.receivers(window.minimize_btn.clicked) > 0

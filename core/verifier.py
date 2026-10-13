@@ -4,7 +4,7 @@ import json
 import os
 import re
 import zipfile
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -42,6 +42,8 @@ class ToolVerifier:
             "add_document": self._verify_add_document,
             "run_command": self._verify_run_command,
             "calendar_create_event": self._verify_calendar_create_event,
+            "local_calendar_create_event": self._verify_local_calendar_create_event,
+            "local_calendar_delete_event": self._verify_local_calendar_delete_event,
             "naver_calendar_read_view": self._verify_naver_calendar_view,
             "excel_create_workbook": self._verify_create_excel_file,
             "excel_write_cells": self._verify_write_excel_cells,
@@ -77,6 +79,129 @@ class ToolVerifier:
             return VerificationResult(False, "캘린더 조회 본문과 실행 증거가 일치하지 않습니다.")
         return VerificationResult(True, "현재 캘린더 표시 화면만 읽었음을 확인했습니다. 전체 일정 동기화는 아닙니다.",
                                   {"scope":"visible_view", "complete_account":False})
+
+    def _verify_local_calendar_create_event(self, tool_input, result):
+        from jsonschema import Draft202012Validator
+        from config import Config
+        from core.local_calendar import CALENDAR_TIMEZONE, LocalCalendarStore
+        import sqlite3
+
+        schema = {
+            "type": "object", "required": ["title", "start"], "additionalProperties": False,
+            "properties": {
+                "title": {"type": "string", "minLength": 1},
+                "start": {"type": "string", "minLength": 1},
+                "end": {"type": "string", "minLength": 1},
+                "all_day": {"type": "boolean"},
+                "location": {"type": "string"}, "description": {"type": "string"},
+                "reminder_minutes": {"type": ["integer", "null"], "minimum": 0, "maximum": 10080},
+            },
+        }
+        try:
+            if not Draft202012Validator(schema).is_valid(tool_input) or not tool_input["title"].strip():
+                return VerificationResult(False, "내부 캘린더 요청 입력이 유효하지 않습니다.")
+            all_day = tool_input.get("all_day", False)
+            reminder = tool_input.get("reminder_minutes", 60)
+            if reminder is not None and type(reminder) is not int:
+                return VerificationResult(False, "내부 캘린더 알림 시간이 유효하지 않습니다.")
+            if not all_day and any(
+                not re.search(r"[Tt ]\d{2}", tool_input[key])
+                for key in ("start", "end") if key in tool_input
+            ):
+                return VerificationResult(False, "시간 일정에는 시작과 종료 시각이 필요합니다.")
+            start = datetime.fromisoformat(tool_input["start"].replace("Z", "+00:00"))
+            start = start.replace(tzinfo=CALENDAR_TIMEZONE) if start.utcoffset() is None else start.astimezone(CALENDAR_TIMEZONE)
+            if "end" in tool_input:
+                end = datetime.fromisoformat(tool_input["end"].replace("Z", "+00:00"))
+                end = end.replace(tzinfo=CALENDAR_TIMEZONE) if end.utcoffset() is None else end.astimezone(CALENDAR_TIMEZONE)
+            else:
+                end = start + timedelta(days=1) if all_day else start + timedelta(hours=1)
+            start_at = int(start.replace(microsecond=0).timestamp())
+            end_at = int(end.replace(microsecond=0).timestamp())
+            if end_at <= start_at or (all_day and (start.time() != time.min or end.time() != time.min)):
+                return VerificationResult(False, "내부 캘린더 요청 시간 범위가 유효하지 않습니다.")
+            evidence = self._evidence_data(result, "local_calendar_event")
+            claimed = evidence.get("event")
+            expected_path = Path(Config.DB_PATH).with_name("calendar.db").expanduser().resolve()
+            claimed_path = evidence.get("db_path")
+            if (not isinstance(claimed_path, str) or Path(claimed_path).expanduser().resolve() != expected_path):
+                return VerificationResult(False, "내부 캘린더 저장소 경로가 일치하지 않습니다.")
+            if not expected_path.is_file():
+                return VerificationResult(False, "내부 캘린더 저장소가 없습니다.")
+            if not isinstance(claimed, dict) or not isinstance(claimed.get("id"), str) or not claimed["id"]:
+                return VerificationResult(False, "내부 캘린더 일정 증거가 유효하지 않습니다.")
+            saved = LocalCalendarStore().get_event(claimed["id"])
+            if saved is None:
+                return VerificationResult(False, "저장된 내부 캘린더 일정을 찾지 못했습니다.")
+            expected = {
+                "id": claimed["id"], "title": tool_input["title"].strip(),
+                "start_at": start_at, "end_at": end_at, "all_day": int(all_day),
+                "location": tool_input.get("location", ""), "description": tool_input.get("description", ""),
+                "reminder_minutes": reminder,
+            }
+            if (saved != expected or claimed != saved
+                    or any(type(claimed[key]) is not type(saved[key]) for key in saved)):
+                return VerificationResult(False, "요청한 일정과 저장 결과 또는 실행 증거가 다릅니다.")
+            return VerificationResult(True, "내부 캘린더 일정을 다시 조회해 요청과 저장 결과를 확인했습니다.",
+                                      {"event_id": saved["id"], "method": "local_calendar_readback"})
+        except (KeyError, TypeError, ValueError, OverflowError, OSError, sqlite3.Error):
+            return VerificationResult(False, "내부 캘린더 저장 결과를 검증하지 못했습니다.")
+
+    def _verify_local_calendar_delete_event(self, tool_input, result):
+        from jsonschema import Draft202012Validator
+        from config import Config
+        from core.local_calendar import CALENDAR_TIMEZONE, LocalCalendarStore
+        import sqlite3
+
+        schema = {
+            "type": "object", "required": ["title", "date"], "additionalProperties": False,
+            "properties": {
+                "title": {"type": "string", "minLength": 1},
+                "date": {"type": "string", "pattern": r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+                "time": {"type": "string", "pattern": r"^([01][0-9]|2[0-3]):[0-5][0-9]$"},
+            },
+        }
+        try:
+            if not Draft202012Validator(schema).is_valid(tool_input) or not tool_input["title"].strip():
+                return VerificationResult(False, "내부 캘린더 삭제 요청이 유효하지 않습니다.")
+            selected_date = datetime.strptime(tool_input["date"], "%Y-%m-%d").date()
+            evidence = self._evidence_data(result, "local_calendar_deleted_event")
+            expected_path = Path(Config.DB_PATH).with_name("calendar.db").expanduser().resolve()
+            claimed_path = evidence.get("db_path")
+            if not isinstance(claimed_path, str) or Path(claimed_path).expanduser().resolve() != expected_path:
+                return VerificationResult(False, "내부 캘린더 저장소 경로가 일치하지 않습니다.")
+            if not expected_path.is_file():
+                return VerificationResult(False, "내부 캘린더 저장소가 없습니다.")
+            event = evidence.get("event")
+            fields = {"id", "title", "start_at", "end_at", "all_day", "location", "description", "reminder_minutes"}
+            if (not isinstance(event, dict) or set(event) != fields
+                    or any(not isinstance(event[key], str) for key in ("id", "title", "location", "description"))
+                    or not event["id"].strip() or not event["title"].strip()
+                    or any(type(event[key]) is not int for key in ("start_at", "end_at", "all_day"))
+                    or event["end_at"] <= event["start_at"] or event["all_day"] not in (0, 1)
+                    or (event["reminder_minutes"] is not None and
+                        (type(event["reminder_minutes"]) is not int or not 0 <= event["reminder_minutes"] <= 10080))):
+                return VerificationResult(False, "삭제된 내부 캘린더 일정 증거가 유효하지 않습니다.")
+            start = datetime.fromtimestamp(event["start_at"], CALENDAR_TIMEZONE)
+            end = datetime.fromtimestamp(event["end_at"], CALENDAR_TIMEZONE)
+            if event["all_day"] and (start.time() != time.min or end.time() != time.min):
+                return VerificationResult(False, "삭제된 종일 일정의 시간 범위가 유효하지 않습니다.")
+            def matches(row):
+                row_start = datetime.fromtimestamp(row["start_at"], CALENDAR_TIMEZONE)
+                return (row["title"] == tool_input["title"].strip() and row_start.date() == selected_date
+                        and ("time" not in tool_input or row_start.strftime("%H:%M") == tool_input["time"]))
+            if not matches(event):
+                return VerificationResult(False, "삭제 요청과 실제 삭제한 일정이 다릅니다.")
+            store = LocalCalendarStore()
+            if store.get_event(event["id"]) is not None:
+                return VerificationResult(False, "삭제 요청한 내부 캘린더 일정이 아직 남아 있습니다.")
+            remaining = store.list_events(selected_date, selected_date + timedelta(days=1))
+            if any(matches(row) for row in remaining):
+                return VerificationResult(False, "삭제 요청과 일치하는 일정이 남아 있어 삭제 대상을 검증하지 못했습니다.")
+            return VerificationResult(True, "요청한 내부 캘린더 일정의 삭제를 다시 조회해 확인했습니다.",
+                                      {"event_id": event["id"], "method": "local_calendar_delete_readback"})
+        except (KeyError, TypeError, ValueError, OverflowError, OSError, sqlite3.Error):
+            return VerificationResult(False, "내부 캘린더 삭제 결과를 검증하지 못했습니다.")
 
     @staticmethod
     def _payload(result: Any) -> Dict[str, Any]:

@@ -456,7 +456,9 @@ def test_production_catalog_is_complete_without_tool_execution(tmp_path, monkeyp
     assert indexes
     assert all(set(prompt["group_descriptions"]) == set(prompt["available_tool_groups"])
                for prompt in indexes)
-    expected = {c.name for c in value.get_capabilities()} - SemanticRequestInterpreter.RUNTIME_ONLY_TOOLS
+    expected = ({c.name for c in value.get_capabilities()}
+                - SemanticRequestInterpreter.RUNTIME_ONLY_TOOLS
+                - SemanticRequestInterpreter.DETERMINISTIC_ONLY_TOOLS)
     expected_groups = {plugin.name: len([tool for tool in plugin.get_tools() if tool.name in expected])
                        for plugin in value.plugins.values()}
     expected_groups = {name: count for name, count in expected_groups.items() if count}
