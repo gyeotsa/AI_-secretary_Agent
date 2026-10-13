@@ -4,6 +4,7 @@ from __future__ import annotations
 import atexit
 from contextlib import contextmanager
 import copy
+from datetime import datetime
 import json
 import math
 import os
@@ -58,6 +59,70 @@ _APPROVAL_POLICY = {"granular": {
 _PASSIVE_ITEMS = {"userMessage", "agentMessage", "reasoning", "plan", "contextCompaction"}
 
 
+def _usage_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return value if math.isfinite(value) else None
+    except OverflowError:
+        return None
+
+
+def _quota_window(window):
+    if not isinstance(window, dict):
+        return None
+    used = _usage_number(window.get("usedPercent"))
+    used = min(100, max(0, used)) if used is not None else None
+    duration = _usage_number(window.get("windowDurationMins"))
+    reset = _usage_number(window.get("resetsAt"))
+    return {"used_percent": used, "remaining_percent": 100 - used if used is not None else None,
+            "window_duration_mins": duration if duration is not None and duration > 0 else None,
+            "resets_at": reset if reset is not None and reset >= 0 else None}
+
+
+def _rate_limit_buckets(payload):
+    from core.productization import SensitiveDataRedactor
+
+    multiple = payload.get("rateLimitsByLimitId")
+    legacy = payload.get("rateLimits")
+    if isinstance(multiple, dict) and multiple:
+        snapshots = list(multiple.items())
+    elif isinstance(legacy, dict):
+        snapshots = [(legacy.get("limitId") or "codex", legacy)]
+    elif isinstance(multiple, dict):
+        return []
+    else:
+        return None
+    result = []
+    for key, snapshot in snapshots:
+        if not isinstance(snapshot, dict):
+            continue
+        labels = {}
+        for field, value in (("limit_id", snapshot.get("limitId") or key),
+                             ("limit_name", snapshot.get("limitName"))):
+            labels[field] = (" ".join(SensitiveDataRedactor.redact(value).split())[:120]
+                             if isinstance(value, str) and value.strip() else None)
+        result.append({**labels, "primary": _quota_window(snapshot.get("primary")),
+                       "secondary": _quota_window(snapshot.get("secondary"))})
+    return result
+
+
+def _account_token_usage(payload):
+    from core.local_calendar import CALENDAR_TIMEZONE
+
+    summary = payload.get("summary")
+    lifetime = summary.get("lifetimeTokens") if isinstance(summary, dict) else None
+    lifetime = lifetime if type(lifetime) is int and lifetime >= 0 else None
+    today = datetime.now(CALENDAR_TIMEZONE).date().isoformat()
+    daily = payload.get("dailyUsageBuckets")
+    matches = ([bucket.get("tokens") for bucket in daily
+                if isinstance(bucket, dict) and bucket.get("startDate") == today]
+               if isinstance(daily, list) else [])
+    tokens = matches[0] if len(matches) == 1 else None
+    tokens = tokens if type(tokens) is int and tokens >= 0 else None
+    return {"lifetime_tokens": lifetime, "today_tokens": tokens}
+
+
 def _codex_command():
     """Use the native npm binary on Windows, without launching a command shell."""
     executable = shutil.which("codex.exe") or shutil.which("codex")
@@ -79,6 +144,7 @@ class CodexRuntime:
         self._settings = settings
         self._process_factory = process_factory or subprocess.Popen
         self._lock = threading.RLock()
+        self._lease_active = False
         self._shutdown_requested = threading.Event()
         self._process = None
         self._events = queue.Queue()
@@ -119,11 +185,13 @@ class CodexRuntime:
             if self._lock.acquire(timeout=0.05):
                 break
         try:
+            self._lease_active = True
             yield
         except BaseException:
             self._stop()
             raise
         finally:
+            self._lease_active = False
             self._lock.release()
 
     def _start(self, deadline, cancellation_check=None):
@@ -226,6 +294,9 @@ class CodexRuntime:
             event = self._event(deadline, cancellation_check)
             if event.get("id") == request_id:
                 if "error" in event:
+                    if (method in {"account/rateLimits/read", "account/usage/read"}
+                            and isinstance(event["error"], dict) and event["error"].get("code") == -32601):
+                        raise CodexRuntimeError("unsupported", "이 Codex 버전은 해당 사용량 조회를 지원하지 않습니다.")
                     raise CodexRuntimeError("protocol", "Codex 요청에 실패했습니다. 연결과 모델 접근 권한을 확인해 주세요.")
                 result = event.get("result")
                 if not isinstance(result, dict):
@@ -279,6 +350,56 @@ class CodexRuntime:
         deadline = time.monotonic() + 30
         with self._lease(deadline):
             return self._discover(deadline)
+
+    def usage(self, timeout=5):
+        """Read account counters without queuing behind or aborting inference."""
+        if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                or not math.isfinite(timeout) or timeout <= 0):
+            raise ValueError("timeout must be a positive finite number")
+        result = {"authenticated": self._authenticated, "rate_limits": None,
+                  "token_usage": {"lifetime_tokens": None, "today_tokens": None},
+                  "fetched_at": None, "error_code": ""}
+        if self._shutdown_requested.is_set():
+            return {**result, "error_code": "cancelled"}
+        if self._lease_active or not self._lock.acquire(blocking=False):
+            return {**result, "error_code": "busy"}
+        self._lease_active = True
+        deadline = time.monotonic() + timeout
+        try:
+            try:
+                self._start(deadline)
+            except BaseException:
+                # A failed new process has not passed the engine safety checks.
+                self._stop()
+                raise
+            self._account(deadline)
+            result["authenticated"] = self._authenticated
+            if not self._authenticated:
+                return {**result, "error_code": "authentication"}
+            for method, field, parse in (
+                ("account/rateLimits/read", "rate_limits", _rate_limit_buckets),
+                ("account/usage/read", "token_usage", _account_token_usage),
+            ):
+                try:
+                    result[field] = parse(self._rpc(method, {}, deadline))
+                except CodexRuntimeError as error:
+                    result["error_code"] = ("unsupported" if error.code == "unsupported"
+                                            else "timeout" if error.code == "timeout" else "unavailable")
+                    if error.code != "unsupported":
+                        break
+            result["fetched_at"] = time.time()
+        except CodexRuntimeError as error:
+            result["error_code"] = error.code if error.code in {"timeout", "authentication"} else "unavailable"
+        except InferenceDeadlineError:
+            result["error_code"] = "timeout"
+        except ToolCancelledError:
+            result["error_code"] = "cancelled"
+        except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+            result["error_code"] = "unavailable"
+        finally:
+            self._lease_active = False
+            self._lock.release()
+        return result
 
     def set_model(self, model):
         if self._models and model not in {entry["model"] for entry in self._models}:

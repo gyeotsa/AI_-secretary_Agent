@@ -68,7 +68,8 @@ class Input:
 
 class Process:
     def __init__(self, *, account="chatgpt", answer="Hello", failure=None,
-                 native=False, stalled=False, provider="openai", config_overrides=None):
+                 native=False, stalled=False, provider="openai", config_overrides=None,
+                 rpc_results=None, rpc_errors=None, stalled_methods=()):
         self.stdout = Output()
         self.stdin = Input(self)
         self.returncode = None
@@ -76,6 +77,9 @@ class Process:
         self.account, self.answer, self.failure = account, answer, failure
         self.native, self.stalled, self.provider = native, stalled, provider
         self.config_overrides = config_overrides or {}
+        self.rpc_results = rpc_results or {}
+        self.rpc_errors = rpc_errors or {}
+        self.stalled_methods = stalled_methods
         self.terminated = False
 
     def emit(self, payload):
@@ -85,6 +89,11 @@ class Process:
         self.calls.append(payload)
         method, request_id = payload.get("method"), payload.get("id")
         if request_id is None or not method:
+            return
+        if method in self.stalled_methods:
+            return
+        if method in self.rpc_errors:
+            self.emit({"id": request_id, "error": self.rpc_errors[method]})
             return
         params = payload.get("params", {})
         result = {}
@@ -117,7 +126,7 @@ class Process:
                        "status": "failed" if self.failure else "completed",
                        "error": self.failure},
                 }})
-        self.emit({"id": request_id, "result": result})
+        self.emit({"id": request_id, "result": self.rpc_results.get(method, result)})
 
     def poll(self):
         return self.returncode
@@ -173,6 +182,170 @@ def test_discovery_uses_returned_default_and_persists_only_model(runtime_factory
     assert runtime.settings.model == "gpt-a"
     assert invocation["stderr"] == subprocess.DEVNULL
     assert "forced_login_method" not in " ".join(invocation["command"])
+
+
+def test_usage_prefers_multiple_buckets_and_only_reads_account_counters(runtime_factory):
+    from datetime import datetime
+    from core.local_calendar import CALENDAR_TIMEZONE
+
+    today = datetime.now(CALENDAR_TIMEZONE).date().isoformat()
+    runtime, process, _ = runtime_factory(rpc_results={
+        "account/rateLimits/read": {
+            "rateLimits": {"limitId": "legacy", "primary": {"usedPercent": 90}},
+            "rateLimitsByLimitId": {
+                "codex": {"limitName": "Codex", "primary": {
+                    "usedPercent": 120, "windowDurationMins": 300, "resetsAt": 1234},
+                    "secondary": {"usedPercent": -5, "windowDurationMins": 10080}},
+                "codex_other": {"limitName": "Other", "primary": {"usedPercent": 0}},
+            }, "accountId": "private-account", "credits": {"secret": "private-credit"},
+        },
+        "account/usage/read": {"summary": {"lifetimeTokens": 0},
+                               "dailyUsageBuckets": [{"startDate": today, "tokens": 0}]},
+    })
+    result = runtime.usage()
+    assert result["authenticated"] is True
+    assert result["error_code"] == ""
+    assert [bucket["limit_id"] for bucket in result["rate_limits"]] == ["codex", "codex_other"]
+    assert result["rate_limits"][0]["primary"] == {
+        "used_percent": 100, "remaining_percent": 0, "window_duration_mins": 300, "resets_at": 1234}
+    assert result["rate_limits"][0]["secondary"]["remaining_percent"] == 100
+    assert result["token_usage"] == {"lifetime_tokens": 0, "today_tokens": 0}
+    assert isinstance(result["fetched_at"], float)
+    methods = [call.get("method") for call in process.calls]
+    assert methods == ["initialize", "initialized", "config/read", "account/read",
+                       "account/rateLimits/read", "account/usage/read"]
+    assert "private" not in json.dumps(result)
+    assert next(call for call in process.calls if call.get("method") == "account/read")["params"] == {"refreshToken": False}
+
+
+def test_usage_legacy_fallback_keeps_missing_windows_unknown(runtime_factory):
+    runtime, process, _ = runtime_factory(rpc_results={
+        "account/rateLimits/read": {"rateLimitsByLimitId": {}, "rateLimits": {
+            "limitId": "codex", "primary": None, "secondary": {"usedPercent": 0}}},
+        "account/usage/read": {"summary": None, "dailyUsageBuckets": None},
+    })
+    result = runtime.usage()
+    assert result["rate_limits"][0]["primary"] is None
+    assert result["rate_limits"][0]["secondary"]["used_percent"] == 0
+    assert result["rate_limits"][0]["secondary"]["resets_at"] is None
+    assert result["token_usage"] == {"lifetime_tokens": None, "today_tokens": None}
+
+
+def test_usage_rejects_malformed_numbers_and_redacts_labels(runtime_factory):
+    from datetime import datetime
+    from core.local_calendar import CALENDAR_TIMEZONE
+
+    today = datetime.now(CALENDAR_TIMEZONE).date().isoformat()
+    runtime, process, _ = runtime_factory(rpc_results={
+        "account/rateLimits/read": {"rateLimitsByLimitId": {
+            "codex": {"limitName": "password=private-secret user@example.com", "primary": {
+                "usedPercent": float("nan"), "windowDurationMins": True, "resetsAt": float("inf")},
+                "secondary": {"usedPercent": "40", "windowDurationMins": -1, "resetsAt": -1}},
+            "broken": "private-invalid-bucket",
+        }},
+        "account/usage/read": {"summary": {"lifetimeTokens": True},
+                               "dailyUsageBuckets": [{"startDate": today, "tokens": -1}]},
+    })
+    result = runtime.usage()
+    assert len(result["rate_limits"]) == 1
+    assert all(value is None for value in result["rate_limits"][0]["primary"].values())
+    assert all(value is None for value in result["rate_limits"][0]["secondary"].values())
+    assert result["token_usage"] == {"lifetime_tokens": None, "today_tokens": None}
+    encoded = json.dumps(result, allow_nan=False)
+    assert "private" not in encoded and "user@example.com" not in encoded
+
+
+@pytest.mark.parametrize("endpoint", ["account/rateLimits/read", "account/usage/read"])
+def test_usage_unsupported_endpoint_preserves_other_result(runtime_factory, endpoint):
+    runtime, process, _ = runtime_factory(
+        rpc_results={"account/rateLimits/read": {"rateLimits": {"limitId": "codex", "primary": {"usedPercent": 10}}},
+                     "account/usage/read": {"summary": {"lifetimeTokens": 100}, "dailyUsageBuckets": []}},
+        rpc_errors={endpoint: {"code": -32601, "message": "password=private-service-error"}},
+    )
+    result = runtime.usage()
+    assert result["error_code"] == "unsupported"
+    if endpoint == "account/usage/read":
+        assert result["rate_limits"][0]["primary"]["used_percent"] == 10
+        assert result["token_usage"] == {"lifetime_tokens": None, "today_tokens": None}
+    else:
+        assert result["rate_limits"] is None
+        assert result["token_usage"]["lifetime_tokens"] == 100
+    assert "private" not in json.dumps(result)
+    assert not process.terminated
+
+
+def test_usage_auth_change_cannot_reuse_previous_account_values(runtime_factory):
+    runtime, process, _ = runtime_factory(rpc_results={
+        "account/rateLimits/read": {"rateLimits": {"primary": {"usedPercent": 10}}},
+        "account/usage/read": {"summary": {"lifetimeTokens": 100}},
+    })
+    assert runtime.usage()["token_usage"]["lifetime_tokens"] == 100
+    process.account = "apiKey"
+    before = len(process.calls)
+    result = runtime.usage()
+    assert result["authenticated"] is False
+    assert result["error_code"] == "authentication"
+    assert result["rate_limits"] is None
+    assert result["token_usage"] == {"lifetime_tokens": None, "today_tokens": None}
+    assert [call["method"] for call in process.calls[before:]] == ["account/read"]
+
+
+def test_usage_busy_does_not_interrupt_or_consume_active_inference(runtime_factory):
+    import threading
+    import time
+
+    runtime, process, _ = runtime_factory(stalled=True)
+    answers = []
+    errors = []
+
+    def infer():
+        try:
+            answers.append(runtime.complete("system", [], timeout=3))
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=infer)
+    worker.start()
+    deadline = time.monotonic() + 2
+    while not any(call.get("method") == "turn/start" for call in process.calls) and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert any(call.get("method") == "turn/start" for call in process.calls)
+    before = len(process.calls)
+    started = time.monotonic()
+    result = runtime.usage(timeout=0.01)
+    assert time.monotonic() - started < 0.1
+    assert result["error_code"] == "busy"
+    assert len(process.calls) == before and not process.terminated
+    item = {"id": "answer", "type": "agentMessage", "phase": "final_answer", "text": "Hello"}
+    process.emit({"method": "turn/completed", "params": {"threadId": "thread", "turn": {
+        "id": "turn", "items": [item], "status": "completed"}}})
+    worker.join(timeout=2)
+    assert not worker.is_alive() and not errors and answers == [("Hello", "gpt-b")]
+    assert not process.terminated
+
+
+def test_usage_reentrant_call_is_busy(runtime_factory):
+    import time
+
+    runtime, process, _ = runtime_factory()
+    with runtime._lease(time.monotonic() + 1):
+        assert runtime.usage()["error_code"] == "busy"
+    assert not process.calls
+
+
+def test_usage_timeout_keeps_idle_engine_available_for_next_inference(runtime_factory):
+    runtime, process, _ = runtime_factory(stalled_methods={"account/rateLimits/read"})
+    result = runtime.usage(timeout=0.08)
+    assert result["error_code"] == "timeout"
+    assert not process.terminated
+    assert runtime.complete("system", [], timeout=2) == ("Hello", "gpt-b")
+
+
+def test_usage_after_shutdown_does_not_start_engine(runtime_factory):
+    runtime, process, _ = runtime_factory()
+    runtime.shutdown()
+    assert runtime.usage()["error_code"] == "cancelled"
+    assert not process.calls
 
 
 def test_api_credentials_removed_and_api_auth_cannot_infer(runtime_factory, monkeypatch):

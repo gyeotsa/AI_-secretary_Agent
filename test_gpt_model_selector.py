@@ -1,4 +1,5 @@
 """GPT picker flows use a fake runtime, no account secrets or external requests."""
+import copy
 import os
 import threading
 import time
@@ -44,6 +45,14 @@ class Runtime:
         self.model_error = False
         self.discover_error = False
         self.discover_auth = None
+        self.usage_started, self.usage_release = threading.Event(), threading.Event()
+        self.usage_release.set()
+        self.usage_error = False
+        self.usage_data = {"authenticated": True, "fetched_at": 1791860400, "error_code": "",
+                           "token_usage": {"lifetime_tokens": 123400, "today_tokens": 0},
+                           "rate_limits": [{"limit_id": "codex", "primary": {
+                               "used_percent": 20, "remaining_percent": 80, "window_duration_mins": 300,
+                               "resets_at": 1791864000}, "secondary": None}]}
 
     def status(self):
         return self.authenticated, "ChatGPT Plus 연결됨" if self.authenticated else "ChatGPT 로그인이 필요합니다."
@@ -77,6 +86,14 @@ class Runtime:
         self.selected_model = model
         return model
 
+    def usage(self):
+        self.calls.append(("usage", threading.get_ident()))
+        self.usage_started.set()
+        assert self.usage_release.wait(3)
+        if self.usage_error:
+            raise RuntimeError("private-account-detail")
+        return copy.deepcopy(self.usage_data)
+
 
 @pytest.fixture
 def picker(monkeypatch):
@@ -94,6 +111,7 @@ def picker(monkeypatch):
     widget.show()
     yield widget, runtime
     runtime.release.set()
+    runtime.usage_release.set()
     assert pump_until(lambda: not _ACTIVE_CODEX_CHECKS)
     widget.popup.close()
     widget.close()
@@ -234,3 +252,54 @@ def test_restart_preserves_saved_gpt_on_until_authentication_is_checked(picker, 
         restored.close()
         restored.deleteLater()
         _APP.processEvents()
+
+
+def test_usage_displays_real_counts_and_refreshes_without_changing_model(picker):
+    widget, runtime = picker
+    runtime.authenticated = True
+    select(widget, "gpt")
+    assert pump_until(lambda: widget._codex_worker is None and widget._usage_worker is None)
+    assert "계정 공용" in widget.usage_title.text()
+    assert "누적 사용 토큰: 123,400" in widget.usage_info.text()
+    assert "오늘 사용 토큰: 0" in widget.usage_info.text()
+    assert len(widget.usage_bars) == 1 and widget.usage_bars[0].value() == 800
+    assert "남음 80% / 사용 20%" in widget.usage_bars[0].accessibleName()
+    assert "모델별 잔여 토큰 수는 미제공" in widget.usage_note.text()
+    runtime.usage_data["rate_limits"][0]["primary"]["used_percent"] = 25
+    widget.refresh_usage_button.click()
+    assert pump_until(lambda: widget._usage_worker is None)
+    assert widget.usage_bars[0].value() == 750
+    assert runtime.selected_model == "fixture-default" and auxiliary_models.is_enabled("gpt")
+    assert all(thread != threading.get_ident() for _, thread in runtime.calls)
+
+
+def test_slow_usage_refresh_does_not_block_provider_switch_or_publish_old_values(picker):
+    widget, runtime = picker
+    runtime.authenticated = True
+    select(widget, "gpt")
+    assert pump_until(lambda: widget._codex_worker is None and widget._usage_worker is None)
+    runtime.usage_started.clear()
+    runtime.usage_release.clear()
+    widget.refresh_usage_button.click()
+    assert runtime.usage_started.wait(1)
+    widget.back_button.click()
+    item = next(widget.models.item(i) for i in range(widget.models.count())
+                if widget.models.item(i).data(Qt.ItemDataRole.UserRole) == "default")
+    widget._select(item)
+    assert auxiliary_models.main_selection() == ("default", True)
+    assert "123,400" not in widget.usage_info.text()
+    runtime.usage_release.set()
+    assert pump_until(lambda: widget._usage_worker is None)
+    assert "기존 모델" in widget.usage_title.text()
+    assert "123,400" not in widget.usage_info.text()
+
+
+def test_usage_failure_never_disables_gpt_or_leaks_provider_details(picker):
+    widget, runtime = picker
+    runtime.authenticated = True
+    runtime.usage_error = True
+    select(widget, "gpt")
+    assert pump_until(lambda: widget._codex_worker is None and widget._usage_worker is None)
+    assert "사용량 조회 실패" in widget.usage_info.text()
+    assert "private-account-detail" not in widget.usage_info.text()
+    assert auxiliary_models.is_enabled("gpt")

@@ -1,7 +1,8 @@
 """Two-step composer picker: model list, then the selected model's usage switch."""
+import time
 from PyQt6.QtCore import QPoint, QThread, Qt, QTimer
 from PyQt6.QtWidgets import (
-    QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QPushButton, QSlider, QVBoxLayout, QWidget,
+    QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QProgressBar, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
 from core import auxiliary_models
@@ -9,6 +10,8 @@ from config import Config
 from core.codex_client import CodexRuntimeError, get_codex_runtime
 from core.jev_client import JEV_CONSOLE_URL, configuration_status as jev_status
 from core.model_registry import get_model_registry
+from core.model_usage import read_model_usage
+from ui.model_usage import format_usage, quota_rows
 from ui.theme import theme_manager
 
 
@@ -32,6 +35,21 @@ class _CodexCheck(QThread):
             self.message = "Codex 연결 실패 · 설치 상태와 ChatGPT 로그인을 확인하세요."
 
 
+class _UsageCheck(QThread):
+    def __init__(self, key, runtime):
+        super().__init__()
+        self.key, self.runtime = key, runtime
+        self.result = None
+
+    def run(self):
+        try:
+            self.result = read_model_usage(self.key[0], codex_runtime=self.runtime)
+            if not isinstance(self.result, dict):
+                self.result = {"error_code": "invalid_output"}
+        except Exception:
+            self.result = {"error_code": "unavailable"}
+
+
 def _release_codex_worker(worker):
     _ACTIVE_CODEX_CHECKS.discard(worker)
     worker.deleteLater()
@@ -46,6 +64,10 @@ class ModelSelector(QPushButton):
         self._codex_message = ""
         self._codex_verified = False
         self._codex_activate = False
+        self._usage_worker = None
+        self._usage_data = {}
+        self._usage_attempts = {}
+        self._usage_epoch = 0
         self._selected_model = auxiliary_models.main_selection()[0]
         self.setObjectName("auxiliaryModelButton")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -130,6 +152,41 @@ class ModelSelector(QPushButton):
         self.runtime_status.setWordWrap(True)
         layout.addWidget(self.runtime_status)
         root.addWidget(self.detail_page)
+        usage_header = QHBoxLayout()
+        self.usage_title = QLabel()
+        self.usage_title.setWordWrap(True)
+        usage_header.addWidget(self.usage_title, 1)
+        self.refresh_usage_button = QPushButton("새로고침")
+        self.refresh_usage_button.setAccessibleName("선택한 모델 사용량 새로고침")
+        self.refresh_usage_button.clicked.connect(lambda: self._refresh_usage(force=True))
+        usage_header.addWidget(self.refresh_usage_button)
+        root.addLayout(usage_header)
+        self.usage_info = QLabel()
+        self.usage_info.setAccessibleName("선택한 모델 토큰 사용량과 남은 한도")
+        self.usage_info.setWordWrap(True)
+        self.usage_info.setTextFormat(Qt.TextFormat.PlainText)
+        self.usage_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.usage_scroll = QScrollArea()
+        self.usage_scroll.setWidgetResizable(True)
+        self.usage_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.usage_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.usage_scroll.setFixedHeight(220)
+        self.usage_body = QWidget()
+        usage_body_layout = QVBoxLayout(self.usage_body)
+        usage_body_layout.setContentsMargins(0, 0, 0, 0)
+        self.usage_bar_box = QWidget()
+        self.usage_bar_layout = QVBoxLayout(self.usage_bar_box)
+        self.usage_bar_layout.setContentsMargins(0, 0, 0, 0)
+        self.usage_bars = []
+        usage_body_layout.addWidget(self.usage_bar_box)
+        usage_body_layout.addWidget(self.usage_info)
+        usage_body_layout.addStretch()
+        self.usage_scroll.setWidget(self.usage_body)
+        root.addWidget(self.usage_scroll)
+        self.usage_note = QLabel()
+        self.usage_note.setWordWrap(True)
+        self.usage_note.setTextFormat(Qt.TextFormat.PlainText)
+        root.addWidget(self.usage_note)
         self._jev_dialog = None
         self.clicked.connect(self._open)
         self.timer = QTimer(self)
@@ -206,6 +263,7 @@ class ModelSelector(QPushButton):
             reason += ("\n" + account if account else "")
             reason += "\n사용 모델: " + (self._codex.selected_model or "연결 후 확인")
         self.detail.setText(self._codex_message if is_gpt and self._codex_message else reason)
+        self._show_usage()
         self._runtime_status()
         self._theme()
 
@@ -243,6 +301,9 @@ class ModelSelector(QPushButton):
         if self._codex_worker is not None or (self._selected_model != "gpt"
                                              and not auxiliary_models.is_enabled("gpt")):
             return
+        if action == "login":
+            self._usage_epoch += 1
+            self._usage_data = {key: data for key, data in self._usage_data.items() if key[0] != "gpt"}
         worker = _CodexCheck(self._codex, action, model)
         self._codex_worker = worker
         _ACTIVE_CODEX_CHECKS.add(worker)
@@ -279,6 +340,8 @@ class ModelSelector(QPushButton):
                 self.codex_model.setCurrentIndex(index)
             self.codex_model.blockSignals(False)
         self.refresh()
+        if self.popup.isVisible():
+            self._refresh_usage(force=True)
         if self.popup.isVisible() and self._selected_model == "gpt":
             self._position()
 
@@ -324,9 +387,96 @@ class ModelSelector(QPushButton):
     def _runtime_status(self):
         if self.popup.isVisible():
             self.runtime_status.setText(auxiliary_models.status(self._selected_model))
+            self._refresh_usage()
+
+    def _usage_key(self):
+        return (self._selected_model, self._codex.selected_model if self._selected_model == "gpt" else "",
+                self._usage_epoch if self._selected_model == "gpt" else 0)
+
+    def _show_usage(self):
+        key = self._usage_key()
+        name = auxiliary_models.AUXILIARY_MODELS[self._selected_model]
+        data = self._usage_data.get(key)
+        account = (data or {}).get("scope") == "account" or key[0] == "gpt"
+        self.usage_title.setText(name + (" · 계정 공용 사용량" if account else " · 사용량 / 한도"))
+        self.usage_info.setText(format_usage(data, show_windows=False) if data is not None else "사용량 조회 대기")
+        while self.usage_bar_layout.count():
+            widget = self.usage_bar_layout.takeAt(0).widget()
+            widget.deleteLater()
+        self.usage_bars = []
+        for row in quota_rows(data or {}):
+            remaining, used = row["remaining"], row["used"]
+            label = (f"{row['title']} · 남음 {remaining:g}% / 사용 {used:g}%"
+                     if remaining is not None else row["title"] + " · 비율 미제공")
+            if remaining is not None and remaining < 20:
+                label += " · 잔여량 낮음"
+            title = QLabel(label)
+            title.setWordWrap(True)
+            title.setTextFormat(Qt.TextFormat.PlainText)
+            self.usage_bar_layout.addWidget(title)
+            if remaining is not None:
+                bar = QProgressBar()
+                bar.setRange(0, 1000)
+                bar.setValue(round(remaining * 10))
+                bar.setTextVisible(False)
+                bar.setFixedHeight(16)
+                bar.setAccessibleName(label)
+                bar.setProperty("remaining_percent", remaining)
+                self.usage_bar_layout.addWidget(bar)
+                self.usage_bars.append(bar)
+            if row["reset"] is not None:
+                self.usage_bar_layout.addWidget(QLabel("초기화: " + row["reset"]))
+        note = (data or {}).get("note", "")
+        note = note[:300] if isinstance(note, str) else ""
+        if (data or {}).get("scope") == "account" and key[0] != "gpt":
+            note = "계정 공용 사용량 · " + note
+        self.usage_note.setText(note)
+        self.refresh_usage_button.setEnabled(self._usage_worker is None and self._codex_worker is None)
+        self._theme()
+
+    def _refresh_usage(self, *, force=False):
+        key = self._usage_key()
+        if self._usage_worker is not None or self._codex_worker is not None:
+            return
+        if key[0] == "gpt" and not self._codex.status()[0]:
+            self._usage_data[key] = {"error_code": "authentication", "scope": "account",
+                                     "note": "Codex 계정 공용 한도"}
+            self._show_usage()
+            return
+        if not force and time.monotonic() - self._usage_attempts.get(key, float("-inf")) < 60:
+            return
+        self._usage_attempts[key] = time.monotonic()
+        worker = _UsageCheck(key, self._codex)
+        self._usage_worker = worker
+        _ACTIVE_CODEX_CHECKS.add(worker)
+        worker.finished.connect(self._usage_finished)
+        worker.finished.connect(lambda: _release_codex_worker(worker))
+        self._show_usage()
+        if key not in self._usage_data:
+            self.usage_info.setText("사용량 조회 중…")
+        worker.start()
+
+    def _usage_finished(self):
+        worker, self._usage_worker = self._usage_worker, None
+        if worker is None:
+            return
+        data = worker.result or {"error_code": "unavailable"}
+        if data.get("error_code") == "busy" and worker.key in self._usage_data:
+            data = {**self._usage_data[worker.key], "error_code": "busy"}
+        self._usage_data[worker.key] = data
+        self._show_usage()
+        if self.popup.isVisible():
+            if worker.key != self._usage_key():
+                self._refresh_usage(force=True)
+            self._position()
 
     def _theme(self, *_):
         c = theme_manager().colors
+        for bar in self.usage_bars:
+            remaining = bar.property("remaining_percent")
+            color = c["error" if remaining < 20 else "warning" if remaining < 50 else "success"]
+            bar.setStyleSheet(f"QProgressBar {{ background: {c['input']}; border: 1px solid {c['border']}; border-radius: 7px; }}"
+                             f"QProgressBar::chunk {{ background: {color}; border-radius: 6px; }}")
         self.jev_link.setText(f'<a style="color: {c["accent"]}" href="{JEV_CONSOLE_URL}">Jev API 키 발급 페이지 열기 ↗</a>')
         track = ("qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5945e8, stop:1 #a777fa)"
                  if self.slider.value() else c["border"])
