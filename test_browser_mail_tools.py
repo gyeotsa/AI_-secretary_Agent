@@ -130,6 +130,7 @@ def test_no_provider_verified_is_explicitly_unverified():
     result = plugin.execute_tool("browser_mail_collect_summary", {})
     assert result.status == "unverified"
     assert json.loads(result.raw_output)["providers"][0]["new_count"] is None
+    assert result.error == "확인 불가"
 
 
 def test_mail_read_tool_analyzes_locally_and_never_returns_body_or_reply_quote():

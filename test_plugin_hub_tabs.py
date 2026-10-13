@@ -41,23 +41,33 @@ def test_https_mcp_validation_and_plugin_tab_reuse():
 @pytest.fixture
 def hub(tmp_path, monkeypatch):
     import ui.plugin_hub as module
-    QApplication.instance() or QApplication([])
+    application = QApplication.instance() or QApplication([])
     monkeypatch.setattr(module, "__file__", str(tmp_path / "ui" / "plugin_hub.py"))
     instance = PluginHub(PluginRegistry())
     yield instance
     instance.close()
 
 
-def test_standalone_mail_login_settings_opens_existing_login_flow(hub, monkeypatch):
+def test_standalone_mail_uses_background_account_settings_without_chrome(hub, monkeypatch):
     import ui.browser_login_dialog as login_module
-    import core.browser_mail as mail_module
+    import core.background_mail as mail_module
+    from ui.oauth_account_dialog import OAuthAccountDialog
     opener = Mock()
     monkeypatch.setattr(login_module, "open_browser_login_dialog", opener)
-    monkeypatch.setattr(mail_module, "BrowserMailService", lambda: Mock())
+    oauth = mail_module.GmailMailAccountService(vault=SimpleNamespace(load=lambda *args: None))
+    analysis = Mock()
+    analysis.settings.return_value = {"enabled": False}
+    service = mail_module.BackgroundMailService(gmail=oauth, analysis=analysis)
+    monkeypatch.setattr(mail_module, "get_background_mail_service", lambda: service)
+    opened = []
+    monkeypatch.setattr(OAuthAccountDialog, "exec", lambda child: opened.append(child) or 0)
     dialog = hub.open_mail_inbox()
     try:
-        dialog.login_button.click()
-        opener.assert_called_once_with(hub.registry, dialog, url="https://accounts.google.com/")
+        assert dialog.service is service and dialog.open_button.isHidden() and dialog.login_button.isHidden()
+        dialog.connection_button.click()
+        assert len(opened) == 1 and opened[0].oauth is oauth and opened[0].gmail_only
+        opener.assert_not_called()
+        assert not service.workflow_lock.locked()
     finally:
         dialog.reject()
         if dialog._worker is not None:

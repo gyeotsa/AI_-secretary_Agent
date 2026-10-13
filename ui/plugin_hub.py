@@ -122,10 +122,10 @@ class PluginHub(QDialog):
         window = self.parentWidget()
         if window is not None and hasattr(window, "show_mail_inbox"):
             return window.show_mail_inbox()
-        from core.browser_mail import get_browser_mail_service
+        from core.background_mail import get_background_mail_service
         from ui.mail_inbox_dialog import MailInboxDialog
         from ui.browser_login_dialog import open_browser_login_dialog
-        dialog = MailInboxDialog(get_browser_mail_service(), self)
+        dialog = MailInboxDialog(get_background_mail_service(), self)
         dialog.login_requested.connect(
             lambda url: open_browser_login_dialog(self.registry, dialog, url=url)
         )

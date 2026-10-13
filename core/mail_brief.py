@@ -9,6 +9,7 @@ from pathlib import Path
 
 from config import Config
 from core.mail_analysis import _digest, _metadata, _scope
+from core.mail_runtime import MailReadError
 from core.plugin import ToolCancelledError
 from core.turn_context import check_turn_cancelled
 
@@ -82,8 +83,8 @@ class MailBriefService:
     @property
     def browser(self):
         if self._browser is None:
-            from core.browser_mail import get_browser_mail_service
-            self._browser = get_browser_mail_service()
+            from core.background_mail import get_background_mail_service
+            self._browser = get_background_mail_service()
         return self._browser
 
     @property
@@ -160,7 +161,12 @@ class MailBriefService:
                         if item["message_key"] in current or type(item.get("unread")) is not bool:
                             raise MailBriefError("메일 목록을 확인하지 못했습니다.")
                         current[item["message_key"]] = signature
-                    key = "account-" + scope
+                    key = getattr(self.browser, "baseline_prefix", "account-") + scope
+                    epoch = listing.get("baseline_epoch")
+                    if epoch not in (None, ""):
+                        if not isinstance(epoch, str) or not _KEY.fullmatch(epoch):
+                            raise MailBriefError("메일함 비교 기준을 확인하지 못했습니다.")
+                        key = getattr(self.browser, "baseline_prefix", "account-") + _digest([scope, epoch])
                     with _LOCK:
                         previous = self._baseline(key)
                     new = set(current) - set(previous or {})
@@ -169,16 +175,22 @@ class MailBriefService:
                     counts.update(list_count=len(items), unread_count=sum(i["unread"] for i in items),
                                   new_count=None if previous is None else len(new), updated_count=len(updated))
                     analysis = self.browser.analysis
+                    def check_listing():
+                        checkpoint()
+                        guard = getattr(self.browser, "check_snapshot", None)
+                        if callable(guard):
+                            guard(provider, listing["account"])
+                    check_listing()
                     try:
                         analysis.collect(provider, listing["account"], items, self.browser.read_message,
-                                         checkpoint=checkpoint,
+                                         checkpoint=check_listing,
                                          progress=(lambda value, p=provider: progress(
                                              {"provider": p, "phase": "analysis", **value})) if progress else None)
                     except ToolCancelledError:
                         raise
                     except Exception:
-                        counts["analysis_error"] = "메일 본문 수집 또는 요약·분류를 끝내지 못했습니다. Chrome 연결과 로컬 AI 상태를 확인하세요."
-                    checkpoint()
+                        counts["analysis_error"] = "메일 본문 수집 또는 요약·분류를 끝내지 못했습니다. 메일 계정 연결과 로컬 AI 상태를 확인하세요."
+                    check_listing()
                     try:
                         records = analysis.current_records(provider, listing["account"], items)
                         settings = analysis.settings()
@@ -197,9 +209,9 @@ class MailBriefService:
                     except Exception:
                         counts["analysis_error"] = "메일 요약·분류 기록을 확인하지 못했습니다."
                         counts["unknown_count"] = len(items)
-                    checkpoint()
+                    check_listing()
                     try:
-                        drafts = self.browser.draft_count(provider, checkpoint=checkpoint)
+                        drafts = self.browser.draft_count(provider, checkpoint=check_listing)
                         if type(drafts) is not int or drafts < 0:
                             raise ValueError()
                         counts["draft_count"] = drafts
@@ -207,7 +219,7 @@ class MailBriefService:
                         raise
                     except Exception:
                         counts["draft_error"] = "임시보관함 건수를 확인하지 못했습니다."
-                    checkpoint()
+                    check_listing()
                     seen = dict(previous or {})
                     for message_key, signature in current.items():
                         seen.pop(message_key, None)
@@ -218,8 +230,8 @@ class MailBriefService:
                     raise
                 except Exception as exc:
                     checkpoint()
-                    counts["error"] = (str(exc) if isinstance(exc, MailBriefError) else
-                                       "받은편지함 수집을 확인하지 못했습니다. Chrome의 로그인·자동 연결 설정을 확인하세요.")
+                    counts["error"] = (str(exc) if isinstance(exc, (MailBriefError, MailReadError)) else
+                                       "받은편지함 수집을 확인하지 못했습니다. 메일 조회의 백그라운드 계정 설정을 확인하세요.")
                 results.append(counts)
                 if progress is not None:
                     progress({"provider": provider, "phase": "completed", **counts})
@@ -233,12 +245,13 @@ class MailBriefService:
                     with _LOCK:
                         for key, value in baselines.items():
                             self._save(key, value)
-            return {"providers": results, "summary": self._summary(results)}
+            return {"providers": results, "summary": self._summary(
+                results, message_unit=getattr(self.browser, "message_unit", "conversation"))}
         finally:
             workflow_lock.release()
 
     @staticmethod
-    def _summary(results):
+    def _summary(results, message_unit="conversation"):
         lines = ["메일 확인 결과입니다."]
         for item in results:
             name = _NAMES[item["provider"]]
@@ -258,7 +271,8 @@ class MailBriefService:
                 lines.append(f"선택한 알림 카테고리에서 회신·자료 전달 필요 여부 미확인 {item['reply_unknown_count']}건은 검토 집계에서 제외했습니다.")
             if item["analysis_error"]:
                 lines.append(item["analysis_error"])
-        lines.append("현재 받은편지함에서 최대 50건씩 확인했습니다. Gmail은 대화 한 건을 한 건으로 셉니다. 임시보관함 초안이 모두 발송 필요를 뜻하지는 않습니다.")
+        unit = "Gmail도 개별 메일을 한 건으로 셉니다." if message_unit == "message" else "Gmail은 대화 한 건을 한 건으로 셉니다."
+        lines.append(f"현재 받은편지함에서 최대 50건씩 확인했습니다. {unit} 임시보관함 초안이 모두 발송 필요를 뜻하지는 않습니다.")
         return "\n".join(lines)
 
     def claim_startup(self):

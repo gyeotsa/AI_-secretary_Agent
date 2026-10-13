@@ -58,6 +58,7 @@ data/computer_use/
 data/oauth_tokens/
 data/mail_analysis/
 data/mail_brief/
+data/mail_background/
 data/AnisKnowledgeVault/
 data/obsidian_settings.json
 

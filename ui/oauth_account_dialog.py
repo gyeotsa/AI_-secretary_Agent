@@ -57,15 +57,20 @@ def _release_worker(worker):
 class OAuthAccountDialog(QDialog):
     settings_changed = pyqtSignal()
 
-    def __init__(self, oauth, parent=None, *, connection_factory=OAuthLoopbackConnection):
+    def __init__(self, oauth, parent=None, *, connection_factory=OAuthLoopbackConnection, gmail_only=False):
         super().__init__(parent)
+        scopes = {"email" if scope == "https://www.googleapis.com/auth/userinfo.email" else scope
+                  for scope in oauth.SPECS.get("google", {}).get("scopes", ())} if gmail_only else set()
+        if gmail_only and scopes != {"openid", "email", "https://www.googleapis.com/auth/gmail.readonly"}:
+            raise ValueError("Gmail 읽기 연결에는 계정 확인·읽기 전용 범위만 사용할 수 있습니다.")
         self.oauth, self.connection_factory = oauth, connection_factory
+        self.gmail_only = gmail_only
         self._worker = None
         self._pending_outcome = None
         self._pending_close = None
         self._configured = False
-        self.setWindowTitle("Google · Microsoft 계정 연결")
-        self.setMinimumWidth(580)
+        self.setWindowTitle("Gmail 읽기 연결" if gmail_only else "Google · Microsoft 계정 연결")
+        self.setMinimumWidth(640 if gmail_only else 580)
         apply_dark_dialog_theme(self)
         layout = QVBoxLayout(self)
         intro = QLabel("로그인과 동의는 기본 브라우저에서 직접 진행합니다. 비밀번호·인증 코드·토큰을 채팅에 입력하지 마세요.")
@@ -75,7 +80,8 @@ class OAuthAccountDialog(QDialog):
         form = QFormLayout()
         self.provider = QComboBox()
         self.provider.addItem("Google", "google")
-        self.provider.addItem("Microsoft", "microsoft")
+        if not gmail_only:
+            self.provider.addItem("Microsoft", "microsoft")
         self.account_input = QLineEdit()
         self.account_input.setMaxLength(320)
         self.account_input.setPlaceholderText("연결할 계정 이메일 (다른 계정으로 로그인하면 저장하지 않음)")
@@ -95,10 +101,17 @@ class OAuthAccountDialog(QDialog):
         form.addRow("OAuth Client ID", self.client_id_input)
         form.addRow("OAuth Client Secret", self.client_secret_input)
         form.addRow("콜백 포트", self.port)
+        if gmail_only:
+            self.port.hide()
+            form.labelForField(self.port).hide()
         layout.addLayout(form)
         self.setup_label = QLabel()
         self.setup_label.setWordWrap(True)
         self.setup_label.setTextFormat(Qt.TextFormat.PlainText)
+        if gmail_only:
+            self.setup_label.setTextFormat(Qt.TextFormat.RichText)
+            self.setup_label.setOpenExternalLinks(True)
+            self.setup_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         layout.addWidget(self.setup_label)
         self.status_label = QLabel("계정 이메일을 입력해 저장 상태를 확인하세요.")
         self.status_label.setWordWrap(True)
@@ -131,6 +144,14 @@ class OAuthAccountDialog(QDialog):
         self.client_id_input.textChanged.connect(self._update_controls)
         self.port.valueChanged.connect(self._setup_text)
         self._provider_changed()
+        if gmail_only:
+            try:
+                account = self.oauth.active_account()
+                if isinstance(account, str) and account:
+                    self.account_input.setText(account)
+                    self._refresh()
+            except Exception:
+                self.status_label.setText("저장된 Gmail 계정을 확인하지 못했습니다. 연결할 이메일을 입력하세요.")
 
     def _provider_changed(self, *_args):
         self.client_secret_input.clear()
@@ -145,6 +166,25 @@ class OAuthAccountDialog(QDialog):
         self._account_changed()
 
     def _setup_text(self, *_args):
+        if self.gmail_only:
+            self.setup_label.setText(
+                "<b>처음 연결할 때 · Google OAuth 앱 설정</b><br>"
+                '1. <a href="https://console.cloud.google.com/">Google Cloud Console</a>에서 프로젝트를 만들거나 선택하고 '
+                'Gmail API를 사용 설정하세요.<br>'
+                "2. Google Auth platform → Branding에서 앱 이름·지원 이메일을 등록하세요.<br>"
+                "3. 개인 Gmail 계정은 Audience → External로 설정하고, Testing 상태의 Test users에 내 이메일을 추가하세요.<br>"
+                "4. Data Access → Add or Remove Scopes에서 openid, userinfo.email, "
+                "https://www.googleapis.com/auth/gmail.readonly를 추가하세요.<br>"
+                "5. Clients → Create client → Desktop app으로 만들고 Client ID와 발급된 Client Secret을 위 입력란에 붙여넣으세요.<br>"
+                "6. 연결할 Gmail 이메일을 입력하고 ‘브라우저에서 연결 / 재연결’을 누르세요.<br><br>"
+                "메일 읽기와 계정 확인만 요청합니다. 전송·삭제·읽음 변경 권한은 요청하지 않습니다. "
+                "연결 후 조회는 브라우저 창 없이 수행하며 자격증명·토큰은 Windows DPAPI로 암호화 저장합니다.<br>"
+                'External·Testing 앱의 Gmail 갱신 토큰은 7일 후 만료되어 재연결이 필요할 수 있습니다. '
+                '<a href="https://developers.google.com/identity/protocols/oauth2#expiration">토큰 만료 안내</a><br>'
+                '<a href="https://developers.google.com/workspace/gmail/api/quickstart/python">Google 공식 설정 안내</a>'
+            )
+            self._update_controls()
+            return
         if self.provider.currentData() == "google":
             text = "Google Cloud에서 Desktop app 클라이언트를 사용하세요. Gmail·Calendar·Drive 접근 동의를 요청합니다."
         else:
@@ -293,7 +333,11 @@ class OAuthAccountDialog(QDialog):
                                 QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
         try:
-            self.oauth.vault.delete(self.provider.currentData(), self.account_input.text())
+            disconnect = getattr(self.oauth, "disconnect", None)
+            if callable(disconnect):
+                disconnect(self.provider.currentData(), self.account_input.text())
+            else:
+                self.oauth.vault.delete(self.provider.currentData(), self.account_input.text())
             self._refresh()
             self.settings_changed.emit()
         except Exception:

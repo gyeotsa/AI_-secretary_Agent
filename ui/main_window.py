@@ -2131,10 +2131,10 @@ class JarvisMainWindow(QWidget):
         return open_tab(self, self.plugin_hub, "플러그인 및 MCP", "plugins")
 
     def show_mail_inbox(self):
-        from core.browser_mail import get_browser_mail_service
+        from core.background_mail import get_background_mail_service
         from ui.mail_inbox_dialog import MailInboxDialog
         if self.mail_inbox_dialog is None:
-            self.mail_inbox_dialog = MailInboxDialog(get_browser_mail_service(), self)
+            self.mail_inbox_dialog = MailInboxDialog(get_background_mail_service(), self)
             self.mail_inbox_dialog.login_requested.connect(
                 lambda url: self.open_interface_surface("browser_login:" + url)
             )

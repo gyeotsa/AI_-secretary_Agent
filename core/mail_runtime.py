@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from email import policy
 from email.parser import BytesParser
+from html.parser import HTMLParser
 import imaplib
 import os
 import re
@@ -59,6 +60,44 @@ def _uid(value, label="UID"):
     return value
 
 
+class _MailHTMLText(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts, self.hidden = [], []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"script", "style", "head", "template"}:
+            self.hidden.append(tag)
+        elif not self.hidden and tag in {"br", "p", "div", "tr", "li", "h1", "h2", "h3"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if self.hidden:
+            if tag == self.hidden[-1]:
+                self.hidden.pop()
+        elif tag in {"p", "div", "tr", "li"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def mail_body(message, *, include_html=False, text_limit=16000):
+    """Extract inline text without rendering HTML or visiting external resources."""
+    part = message.get_body(preferencelist=("plain", "html") if include_html else ("plain",))
+    body = part.get_content() if part is not None else ""
+    if not isinstance(body, str):
+        body = ""
+    if part is not None and part.get_content_type() == "text/html":
+        parser = _MailHTMLText()
+        parser.feed(body)
+        parser.close()
+        body = "".join(parser.parts).strip()
+    body = body.replace("\x00", "")
+    return body[:text_limit], part is not None, len(body) > text_limit
+
+
 class ImapReader:
     HEADER_LIMIT = 32768
     BODY_LIMIT = 262144
@@ -110,9 +149,10 @@ class ImapReader:
             except Exception:
                 pass
 
-    def _fetch(self, client, uid, section, limit, check):
+    def _fetch(self, client, uid, section, limit, check, *, include_flags=False):
         check()
-        data = self._ok(client.uid("FETCH", str(uid), f"(UID RFC822.SIZE BODY.PEEK[{section}]<0.{limit + 1}>)"))
+        flags = " FLAGS" if include_flags else ""
+        data = self._ok(client.uid("FETCH", str(uid), f"(UID RFC822.SIZE{flags} BODY.PEEK[{section}]<0.{limit + 1}>)"))
         check()
         records = [item for item in (data or []) if isinstance(item, tuple)]
         if len(records) != 1 or len(records[0]) != 2:
@@ -125,6 +165,11 @@ class ImapReader:
         if len(matches) != 1 or int(matches[0]) != uid or len(sizes) != 1:
             raise MailReadError("요청한 메일과 응답의 UID가 일치하지 않습니다.")
         truncated = len(raw) > limit or (section == "" and int(sizes[0]) > len(raw))
+        if include_flags:
+            groups = re.findall(rb"\bFLAGS \(([^()]*)\)", metadata)
+            if len(groups) != 1:
+                raise MailReadError("메일 읽음 상태를 확인하지 못했습니다.")
+            return raw[:limit], truncated, b"\\seen" not in {flag.lower() for flag in groups[0].split()}
         return raw[:limit], truncated
 
     @staticmethod
@@ -133,8 +178,9 @@ class ImapReader:
         return {name: str(message.get(name, ""))[:2000]
                 for name in ("From", "To", "Subject", "Date", "Message-ID")}
 
-    def list_inbox(self, *, limit=20, unread_only=False, before_uid=None, uid_validity=None):
-        if type(limit) is not int or not 1 <= limit <= 50 or type(unread_only) is not bool:
+    def list_inbox(self, *, limit=20, unread_only=False, before_uid=None, uid_validity=None, include_flags=False):
+        if (type(limit) is not int or not 1 <= limit <= 50 or type(unread_only) is not bool
+                or type(include_flags) is not bool):
             raise MailReadError("메일 조회 개수는 1~50, unread_only는 참/거짓이어야 합니다.")
         if uid_validity is not None:
             _uid(uid_validity, "UIDVALIDITY")
@@ -164,29 +210,76 @@ class ImapReader:
                     raise MailReadError("서버가 요청한 메일 조회 범위를 벗어났습니다.")
             items = []
             for uid in ids[:limit]:
-                raw, truncated = self._fetch(client, uid, "HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)", self.HEADER_LIMIT, check)
-                items.append({"uid": uid, "headers": self._headers(raw), "headers_truncated": truncated})
+                fetched = self._fetch(client, uid, "HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID)",
+                                      self.HEADER_LIMIT, check, include_flags=include_flags)
+                items.append({"uid": uid, "headers": self._headers(fetched[0]), "headers_truncated": fetched[1]})
+                if include_flags:
+                    items[-1]["unread"] = fetched[2]
             return {"mailbox": "INBOX", "uid_validity": validity, "items": items,
                     "more": len(ids) > limit, "next_before_uid": items[-1]["uid"] if len(ids) > limit else None,
                     "unread_only": unread_only, "read_only": True, "content_trust": "untrusted_external",
                     "snapshot": False, "body_included": False}
 
-    def read_message(self, *, uid, uid_validity):
+    def read_message(self, *, uid, uid_validity, include_html=False):
         _uid(uid)
         _uid(uid_validity, "UIDVALIDITY")
+        if type(include_html) is not bool:
+            raise MailReadError("메일 본문 조회 설정이 올바르지 않습니다.")
         with self._inbox(uid_validity) as (client, validity, check):
             raw, truncated = self._fetch(client, uid, "", self.BODY_LIMIT, check)
             message = BytesParser(policy=policy.default).parsebytes(raw)
             # Never expose attachments or execute/render HTML. Outlook-style
             # attached messages can contain text/plain too; get_body excludes them.
-            part = message.get_body(preferencelist=("plain",))
-            body = part.get_content() if part is not None else ""
-            if not isinstance(body, str):
-                body = ""
-            text_limit = 16000
+            body, available, text_truncated = mail_body(message, include_html=include_html)
             return {"mailbox": "INBOX", "uid_validity": validity, "uid": uid,
-                    "headers": self._headers(raw), "body": body[:text_limit],
-                    "body_available": part is not None, "body_format": "text/plain",
-                    "truncated": truncated or len(body) > text_limit,
+                    "headers": self._headers(raw), "body": body,
+                    "body_available": available, "body_format": "text/plain",
+                    "truncated": truncated or text_truncated,
                     "read_only": True, "attachments_included": False,
                     "content_trust": "untrusted_external"}
+
+    def draft_count(self, *, known_folders=()):
+        with self._inbox() as (client, _validity, check):
+            check()
+            data = self._ok(client.list())
+            check()
+            if (not isinstance(data, list) or len(data) > 1000
+                    or any(not isinstance(row, bytes) for row in data)
+                    or sum(map(len, data)) > 65536):
+                raise MailReadError("임시보관함 정보를 확인하지 못했습니다.")
+            special, fallback = [], []
+            for row in data:
+                check()
+                match = re.fullmatch(rb'\(([^()]*)\) (?:"(?:[^"\\]|\\.)*"|NIL) ("(?:[^"\\]|\\.)*"|[^\s]+)', row)
+                if not match:
+                    raise MailReadError("임시보관함 정보를 확인하지 못했습니다.")
+                name = match[2].decode("ascii")
+                if name.startswith('"'):
+                    name = re.sub(r"\\(.)", r"\1", name[1:-1])
+                if not name or len(name) > 512 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+                    raise MailReadError("임시보관함 정보를 확인하지 못했습니다.")
+                flags = match[1].split()
+                if b"\\Noselect" in flags:
+                    continue
+                if any(flag.lower() == b"\\drafts" for flag in flags):
+                    special.append(name)
+                if name in known_folders:
+                    fallback.append(name)
+            candidates = set(special or fallback)
+            if len(candidates) != 1:
+                raise MailReadError("임시보관함을 하나로 확인하지 못했습니다.")
+            quoted = '"' + candidates.pop().replace("\\", "\\\\").replace('"', '\\"') + '"'
+            check()
+            status = self._ok(client.status(quoted, "(MESSAGES)"))
+            check()
+            if not isinstance(status, list) or len(status) != 1 or not isinstance(status[0], bytes):
+                raise MailReadError("임시보관함 건수를 확인하지 못했습니다.")
+            match = re.fullmatch(re.escape(quoted.encode("ascii")) + rb" \(MESSAGES ([0-9]{1,10})\)", status[0])
+            if not match:
+                # IMAP servers may omit quoting for an atom mailbox name.
+                atom = quoted[1:-1]
+                match = (re.fullmatch(re.escape(atom.encode("ascii")) + rb" \(MESSAGES ([0-9]{1,10})\)", status[0])
+                         if re.fullmatch(r"[A-Za-z0-9_.-]+", atom) else None)
+            if not match:
+                raise MailReadError("임시보관함 건수를 확인하지 못했습니다.")
+            return int(match[1])

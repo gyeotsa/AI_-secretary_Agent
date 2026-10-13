@@ -116,6 +116,43 @@ def test_restart_counts_new_keys_and_changed_threads_separately(service):
     assert result["list_count"] == 2
 
 
+def test_background_migration_starts_its_own_baseline_and_counts_individual_messages(service):
+    service.collect()
+    previous = deepcopy(service.vault.saved)
+    service.browser.baseline_prefix = "background-v1-account-"
+    service.browser.message_unit = "message"
+    result = service.collect()
+    assert all(row["new_count"] is None for row in result["providers"])
+    assert "개별 메일" in result["summary"] and "대화 한 건" not in result["summary"]
+    assert all(service.vault.saved[key] == value for key, value in previous.items())
+    assert sum(key[1].startswith("background-v1-account-") for key in service.vault.saved) == 2
+    assert all(row["new_count"] == 0 for row in service.collect()["providers"])
+
+
+def test_account_change_after_cached_analysis_cancels_counts_and_baseline(service):
+    def changed(provider, account):
+        raise ToolCancelledError("메일 계정 설정이 변경되었습니다.")
+    service.browser.check_snapshot = changed
+    with pytest.raises(ToolCancelledError):
+        service.collect(("gmail",))
+    assert service.vault.saved == {}
+    assert not service.browser.workflow_lock.locked()
+
+
+def test_imap_uid_epoch_reset_starts_new_baseline_without_false_new_mail(service):
+    service.browser.baseline_prefix = "background-v1-account-"
+    listing = service.browser.list_inbox
+    epoch = ["1" * 64]
+    def with_epoch(provider, *, checkpoint):
+        return {**listing(provider, checkpoint=checkpoint), "baseline_epoch": epoch[0]}
+    service.browser.list_inbox = with_epoch
+    service.collect(("naver",))
+    assert service.collect(("naver",))["providers"][0]["new_count"] == 0
+    epoch[0] = "2" * 64
+    assert service.collect(("naver",))["providers"][0]["new_count"] is None
+    assert len(service.vault.saved) == 2
+
+
 def test_filter_current_complete_records_and_notify_categories(service):
     service.collect(("gmail",))
     browser = service.browser

@@ -216,6 +216,77 @@ def test_wrong_status_target_is_rejected_and_disconnect_is_scoped_confirmed(make
     assert not dialog.disconnect_button.isEnabled()
 
 
+@pytest.mark.parametrize("email_scope", ["email", "https://www.googleapis.com/auth/userinfo.email"])
+def test_gmail_mode_explains_desktop_setup_and_requests_readonly_identity_scopes(monkeypatch, email_scope):
+    app()
+    oauth = OAuth()
+    oauth.SPECS = {"google": {**OAuth.SPECS["google"], "scopes": [
+        "openid", email_scope, "https://www.googleapis.com/auth/gmail.readonly"]}}
+    oauth.active_account = lambda: "owner@example.com"
+    monkeypatch.delenv(oauth.SPECS["google"]["client_id"], raising=False)
+    dialog = OAuthAccountDialog(oauth, gmail_only=True)
+    try:
+        assert dialog.windowTitle() == "Gmail 읽기 연결" and dialog.provider.count() == 1
+        assert dialog.account_input.text() == "owner@example.com"
+        assert not dialog.client_id_input.text() and dialog.client_secret_input.text() == ""
+        assert not dialog.connect_button.isEnabled() and dialog.port.isHidden()
+        setup = dialog.setup_label.text()
+        for required in ("Gmail API", "Branding", "Audience", "External", "Test users", "Data Access",
+                         "gmail.readonly", "openid", "userinfo.email", "Clients", "Desktop app", "7일"):
+            assert required in setup
+        assert "Calendar" not in setup and "Drive" not in setup and "Microsoft" not in setup
+        assert dialog.setup_label.openExternalLinks()
+        assert 'href="https://developers.google.com/' in setup
+        assert "전송·삭제·읽음 변경 권한은 요청하지 않습니다" in setup
+        assert "연결이 없습니다" in dialog.status_label.text()
+    finally:
+        dialog.reject()
+
+
+def test_account_disconnect_uses_service_guard_when_available(make_dialog, monkeypatch):
+    dialog, oauth, _connection = make_dialog()
+    oauth.vault.save("google", "owner@example.com", {"access_token": "fixture-secret"})
+    calls = []
+
+    def disconnect(provider, account):
+        calls.append((provider, account))
+        oauth.vault.delete(provider, account)
+
+    oauth.disconnect = disconnect
+    dialog.status_button.click()
+    monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.StandardButton.Yes)
+    dialog.disconnect_button.click()
+    assert calls == [("google", "owner@example.com")]
+    assert not dialog.disconnect_button.isEnabled()
+
+
+def test_gmail_mode_rejects_generic_write_capable_oauth_coordinator():
+    app()
+    with pytest.raises(ValueError, match="읽기 전용"):
+        OAuthAccountDialog(OAuth(), gmail_only=True)
+
+
+def test_gmail_dialog_uses_actual_readonly_service_contract_without_saved_account_or_network(monkeypatch):
+    from core.background_mail import GmailMailAccountService
+    from unittest.mock import Mock
+    app()
+    vault = Vault()
+    session = SimpleNamespace(get=Mock(side_effect=AssertionError("unexpected network")),
+                              post=Mock(side_effect=AssertionError("unexpected network")))
+    oauth = GmailMailAccountService(vault=vault, session=session)
+    monkeypatch.delenv(oauth.SPECS["google"]["client_id"], raising=False)
+    dialog = OAuthAccountDialog(oauth, gmail_only=True)
+    try:
+        assert dialog.windowTitle() == "Gmail 읽기 연결" and dialog.provider.count() == 1
+        assert dialog.account_input.text() == "" and dialog.client_id_input.text() == ""
+        assert not dialog.connect_button.isEnabled()
+        assert not vault.tokens
+        session.get.assert_not_called()
+        session.post.assert_not_called()
+    finally:
+        dialog.reject()
+
+
 def test_plugin_hub_and_diagnostics_buttons_open_account_dialog(monkeypatch):
     from ui.plugin_hub import PluginHub
     from ui.main_window import PluginDiagnosticsDialog

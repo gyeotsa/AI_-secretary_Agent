@@ -1,4 +1,4 @@
-"""Read Chrome mail and collect account-scoped summaries in the background."""
+"""Read mail and collect account-scoped summaries through the injected service."""
 from __future__ import annotations
 
 import threading
@@ -19,6 +19,8 @@ from core.turn_context import TurnExecutionContext, bind_turn_context
 from .dialog_theme import apply_dark_dialog_theme
 from .mail_connection_dialog import MailConnectionDialog
 from .mail_category_dialog import MailCategoryDialog
+from .mail_account_dialog import MailAccountDialog
+from .oauth_account_dialog import OAuthAccountDialog
 
 
 # Keep parentless workers alive when the owning window is destroyed mid-query.
@@ -47,6 +49,8 @@ class _MailOperation(QThread):
     def checkpoint(self):
         if self.cancelled.is_set():
             raise ToolCancelledError("메일 조회가 취소되었습니다.")
+        if self.operation == "collect" and getattr(self.service, "background", False) is True:
+            self.service.check_snapshot(self.provider, self.account)
 
     def run(self):
         locked = False
@@ -116,6 +120,7 @@ class MailInboxDialog(QDialog):
     def __init__(self, service, parent=None, *, brief_service=None):
         super().__init__(parent)
         self.service = service
+        self._background = getattr(service, "background", False) is True
         self.brief_service = brief_service
         self._worker = None
         self._pending_outcome = None
@@ -138,6 +143,9 @@ class MailInboxDialog(QDialog):
 
         layout = QVBoxLayout(self)
         intro = QLabel(
+            "Gmail API·네이버 IMAP으로 받은편지함의 최근 메일 최대 50건을 조회합니다.\n"
+            "처음 계정을 연결한 뒤에는 Chrome 창을 띄우지 않고 메일을 수집합니다."
+            if self._background else
             "로그인된 Chrome의 Gmail·네이버 메일 목록을 조회합니다.\n"
             "로그인이 필요하면 아니스에 저장한 계정으로 로그인합니다. 추가 인증은 Chrome에서 직접 완료하세요.\n"
             "Chrome에서 선택한 현재 페이지의 목록 최대 50건을 표시합니다."
@@ -152,16 +160,20 @@ class MailInboxDialog(QDialog):
         self.provider.addItem("네이버 메일", "naver")
         actions.addWidget(self.provider)
         self.open_button = QPushButton("Chrome 메일 열기")
-        self.list_button = QPushButton("현재 목록 조회")
+        self.list_button = QPushButton("받은편지함 조회" if self._background else "현재 목록 조회")
         self.refresh_button = QPushButton("새로고침")
         self.login_button = QPushButton("로그인 계정 설정")
-        self.disconnect_button = QPushButton("연결 해제")
+        self.disconnect_button = QPushButton("조회 결과 비우기" if self._background else "연결 해제")
+        if self._background:
+            self.open_button.hide()
+            self.login_button.hide()
+            self.disconnect_button.setToolTip("화면의 조회 결과와 임시 캐시를 비웁니다. 저장된 계정 연결은 유지됩니다.")
         for button in (self.open_button, self.list_button, self.refresh_button, self.login_button, self.disconnect_button):
             button.setAutoDefault(False)
             actions.addWidget(button)
         layout.addLayout(actions)
         connection = QHBoxLayout()
-        self.connection_button = QPushButton("자동 연결 설정")
+        self.connection_button = QPushButton("백그라운드 계정 설정" if self._background else "자동 연결 설정")
         self.connection_button.setAutoDefault(False)
         self.connection_label = QLabel()
         self.connection_label.setWordWrap(True)
@@ -200,7 +212,7 @@ class MailInboxDialog(QDialog):
         self.count_label.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.count_label)
         self.table = QTableWidget(0, 4)
-        self.table.setAccessibleName("현재 페이지 메일 목록")
+        self.table.setAccessibleName("받은편지함 메일 목록" if self._background else "현재 페이지 메일 목록")
         self.table.setHorizontalHeaderLabels(["보낸 사람", "제목", "수신 일시", "읽음 상태"])
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -213,11 +225,16 @@ class MailInboxDialog(QDialog):
         layout.addWidget(self.table)
         self.table.cellClicked.connect(self._toggle_body)
         self.table.installEventFilter(self)
-        self.status_label = QLabel("Chrome 메일 목록을 연 뒤 현재 목록 조회를 누르세요.")
+        self.status_label = QLabel("백그라운드 계정 설정에서 연결한 뒤 받은편지함 조회를 누르세요." if self._background else
+                                  "Chrome 메일 목록을 연 뒤 현재 목록 조회를 누르세요.")
         self.status_label.setWordWrap(True)
         self.status_label.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.status_label)
         note = QLabel(
+            "메일 행을 클릭하거나 Enter·Space를 누르면 아래에 본문을 펼칩니다. 본문 조회·분류는 읽음 상태를 변경하지 않습니다.\n"
+            "자동 요약·분류가 켜져 있으면 조회 목록의 본문을 읽고 요약·분류를 기억합니다.\n"
+            "검색·읽지 않음 필터는 조회된 목록에만 적용됩니다. 계정 연결 해제는 백그라운드 계정 설정에서 할 수 있습니다."
+            if self._background else
             "자동 연결 토큰을 등록하면 대상 메일 탭을 자동 선택합니다. 미등록 시 Allow & select에서 직접 선택하세요.\n"
             "추가 인증은 Chrome에서 완료하세요. 계정·폴더·페이지를 바꾼 뒤에는 현재 목록을 다시 조회하세요.\n"
             "메일 행을 클릭하거나 Enter·Space를 누르면 아래에 본문을 펼칩니다. 메일을 열면 서비스에서 읽음 처리될 수 있습니다.\n"
@@ -293,6 +310,17 @@ class MailInboxDialog(QDialog):
 
     def _refresh_connection_status(self):
         try:
+            if self._background:
+                status = self.service.connection_status(self.provider.currentData())
+                configured, account = status.get("configured"), status.get("account")
+                if (type(configured) is not bool or not isinstance(account, str) or len(account) > 320
+                        or (configured and not account.strip())):
+                    raise ValueError("Invalid background account status")
+                self.connection_label.setText(
+                    f"백그라운드 계정: {account} · 저장됨 · 실제 접속은 조회 시 확인" if configured and account else
+                    "백그라운드 계정: 미연결 · 계정 설정에서 연결하세요."
+                )
+                return
             self._auto_configured = self.service.connection_credentials.status().get("configured") is True
             self.connection_label.setText(
                 "자동 연결 토큰: 등록됨 · 연결·로그인은 조회 시 확인" if self._auto_configured else
@@ -300,10 +328,13 @@ class MailInboxDialog(QDialog):
             )
         except Exception:
             self._auto_configured = False
-            self.connection_label.setText("자동 연결 등록 상태 확인 불가")
+            self.connection_label.setText("백그라운드 계정 저장 상태 확인 불가" if self._background else "자동 연결 등록 상태 확인 불가")
 
     def _request_connection_settings(self):
         if self._worker is not None or self._closed or self._connection_dialog is not None or self._category_dialog is not None:
+            return
+        if self._background:
+            self._show_connection_settings()
             return
         self._pending_connection_settings = True
         self._start("disconnect")
@@ -313,15 +344,22 @@ class MailInboxDialog(QDialog):
             self.status_label.setText("다른 메일 작업이 진행 중입니다. 작업이 끝난 뒤 설정을 변경하세요.")
             return
         try:
-            dialog = MailConnectionDialog(self.service.connection_credentials, self)
+            if self._background:
+                dialog = (OAuthAccountDialog(self.service.gmail, self, gmail_only=True) if self.provider.currentData() == "gmail" else
+                          MailAccountDialog(self.service.naver, self))
+                dialog.settings_changed.connect(self._refresh_connection_status)
+            else:
+                dialog = MailConnectionDialog(self.service.connection_credentials, self)
+                dialog.registration_changed.connect(self._refresh_connection_status)
             self._connection_dialog = dialog
-            dialog.registration_changed.connect(self._refresh_connection_status)
             self._update_controls()
             try:
                 dialog.exec()
             finally:
                 self._connection_dialog = None
                 dialog.deleteLater()
+                if self._background:
+                    self._clear()
                 self._refresh_connection_status()
                 self._update_controls()
         finally:
@@ -340,12 +378,16 @@ class MailInboxDialog(QDialog):
 
     def _provider_changed(self, *_args):
         self._clear()
+        self._refresh_connection_status()
         if self._worker is not None:
             self._cancel()
         else:
             self._start("switch")
 
     def _request_login(self):
+        if self._background:
+            self._request_connection_settings()
+            return
         if self._worker is None and not self._closed:
             if self.service.workflow_lock.locked() is True:
                 self.status_label.setText("다른 메일 작업이 진행 중입니다. 작업이 끝난 뒤 로그인 설정을 확인하세요.")
@@ -393,8 +435,10 @@ class MailInboxDialog(QDialog):
                 "선택한 메일의 본문을 확인하고 있습니다…" if operation == "body" else
                 "네이버·Gmail 메일 현황을 수집하고 있습니다…" if operation == "brief" else
                 f"조회한 목록 {len(self._items)}건의 본문을 읽고 요약·분류하고 있습니다…" if operation == "collect" else
+                "조회 결과와 임시 캐시를 비우고 있습니다…" if operation == "disconnect" and self._background else
                 "연결을 해제하고 있습니다…" if operation == "disconnect" else
                 "메일 서비스를 전환하고 있습니다…" if operation == "switch" else
+                "받은편지함을 백그라운드에서 조회하고 있습니다…" if self._background else
                 "Chrome 메일 작업 중… 저장된 자동 연결 토큰으로 대상 탭을 확인합니다." if self._auto_configured else
                 "Chrome 메일 작업 중… 대상 탭 선택까지 최대 5분 기다립니다."
             )
@@ -467,18 +511,22 @@ class MailInboxDialog(QDialog):
             elif worker.operation == "open":
                 self.status_label.setText("Chrome에 메일 주소를 전달했습니다. 현재 목록 조회 시 저장된 로그인 계정을 활용합니다.")
             elif worker.operation == "disconnect":
-                self.status_label.setText("앱의 메일 탭 연결을 해제했습니다. Chrome 로그인 상태는 유지됩니다.")
+                self.status_label.setText("조회 결과와 임시 캐시를 비웠습니다. 저장된 계정 연결은 유지됩니다." if self._background else
+                                          "앱의 메일 탭 연결을 해제했습니다. Chrome 로그인 상태는 유지됩니다.")
             elif worker.operation == "switch":
-                self.status_label.setText("메일 서비스를 전환했습니다. 현재 목록 조회에서 대상 메일 계정을 확인하세요.")
+                self.status_label.setText("메일 서비스를 전환했습니다. 받은편지함 조회에서 대상 계정을 확인하세요." if self._background else
+                                          "메일 서비스를 전환했습니다. 현재 목록 조회에서 대상 메일 계정을 확인하세요.")
             else:
                 try:
                     self._apply_result(payload)
-                    self.status_label.setText("선택한 Chrome 메일 목록을 조회했습니다. 메일을 열거나 읽음 상태를 변경하지 않았습니다.")
+                    self.status_label.setText("받은편지함을 백그라운드에서 조회했습니다. 읽음 상태를 변경하지 않았습니다." if self._background else
+                                              "선택한 Chrome 메일 목록을 조회했습니다. 메일을 열거나 읽음 상태를 변경하지 않았습니다.")
                     self._refresh_analysis_status()
                     collect = self._analysis_enabled and bool(self._items)
                 except (TypeError, ValueError, KeyError):
                     self._clear()
-                    self.status_label.setText("메일 목록을 확인하지 못했습니다. 올바른 메일 목록 탭에서 다시 조회하세요.")
+                    self.status_label.setText("메일 목록을 확인하지 못했습니다. 백그라운드 계정 설정을 확인하고 다시 조회하세요." if self._background else
+                                              "메일 목록을 확인하지 못했습니다. 올바른 메일 목록 탭에서 다시 조회하세요.")
         elif kind == "cancelled":
             self._clear()
             self.status_label.setText("메일 조회를 취소했습니다.")
@@ -495,8 +543,9 @@ class MailInboxDialog(QDialog):
             else:
                 self._clear()
                 message = payload.get("message") if isinstance(payload, dict) else None
-                self.status_label.setText(message if isinstance(message, str) and message else
-                                          "메일을 조회하지 못했습니다. Chrome 로그인·확장 설치·탭 선택을 확인하고 다시 조회하세요.")
+                fallback = ("메일을 조회하지 못했습니다. 백그라운드 계정 설정과 네트워크를 확인하고 다시 조회하세요." if self._background else
+                            "메일을 조회하지 못했습니다. Chrome 로그인·확장 설치·탭 선택을 확인하고 다시 조회하세요.")
+                self.status_label.setText(message if isinstance(message, str) and message else fallback)
         self._update_controls()
         if show_connection_settings:
             self._show_connection_settings()
@@ -516,7 +565,8 @@ class MailInboxDialog(QDialog):
         )
 
     def _apply_result(self, payload):
-        if not isinstance(payload, dict) or payload.get("scope") != "current_view" or payload.get("provider") != self.provider.currentData():
+        scope = "inbox" if self._background else "current_view"
+        if not isinstance(payload, dict) or payload.get("scope") != scope or payload.get("provider") != self.provider.currentData():
             raise ValueError("Invalid mail scope")
         items, account, observed = payload.get("items"), payload.get("account"), payload.get("observed_count")
         if not isinstance(items, list) or len(items) > 50 or not isinstance(account, str) or not account.strip() or len(account) > 320:
@@ -557,11 +607,13 @@ class MailInboxDialog(QDialog):
         if self._items or self._observed_count:
             unread = sum(item["unread"] for item in self._items)
             self.count_label.setText(
-                f"현재 페이지 목록 {self._observed_count}건 중 조회 {len(self._items)}건 · "
+                (f"받은편지함 조회 {len(self._items)}건 (최대 50건) · " if self._background else
+                 f"현재 페이지 목록 {self._observed_count}건 중 조회 {len(self._items)}건 · ") +
                 f"조회된 목록의 읽지 않음 {unread}건 · 필터 표시 {len(items)}건"
             )
         else:
-            self.count_label.setText("현재 조회된 목록은 0건입니다. 전체 메일함 건수는 확인하지 않습니다.")
+            self.count_label.setText("받은편지함 조회 결과는 0건입니다." if self._background else
+                                     "현재 조회된 목록은 0건입니다. 전체 메일함 건수는 확인하지 않습니다.")
 
     def eventFilter(self, watched, event):
         if watched is self.table and event.type() == QEvent.Type.KeyPress and event.key() in (
@@ -616,9 +668,10 @@ class MailInboxDialog(QDialog):
             if valid:
                 text = payload["body"] or "표시할 텍스트 본문이 없습니다."
                 if payload.get("truncated"):
-                    text += "\n\n[긴 본문은 일부만 표시합니다. 전체 내용은 Chrome에서 확인하세요.]"
+                    text += "\n\n[긴 본문은 일부만 표시합니다. 전체 내용은 메일 서비스에서 확인하세요.]"
                 self._body_view.setPlainText(text)
-                self.status_label.setText("선택한 메일 본문을 펼쳤습니다. 다시 클릭하면 접습니다. 목록의 읽음 상태는 새로고침 시 확인됩니다.")
+                self.status_label.setText("선택한 메일 본문을 펼쳤습니다. 다시 클릭하면 접습니다. 읽음 상태는 변경하지 않습니다." if self._background else
+                                          "선택한 메일 본문을 펼쳤습니다. 다시 클릭하면 접습니다. 목록의 읽음 상태는 새로고침 시 확인됩니다.")
                 return
         self._body_failed = True
         message = payload.get("message") if kind == "failed" and isinstance(payload, dict) else None
