@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -12,6 +13,28 @@ from typing import Any, Dict, List, Optional
 
 
 user32 = ctypes.windll.user32 if os.name == "nt" else None
+
+
+@contextmanager
+def windows_com_apartment():
+    """Balance COM per worker without changing an existing STA/MTA apartment."""
+    if os.name != "nt":
+        yield
+        return
+    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    ole32.CoInitializeEx.argtypes = (ctypes.c_void_p, wintypes.DWORD)
+    ole32.CoInitializeEx.restype = wintypes.LONG
+    ole32.CoUninitialize.argtypes = ()
+    ole32.CoUninitialize.restype = None
+    result = int(ole32.CoInitializeEx(None, 0))
+    if result & 0xFFFFFFFF == 0x80010106:  # RPC_E_CHANGED_MODE: retain an existing STA.
+        result = int(ole32.CoInitializeEx(None, 2))
+    if result not in (0, 1):
+        raise OSError(result, "Windows COM 초기화에 실패했습니다.")
+    try:
+        yield
+    finally:
+        ole32.CoUninitialize()
 
 
 @dataclass(frozen=True)
@@ -312,6 +335,7 @@ class WindowsAutomationRuntime:
         ranked.sort(key=lambda item: item[0], reverse=True)
         return ranked
 
+    @windows_com_apartment()
     def accessibility_controls(self, handle: int) -> List[Dict[str, Any]]:
         """List visible controls as metadata only; native wrapper objects never escape."""
         return [metadata for _score, _wrapper, metadata in self._accessibility_candidates(
@@ -329,6 +353,7 @@ class WindowsAutomationRuntime:
                 return method, interface
         return "", None
 
+    @windows_com_apartment()
     def activate_accessibility_control(
         self, handle: int, *, names=(), automation_id_keywords=(), control_types=(),
         excluded_names=(), exact_name: bool = False, allow_type_only: bool = False,
@@ -445,6 +470,7 @@ class WindowsAutomationRuntime:
             metadata["keyboard_focus_verified"] = True
         return wrapper, metadata
 
+    @windows_com_apartment()
     def verify_accessibility_control(
         self, handle: int, *, expected_identity: Dict[str, Any], names=(),
         automation_id_keywords=(), control_types=(), excluded_names=(),
@@ -503,6 +529,7 @@ class WindowsAutomationRuntime:
             text = text[:-1]
         return text
 
+    @windows_com_apartment()
     def set_accessibility_text(
         self, handle: int, value: str, *, names=(), automation_id_keywords=(),
         control_types=("Edit",), excluded_names=(), exact_name: bool = False,
@@ -570,6 +597,7 @@ class WindowsAutomationRuntime:
             "coordinate_fallback_used": False,
         }
 
+    @windows_com_apartment()
     def read_accessibility_text(
         self, handle: int, *, names=(), automation_id_keywords=(),
         control_types=("Edit",), excluded_names=(), exact_name: bool = False,
@@ -627,6 +655,7 @@ class WindowsAutomationRuntime:
             "ancestor_class_names": [item for item in class_names if item],
         }
 
+    @windows_com_apartment()
     def accessibility_text_occurrences(
         self, handle: int, value: str, *, control_types=("Text", "ListItem", "Document"),
     ) -> List[Dict[str, Any]]:
@@ -690,6 +719,7 @@ class WindowsAutomationRuntime:
         user32.PostMessageW(int(handle), 0x0010, 0, 0)  # WM_CLOSE
         time.sleep(0.08)
 
+    @windows_com_apartment()
     def accessibility_tree(self, handle: int, max_depth: int = 4, max_nodes: int = 300) -> Dict[str, Any]:
         if user32 is None or not user32.IsWindow(int(handle)):
             raise LookupError("유효하지 않은 창 Handle입니다.")

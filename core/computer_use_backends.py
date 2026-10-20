@@ -351,8 +351,8 @@ class WindowsComputerBackend:
     def __enter__(self):
         if os.name != "nt":
             raise RuntimeError("Windows Computer Use는 Windows에서만 사용할 수 있습니다.")
-        import comtypes
         import psutil
+        from core.windows_automation import windows_com_apartment
         try:
             setter = ctypes.WinDLL("user32", use_last_error=True).SetThreadDpiAwarenessContext
             setter.argtypes, setter.restype = [ctypes.c_void_p], ctypes.c_void_p
@@ -363,7 +363,8 @@ class WindowsComputerBackend:
             pass
         initialized = False
         try:
-            comtypes.CoInitialize()
+            self._com_scope = windows_com_apartment()
+            self._com_scope.__enter__()
             initialized = True
             self.checkpoint()
             self.window = self._choose_window(self.automation.list_windows())
@@ -377,7 +378,7 @@ class WindowsComputerBackend:
             return self
         except BaseException:
             if initialized:
-                comtypes.CoUninitialize()
+                self._com_scope.__exit__(None, None, None)
             self._restore_dpi()
             raise
 
@@ -387,9 +388,8 @@ class WindowsComputerBackend:
             self._dpi_setter, self._dpi_previous = None, None
 
     def __exit__(self, *_):
-        import comtypes
         self.controls.clear()
-        comtypes.CoUninitialize()
+        self._com_scope.__exit__(None, None, None)
         self._restore_dpi()
 
     def _scope_windows(self):

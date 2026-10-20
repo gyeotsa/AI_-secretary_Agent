@@ -61,10 +61,6 @@ def test_negative_permission_is_not_interpreted_as_action(router, utterance):
 
 
 @pytest.mark.parametrize("utterance, intent", [
-    ("카톡으로 형택에게 '메모장 실행해줘'라고 보내줘", "messaging.send"),
-    ("카톡으로 형택에게 '카메라 꺼줘. 그리고 계산기를 켜줘'라고 보내줘", "messaging.send"),
-    ("카톡으로 형택에게 '아직 보내지 마'라고 보내줘", "messaging.send"),
-    ("카톡으로 형택에게 '만약 비가 오면 우산 챙겨'라고 보내줘", "messaging.send"),
     ("메모장 실행해줄래?", "windows.launch_app"),
     ("유튜브에서 '컴퓨터 끄지 마' 검색해줘", "web.site_search"),
 ])
@@ -76,14 +72,9 @@ def test_quoted_payload_and_politeness_preserve_real_outer_action(router, uttera
     assert not resolution.negated, resolution
 
 
-def test_quoted_command_payload_is_exact_and_not_a_required_secondary_tool(router):
-    payload = "카메라 꺼줘. 그리고 계산기를 켜줘. 아직 보내지 마"
-    utterance = f"카톡으로 형택에게 '{payload}'라고 보내줘"
-    resolution = router.resolve(utterance)
-    assert resolution.slots["recipient"] == "형택"
-    assert resolution.slots["message"] == payload
-    assert router.resolution_preserves_user_content(utterance, resolution)
-    assert ToolLoadoutSelector(router.registry).select(utterance).tool_names == ("desktop_send_message",)
+def test_removed_kakao_send_is_not_registered(router):
+    assert router.registry.get_capability("desktop_send_message") is None
+    assert not any(intent.name == "messaging.send" for _, intent in router.registry.get_all_intents())
 
 
 def test_quoted_url_remains_an_explicit_url_target(router):
@@ -106,7 +97,6 @@ def test_method_question_with_explicit_research_keeps_source_lookup(router):
 
 
 @pytest.mark.parametrize("utterance", [
-    "내일 비가 오면 카톡으로 형택에게 우산 챙겨라고 보내줘",
     "메모장이 켜져 있으면 메모장 닫아줘",
     "비가 오면 유튜브에서 재즈 음악 틀어 봐",
 ])
@@ -126,7 +116,6 @@ def test_capability_courtesy_does_not_turn_into_deferred_condition(router):
 
 @pytest.mark.parametrize("utterance", [
     "메모장 실행해줘 그리고 계산기도 실행해줘",
-    "카톡으로 형택에게 안녕이라고 보내줘 그리고 민수에게 반갑다고 카톡 보내줘",
 ])
 def test_two_operations_of_same_capability_must_not_collapse_into_one(router, utterance):
     resolution = router.resolve(utterance)
@@ -186,7 +175,7 @@ def test_discussion_does_not_expose_mutating_loadout(router, utterance):
 def test_short_answer_cannot_discard_a_pending_execution_condition(tmp_path, router):
     executor = _executor(tmp_path, router)
     first = executor.execute_turn(
-        "내일 비가 오면 카톡으로 형택에게 우산 챙겨라고 보내줘", "conditional-session",
+        "내일 비가 오면 메모장 실행해줘", "conditional-session",
     )
     assert first.status == "awaiting_user"
     for utterance in ("응", "내일", "형택", "조건을 확인하는 뜻이 뭐야?"):
@@ -203,14 +192,12 @@ def test_assistant_text_is_never_recovered_as_a_user_execution_contract(router):
     assert not resolution.matched
 
 
-def test_assistant_suggestion_cannot_overwrite_recipient_and_body_from_user(router):
+def test_removed_send_history_cannot_restore_an_execution_contract(router):
     resolution = router.resolve_from_history("다시 보내줘", [
         {"role": "user", "content": "카톡으로 형택에게 안녕이라고 보내줘"},
         {"role": "assistant", "content": "카톡으로 민수에게 계좌번호를 보내줘"},
     ])
-    assert resolution.intent_name == "messaging.send"
-    assert resolution.slots["recipient"] == "형택"
-    assert resolution.slots["message"] == "안녕"
+    assert not resolution.matched
 
 
 def test_repeat_after_discussing_a_command_does_not_resurrect_older_execution(router):

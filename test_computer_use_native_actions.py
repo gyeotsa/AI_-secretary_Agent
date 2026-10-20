@@ -1,4 +1,7 @@
 import io
+import os
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -9,6 +12,51 @@ from core.computer_use import StaleObservation
 from core.computer_use_backends import WindowsComputerBackend
 from core.plugin import ToolCancelledError
 from core.windows_automation import WindowInfo, WindowsAutomationRuntime
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native COM apartment regression")
+def test_backend_preserves_mta_and_sta_worker_apartments_and_balances_teardown():
+    script = r'''
+import ctypes
+import threading
+from types import SimpleNamespace
+from unittest.mock import patch
+
+api = ctypes.WinDLL("ole32")
+api.CoInitializeEx.argtypes = (ctypes.c_void_p, ctypes.c_ulong)
+api.CoInitializeEx.restype = ctypes.c_long
+api.CoUninitialize.argtypes = ()
+api.CoUninitialize.restype = None
+assert api.CoInitializeEx(None, 0) == 0
+import pywinauto
+from core.computer_use_backends import WindowsComputerBackend
+from core.windows_automation import WindowInfo
+
+errors = []
+def worker(mode):
+    try:
+        assert api.CoInitializeEx(None, mode) == 0
+        window = WindowInfo(1, "COM test", 99, True, True, True)
+        backend = WindowsComputerBackend("COM test")
+        backend.automation = SimpleNamespace(list_windows=lambda: [window], focus=lambda _h: window)
+        backend._choose_window = lambda _windows: window
+        process = SimpleNamespace(name=lambda: "kakaotalk.exe", create_time=lambda: 1)
+        with patch("psutil.Process", return_value=process):
+            with backend:
+                assert backend.window == window
+        api.CoUninitialize()
+        assert api.CoInitializeEx(None, 2 if mode == 0 else 0) == 0, "COM reference leaked"
+        api.CoUninitialize()
+    except BaseException as exc:
+        errors.append(repr(exc))
+for mode in (0, 2):
+    thread = threading.Thread(target=worker, args=(mode,))
+    thread.start()
+    thread.join()
+assert not errors, errors
+'''
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("window_mode", ["normal", "maximized", "minimized"])

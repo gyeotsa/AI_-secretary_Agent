@@ -205,8 +205,8 @@ def test_step_budget_still_allows_final_verification_but_no_extra_action():
     assert result.status == ToolRunStatus.PARTIAL and len(screen.actions) == 1
 
 
-def test_one_time_confirmation_never_reuses_or_persists_allow():
-    with tempfile.TemporaryDirectory() as directory:
+def test_one_time_confirmation_never_reuses_or_persists_allow(tmp_path):
+    with tempfile.TemporaryDirectory(dir=tmp_path) as directory:
         manager = PermissionManager(str(Path(directory) / "permissions.json"))
         manager.grant_permission("computer_control")
         before = manager.storage_path.read_bytes()
@@ -375,6 +375,24 @@ def test_windows_full_value_hash_detects_hidden_suffix():
     backend.automation.set_accessibility_text.assert_not_called()
     assert "private suffix" not in json.dumps(observation.payload())
     assert _value_hash(full_value) not in json.dumps(observation.payload())
+
+
+def test_unicode_typing_preserves_korean_and_surrogate_pairs_without_clipboard(monkeypatch):
+    import core.desktop_messaging as messaging
+
+    sent = []
+    monkeypatch.setattr(messaging, "_dispatch_inputs", lambda array: sent.append(list(array)))
+    messaging.DesktopMessagingRuntime._type_unicode("한A😀")
+    units = [int.from_bytes("한A😀".encode("utf-16-le")[index:index + 2], "little")
+             for index in range(0, len("한A😀".encode("utf-16-le")), 2)]
+    assert len(sent) == 1 and len(sent[0]) == 2 * len(units)
+    for unit, down, up in zip(units, sent[0][::2], sent[0][1::2]):
+        assert down.type == up.type == 1
+        assert down.ki.wVk == up.ki.wVk == 0
+        assert down.ki.wScan == up.ki.wScan == unit
+        assert down.ki.dwFlags == 0x0004 and up.ki.dwFlags == 0x0006
+    messaging.DesktopMessagingRuntime._type_unicode("")
+    assert len(sent) == 1
 
 
 def test_windows_global_typing_pins_observed_focus_after_approval_and_before_dispatch():

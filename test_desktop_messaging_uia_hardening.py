@@ -1,15 +1,9 @@
-import json
-
-import ctypes
-from ctypes import wintypes
 from types import SimpleNamespace
 
 import pytest
 
 from core.desktop_messaging import DesktopMessagingRuntime
-from core.tool_result import ToolRunStatus
 from core.windows_automation import WindowInfo, WindowsAutomationRuntime
-from plugins.desktop_messaging import DesktopMessagingPlugin
 
 
 class VerifiedMessagingAutomation:
@@ -80,7 +74,10 @@ class VerifiedMessagingAutomation:
         names = kwargs.get("names") or []
         if names == ["형택"]:
             self.contact_search_count += 1
-            return {"control_type": "ListItem", "activation": "invoke"}
+            return {
+                "name": "형택", "control_type": "ListItem", "activation": "invoke",
+                "control_identity": {"runtime_id": [55, 1], "token": "recipient-55-1"},
+            }
         if "친구" in names:
             return {"control_type": "TabItem", "activation": "invoke"}
         if int(handle) == self.main.handle:
@@ -160,7 +157,8 @@ def _runtime(monkeypatch, automation):
     monkeypatch.setattr("core.desktop_messaging.os.name", "nt")
     monkeypatch.setattr("core.desktop_messaging.time.sleep", lambda _seconds: None)
     monkeypatch.setattr(runtime, "_hotkey", lambda _keys: None)
-    monkeypatch.setattr(runtime, "_type_unicode", lambda _text: None)
+    monkeypatch.setattr(runtime, "_verify_provider_process", lambda _pid, _config: None)
+    monkeypatch.setattr(runtime, "_capture_chat_observation", lambda _chat: None)
     def press(key):
         if key == "ENTER":
             automation.enter()
@@ -178,242 +176,215 @@ def test_main_window_matching_does_not_confuse_recipient_chat():
     assert DesktopMessagingRuntime._matching_windows([main, chat], ["카카오톡"]) == [main]
 
 
-def test_send_requires_same_focused_composer_and_new_exact_outgoing_bubble(monkeypatch):
+def test_recipient_title_preserves_internal_spaces_and_only_removes_exact_provider_suffix():
+    normal = DesktopMessagingRuntime._normal_title
+    assert normal("김 철수 - KakaoTalk") != normal("김철수 - KakaoTalk")
+    assert normal("형택 - 카카오톡 추가 내용") != normal("형택")
+    assert normal("형택 - 카카오톡") == "형택"
+
+
+def test_provider_title_requires_real_kakao_executable(monkeypatch):
+    config = {"executable_names": ["KakaoTalk.exe"]}
+    monkeypatch.setattr("psutil.Process", lambda _pid: SimpleNamespace(exe=lambda: r"C:\Apps\Notepad.exe"))
+    with pytest.raises(RuntimeError, match="프로세스가 일치하지"):
+        DesktopMessagingRuntime._verify_provider_process(99, config)
+    monkeypatch.setattr("psutil.Process", lambda _pid: SimpleNamespace(exe=lambda: r"C:\Apps\KakaoTalk.exe"))
+    DesktopMessagingRuntime._verify_provider_process(99, config)
+
+
+def test_duplicate_exact_recipient_results_are_never_invoked(monkeypatch):
     automation = VerifiedMessagingAutomation()
     runtime = _runtime(monkeypatch, automation)
+    original_activate = automation.activate_accessibility_control
+    search = original_activate(automation.main.handle, control_types=["Edit"])
 
-    result = runtime.send("카카오톡", "형택", "테스트", send_verify_timeout=0.2)
+    def ambiguous(handle, **kwargs):
+        if kwargs.get("names") == ["형택"]:
+            assert kwargs["require_unique"] is True
+            assert kwargs["invoke"] is False
+            raise LookupError("same-name contacts")
+        return original_activate(handle, **kwargs)
 
-    assert automation.enter_count == 1
-    assert result["send_accepted_verified"] is True
-    assert result["outgoing_message_verified"] is True
-    assert result["send_verification"] == "new_exact_outgoing_message_bubble"
-    assert result["message_input_focus"]["control_identity"]["token"] == "composer-42-7"
-    assert automation.contact_search_count == 0
-
-
-def test_message_input_selector_supports_current_kakao_document_richedit():
-    selector = DesktopMessagingRuntime._message_input_selector({})
-
-    assert "Document" in selector["control_types"]
-    assert "RichEdit Control" in selector["names"]
-    assert "1006" in selector["automation_id_keywords"]
-
-
-def test_native_richedit_trailing_carriage_return_is_not_visible_message_content():
-    state = {"value": "한글 테스트\r", "class_name": "RICHEDIT50W"}
-
-    assert DesktopMessagingRuntime._canonical_composer_value(state) == "한글 테스트"
-    assert DesktopMessagingRuntime._canonical_composer_value({
-        "value": "\r", "class_name": "RICHEDIT50W",
-    }) == ""
-
-
-def test_native_richedit_preserves_intentional_trailing_newline_and_spaces():
-    assert DesktopMessagingRuntime._canonical_composer_value({
-        "value": "한글 😀  \r\r", "class_name": "RICHEDIT50W",
-    }) == "한글 😀  \n"
-    assert WindowsAutomationRuntime._canonical_edit_value("한글 😀  \n") == "한글 😀  \n"
-
-
-@pytest.mark.parametrize("native", [False, True])
-def test_message_composer_never_overwrites_an_unrelated_user_draft(monkeypatch, native):
-    automation = VerifiedMessagingAutomation()
-    draft = "아직 보내지 않은 사용자 초안 😀  "
-    automation.composer_value = draft
-    if native:
-        automation.activate_accessibility_control = lambda *_args, **_kwargs: {
-            "class_name": "RICHEDIT50W", "control_type": "Document",
-            "control_identity": dict(automation.composer_identity),
-        }
-    runtime = _runtime(monkeypatch, automation)
-    monkeypatch.setattr(runtime, "_select_native_edit_all", lambda *_args: pytest.fail("must not select"))
-    monkeypatch.setattr(runtime, "_paste_unicode_preserving_clipboard", lambda *_args, **_kw: pytest.fail("must not paste"))
-
-    with pytest.raises(RuntimeError, match="다른 초안"):
-        runtime.send("카카오톡", "형택", "테스트", send_verify_timeout=0.2)
-
-    assert automation.composer_value == draft
+    automation.activate_accessibility_control = ambiguous
+    with pytest.raises(RuntimeError, match="정확히 일치"):
+        runtime._activate_recipient_result(automation.main, "형택", {}, search)
     assert automation.enter_count == 0
 
 
-def test_native_edit_uses_bounded_targeted_message_instead_of_global_backspace(monkeypatch):
-    calls = []
-
-    class NativeApi:
-        def IsWindow(self, handle):
-            return handle == 701
-
-        def GetWindowThreadProcessId(self, handle, process):
-            ctypes.cast(process, ctypes.POINTER(wintypes.DWORD)).contents.value = 99
-            return 1
-
-        def IsChild(self, parent, handle):
-            return parent == 11 and handle == 701
-
-        def GetClassNameW(self, handle, buffer, length):
-            buffer.value = "RICHEDIT50W"
-            return len(buffer.value)
-
-        def SendMessageTimeoutW(self, handle, message, wparam, lparam, flags, timeout, result):
-            calls.append((handle, message, wparam, lparam, flags, timeout))
-            return 1
-
-    monkeypatch.setattr("core.desktop_messaging._USER32", NativeApi())
-    identity = {"native_handle": 701, "process_id": 99, "window_handle": 11, "class_name": "RICHEDIT50W"}
-    DesktopMessagingRuntime._select_native_edit_all(identity)
-    DesktopMessagingRuntime._native_edit_message(identity, 0x0302)
-    assert calls == [(701, 0xB1, 0, -1, 3, 2000), (701, 0x302, 0, 0, 3, 2000)]
-
-
-def test_native_edit_timeout_is_not_reported_as_input_success(monkeypatch):
-    class NativeApi:
-        def IsWindow(self, handle):
-            return True
-
-        def GetWindowThreadProcessId(self, handle, process):
-            ctypes.cast(process, ctypes.POINTER(wintypes.DWORD)).contents.value = 99
-            return 1
-
-        def IsChild(self, parent, handle):
-            return True
-
-        def GetClassNameW(self, handle, buffer, length):
-            buffer.value = "RICHEDIT50W"
-            return len(buffer.value)
-
-        def SendMessageTimeoutW(self, *_args):
-            return 0
-
-    monkeypatch.setattr("core.desktop_messaging._USER32", NativeApi())
-    with pytest.raises(RuntimeError, match="시간 내"):
-        DesktopMessagingRuntime._native_edit_message({
-            "native_handle": 701, "process_id": 99, "window_handle": 11, "class_name": "RICHEDIT50W",
-        }, 0x0302)
-
-
-@pytest.mark.parametrize("field,replacement", [("native_handle", 999), ("process_id", 88),
-                                              ("window_handle", 22), ("class_name", "OtherEdit")])
-def test_same_runtime_id_cannot_hide_changed_native_identity(monkeypatch, field, replacement):
+def test_space_different_uia_contact_is_never_invoked(monkeypatch):
     automation = VerifiedMessagingAutomation()
     runtime = _runtime(monkeypatch, automation)
-    expected = dict(automation.composer_identity)
-    automation.composer_identity[field] = replacement
-    with pytest.raises(RuntimeError, match=field):
-        runtime._read_same_message_input(automation.chat, {}, expected)
+    original_activate = automation.activate_accessibility_control
+    search = original_activate(automation.main.handle, control_types=["Edit"])
 
+    def different_display_name(handle, **kwargs):
+        result = original_activate(handle, **kwargs)
+        if kwargs.get("names") == ["형택"]:
+            assert kwargs["invoke"] is False
+            result["name"] = "형 택"
+        return result
 
-def test_native_clipboard_prepare_failure_preserves_matching_unsent_draft(monkeypatch):
-    automation = VerifiedMessagingAutomation()
-    automation.composer_value = "테스트"
-    automation.activate_accessibility_control = lambda *_args, **_kwargs: {
-        "class_name": "RICHEDIT50W", "control_type": "Document",
-        "control_identity": dict(automation.composer_identity),
-    }
-    runtime = _runtime(monkeypatch, automation)
-
-    def failed_paste(*_args, **_kwargs):
-        raise RuntimeError("clipboard snapshot failed")
-
-    monkeypatch.setattr(runtime, "_paste_unicode_preserving_clipboard", failed_paste)
-    monkeypatch.setattr(runtime, "_select_native_edit_all", lambda *_args: pytest.fail("must not select before preparation"))
-    with pytest.raises(RuntimeError, match="snapshot failed"):
-        runtime.send("카카오톡", "형택", "테스트", send_verify_timeout=0.2)
-    assert automation.composer_value == "테스트"
+    automation.activate_accessibility_control = different_display_name
+    with pytest.raises(RuntimeError, match="표시 이름"):
+        runtime._activate_recipient_result(automation.main, "형택", {}, search)
     assert automation.enter_count == 0
 
 
-def test_native_new_user_typing_before_paste_is_preserved(monkeypatch):
+def test_read_returns_only_visible_semantic_message_items_without_sending(monkeypatch):
     automation = VerifiedMessagingAutomation()
-    automation.activate_accessibility_control = lambda *_args, **_kwargs: {
-        "class_name": "RICHEDIT50W", "control_type": "Document",
-        "control_identity": dict(automation.composer_identity),
-    }
     runtime = _runtime(monkeypatch, automation)
 
-    def delayed_paste(_value, *, identity, verify_target):
-        automation.composer_value = "사용자가 방금 타이핑함"
-        verify_target()
-        pytest.fail("must not paste after draft mutation")
-
-    monkeypatch.setattr(runtime, "_paste_unicode_preserving_clipboard", delayed_paste)
-    with pytest.raises(RuntimeError, match="초안이 변경"):
-        runtime.send("카카오톡", "형택", "테스트", send_verify_timeout=0.2)
-    assert automation.composer_value == "사용자가 방금 타이핑함"
-    assert automation.enter_count == 0
-
-
-def test_native_richedit_uses_verified_ole_paste_before_enter(monkeypatch):
-    automation = VerifiedMessagingAutomation()
-    automation.composer_identity.update({
-        "automation_id": "1006",
-        "control_type": "Document",
-        "class_name": "RICHEDIT50W",
-        "name": "RichEdit Control",
-    })
-
-    def activate_composer(_handle, **_kwargs):
+    def item(name, token, automation_id, top, **extra):
         return {
-            "name": "RichEdit Control", "automation_id": "1006",
-            "control_type": "Document", "class_name": "RICHEDIT50W",
-            "activation": "focus",
-            "control_identity": dict(automation.composer_identity),
+            "name": name, "control_type": "Text", "automation_id": automation_id,
+            "rectangle": [100, top, 300, top + 30], "class_name": "Text",
+            "control_identity": {"runtime_id": [token], "token": str(token)}, **extra,
         }
 
-    def read_composer(_handle, **kwargs):
-        return {
-            "name": "RichEdit Control", "automation_id": "1006",
-            "control_type": "Document", "class_name": "RICHEDIT50W",
-            "value": automation.composer_value,
-            "keyboard_focus_verified": bool(kwargs.get("require_keyboard_focus")),
-            "control_identity": dict(automation.composer_identity),
-        }
+    automation.accessibility_controls = lambda _handle: [
+        item("알겠어", 2, "OutgoingMessageBody", 300),
+        item("오늘 7시에 보자", 1, "IncomingMessageBody", 100, x_ratio=0.2),
+        item("오후 6:30", 3, "outgoing-timestamp", 310),
+        item("보내지 않은 초안", 4, "outgoing-composer", 500, class_name="RichEdit50W"),
+        item("검색", 5, "search", 20),
+    ]
+    result = runtime.read("카톡", "형택", limit=2)
+    assert [(message["text"], message["direction"]) for message in result["messages"]] == [
+        ("오늘 7시에 보자", "incoming"), ("알겠어", "outgoing"),
+    ]
+    assert result["read_verified"] is True
+    assert result["visible_only"] is True
+    assert result["history_complete"] is False
+    assert automation.enter_count == 0
+    assert automation.text_set_calls == []
 
-    automation.activate_accessibility_control = activate_composer
-    automation.read_accessibility_text = read_composer
+
+def test_read_empty_accessibility_tree_does_not_claim_no_received_messages(monkeypatch):
+    automation = VerifiedMessagingAutomation()
     runtime = _runtime(monkeypatch, automation)
-    pasted_inputs = []
-    native_selections = []
-
-    def paste_unicode(value, *, identity, verify_target):
-        verify_target()
-        assert identity["native_handle"] == 701
-        pasted_inputs.append(value)
-        automation.composer_value = str(value) + "\r"
-
-    monkeypatch.setattr(runtime, "_paste_unicode_preserving_clipboard", paste_unicode)
-    monkeypatch.setattr(
-        runtime, "_select_native_edit_all",
-        lambda identity: native_selections.append(identity["native_handle"]),
-    )
-
-    result = runtime.send("카카오톡", "형택", "테스트", send_verify_timeout=0.2)
-
-    assert pasted_inputs == ["테스트"]
-    assert native_selections == []  # An empty composer needs no selection or deletion.
-    assert automation.enter_count == 1
-    assert result["send_accepted_verified"] is True
-    assert result["message_input_focus"]["text_method"] == "verified_ole_paste"
-
-
-def test_send_fails_closed_if_composer_identity_changes_before_enter(monkeypatch):
-    automation = VerifiedMessagingAutomation(swap_composer=True)
-    runtime = _runtime(monkeypatch, automation)
-
-    with pytest.raises(RuntimeError, match="다른 UIA 요소"):
-        runtime.send("카카오톡", "형택", "테스트", send_verify_timeout=0.2)
-
+    automation.accessibility_controls = lambda _handle: []
+    result = runtime.read("카톡", "형택")
+    assert result["read_verified"] is False
+    assert result["messages"] == []
+    assert "메시지가 없다는 뜻은 아닙니다" in result["unverified_reason"]
     assert automation.enter_count == 0
 
 
-def test_send_fails_closed_if_foreground_changes_during_composer_read(monkeypatch):
-    automation = VerifiedMessagingAutomation(steal_focus_on_read=True)
+def test_outgoing_marker_does_not_match_arbitrary_message_text_or_present_class():
+    config = {"outgoing_message_direction_keywords": ["sent", "mine"]}
+    assert DesktopMessagingRuntime._is_outgoing_occurrence({
+        "class_name": "PresentText", "ancestor_names": ["mine sent this"],
+    }, config) is False
+
+
+def _vision_observation(color):
+    import io
+    from PIL import Image
+    from core.computer_use import Observation
+    buffer = io.BytesIO()
+    Image.new("RGB", (100, 100), color).save(buffer, format="PNG")
+    return Observation(color, buffer.getvalue(), "", {}, {"bounds": [0, 0, 100, 100]})
+
+
+def test_read_uses_existing_vision_model_when_kakao_history_is_not_accessible(monkeypatch):
+    automation = VerifiedMessagingAutomation()
     runtime = _runtime(monkeypatch, automation)
-
-    with pytest.raises(RuntimeError, match="포커스 검증"):
-        runtime.send("카카오톡", "형택", "테스트", send_verify_timeout=0.2)
-
+    automation.accessibility_controls = lambda _handle: []
+    observation = _vision_observation("white")
+    monkeypatch.setattr(runtime, "_capture_chat_observation", lambda _chat: observation)
+    monkeypatch.setattr("core.kakao_vision.read_messages", lambda *_args: [{
+        "text": "오늘 7시에 보자", "direction": "incoming", "sender": "",
+    }])
+    result = runtime.read("카톡", "형택")
+    assert result["read_verified"] is True
+    assert result["read_method"] == "vision_visible_chat_bubbles"
+    assert result["screenshot_sha256"] == observation.image_hash
     assert automation.enter_count == 0
+
+
+@pytest.mark.parametrize("result_change, expected_open", [
+    ({}, True), ({"all_results_visible": False}, False),
+    ({"count_label": "친구 2", "total_results": 2}, False),
+    ({"friends_results": False}, False),
+    ({"candidates": [{"name": "형 택", "x": 30, "y": 60}]}, False),
+    ({"count_label": "친구 2", "total_results": 2, "candidates": [
+        {"name": "형택", "x": 30, "y": 60}, {"name": "형택", "x": 30, "y": 80},
+    ]}, False),
+    ({"count_label": "친구 2", "total_results": 2, "candidates": [
+        {"name": "형택", "x": 30, "y": 60}, {"name": "형택의 어머니", "x": 30, "y": 80},
+    ]}, True),
+])
+@pytest.mark.parametrize("search_prepared", [False, True])
+def test_visual_contact_navigation_requires_complete_unique_friend_results(monkeypatch, result_change, expected_open, search_prepared):
+    import sys
+    import core.kakao_vision as vision
+    main = WindowInfo(10, "카카오톡", 99, True, True, True)
+    chat = WindowInfo(11, "형택 - 카카오톡", 99, True, True, True)
+    identity = {"stable": True, "token": "search-1", "runtime_id": [1]}
+    actions, double_clicks = [], []
+
+    class Backend:
+        def __init__(self, **_kwargs):
+            self.window = main
+            self.query = "형택" if search_prepared else ""
+            self.automation = SimpleNamespace(
+                read_accessibility_text=lambda *_args, **_kwargs: {"value": self.query},
+                list_windows=lambda: [main, chat] if double_clicks else [main],
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def observe(self):
+            observation = _vision_observation("white")
+            observation.context.update({
+                "handle": 10, "width": 100, "height": 100,
+                "actions": ["coordinate_click", "fill", "type_text"],
+            })
+            observation.host_state["focused_identity"] = identity
+            observation.targets = {"e1": {
+                "control_type": "Edit", "bounds": [5, 5, 50, 25],
+                "control_identity": identity, "actions": ["fill"], "value": self.query,
+            }}
+            return observation
+
+        def validate_action(self, _observation, decision):
+            assert decision["action"] in {"coordinate_click", "fill", "type_text"}
+
+        def execute(self, decision, _check):
+            actions.append(decision)
+            if decision["action"] == "type_text":
+                self.query = decision["text"]
+
+        def _root(self):
+            return None
+
+        _screen_point = staticmethod(lambda _bounds, _size, x, y: (x, y))
+
+    answers = iter(([] if search_prepared else [{"kind": "search_field", "x": 15, "y": 15}]) + [
+        {"friends_results": True, "all_results_visible": True, "count_label": "친구 1",
+         "total_results": 1, "candidates": [{"name": "형택", "x": 30, "y": 60}], **result_change},
+    ])
+    monkeypatch.setattr(vision, "WindowsComputerBackend", Backend)
+    monkeypatch.setattr(vision.time, "sleep", lambda _seconds: None)
+    monkeypatch.setitem(sys.modules, "pywinauto.mouse", SimpleNamespace(
+        double_click=lambda **kwargs: double_clicks.append(kwargs),
+    ))
+    model = SimpleNamespace(_call=lambda *_args: next(answers))
+    if expected_open:
+        result = vision.open_recipient_chat(main, "형택", model=model, search_prepared=search_prepared)
+        assert result["window_handle"] == chat.handle
+        assert double_clicks == [{"coords": (30, 60)}]
+    else:
+        with pytest.raises(RuntimeError, match="수신자를 하나로"):
+            vision.open_recipient_chat(main, "형택", model=model, search_prepared=search_prepared)
+        assert double_clicks == []
+    assert [action["action"] for action in actions] == ([] if search_prepared else ["coordinate_click", "fill", "type_text"])
+    if not search_prepared:
+        assert actions[-1]["text"] == "형택"
 
 
 def test_contact_search_uses_bound_uia_edit_without_global_typing(monkeypatch):
@@ -424,7 +395,6 @@ def test_contact_search_uses_bound_uia_edit_without_global_typing(monkeypatch):
         automation.main.handle, control_types=["Edit"],
     )
     monkeypatch.setattr(runtime, "_hotkey", lambda _keys: pytest.fail("global hotkey forbidden"))
-    monkeypatch.setattr(runtime, "_type_unicode", lambda _text: pytest.fail("global typing forbidden"))
     monkeypatch.setattr(runtime, "_press", lambda _key: pytest.fail("global key forbidden"))
 
     result = runtime._activate_recipient_result(
@@ -463,9 +433,6 @@ def test_contact_search_focus_theft_aborts_before_result_or_global_input(monkeyp
     monkeypatch.setattr(
         runtime, "_hotkey", lambda _keys: pytest.fail("must not dispatch after focus theft"),
     )
-    monkeypatch.setattr(
-        runtime, "_type_unicode", lambda _text: pytest.fail("must not dispatch after focus theft"),
-    )
 
     with pytest.raises(RuntimeError, match="포커스 검증"):
         runtime._activate_recipient_result(
@@ -492,7 +459,7 @@ def test_missing_exact_recipient_never_presses_enter_on_first_result(monkeypatch
     automation.activate_accessibility_control = no_exact_result
     monkeypatch.setattr(runtime, "_press", lambda _key: pytest.fail("blind Enter forbidden"))
 
-    with pytest.raises(RuntimeError, match="전송을 중단"):
+    with pytest.raises(RuntimeError, match="대화방 열기를 중단"):
         runtime._activate_recipient_result(
             automation.main, "형택", {}, search,
         )
@@ -548,71 +515,6 @@ def test_verified_global_key_helper_never_dispatches_after_failed_proof(monkeypa
     assert dispatched == []
 
 
-def test_send_fails_closed_without_stable_composer_identity(monkeypatch):
-    automation = VerifiedMessagingAutomation()
-
-    def set_without_identity(_handle, value, **_kwargs):
-        automation.composer_value = str(value)
-        return {
-            "name": "메시지 입력", "automation_id": "chat-input",
-            "control_type": "Edit", "value_verified": True,
-        }
-
-    automation.set_accessibility_text = set_without_identity
-    runtime = _runtime(monkeypatch, automation)
-
-    with pytest.raises(RuntimeError, match="안정적인 UIA"):
-        runtime.send("카카오톡", "형택", "테스트", send_verify_timeout=0.2)
-
-    assert automation.enter_count == 0
-
-
-def test_send_returns_unverified_when_new_outgoing_bubble_is_not_observable(monkeypatch):
-    automation = VerifiedMessagingAutomation(expose_new_bubble=False)
-    runtime = _runtime(monkeypatch, automation)
-
-    result = runtime.send("카카오톡", "형택", "테스트", send_verify_timeout=0.2)
-
-    assert automation.enter_count == 1
-    assert result["send_accepted_verified"] is False
-    assert result["outgoing_message_verified"] is False
-    assert result["verification_status"] == "unverified"
-    assert "말풍선" in result["unverified_reason"]
-
-
-def test_right_aligned_text_without_outgoing_semantics_is_not_delivery_evidence(monkeypatch):
-    automation = VerifiedMessagingAutomation(expose_new_bubble=False)
-    automation.bubbles.append({
-        "identity_token": "right-side-non-message",
-        "control_identity": {"token": "right-side-non-message"},
-        "value": "테스트",
-        "x_ratio": 0.92,
-        "automation_id": "timestamp",
-        "class_name": "Text",
-    })
-    runtime = _runtime(monkeypatch, automation)
-
-    result = runtime.send("카카오톡", "형택", "테스트", send_verify_timeout=0.2)
-
-    assert automation.enter_count == 1
-    assert result["outgoing_message_verified"] is False
-    assert result["verification_status"] == "unverified"
-
-
-def test_rerendered_old_bubble_with_new_runtime_id_is_not_new_send_evidence(monkeypatch):
-    automation = VerifiedMessagingAutomation(
-        expose_new_bubble=False, rerender_old_bubble=True,
-    )
-    runtime = _runtime(monkeypatch, automation)
-
-    result = runtime.send("카카오톡", "형택", "테스트", send_verify_timeout=0.2)
-
-    assert automation.enter_count == 1
-    assert len(automation.bubbles) == 1
-    assert result["outgoing_message_verified"] is False
-    assert result["verification_status"] == "unverified"
-
-
 def test_semantic_outgoing_marker_must_also_be_on_expected_side():
     config = {
         "outgoing_message_direction_keywords": ["outgoing"],
@@ -625,29 +527,6 @@ def test_semantic_outgoing_marker_must_also_be_on_expected_side():
     assert DesktopMessagingRuntime._is_outgoing_occurrence({
         "direction": "outgoing", "x_ratio": 0.2,
     }, config) is False
-
-
-def test_plugin_never_claims_completion_for_unverified_dispatch(monkeypatch):
-    plugin = DesktopMessagingPlugin()
-    raw = {
-        "provider": "kakaotalk", "recipient": "형택", "window_title": "형택 - 카카오톡",
-        "window_handle": 11, "process_id": 99,
-        "send_accepted_verified": False, "outgoing_message_verified": False,
-        "send_verification": "unverified_no_new_exact_outgoing_message_bubble",
-        "unverified_reason": "새 말풍선을 찾지 못했습니다.",
-        "delivery_receipt_verified": False,
-    }
-    monkeypatch.setattr(plugin.runtime, "send", lambda *_args, **_kwargs: dict(raw))
-
-    result = plugin.execute_tool("desktop_send_message", {
-        "provider": "kakaotalk", "recipient": "형택", "message": "테스트",
-    })
-
-    assert result.status == ToolRunStatus.UNVERIFIED
-    assert "완료로 처리하지 않았습니다" in result.evidence[0].summary
-    presentation = plugin.present_result("desktop_send_message", result.raw_output)
-    assert "완료로 처리하지 않았습니다" in presentation
-    assert "전송했습니다" not in presentation
 
 
 def test_windows_uia_reader_rejects_different_runtime_identity(monkeypatch):
