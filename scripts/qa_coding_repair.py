@@ -65,7 +65,7 @@ def main():
             "ANTHROPIC_API_KEY": "", "HYBRID_CLAUDE_ROLES": "", "PYTHON_DOTENV_DISABLED": "1",
             "NO_PROXY": "localhost,127.0.0.1,::1", "no_proxy": "localhost,127.0.0.1,::1",
             "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "QT_QPA_PLATFORM": "offscreen",
-            "JARVIS_DISABLE_MIC_AUTOSTART": "1", "JARVIS_DISABLE_CAMERA_AUTOSTART": "1",
+            "JARVIS_DISABLE_MIC_AUTOSTART": "1",
         })
         os.chdir(sandbox)
         with redirect_stdout(io.StringIO()):

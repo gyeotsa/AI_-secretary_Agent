@@ -58,8 +58,6 @@ class DiagnosticsRuntime:
             ("microphone", "Microphone", self._microphone),
             ("speaker", "TTS·Speaker", lambda: self._speaker(live=live)),
         ]
-        if scope in {"device", "full"}:
-            checks.append(("camera", "Camera", lambda: self._camera(live=live)))
         for key, label, check in checks:
             started = time.perf_counter()
             try:
@@ -260,19 +258,3 @@ class DiagnosticsRuntime:
                     str(getattr(result, "error", "TTS 설정을 확인하세요."))
             return "passed", f"TTS 음성 {len(voices)}개 · 출력 장치 {len(outputs)}개 · 실제 재생 성공", evidence, ""
         return "passed", f"TTS 음성 {len(voices)}개 · 출력 장치 {len(outputs)}개 열거", evidence, ""
-
-    @staticmethod
-    def _camera(*, live: bool):
-        if not live:
-            return "not_run", "카메라는 명시적 장치 진단에서만 켭니다.", {"privacy": "camera_off"}, "전체 장치 진단에서 직접 실행하세요."
-        import cv2
-        devices = []
-        for index in range(5):
-            capture = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-            opened = capture.isOpened()
-            if opened:
-                ok, frame = capture.read()
-                devices.append({"index": index, "frame_verified": bool(ok and frame is not None)})
-            capture.release()
-        return ("passed" if devices else "failed", f"카메라 {len(devices)}개 실제 프레임 확인",
-                {"devices": devices}, "Windows 카메라 권한 또는 장치 연결을 확인하세요." if not devices else "")

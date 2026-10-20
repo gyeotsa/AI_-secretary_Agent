@@ -31,7 +31,6 @@ REMOTE_VERIFICATION_METHODS = {
     "local_ui_readback", "oauth_roundtrip",
 }
 REMOTE_OPERATION_BY_SCENARIO = {
-    "kakao_delivery": "message_delivery",
     "mail_delivery": "mail_delivery",
     "oauth_roundtrip": "oauth_roundtrip",
 }
@@ -66,14 +65,10 @@ DEFAULT_SCENARIOS = (
                        ("evaluation_report", "artifact"), 14),
     AcceptanceScenario("mockup_visual_eval", "시안 렌더·수정 시각 수락", "specialist", True,
                        ("evaluation_report", "image"), 14),
-    AcceptanceScenario("camera_gesture", "실카메라 한·두 손 제스처", "device", True,
-                       ("device_report",), 30),
     AcceptanceScenario("microphone_stt", "실마이크 STT·호출어", "device", True,
                        ("device_report",), 30),
     AcceptanceScenario("speaker_tts", "실스피커 TTS 청취", "device", True,
                        ("device_report", "audio"), 30),
-    AcceptanceScenario("kakao_delivery", "카카오톡 실제 상대방 전달", "external", True,
-                       ("remote_receipt",), 14),
     AcceptanceScenario("mail_delivery", "메일 실제 계정 전달", "external", True,
                        ("remote_id", "remote_receipt"), 14),
     AcceptanceScenario("oauth_roundtrip", "OAuth 로그인·갱신·조회", "external", True,

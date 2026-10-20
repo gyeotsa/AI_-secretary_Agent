@@ -87,20 +87,10 @@ class BrainOrbitWidget(QWidget):
     """A truthful navigator: every orbit node is backed by a real UI surface."""
 
     surface_requested = pyqtSignal(str)
-    camera_toggle_requested = pyqtSignal(bool)
     graph_portal_changed = pyqtSignal(bool)
     graph_node_selected = pyqtSignal(object)
     graph_note_open_requested = pyqtSignal(str)
 
-    PORTAL_ENTER_SIGNAL = .82
-    PORTAL_ENTER_RESET_SIGNAL = .69
-    PORTAL_EXIT_SIGNAL = .25
-    PORTAL_EXIT_RESET_SIGNAL = .38
-    PORTAL_ENTER_DWELL_SECONDS = .38
-    PORTAL_EXIT_DWELL_SECONDS = .28
-    PORTAL_MIN_ENTER_SAMPLES = 4
-    PORTAL_MIN_EXIT_SAMPLES = 3
-    GESTURE_STALE_SECONDS = .62
     EMBEDDED_GRAPH_MAX_NODES = 96
 
     GRAPH_NODE_COLORS = {
@@ -137,15 +127,10 @@ class BrainOrbitWidget(QWidget):
         self.pitch_velocity = 0.0
         self.camera_pan_x = 0.0
         self.camera_pan_y = 0.0
-        self.pan_velocity_x = 0.0
-        self.pan_velocity_y = 0.0
         self.zoom = 1.0
         self.target_zoom = 1.0
         self.zoom_response = 0.13
-        self._gesture_zoom_sample: tuple[float, float] | None = None
         self.runtime_state = "idle"
-        self.camera_running = False
-        self.camera_error = ""
         self._drag_origin: QPointF | None = None
         self._drag_angle = 0.0
         self._drag_yaw = 0.0
@@ -154,22 +139,20 @@ class BrainOrbitWidget(QWidget):
         self._drag_pan_y = 0.0
         self._hit_regions: dict[str, QRectF] = {}
         self._graph_hit_regions: dict[str, tuple[QRectF, float]] = {}
-        self._surfaces: list[OrbitSurface] = []
+        self._surfaces = [
+            OrbitSurface("command_center", "CONTROL", "system"),
+            OrbitSurface("permissions", "ACCESS", "system"),
+            OrbitSurface("sessions", "MEMORY", "system"),
+            OrbitSurface("plugins", "TOOLS", "system"),
+            OrbitSurface("voice", "VOICE", "system"),
+        ]
         self.portal_progress = 0.0
         self.portal_mode = "brain"
         self._portal_requested = False
         self._portal_enabled = not compact
         self._portal_announced = False
-        self._enter_candidate_at: float | None = None
-        self._enter_candidate_samples = 0
-        self._exit_candidate_at: float | None = None
-        self._exit_candidate_samples = 0
-        self._last_gesture_wall = 0.0
-        self._gesture_sensitivity = 60
-        self._gesture_response_gain = 1.0
         self._manual_enter_at: float | None = None
         self._manual_exit_at: float | None = None
-        self._manual_portal_active = False
         self._graph_payload_provider = graph_payload_provider
         self._graph_loaded = False
         self._graph_dirty = True
@@ -202,7 +185,6 @@ class BrainOrbitWidget(QWidget):
         self._graph_preload_timer.setInterval(80)
         self._graph_preload_timer.timeout.connect(self._start_graph_load)
         self._brain_points, self._brain_edges = self._build_brain_graph()
-        self.set_surfaces([])
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
 
@@ -250,170 +232,29 @@ class BrainOrbitWidget(QWidget):
         edges.extend((index, index + 1) for index in range(0, len(points), 14))
         return points, edges
 
-    def set_surfaces(self, workspace_specs) -> None:
-        surfaces = [
-            OrbitSurface("command_center", "CONTROL", "system"),
-            OrbitSurface("permissions", "ACCESS", "system"),
-            OrbitSurface("sessions", "MEMORY", "system"),
-            OrbitSurface("plugins", "TOOLS", "system"),
-            OrbitSurface("voice", "VOICE", "system"),
-        ]
-        for spec in workspace_specs:
-            surfaces.append(OrbitSurface(str(spec.key), str(spec.title).replace(" 전문가", "")))
-        self._surfaces = surfaces
-        self.update()
-
     def set_runtime_state(self, state) -> None:
         value = str(getattr(state, "name", state)).casefold()
         self.runtime_state = value
         self.update()
-
-    def set_camera_status(self, status: dict) -> None:
-        self.camera_running = bool(status.get("running"))
-        self.camera_error = str(status.get("error") or "")
-        self.setToolTip(self.camera_error or "카메라 영상은 로컬에서만 처리되며 저장되지 않습니다.")
-        self.update()
-
-    def set_gesture_sensitivity(self, value: int) -> None:
-        """Apply the same user sensitivity to visual motion and recognition.
-
-        The camera runtime controls whether a movement is recognized; this gain
-        controls how far the already-recognized movement travels on screen.
-        Keeping both sides tied to one setting avoids a slider that appears to
-        work while the visual response remains unchanged.
-        """
-        self._gesture_sensitivity = max(0, min(100, int(value)))
-        self._gesture_response_gain = 0.55 + (self._gesture_sensitivity / 100.0) * 1.35
-
-    def apply_gesture_motion(self, payload: dict) -> None:
-        zoom_signal = min(1.0, max(0.0, float(payload.get("zoom", 0.0))))
-        timestamp = float(payload.get("timestamp", 0.0) or 0.0)
-        tracking_state = str(payload.get("tracking_state", "tracking") or "tracking").casefold()
-        hand_count = int(payload.get("hand_count", 1) or 0)
-        gesture_hand_count = int(payload.get("gesture_hand_count", hand_count) or 0)
-        swipe = float(payload.get("swipe_velocity", 0.0))
-        swipe_phase = str(payload.get("swipe_phase", "idle") or "idle").casefold()
-        gesture_mode_active = bool(payload.get("gesture_mode_active", True))
-        zoom_active = bool(payload.get("zoom_active", False))
-        if hand_count <= 0 or tracking_state in {"lost", "coasting", "missing", "none"}:
-            self._reset_gesture_zoom_candidates()
-            # A lost hand while entering must not complete an accidental dive.
-            # Once inside the graph, hand loss keeps the current view stable.
-            if self.portal_mode == "entering":
-                self._request_portal(False)
-                self.target_zoom = min(self.target_zoom, 1.18)
-            return
-        self._last_gesture_wall = time.monotonic()
-
-        # One hand owns orientation/pan, two hands own depth.  Enforcing this at
-        # the widget boundary keeps accidental open-palm scale estimates from
-        # entering the brain even if a camera backend emits an ambiguous zoom.
-        if gesture_hand_count == 1:
-            self._reset_gesture_zoom_candidates()
-            if self.portal_mode == "entering" and not self._manual_portal_active:
-                self._request_portal(False)
-                self.target_zoom = min(self.target_zoom, 1.18)
-            vx = float(payload.get("velocity_x", swipe) or 0.0)
-            vy = float(payload.get("velocity_y", 0.0) or 0.0)
-            response = self._gesture_response_gain
-            motion_gate = .012 / max(.55, response)
-            if abs(vx) > motion_gate:
-                self.yaw_velocity = max(-.095, min(.095, -vx * .040 * response))
-                self.angular_velocity = max(-.085, min(.085, -vx * .035 * response))
-            if abs(vy) > motion_gate:
-                self.pitch_velocity = max(-.070, min(.070, vy * .034 * response))
-            # Deep in the knowledge sphere, the same one-hand movement also
-            # shifts the camera slightly.  It feels like travelling through a
-            # 2.5D volume while orientation remains continuous.
-            if self.portal_progress > .58:
-                self.pan_velocity_x = max(-6.0, min(6.0, -vx * 3.8 * response))
-                self.pan_velocity_y = max(-5.0, min(5.0, vy * 3.2 * response))
-            return
-
-        if (gesture_hand_count != 2 or not gesture_mode_active or not zoom_active
-                or swipe_phase in {"candidate", "started", "updated"}):
-            self._reset_gesture_zoom_candidates()
-            if self.portal_mode == "entering" and not self._manual_portal_active:
-                self._request_portal(False)
-                self.target_zoom = min(self.target_zoom, 1.18)
-            return
-        sample_time = timestamp if timestamp > 0 else self._last_gesture_wall
-        if self._gesture_zoom_sample is not None and timestamp > self._gesture_zoom_sample[1]:
-            previous_signal, previous_time = self._gesture_zoom_sample
-            zoom_speed = abs(zoom_signal - previous_signal) / max(1 / 120, timestamp - previous_time)
-            self.zoom_response = max(0.08, min(0.58, 0.08 + zoom_speed * 0.12))
-        self._gesture_zoom_sample = (zoom_signal, timestamp)
-        self.target_zoom = (0.88 + zoom_signal * 1.16
-                            if self._portal_enabled else 0.90 + zoom_signal * 0.40)
-        if self._portal_enabled:
-            if self.portal_mode in {"brain", "exiting"}:
-                self._exit_candidate_at = None
-                self._exit_candidate_samples = 0
-                if zoom_signal >= self.PORTAL_ENTER_SIGNAL:
-                    if self._enter_candidate_at is None:
-                        self._enter_candidate_at = sample_time
-                        self._enter_candidate_samples = 1
-                    else:
-                        self._enter_candidate_samples += 1
-                    if (sample_time - self._enter_candidate_at >= self.PORTAL_ENTER_DWELL_SECONDS
-                            and self._enter_candidate_samples >= self.PORTAL_MIN_ENTER_SAMPLES):
-                        self._request_portal(True)
-                elif zoom_signal <= self.PORTAL_ENTER_RESET_SIGNAL:
-                    self._enter_candidate_at = None
-                    self._enter_candidate_samples = 0
-            elif self.portal_mode in {"graph", "entering"}:
-                self._enter_candidate_at = None
-                self._enter_candidate_samples = 0
-                if zoom_signal <= self.PORTAL_EXIT_SIGNAL:
-                    if self._exit_candidate_at is None:
-                        self._exit_candidate_at = sample_time
-                        self._exit_candidate_samples = 1
-                    else:
-                        self._exit_candidate_samples += 1
-                    if (sample_time - self._exit_candidate_at >= self.PORTAL_EXIT_DWELL_SECONDS
-                            and self._exit_candidate_samples >= self.PORTAL_MIN_EXIT_SAMPLES):
-                        self._request_portal(False)
-                elif zoom_signal >= self.PORTAL_EXIT_RESET_SIGNAL:
-                    self._exit_candidate_at = None
-                    self._exit_candidate_samples = 0
-
-    def _reset_gesture_zoom_candidates(self) -> None:
-        self._gesture_zoom_sample = None
-        self._enter_candidate_at = None
-        self._enter_candidate_samples = 0
-        self._exit_candidate_at = None
-        self._exit_candidate_samples = 0
 
     def _tick(self):
         self.phase = (self.phase + 0.023) % math.tau
         self.orbit_angle = (self.orbit_angle + self.angular_velocity) % math.tau
         self.brain_yaw = (self.brain_yaw + self.yaw_velocity) % math.tau
         self.brain_pitch = max(-1.08, min(1.08, self.brain_pitch + self.pitch_velocity))
-        self.camera_pan_x = max(-self.width() * .24,
-                                min(self.width() * .24, self.camera_pan_x + self.pan_velocity_x))
-        self.camera_pan_y = max(-self.height() * .20,
-                                min(self.height() * .20, self.camera_pan_y + self.pan_velocity_y))
         self.angular_velocity = self.angular_velocity * 0.94 + 0.0018 * 0.06
         self.yaw_velocity = self.yaw_velocity * .94 + .0021 * .06
         self.pitch_velocity *= .91
-        self.pan_velocity_x *= .86
-        self.pan_velocity_y *= .86
         self.zoom += (self.target_zoom - self.zoom) * self.zoom_response
         self.zoom_response = self.zoom_response * 0.92 + 0.13 * 0.08
         if self._portal_enabled:
             now = time.monotonic()
             if self._manual_enter_at is not None and now - self._manual_enter_at >= .34:
                 self._manual_enter_at = None
-                self._request_portal(True, manual=True)
+                self._request_portal(True)
             if self._manual_exit_at is not None and now - self._manual_exit_at >= .24:
                 self._manual_exit_at = None
                 self._request_portal(False)
-            if (self.portal_mode == "entering" and self._last_gesture_wall
-                    and now - self._last_gesture_wall > self.GESTURE_STALE_SECONDS
-                    and self._manual_enter_at is None
-                    and not self._manual_portal_active):
-                self._request_portal(False)
-                self.target_zoom = min(self.target_zoom, 1.18)
             graph_ready = self._graph_cache_payload is not None and not self._graph_dirty
             target = (1.0 if graph_ready else .92) if self._portal_requested else 0.0
             self.portal_progress += (target - self.portal_progress) * 0.105
@@ -435,7 +276,7 @@ class BrainOrbitWidget(QWidget):
             self._portal_announced = False
             self.graph_portal_changed.emit(False)
 
-    def _request_portal(self, enter: bool, *, manual: bool = False) -> None:
+    def _request_portal(self, enter: bool) -> None:
         if not self._portal_enabled:
             return
         self._portal_requested = bool(enter)
@@ -445,18 +286,12 @@ class BrainOrbitWidget(QWidget):
             # next explicit entry is also the user's retry request.
             if self._graph_error:
                 self._graph_dirty = True
-            self._manual_portal_active = bool(manual)
             self._set_portal_mode("entering")
-            self._enter_candidate_at = None
-            self._enter_candidate_samples = 0
             self._graph_preload_timer.stop()
             self._start_graph_load()
         else:
-            self._manual_portal_active = False
             if self.portal_mode != "brain":
                 self._set_portal_mode("exiting")
-            self._exit_candidate_at = None
-            self._exit_candidate_samples = 0
 
     def _brain_projection(self, center: QPointF, width: float, height: float):
         projected = []
@@ -801,7 +636,6 @@ class BrainOrbitWidget(QWidget):
         if (self._portal_requested and self._graph_loaded
                 and self.portal_progress >= .965 and self.portal_mode != "graph"):
             self._set_portal_mode("graph")
-            self._manual_portal_active = False
 
     def _draw_knowledge_graph(
         self,
@@ -1090,22 +924,11 @@ class BrainOrbitWidget(QWidget):
                 "아직 연결된 지식 노드가 없습니다",
             )
 
-        camera_color = QColor("#65e0a1") if self.camera_running else QColor("#8293a3")
-        if self.camera_error:
-            camera_color = QColor("#ff758a")
-        painter.setPen(camera_color)
-        painter.setFont(QFont("Consolas", 8, 600))
-        status = "CAM LOCAL ON" if self.camera_running else "CAM OFF"
-        if self.camera_error:
-            status = "CAM BLOCKED / ERROR"
-        status_rect = QRectF(12, 9, 125, 20)
-        painter.drawText(status_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, status)
-        self._hit_regions["__camera__"] = status_rect.adjusted(-5, -4, 5, 4)
         painter.setPen(theme_color("muted"))
         painter.setFont(QFont("Segoe UI", 7))
         painter.drawText(QRectF(self.width() - 350, 8, 338, 20),
                          Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                         "ONE HAND · ROTATE / PAN    TWO HANDS · ENTER BRAIN")
+                         "DRAG · ROTATE    SHIFT + DRAG · PAN    WHEEL · ZOOM")
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1171,10 +994,7 @@ class BrainOrbitWidget(QWidget):
                     return
                 for key, region in reversed(tuple(self._hit_regions.items())):
                     if region.contains(event.position()):
-                        if key == "__camera__":
-                            self.camera_toggle_requested.emit(not self.camera_running)
-                        else:
-                            self.surface_requested.emit(key)
+                        self.surface_requested.emit(key)
                         break
             event.accept()
 

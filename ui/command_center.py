@@ -2,7 +2,6 @@
 from __future__ import annotations
 from .theme import set_widget_style, theme_color
 
-import json
 import math
 import threading
 
@@ -14,9 +13,9 @@ from PyQt6.QtWidgets import (
     QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout,
     QWidget,
 )
-from core.specialist_workspaces import get_specialist_workspace_registry
 from core.acceptance_runtime import LOCAL_EVIDENCE_KINDS, get_acceptance_runtime
 from .brain_orbit import BrainOrbitWidget
+from .readable_details import format_details
 
 
 COMMAND_CENTER_STYLE = """
@@ -33,6 +32,7 @@ QTabWidget::pane { border: 1px solid #1a3449; border-radius: 10px; background: #
 QTabBar::tab { background: #0a1827; color: #7793aa; padding: 9px 15px; border: 1px solid #172f43; }
 QTabBar::tab:selected { color: #75e9ff; background: #10283b; }
 QTableWidget, QTextEdit { background: #07111e; border: 1px solid #18334a; border-radius: 8px; gridline-color: #172c3d; }
+QTextEdit { font-size: 14px; padding: 10px; }
 QHeaderView::section { background: #102238; color: #8fb3ca; border: 0; padding: 7px; }
 QProgressBar { background: #091522; border: 1px solid #1c3a50; border-radius: 5px; text-align: center; }
 QProgressBar::chunk { background: #27c4d9; border-radius: 4px; }
@@ -46,7 +46,7 @@ class _AsyncBridge(QObject):
 
 
 class RuntimeOrb(QWidget):
-    """GPU-light 2D state visualization. No camera or 3D runtime is required."""
+    """GPU-light 2D state visualization. No 3D runtime is required."""
     COLORS = {
         "idle": QColor("#37d3e8"), "running": QColor("#8f7cff"),
         "verifying": QColor("#ffcc66"), "approval": QColor("#ff9b58"),
@@ -89,7 +89,7 @@ class RuntimeOrb(QWidget):
             painter.drawEllipse(center, radius + offset, radius + offset)
         painter.setPen(theme_color("text"))
         painter.setFont(QFont("Segoe UI", 9, 600))
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.state.upper())
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, format_details(self.state))
 
 
 class MetricCard(QFrame):
@@ -108,18 +108,16 @@ class MetricCard(QFrame):
 
 class CommandCenterDialog(QDialog):
     def __init__(self, runtime, *, workflow_runtime=None, diagnostics=None,
-                 gesture_runtime=None, context_provider=None,
+                 context_provider=None,
                  control_callback=None, surface_callback=None,
-                 gesture_callback=None, parent=None):
+                 parent=None):
         super().__init__(parent)
         self.runtime = runtime
         self.workflow_runtime = workflow_runtime
         self.diagnostics = diagnostics
-        self.gesture_runtime = gesture_runtime
         self.context_provider = context_provider or (lambda: {})
         self.control_callback = control_callback
         self.surface_callback = surface_callback
-        self.gesture_callback = gesture_callback
         self._contract_rows = []
         self._acceptance_rows = []
         self.bridge = _AsyncBridge(self)
@@ -177,21 +175,16 @@ class CommandCenterDialog(QDialog):
         diag_btn = QPushButton("핵심 진단")
         diag_btn.clicked.connect(lambda: self._run_diagnostics("core", False))
         controls.addWidget(diag_btn)
-        device_btn = QPushButton("장치 진단 · 카메라 사용")
+        device_btn = QPushButton("장치 진단 · 음성 재생")
         device_btn.clicked.connect(lambda: self._run_diagnostics("full", True))
         controls.addWidget(device_btn)
-        self.gesture_btn = QPushButton("제스처 켜기")
-        self.gesture_btn.clicked.connect(self._toggle_gesture)
-        controls.addWidget(self.gesture_btn)
         controls.addStretch()
         root.addLayout(controls)
 
         self.tabs = QTabWidget()
         self.brain_map = BrainOrbitWidget(compact=True)
-        self.brain_map.set_surfaces(get_specialist_workspace_registry().all())
         if self.surface_callback:
             self.brain_map.surface_requested.connect(self.surface_callback)
-        self.brain_map.camera_toggle_requested.connect(self._request_gesture_state)
         self.tabs.addTab(self.brain_map, "BRAIN MAP")
         self.task_table = self._table(("계약 ID", "상위 작업", "상태", "전문가", "목표", "시도", "실패/승인"))
         self.task_table.itemSelectionChanged.connect(self._show_selected_contract)
@@ -246,7 +239,8 @@ class CommandCenterDialog(QDialog):
 
         self.detail = QTextEdit()
         self.detail.setReadOnly(True)
-        self.detail.setMaximumHeight(120)
+        self.detail.setMinimumHeight(160)
+        self.detail.setMaximumHeight(260)
         self.detail.setPlaceholderText("워크플로·진단 실행 결과가 여기에 표시됩니다.")
         root.addWidget(self.detail)
 
@@ -265,7 +259,9 @@ class CommandCenterDialog(QDialog):
         table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             for column_index, value in enumerate(row):
-                item = QTableWidgetItem(str(value if value is not None else ""))
+                text = format_details(value) if isinstance(value, (dict, list, tuple)) else str(value if value is not None else "")
+                item = QTableWidgetItem(text)
+                item.setToolTip(text)
                 table.setItem(row_index, column_index, item)
         table.resizeColumnsToContents()
 
@@ -276,7 +272,7 @@ class CommandCenterDialog(QDialog):
             self.updated_label.setText(f"상태 갱신 실패: {exc}")
             self.orb.set_state("failed")
             return
-        self.updated_label.setText(f"LIVE · {data['updated_at']} · Workspace: {data.get('workspace', {}).get('name') or '없음'}")
+        self.updated_label.setText(f"최근 갱신 {format_details(data['updated_at'])} · 작업 폴더: {data.get('workspace', {}).get('name') or '없음'}")
         contracts = data["contracts"]
         self._contract_rows = list(contracts)
         active_statuses = {"queued", "running", "verifying", "awaiting_approval", "failed", "escalated"}
@@ -299,22 +295,22 @@ class CommandCenterDialog(QDialog):
         )
         self.cards["approvals"].value.setText(str(len(pending)))
         health = data["diagnostics"].get("summary", {}).get("status", "not_run")
-        self.cards["health"].value.setText(health.upper())
+        self.cards["health"].value.setText(format_details(health))
         state = ("failed" if any(item.get("status") in {"failed", "escalated"} for item in active)
                  else "approval" if pending or any(item.get("status") == "awaiting_approval" for item in active)
                  else "verifying" if any(item.get("status") == "verifying" for item in active)
                  else "running" if active or data["teams"] else "idle")
         self.orb.set_state(state)
         self._set_rows(self.task_table, [(item.get("contract_id"), item.get("parent_id"),
-                                         item.get("status"), item.get("specialist"), item.get("goal", "")[:120],
+                                         format_details(item.get("status")), item.get("specialist"), item.get("goal", "")[:120],
                                          item.get("attempts"), item.get("failure_reason", "")) for item in contracts])
-        self._set_rows(self.team_table, [(item.get("status"), item.get("workspace_key"), item.get("current_role"),
+        self._set_rows(self.team_table, [(format_details(item.get("status")), item.get("workspace_key"), item.get("current_role"),
                                          item.get("instruction", "")[:140]) for item in data["teams"]])
-        self._set_rows(self.dag_table, [(item.get("task_id"), item.get("step_id"), item.get("status"),
+        self._set_rows(self.dag_table, [(item.get("task_id"), item.get("step_id"), format_details(item.get("status")),
                                         ", ".join(map(str, item.get("dependencies", []))), item.get("tool"),
                                         item.get("attempts"), item.get("description", "")[:150])
                                        for item in data.get("plan_steps", [])])
-        self._set_rows(self.model_table, [(item["role"], item["model"], item.get("runtime_status"),
+        self._set_rows(self.model_table, [(item["role"], item["model"], format_details(item.get("runtime_status")),
                                           f"{item.get('loaded_vram_mb', 0)} MB" if item.get("loaded") else "—",
                                           ", ".join(item["modalities"]), item["keep_alive"])
                                           for item in data["models"]])
@@ -344,26 +340,21 @@ class CommandCenterDialog(QDialog):
         self._set_rows(self.artifact_table, [(item.get("contract_id"), item.get("kind") or item.get("type"),
                                              item.get("uri") or item.get("value_type") or item) for item in data["artifacts"]])
         probes = data["diagnostics"].get("probes", [])
-        self._set_rows(self.diagnostic_table, [(item.get("status"), item.get("label"), item.get("summary"), item.get("remediation"))
+        self._set_rows(self.diagnostic_table, [(format_details(item.get("status")), item.get("label"), item.get("summary"), item.get("remediation"))
                                                for item in probes])
         scenarios = data["acceptance"].get("scenarios", [])
-        self._set_rows(self.quality_table, [(item["status"], item["key"], item["value"],
+        self._set_rows(self.quality_table, [(format_details(item["status"]), item["key"], item["value"],
                                             f"{item.get('sample_count', 0)}/{item.get('minimum_samples', 0)}",
                                             f"{item['operator']} {item['target']}") for item in scenarios])
         live_scenarios = data.get("live_acceptance", {}).get("scenarios", [])
         self._acceptance_rows = list(live_scenarios)
         self._set_rows(self.acceptance_table, [(
-            item.get("status"), item.get("category"), item.get("label"),
+            format_details(item.get("status")), item.get("category"), item.get("label"),
             item.get("evidence_count", 0),
             item.get("reason") or ", ".join(item.get("blockers") or []),
         ) for item in live_scenarios])
         self._set_rows(self.event_table, [(item["timestamp"][11:19], item["type"], item["source"],
-                                          json.dumps(item["data"], ensure_ascii=False)[:180]) for item in data["events"][:50]])
-        if self.gesture_runtime:
-            gesture = self.gesture_runtime.status()
-            self.gesture_btn.setText("제스처 끄기" if gesture["running"] else "제스처 켜기")
-            self.gesture_btn.setToolTip(gesture.get("error", ""))
-            self.brain_map.set_camera_status(gesture)
+                                          " · ".join(format_details(item["data"]).splitlines())[:180]) for item in data["events"][:50]])
 
     def _selected_acceptance(self):
         row = self.acceptance_table.currentRow()
@@ -446,7 +437,7 @@ class CommandCenterDialog(QDialog):
             return
         if live and QMessageBox.question(
             self, "장치 진단",
-            "카메라를 잠시 켜 실제 프레임을 확인하고 짧은 TTS 진단음을 재생할까요?",
+            "짧은 TTS 진단음을 재생하고 장치 상태를 확인할까요?",
         ) != QMessageBox.StandardButton.Yes:
             return
         self.detail.setPlainText("실제 진단을 실행 중입니다…")
@@ -477,9 +468,15 @@ class CommandCenterDialog(QDialog):
     def _show_selected_contract(self):
         row = self.task_table.currentRow()
         if 0 <= row < len(self._contract_rows):
-            self.detail.setPlainText(json.dumps(
-                self._contract_rows[row], ensure_ascii=False, indent=2, default=str,
-            ))
+            contract = self._contract_rows[row]
+            self.detail.setPlainText(format_details({
+                "목표": contract.get("goal"), "상태": contract.get("status"),
+                "담당": contract.get("specialist"), "시도 횟수": contract.get("attempts"),
+                "확인이 필요한 내용": contract.get("failure_reason"),
+                "완료 확인 기준": contract.get("acceptance_criteria"),
+                "결과물": contract.get("artifacts"), "진행 근거": contract.get("evidence"),
+                "생성 시각": contract.get("created_at"), "최근 변경": contract.get("updated_at"),
+            }))
 
     def _control_selected(self, command: str):
         contract = self._selected_contract()
@@ -503,33 +500,11 @@ class CommandCenterDialog(QDialog):
         self.detail.setPlainText(f"작업 {task_id} {command} 처리 중…")
         self._run_async(lambda: self.control_callback(f"작업 {task_id} {command}"))
 
-    def _toggle_gesture(self):
-        if not self.gesture_runtime:
-            return
-        self._request_gesture_state(not bool(self.gesture_runtime.status().get("running")))
-
-    def _request_gesture_state(self, enabled: bool):
-        if self.gesture_callback:
-            self.gesture_callback(bool(enabled))
-            return
-        try:
-            self.gesture_runtime.start() if enabled else self.gesture_runtime.stop()
-        except Exception as exc:
-            QMessageBox.warning(self, "제스처 상태를 변경할 수 없음", str(exc))
-        self.refresh()
-
-    def apply_gesture_motion(self, payload: dict):
-        self.brain_map.apply_gesture_motion(payload)
-
-    def set_gesture_camera_status(self, status: dict):
-        self.brain_map.set_camera_status(status)
-        self.gesture_btn.setText("제스처 끄기" if status.get("running") else "제스처 켜기")
-        self.gesture_btn.setToolTip(str(status.get("error") or ""))
 
     def _async_completed(self, result):
         if hasattr(result, "__dict__"):
             result = vars(result)
-        self.detail.setPlainText(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        self.detail.setPlainText(format_details(result))
         self.refresh()
 
     def _async_failed(self, error):
@@ -554,7 +529,7 @@ class FirstRunWizard(QDialog):
         title = QLabel("실행 환경을 먼저 확인할게요")
         title.setObjectName("title")
         layout.addWidget(title)
-        subtitle = QLabel("설치 여부가 아닌 실제 서버·모델·CUDA·장치·Plugin·Tool 흐름을 검사합니다. 카메라는 켜지 않습니다.")
+        subtitle = QLabel("설치 여부가 아닌 실제 서버·모델·CUDA·장치·Plugin·Tool 흐름을 검사합니다.")
         subtitle.setWordWrap(True)
         subtitle.setObjectName("subtitle")
         layout.addWidget(subtitle)
@@ -592,8 +567,8 @@ class FirstRunWizard(QDialog):
 
     def _complete(self, report):
         self.progress.hide()
-        lines = [f"종합 상태: {report['summary']['status']}"]
-        lines.extend(f"[{item['status']}] {item['label']}: {item['summary']}" for item in report["probes"])
+        lines = [f"종합 상태: {format_details(report['summary']['status'])}"]
+        lines.extend(f"[{format_details(item['status'])}] {item['label']}: {format_details(item['summary'])}" for item in report["probes"])
         self.result.setPlainText("\n".join(lines))
         if report["summary"]["status"] != "failed":
             QSettings("JARVIS", "ANIS").setValue(self.SETTINGS_KEY, True)

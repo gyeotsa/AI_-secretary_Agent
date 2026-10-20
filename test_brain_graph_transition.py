@@ -55,32 +55,14 @@ def _pump_until(app, predicate, timeout: float = 2.0):
     return bool(predicate())
 
 
-def _hold_open(widget, start: float = 1.0):
-    for offset in (0.0, .14, .28, .42):
-        widget.apply_gesture_motion({
-            "zoom": 1.0,
-            "swipe_velocity": 0.0,
-            "timestamp": start + offset,
-            "hand_count": 2,
-            "gesture_hand_count": 2,
-            "tracking_state": "tracking",
-            "zoom_active": True,
-            "gesture_mode_active": True,
-        })
+def _enter_graph(widget):
+    widget.target_zoom = 2.04
+    widget._request_portal(True)
 
 
-def _hold_closed(widget, start: float = 2.0):
-    for offset in (0.0, .15, .30):
-        widget.apply_gesture_motion({
-            "zoom": 0.0,
-            "swipe_velocity": 0.0,
-            "timestamp": start + offset,
-            "hand_count": 2,
-            "gesture_hand_count": 2,
-            "tracking_state": "tracking",
-            "zoom_active": True,
-            "gesture_mode_active": True,
-        })
+def _exit_graph(widget):
+    widget.target_zoom = .9
+    widget._request_portal(False)
 
 
 def test_brain_network_is_dense_bilateral_and_lobed(monkeypatch):
@@ -134,140 +116,6 @@ def test_graph_prefetch_is_async_dirty_reloadable_and_bounded(monkeypatch):
             lambda: len(provider_threads) >= 2 and not widget._graph_dirty and not widget._graph_loading,
         )
         assert provider_threads[1] != gui_thread
-    finally:
-        widget.close()
-        app.processEvents()
-
-
-def test_portal_requires_dwell_survives_jitter_and_cancels_on_hand_loss(monkeypatch):
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from ui.brain_orbit import BrainOrbitWidget
-
-    app = _APP
-    widget = BrainOrbitWidget(graph_payload_provider=_graph_payload)
-    widget.show()
-    try:
-        for timestamp, zoom in ((1.0, .9), (1.08, .68), (1.16, .84), (1.23, .68)):
-            widget.apply_gesture_motion({
-                "zoom": zoom, "timestamp": timestamp,
-                "gesture_hand_count": 2, "tracking_state": "tracking",
-                "swipe_velocity": 0.0, "zoom_active": True,
-                "gesture_mode_active": True, "hand_count": 2,
-            })
-        assert widget.portal_mode == "brain"
-        assert widget._portal_requested is False
-
-        _hold_open(widget, 2.0)
-        assert widget.portal_mode == "entering"
-        assert widget._portal_requested is True
-        widget.apply_gesture_motion({
-            "zoom": 1.0, "timestamp": 2.5, "hand_count": 0,
-            "tracking_state": "lost", "swipe_velocity": 0.0,
-        })
-        assert widget.portal_mode == "exiting"
-        assert widget._portal_requested is False
-        for _ in range(70):
-            widget._tick()
-        assert widget.portal_mode == "brain"
-    finally:
-        widget.close()
-        app.processEvents()
-
-
-def test_swipe_rotation_never_accumulates_brain_portal_zoom(monkeypatch):
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from ui.brain_orbit import BrainOrbitWidget
-
-    app = _APP
-    widget = BrainOrbitWidget(graph_payload_provider=_graph_payload)
-    widget.show()
-    try:
-        for offset in (0.0, .14, .28, .42, .56):
-            widget.apply_gesture_motion({
-                "zoom": .96,
-                "swipe_velocity": 1.2,
-                "swipe_phase": "updated" if offset else "started",
-                "zoom_active": False,
-                "gesture_mode_active": True,
-                "timestamp": 1.0 + offset,
-                "hand_count": 1,
-                "gesture_hand_count": 1,
-                "tracking_state": "tracking",
-            })
-        assert widget.portal_mode == "brain"
-        assert widget._portal_requested is False
-        assert widget._enter_candidate_samples == 0
-        assert widget.angular_velocity < 0
-
-        _hold_open(widget, 2.0)
-        assert widget.portal_mode == "entering"
-    finally:
-        widget.close()
-        app.processEvents()
-
-
-def test_candidate_swipe_never_accumulates_brain_portal_zoom(monkeypatch):
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from ui.brain_orbit import BrainOrbitWidget
-
-    app = _APP
-    widget = BrainOrbitWidget(graph_payload_provider=_graph_payload)
-    widget.show()
-    try:
-        for offset in (0.0, .14, .28, .42, .56):
-            widget.apply_gesture_motion({
-                "zoom": .98,
-                "swipe_velocity": 0.0,
-                "swipe_phase": "candidate",
-                "zoom_active": True,
-                "gesture_mode_active": True,
-                "timestamp": 1.0 + offset,
-                "hand_count": 1,
-                "gesture_hand_count": 1,
-                "tracking_state": "tracking",
-            })
-        assert widget.portal_mode == "brain"
-        assert widget._portal_requested is False
-        assert widget._enter_candidate_samples == 0
-
-        _hold_open(widget, 2.0)
-        assert widget.portal_mode == "entering"
-    finally:
-        widget.close()
-        app.processEvents()
-
-
-def test_swipe_claim_cancels_an_in_progress_gesture_portal_entry(monkeypatch):
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from ui.brain_orbit import BrainOrbitWidget
-
-    app = _APP
-    widget = BrainOrbitWidget(graph_payload_provider=_graph_payload)
-    widget.show()
-    try:
-        _hold_open(widget, 1.0)
-        assert widget.portal_mode == "entering"
-        assert widget._portal_requested is True
-
-        widget.apply_gesture_motion({
-            "zoom": .96,
-            "swipe_velocity": 1.1,
-            "swipe_phase": "started",
-            "zoom_active": False,
-            "gesture_mode_active": True,
-            "timestamp": 1.7,
-            "hand_count": 1,
-            "gesture_hand_count": 1,
-            "tracking_state": "tracking",
-        })
-
-        assert widget.portal_mode == "exiting"
-        assert widget._portal_requested is False
-        assert widget.target_zoom <= 1.18
-        for _ in range(80):
-            widget._tick()
-        assert widget.portal_mode == "brain"
-        assert widget.portal_progress == pytest.approx(0.0)
     finally:
         widget.close()
         app.processEvents()
@@ -366,7 +214,7 @@ def test_deep_zoom_uses_explicit_states_and_embedded_existing_graph(monkeypatch)
     widget.show()
     try:
         assert _pump_until(app, lambda: widget._graph_cache_payload is not None)
-        _hold_open(widget)
+        _enter_graph(widget)
         assert widget.portal_mode == "entering"
         for _ in range(75):
             widget._tick()
@@ -390,7 +238,7 @@ def test_deep_zoom_uses_explicit_states_and_embedded_existing_graph(monkeypatch)
         widget.open_note("projects/jarvis.md")
         assert opened == ["projects/jarvis.md"]
 
-        _hold_closed(widget)
+        _exit_graph(widget)
         assert widget.portal_mode == "exiting"
         for _ in range(90):
             widget._tick()
@@ -414,7 +262,7 @@ def test_hidden_widget_stops_all_animation_timers(monkeypatch):
     try:
         assert widget.timer.isActive()
         assert _pump_until(app, lambda: widget._graph_cache_payload is not None)
-        _hold_open(widget)
+        _enter_graph(widget)
         for _ in range(75):
             widget._tick()
         assert widget.portal_mode == "graph"
@@ -478,7 +326,7 @@ def test_compact_command_center_map_does_not_duplicate_graph_runtime(monkeypatch
     calls = []
     widget = BrainOrbitWidget(compact=True, graph_payload_provider=lambda: calls.append(1) or _graph_payload())
     try:
-        widget.apply_gesture_motion({"zoom": 1.0, "swipe_velocity": 0.0, "timestamp": 1.0})
+        widget._request_portal(True)
         for _ in range(20):
             widget._tick()
         assert not hasattr(widget, "_graph_view")
@@ -516,37 +364,6 @@ def test_vault_coordinates_are_deterministic_across_payload_order(monkeypatch):
     finally:
         first.close()
         second.close()
-        _APP.processEvents()
-
-
-def test_one_hand_rotates_but_only_two_hands_can_zoom(monkeypatch):
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from ui.brain_orbit import BrainOrbitWidget
-
-    widget = BrainOrbitWidget(graph_payload_provider=_graph_payload)
-    try:
-        initial_zoom = widget.target_zoom
-        widget.apply_gesture_motion({
-            "zoom": 1.0,
-            "zoom_active": True,
-            "gesture_mode_active": True,
-            "velocity_x": 1.3,
-            "velocity_y": .4,
-            "timestamp": 1.0,
-            "hand_count": 1,
-            "gesture_hand_count": 1,
-            "tracking_state": "tracking",
-        })
-        assert widget.target_zoom == initial_zoom
-        assert widget.yaw_velocity < 0
-        assert widget.pitch_velocity > 0
-        assert widget._enter_candidate_samples == 0
-
-        _hold_open(widget, 2.0)
-        assert widget.target_zoom > initial_zoom
-        assert widget.portal_mode == "entering"
-    finally:
-        widget.close()
         _APP.processEvents()
 
 
@@ -636,7 +453,7 @@ def test_hidden_orbit_nodes_are_not_clickable_inside_knowledge_space(monkeypatch
         widget.render(painter)
         painter.end()
 
-        assert set(widget._hit_regions) == {"__camera__"}
+        assert widget._hit_regions == {}
         assert widget._graph_hit_regions
     finally:
         widget.close()
@@ -663,7 +480,7 @@ def test_first_graph_load_failure_returns_to_brain_and_explicit_entry_retries(mo
         assert widget.target_zoom == pytest.approx(1.0)
 
         monkeypatch.setattr(widget, "_start_graph_load", lambda: retries.append(True))
-        widget._request_portal(True, manual=True)
+        widget._request_portal(True)
         assert widget._graph_dirty is True
         assert retries == [True]
         assert widget.portal_mode == "entering"

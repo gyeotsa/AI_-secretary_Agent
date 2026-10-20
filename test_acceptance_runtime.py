@@ -63,7 +63,7 @@ def test_expired_live_evidence_does_not_count_as_complete(tmp_path):
 def test_blocked_requires_actionable_reason(tmp_path):
     runtime = AcceptanceRuntime(str(tmp_path / "acceptance.json"))
     with pytest.raises(ValueError, match="차단 사유"):
-        runtime.record("kakao_delivery", "blocked")
+        runtime.record("oauth_roundtrip", "blocked")
 
 
 def test_corrupt_or_unknown_records_never_become_passed(tmp_path):
@@ -109,8 +109,8 @@ def _record_runtime(tmp_path):
     return runtime, path, report
 
 
-def _remote_receipt(*, kind="remote_receipt", value="receipt-1",
-                    operation="message_delivery", method="recipient_readback",
+def _remote_receipt(*, kind="remote_id", value="receipt-1",
+                    operation="oauth_roundtrip", method="recipient_readback",
                     expected=None, observed=None, verified_at=None):
     expected = expected or sha256(b"expected-message").hexdigest()
     observed = observed or expected
@@ -118,7 +118,7 @@ def _remote_receipt(*, kind="remote_receipt", value="receipt-1",
         "kind": kind,
         "value": value,
         "verification": {
-            "provider": "kakao",
+            "provider": "google",
             "operation": operation,
             "target": "recipient-fixture",
             "remote_id": value,
@@ -135,7 +135,7 @@ def _remote_receipt(*, kind="remote_receipt", value="receipt-1",
     "[]", "null", "7", '"text"', "{", "{}", '{"results":null}',
     '{"results":[]}', '{"results":1}', '{"version":999,"results":{}}',
     '{"version":true,"results":{}}', '{"results":{},"results":{}}',
-    '{"results":{"kakao_delivery":{"status":"blocked","status":"passed"}}}',
+    '{"results":{"oauth_roundtrip":{"status":"blocked","status":"passed"}}}',
 ])
 def test_malformed_ledger_never_crashes_or_is_overwritten(tmp_path, raw):
     path = tmp_path / "acceptance.json"
@@ -147,7 +147,7 @@ def test_malformed_ledger_never_crashes_or_is_overwritten(tmp_path, raw):
     assert snapshot["completion_percent"] == 0
     assert snapshot["load_error"]
     with pytest.raises(ValueError, match="원장"):
-        runtime.record("kakao_delivery", "blocked", blockers=["계정 로그인 필요"])
+        runtime.record("oauth_roundtrip", "blocked", blockers=["계정 로그인 필요"])
     assert path.read_text(encoding="utf-8") == raw
 
 
@@ -156,19 +156,19 @@ def test_malformed_ledger_never_crashes_or_is_overwritten(tmp_path, raw):
     ("evidence", {"kind": "runtime_report"}), ("evidence", [None]),
     ("blockers", "test"), ("blockers", [None]), ("operator", None),
     ("operator", 123), ("notes", ["text"]), ("executed_at", ["today"]),
-    ("key", "kakao_delivery"),
+    ("key", "oauth_roundtrip"),
 ])
 def test_bad_record_fields_do_not_discard_healthy_siblings(tmp_path, field, value):
     _, path, _ = _record_runtime(tmp_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["results"]["packaged_runtime"][field] = value
-    payload["results"]["kakao_delivery"] = {
+    payload["results"]["oauth_roundtrip"] = {
         "status": "blocked", "blockers": ["로그인이 필요합니다."],
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
     runtime = AcceptanceRuntime(str(path))
     assert _row(runtime)["status"] == "failed"
-    assert _row(runtime, "kakao_delivery")["status"] == "blocked"
+    assert _row(runtime, "oauth_roundtrip")["status"] == "blocked"
     assert runtime.snapshot()["counts"]["passed"] == 0
 
 
@@ -187,15 +187,15 @@ def test_loaded_pass_requires_valid_nonfuture_timezone_timestamp(tmp_path, execu
 
 def test_loaded_live_pass_rechecks_operator_and_required_evidence(tmp_path):
     path = tmp_path / "acceptance.json"
-    payload = {"results": {"kakao_delivery": {
+    payload = {"results": {"oauth_roundtrip": {
         "status": "passed", "executed_at": datetime.now(timezone.utc).isoformat(),
-        "operator": "", "evidence": [{"kind": "remote_receipt", "value": "test-fixture"}],
+        "operator": "", "evidence": [{"kind": "remote_id", "value": "test-fixture"}],
     }}}
     path.write_text(json.dumps(payload), encoding="utf-8")
-    assert "사용자" in _row(AcceptanceRuntime(str(path)), "kakao_delivery")["reason"]
-    payload["results"]["kakao_delivery"].update(operator="fixture-tester", evidence=[])
+    assert "사용자" in _row(AcceptanceRuntime(str(path)), "oauth_roundtrip")["reason"]
+    payload["results"]["oauth_roundtrip"].update(operator="fixture-tester", evidence=[])
     path.write_text(json.dumps(payload), encoding="utf-8")
-    row = _row(AcceptanceRuntime(str(path)), "kakao_delivery")
+    row = _row(AcceptanceRuntime(str(path)), "oauth_roundtrip")
     assert row["status"] == "failed"
     assert "증거" in row["reason"]
 
@@ -241,8 +241,8 @@ def test_legacy_unsealed_local_evidence_requires_fresh_attestation(tmp_path):
 def test_remote_evidence_requires_a_real_nonempty_string(tmp_path, value):
     runtime = AcceptanceRuntime(str(tmp_path / "acceptance.json"))
     with pytest.raises(ValueError, match="kind와 value"):
-        runtime.record("kakao_delivery", "passed", operator="fixture-tester", evidence=[
-            {"kind": "remote_receipt", "value": value},
+        runtime.record("oauth_roundtrip", "passed", operator="fixture-tester", evidence=[
+            {"kind": "remote_id", "value": value},
         ])
     assert runtime.snapshot()["counts"]["passed"] == 0
 
@@ -250,8 +250,8 @@ def test_remote_evidence_requires_a_real_nonempty_string(tmp_path, value):
 def test_opaque_remote_success_string_cannot_count_as_acceptance(tmp_path):
     runtime = AcceptanceRuntime(str(tmp_path / "acceptance.json"))
     with pytest.raises(ValueError, match="구조화된 verification"):
-        runtime.record("kakao_delivery", "passed", operator="fixture-tester", evidence=[
-            {"kind": "remote_receipt", "value": "anything"},
+        runtime.record("oauth_roundtrip", "passed", operator="fixture-tester", evidence=[
+            {"kind": "remote_id", "value": "anything"},
         ])
     assert runtime.snapshot()["completion_percent"] == 0
 
@@ -270,7 +270,7 @@ def test_remote_receipt_must_bind_expected_payload_to_attributable_readback(
     receipt["verification"].update(mutation)
     runtime = AcceptanceRuntime(str(tmp_path / "acceptance.json"))
     with pytest.raises(ValueError, match=message):
-        runtime.record("kakao_delivery", "passed", operator="fixture-tester",
+        runtime.record("oauth_roundtrip", "passed", operator="fixture-tester",
                        evidence=[receipt])
     assert runtime.snapshot()["counts"]["passed"] == 0
 
@@ -278,17 +278,17 @@ def test_remote_receipt_must_bind_expected_payload_to_attributable_readback(
 def test_structured_remote_receipt_is_revalidated_after_persistence(tmp_path):
     path = tmp_path / "acceptance.json"
     runtime = AcceptanceRuntime(str(path))
-    result = runtime.record("kakao_delivery", "passed", operator="fixture-tester",
+    result = runtime.record("oauth_roundtrip", "passed", operator="fixture-tester",
                             evidence=[_remote_receipt()])
     assert result.status == "passed"
-    assert _row(AcceptanceRuntime(str(path)), "kakao_delivery")["status"] == "passed"
+    assert _row(AcceptanceRuntime(str(path)), "oauth_roundtrip")["status"] == "passed"
 
     payload = json.loads(path.read_text(encoding="utf-8"))
-    verification = payload["results"]["kakao_delivery"]["evidence"][0]["verification"]
+    verification = payload["results"]["oauth_roundtrip"]["evidence"][0]["verification"]
     verification["observed_sha256"] = "f" * 64
     path.write_text(json.dumps(payload), encoding="utf-8")
     restored = AcceptanceRuntime(str(path))
-    assert _row(restored, "kakao_delivery")["status"] == "failed"
+    assert _row(restored, "oauth_roundtrip")["status"] == "failed"
     assert restored.snapshot()["completion_percent"] == 0
 
 
@@ -310,14 +310,14 @@ def test_expired_remote_receipt_cannot_replace_existing_acceptance(tmp_path, mon
     _freeze_acceptance_clock(monkeypatch, now)
     path = tmp_path / "acceptance.json"
     runtime = AcceptanceRuntime(str(path))
-    runtime.record("kakao_delivery", "blocked", blockers=["실제 수신 확인 필요"])
+    runtime.record("oauth_roundtrip", "blocked", blockers=["실제 수신 확인 필요"])
     before = path.read_bytes()
     receipt = _remote_receipt(verified_at=(now - timedelta(days=15)).isoformat())
     with pytest.raises(ValueError, match="재검증 기한"):
-        runtime.record("kakao_delivery", "passed", operator="fixture-tester", evidence=[receipt])
+        runtime.record("oauth_roundtrip", "passed", operator="fixture-tester", evidence=[receipt])
     assert path.read_bytes() == before
-    assert _row(runtime, "kakao_delivery")["status"] == "blocked"
-    assert _row(AcceptanceRuntime(str(path)), "kakao_delivery")["status"] == "blocked"
+    assert _row(runtime, "oauth_roundtrip")["status"] == "blocked"
+    assert _row(AcceptanceRuntime(str(path)), "oauth_roundtrip")["status"] == "blocked"
 
 
 def test_rerecording_recent_receipt_preserves_original_expiry(tmp_path, monkeypatch):
@@ -327,17 +327,17 @@ def test_rerecording_recent_receipt_preserves_original_expiry(tmp_path, monkeypa
     path = tmp_path / "acceptance.json"
     runtime = AcceptanceRuntime(str(path))
     receipt = _remote_receipt(verified_at=verified.isoformat())
-    runtime.record("kakao_delivery", "passed", operator="fixture-tester", evidence=[receipt])
+    runtime.record("oauth_roundtrip", "passed", operator="fixture-tester", evidence=[receipt])
     clock["now"] += timedelta(hours=12)
-    second = runtime.record("kakao_delivery", "passed", operator="fixture-tester", evidence=[receipt])
+    second = runtime.record("oauth_roundtrip", "passed", operator="fixture-tester", evidence=[receipt])
     assert datetime.fromisoformat(second.executed_at) == clock["now"]
     saved = path.read_bytes()
     for candidate in (runtime, AcceptanceRuntime(str(path))):
-        assert _row(candidate, "kakao_delivery")["status"] == "passed"
+        assert _row(candidate, "oauth_roundtrip")["status"] == "passed"
         boundary = verified + timedelta(days=14)
-        assert _row(candidate, "kakao_delivery", now=boundary)["status"] == "passed"
+        assert _row(candidate, "oauth_roundtrip", now=boundary)["status"] == "passed"
         snapshot = candidate.snapshot(now=boundary + timedelta(microseconds=1))
-        row = next(item for item in snapshot["scenarios"] if item["key"] == "kakao_delivery")
+        row = next(item for item in snapshot["scenarios"] if item["key"] == "oauth_roundtrip")
         assert row["status"] == "expired"
         assert row["evidence"][0]["verification"]["verified_at"] == verified.isoformat()
         assert snapshot["counts"]["passed"] == 0
@@ -352,7 +352,7 @@ def test_remote_expiry_uses_oldest_required_receipt(tmp_path, monkeypatch, rever
     evidence = [
         _remote_receipt(kind="remote_id", operation="mail_delivery", value="mail-1",
                         verified_at=(now - timedelta(days=13)).isoformat()),
-        _remote_receipt(operation="mail_delivery", value="delivery-1", verified_at=now.isoformat()),
+        _remote_receipt(kind="remote_receipt", operation="mail_delivery", value="delivery-1", verified_at=now.isoformat()),
     ]
     if reverse:
         evidence.reverse()
@@ -387,8 +387,8 @@ def test_remote_expiry_uses_scenario_window_and_timezone_boundary(tmp_path, monk
 def test_extra_evidence_cannot_omit_its_kind(tmp_path):
     runtime = AcceptanceRuntime(str(tmp_path / "acceptance.json"))
     with pytest.raises(ValueError, match="kind와 value"):
-        runtime.record("kakao_delivery", "passed", operator="fixture-tester", evidence=[
-            {"kind": "remote_receipt", "value": "test-fixture"}, {"value": "untyped"},
+        runtime.record("oauth_roundtrip", "passed", operator="fixture-tester", evidence=[
+            {"kind": "remote_id", "value": "test-fixture"}, {"value": "untyped"},
         ])
 
 
@@ -458,12 +458,12 @@ def test_relative_evidence_paths_are_stable_across_working_directory_changes(tmp
 def test_in_memory_and_persisted_records_are_equally_redacted(tmp_path):
     path = tmp_path / "acceptance.json"
     runtime = AcceptanceRuntime(str(path))
-    result = runtime.record("kakao_delivery", "blocked", blockers=["로그인 필요"],
+    result = runtime.record("oauth_roundtrip", "blocked", blockers=["로그인 필요"],
                             environment={"api_key": "private-value"},
                             notes="Bearer do-not-retain")
     assert "private-value" not in str(result)
     assert "do-not-retain" not in str(result)
-    assert _row(runtime, "kakao_delivery") == _row(AcceptanceRuntime(str(path)), "kakao_delivery")
+    assert _row(runtime, "oauth_roundtrip") == _row(AcceptanceRuntime(str(path)), "oauth_roundtrip")
 
 
 @pytest.mark.parametrize("bad_value", [{1, 2}, float("nan"), float("inf")])
@@ -480,11 +480,11 @@ def test_non_json_data_never_publishes_partial_state(tmp_path, bad_value):
 def test_pass_cannot_keep_unresolved_blockers_and_loaded_blocked_requires_reason(tmp_path):
     runtime = AcceptanceRuntime(str(tmp_path / "acceptance.json"))
     with pytest.raises(ValueError, match="차단 사유"):
-        runtime.record("kakao_delivery", "passed", operator="fixture-tester", blockers=["미수신"],
-                       evidence=[{"kind": "remote_receipt", "value": "test-fixture"}])
+        runtime.record("oauth_roundtrip", "passed", operator="fixture-tester", blockers=["미수신"],
+                       evidence=[{"kind": "remote_id", "value": "test-fixture"}])
     path = tmp_path / "loaded.json"
-    path.write_text(json.dumps({"results": {"kakao_delivery": {"status": "blocked"}}}), encoding="utf-8")
-    assert _row(AcceptanceRuntime(str(path)), "kakao_delivery")["status"] == "failed"
+    path.write_text(json.dumps({"results": {"oauth_roundtrip": {"status": "blocked"}}}), encoding="utf-8")
+    assert _row(AcceptanceRuntime(str(path)), "oauth_roundtrip")["status"] == "failed"
 
 
 def test_one_valid_scenario_completes_only_its_explicit_gate(tmp_path):
@@ -528,7 +528,7 @@ def test_relative_ledger_path_is_fixed_at_runtime_creation(tmp_path, monkeypatch
     monkeypatch.chdir(original)
     runtime = AcceptanceRuntime("acceptance.json")
     monkeypatch.chdir(other)
-    runtime.record("kakao_delivery", "blocked", blockers=["로그인 필요"])
+    runtime.record("oauth_roundtrip", "blocked", blockers=["로그인 필요"])
     assert (original / "acceptance.json").exists()
     assert not (other / "acceptance.json").exists()
 

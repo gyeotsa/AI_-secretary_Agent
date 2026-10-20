@@ -20,7 +20,7 @@ def _default_data_path(filename: str) -> str:
 
 
 def request_windows_permissions():
-    """Windows에서 마이크와 카메라 권한 요청"""
+    """Windows에서 마이크 권한 요청"""
     if sys.platform != "win32":
         return  # Windows가 아니면 건너뜀
 
@@ -44,13 +44,6 @@ def request_windows_permissions():
         except Exception as e:
             print(f"[알림] 마이크 권한 요청 실패: {e}")
 
-        # 카메라 권한 요청
-        try:
-            shell32.ShellExecuteW(
-                None, "open", "ms-settings:privacy-webcam", None, None, 1
-            )
-        except Exception as e:
-            print(f"[알림] 카메라 권한 요청 실패: {e}")
 
     except Exception as e:
         print(f"[알림] 권한 요청 중 오류 발생: {e}")
@@ -136,7 +129,6 @@ class APIConfig:
     MICROPHONE_MAX_COMMAND_SECONDS: float = field(
         default_factory=lambda: float(os.getenv("MICROPHONE_MAX_COMMAND_SECONDS", "15.0"))
     )
-    CAMERA_INDEX: str = field(default_factory=lambda: os.getenv("CAMERA_INDEX", "auto"))
     
     ALLOWED_PATHS: list = field(default_factory=lambda: [
         p.strip() for p in os.getenv("ALLOWED_PATHS", "").split(",") if p.strip()
@@ -328,10 +320,6 @@ class Config:
     def MICROPHONE_MAX_COMMAND_SECONDS(cls):
         return cls.API_CONFIG.MICROPHONE_MAX_COMMAND_SECONDS
 
-    @classmethod
-    @property
-    def CAMERA_INDEX(cls):
-        return cls.API_CONFIG.CAMERA_INDEX
     
     @classmethod
     @property

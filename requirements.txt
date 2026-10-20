@@ -32,7 +32,6 @@ sounddevice>=0.4.6
 scipy>=1.11.0
 # schedule>=1.2.0
 opencv-contrib-python<4.9,>=4.8.0
-# mediapipe>=0.10.0
 librosa>=0.10.0
 
 # Phase 4: Advanced (enable later)

@@ -1,6 +1,5 @@
 import os
 import hashlib
-import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -8,7 +7,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image, ImageDraw
-from PyQt6.QtWidgets import QApplication, QListWidgetItem
 
 from core.mockup_design import MockupDesignRuntime
 from core.mockup_scene import (build_evidence_fallback_plan, enforce_explicit_user_constraints,
@@ -19,7 +17,6 @@ from core.mockup_scene import (build_evidence_fallback_plan, enforce_explicit_us
 from core.model_registry import ModelRegistry, ModelRoleRouter
 from core.specialist_workspaces import get_specialist_workspace_registry
 from plugins.mockup_design import MockupDesignPlugin
-from ui.specialist_workspaces import MockupWorkspaceWindow
 
 
 def test_windows_localized_font_family_resolves_to_real_file():
@@ -184,36 +181,6 @@ def test_learned_style_profile_and_rendered_output_are_persistent(tmp_path):
     assert output.with_suffix(".json").is_file()
     assert len(profile.reference_hashes) == 2 and profile.palette
     assert runtime.load_profile(profile.profile_id).name == "네이비 카드형"
-
-
-def test_reference_and_production_inputs_stay_separate_in_ui(tmp_path):
-    app = QApplication.instance() or QApplication([])
-    spec = get_specialist_workspace_registry().get("mockup")
-    window = MockupWorkspaceWindow(spec, runtime=MockupDesignRuntime(
-        tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend()))
-    ref, product = str(tmp_path / "ref.png"), str(tmp_path / "product.png")
-    _image(Path(ref), (1, 2, 3)); _image(Path(product), (4, 5, 6))
-    window.reference_paths.append(ref); window.reference_list.addItem(QListWidgetItem("ref.png"))
-    window.production_paths.append(product); window.production_list.addItem(QListWidgetItem("product.png"))
-    assert window.reference_paths == [ref]
-    assert window.production_paths == [product]
-    assert window.reference_list is not window.production_list
-    window.close(); assert app is not None
-
-
-def test_active_style_card_and_render_button_make_selection_explicit(tmp_path):
-    app = QApplication.instance() or QApplication([])
-    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend())
-    profile = runtime.learn_style([_image(tmp_path / "ref.png", (10, 20, 30))], name="선택 테스트")
-    window = MockupWorkspaceWindow(get_specialist_workspace_registry().get("mockup"), runtime=runtime)
-    assert window.active_profile_id == ""
-    assert not window.render_button.isEnabled()
-    window.profile_list.setCurrentRow(0)
-    assert window.active_profile_id == profile.profile_id
-    assert window.render_button.isEnabled()
-    assert "선택 테스트" in window.active_profile_label.text()
-    assert "참고 이미지 1장" in window.active_profile_meta.text()
-    window.close(); assert app is not None
 
 
 def test_missing_production_asset_in_ai_plan_is_repaired_automatically(tmp_path):
@@ -540,9 +507,9 @@ def test_invalid_ai_edit_can_apply_only_explicit_safe_constraints(tmp_path):
     assert edited["renderer"] == "structured-scene-patch-v4"
 
 
-def test_mockup_workspace_and_model_role_are_registered():
+def test_mockup_execution_contract_and_model_role_are_registered():
     registry = get_specialist_workspace_registry()
-    assert registry.match_open_command("시안 제작 전문가 작업공간 열어줘").key == "mockup"
+    assert "mockup_design" in registry.get("mockup").required_tools
     assert ModelRegistry().resolve("mockup").role == "mockup_design"
     assert ModelRoleRouter().route(allowed_tools=["mockup_learn_style"], modalities=["image"]) == "mockup_design"
 
@@ -795,27 +762,6 @@ def test_learned_lower_overlay_centers_copy_inside_primary_frame():
     assert "texts[0].learned_lower_overlay" in fields
 
 
-def test_save_uses_current_history_metadata_instead_of_stale_global_metadata(tmp_path, monkeypatch):
-    app = QApplication.instance() or QApplication([])
-    spec = get_specialist_workspace_registry().get("mockup")
-    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(),
-                                  generation_backend=FakeGenerationBackend())
-    window = MockupWorkspaceWindow(spec, runtime=runtime)
-    preview_root = Path(__import__("tempfile").gettempdir()) / "jarvis_mockup_previews"
-    preview_root.mkdir(parents=True, exist_ok=True)
-    source = preview_root / "history-current.png"
-    Image.new("RGB", (20, 20), "white").save(source)
-    current = {"output": str(source), "edit_instruction": "마지막 명령", "scene_plan": {"texts": []}}
-    window.preview_history = [current]; window.preview_index = 0
-    window.preview_metadata = {"output": str(source), "edit_instruction": "이전 명령"}
-    target = tmp_path / "saved.png"
-    monkeypatch.setattr("ui.specialist_workspaces.QFileDialog.getSaveFileName",
-                        lambda *_args, **_kwargs: (str(target), "PNG"))
-    window._save_preview()
-    saved = __import__("json").loads(target.with_suffix(".json").read_text(encoding="utf-8"))
-    assert saved["edit_instruction"] == "마지막 명령"
-
-
 def test_save_preview_rejects_corrupt_image_before_copy(tmp_path):
     runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(),
                                   generation_backend=FakeGenerationBackend())
@@ -827,26 +773,6 @@ def test_save_preview_rejects_corrupt_image_before_copy(tmp_path):
     with pytest.raises(ValueError, match="손상된 미리보기"):
         runtime.save_preview(source, target, {})
     assert not target.exists()
-
-
-def test_completed_ai_edit_is_discarded_if_user_changed_active_preview(tmp_path):
-    app = QApplication.instance() or QApplication([])
-    spec = get_specialist_workspace_registry().get("mockup")
-    window = MockupWorkspaceWindow(spec, runtime=MockupDesignRuntime(
-        tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend()))
-    first = _image(tmp_path / "first.png", (10, 20, 30), size=(100, 100))
-    second = _image(tmp_path / "second.png", (30, 20, 10), size=(100, 100))
-    stale = _image(tmp_path / "stale.png", (200, 10, 10), size=(100, 100))
-    window.preview_history = [{"output": first}, {"output": second}]
-    window.preview_index = 0
-    window._ai_edit_serial = 7
-    window._ai_edit_in_progress = True
-    window._on_render_done({"output": stale, "_ai_edit_serial": 7,
-                            "_ai_edit_base_output": second})
-    assert window.preview_index == 0
-    assert len(window.preview_history) == 2
-    assert window.preview_history[0]["output"] == first
-    window.close(); assert app is not None
 
 
 def test_edit_write_barrier_preserves_unrequested_groups_and_copy():
@@ -904,35 +830,3 @@ def test_live_adjustment_is_repeatable_from_stable_base(tmp_path):
     assert first["adjustment_base"] == second["adjustment_base"] == str(source.resolve())
     assert hashlib.sha256(Path(first["output"]).read_bytes()).digest() == hashlib.sha256(
         Path(second["output"]).read_bytes()).digest()
-
-
-def test_adjustment_sliders_use_percent_range_and_keep_selected_value(tmp_path):
-    app = QApplication.instance() or QApplication([])
-    spec = get_specialist_workspace_registry().get("mockup")
-    window = MockupWorkspaceWindow(spec, runtime=MockupDesignRuntime(
-        tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend()))
-    assert set(window.adjustment_sliders) == {"brightness", "contrast", "saturation", "sharpness"}
-    for slider in window.adjustment_sliders.values():
-        assert (slider.minimum(), slider.maximum(), slider.value()) == (0, 100, 50)
-    window.adjustment_sliders["brightness"].setValue(73)
-    assert window.adjustment_sliders["brightness"].value() == 73
-    assert window.adjustment_labels["brightness"].text() == "73%"
-    window.close(); assert app is not None
-
-
-def test_slider_movement_applies_preview_without_button_or_reset(tmp_path):
-    app = QApplication.instance() or QApplication([])
-    spec = get_specialist_workspace_registry().get("mockup")
-    runtime = MockupDesignRuntime(tmp_path / "styles", vision=FakeVision(), generation_backend=FakeGenerationBackend())
-    window = MockupWorkspaceWindow(spec, runtime=runtime)
-    source = _image(tmp_path / "preview.png", (80, 100, 120), size=(500, 500))
-    window._push_preview({"output": source, "preview_only": True, "renderer": "test",
-                          "width": 500, "height": 500, "generation_fallback_reason": ""})
-    window.adjustment_sliders["contrast"].setValue(72)
-    deadline = time.monotonic() + 3
-    while window.preview_metadata.get("renderer") != "pillow-live-adjustment-v2" and time.monotonic() < deadline:
-        app.processEvents(); time.sleep(.02)
-    assert window.preview_metadata["renderer"] == "pillow-live-adjustment-v2"
-    assert window.preview_metadata["adjustments"]["contrast"] == 1.44
-    assert window.adjustment_sliders["contrast"].value() == 72
-    window.close()

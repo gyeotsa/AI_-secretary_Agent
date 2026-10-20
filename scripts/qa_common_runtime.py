@@ -1,6 +1,6 @@
 """Run the real Anis application in a disposable, local-only QA workspace.
 
-No user databases are copied. Microphone, camera and speech are disabled for
+No user databases are copied. Microphone and speech are disabled for
 this diagnostic process only. --gui exposes the actual window for manual QA.
 """
 from __future__ import annotations
@@ -292,7 +292,6 @@ def main() -> int:
         "OBSIDIAN_VAULT_PATH": str(sandbox / "vault"),
         "ALLOWED_PATHS": str(sandbox),
         "JARVIS_DISABLE_MIC_AUTOSTART": "1",
-        "JARVIS_DISABLE_CAMERA_AUTOSTART": "1",
         "JARVIS_SKIP_FIRST_RUN_WIZARD": "1",
         "RAG_DEVICE": "cpu",
         "RAG_EMBEDDING_MODEL_PATH": str(root / "data/models/bge-m3"),

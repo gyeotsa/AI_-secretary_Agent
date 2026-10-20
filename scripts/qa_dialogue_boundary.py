@@ -139,7 +139,7 @@ def isolated_environment(sandbox: Path, root: Path, endpoint: str) -> dict[str, 
         "LLM_PROVIDER": "ollama", "OLLAMA_BASE_URL": endpoint,
         "ANTHROPIC_API_KEY": "", "HYBRID_CLAUDE_ROLES": "",
         "PYTHON_DOTENV_DISABLED": "1", "PYTHONIOENCODING": "utf-8",
-        "JARVIS_DISABLE_MIC_AUTOSTART": "1", "JARVIS_DISABLE_CAMERA_AUTOSTART": "1",
+        "JARVIS_DISABLE_MIC_AUTOSTART": "1",
         "JARVIS_SKIP_FIRST_RUN_WIZARD": "1", "QT_QPA_PLATFORM": "offscreen",
         "RAG_DEVICE": "cpu", "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
         "RAG_EMBEDDING_MODEL_PATH": str(root / "data/models/bge-m3"),
@@ -272,7 +272,6 @@ def _run(args, cases, sandbox, emit) -> int:
 
     settings = get_assistant_settings()
     settings.set_tts_enabled(False)
-    settings.set("gesture_camera_enabled", "false")
     workspace = sandbox / "workspace"
     workspace.mkdir()
     if not get_workspace_manager().set_workspace(str(workspace)):

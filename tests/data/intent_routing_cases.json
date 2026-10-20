@@ -26,9 +26,6 @@
   {"id": "market_overview", "utterance": "오늘 국내 주식시장 상황을 분석해줘", "intent": "finance.market_overview", "request_type": "query"},
   {"id": "current_crypto_price", "utterance": "지금 비트코인 시세를 출처와 함께 알려줘", "intent": "web.search", "request_type": "query", "freshness": "live"},
 
-  {"id": "kakao_send_casual", "utterance": "형택이한테 카톡으로 늦는다고 전해줘", "intent": "messaging.send", "request_type": "external_send"},
-  {"id": "kakao_send_short", "utterance": "민수에게 톡 하나 보내줘", "intent": "messaging.send", "request_type": "external_send"},
-  {"id": "messaging_capability", "utterance": "카카오톡 메시지도 보낼 수 있어?", "intent": "messaging.send", "request_type": "external_send"},
 
   {"id": "relative_alarm", "utterance": "20분 뒤에 알람 맞춰줘", "intent": "alarm.set_relative", "request_type": "change"},
   {"id": "open_calculator", "utterance": "계산기 좀 켜줄래?", "intent": "windows.launch_app", "request_type": "execute"},
@@ -38,9 +35,6 @@
   {"id": "create_excel", "utterance": "이번 달 지출 내역을 엑셀로 정리해줘", "intent": "excel.create", "request_type": "change"},
   {"id": "create_pdf", "utterance": "이 내용을 PDF 문서로 만들어줘", "intent": "pdf.create", "request_type": "change"},
 
-  {"id": "gesture_camera_off", "utterance": "손 제스처 카메라 꺼줘", "intent": "interface.gesture_camera", "request_type": "change"},
-  {"id": "gesture_sensitivity", "utterance": "스와이프 제스처 민감도를 조금 높여줘", "intent": "interface.gesture_sensitivity", "request_type": "change"},
-  {"id": "gesture_status", "utterance": "지금 손 인식 상태가 어떻게 돼?", "intent": "interface.gesture_status", "request_type": "query"},
 
   {"id": "assistant_self_status", "utterance": "아니스 네 현재 상태와 문제점을 분석해줘", "intent": "self.status", "request_type": "query"},
   {"id": "assistant_capabilities", "utterance": "네가 실제로 할 수 있는 작업을 알려줘", "intent": "self.capabilities", "request_type": "query"},
@@ -51,7 +45,6 @@
   {"id": "workspace_create", "utterance": "새 프로젝트 작업공간을 만들어줘", "intent": "workspace.create_project", "request_type": "change"},
   {"id": "user_feedback", "utterance": "방금 답변은 틀렸어. 이 피드백을 기록해줘", "intent": "learning.feedback", "request_type": "change"},
 
-  {"id": "negated_message_send", "utterance": "형택이한테 카톡 보내지 마", "intent": "messaging.send", "request_type": "prohibition", "negated": true},
   {"id": "negated_app_launch", "utterance": "메모장 실행하지 마세요", "intent": "windows.launch_app", "request_type": "prohibition", "negated": true},
   {"id": "negated_calendar_creation", "utterance": "캘린더 파일 만들지 말아줘", "intent": "calendar.create_event", "request_type": "prohibition", "negated": true},
   {"id": "compound_app_and_media", "utterance": "메모장을 실행해줘. 그리고 유튜브에서 재즈 음악을 틀어줘", "intent": "compound", "intent_any": ["windows.launch_app", "media.play"], "request_type": "execute", "compound": true},
@@ -67,8 +60,6 @@
   {"id": "open_url_polite", "utterance": "이 링크를 브라우저로 열어 주세요 https://example.com", "intent": "web.open_url", "request_type": "execute"},
   {"id": "equity_analysis_spacing", "utterance": "SK 하이닉스 전망 분석 좀 해봐", "intent": "finance.equity_analysis", "request_type": "query"},
   {"id": "market_overview_us", "utterance": "미국 증시 상황을 요약하고 분석해줘", "intent": "finance.market_overview", "request_type": "query"},
-  {"id": "kakao_send_polite", "utterance": "지연 씨에게 카카오톡으로 회의가 취소됐다고 보내 주세요", "intent": "messaging.send", "request_type": "external_send"},
-  {"id": "kakao_stt_variant", "utterance": "민수한테 카톡 하나 보내 줘", "intent": "messaging.send", "request_type": "external_send"},
   {"id": "alarm_colloquial", "utterance": "한 시간 있다가 깨워줘", "intent": "alarm.set_relative", "request_type": "change"},
   {"id": "launch_paint", "utterance": "그림판 열어 줘", "intent": "windows.launch_app", "request_type": "execute"},
   {"id": "find_application", "utterance": "내 컴퓨터에서 포토샵 설치 위치 찾아줘", "intent": "windows.find_app", "request_type": "query"},
@@ -79,7 +70,6 @@
   {"id": "create_word_typo", "utterance": "워드 문서 하나 만들어 줘", "intent": "word.create", "request_type": "change"},
   {"id": "photoshop_status", "utterance": "포토샵 연결 상태 확인해줘", "intent": "photoshop.status", "request_type": "query"},
   {"id": "photoshop_open", "utterance": "포토샵 좀 열어줘", "intent": "windows.launch_app", "request_type": "execute"},
-  {"id": "gesture_mapping", "utterance": "손바닥 펼치기를 채팅 숨기기에 할당해줘", "intent": "interface.gesture_mapping", "request_type": "change"},
   {"id": "open_command_center", "utterance": "커맨드 센터 열어줘", "intent": "interface.open_surface", "request_type": "execute"},
   {"id": "self_change_plan", "utterance": "너의 UI를 어떻게 개선할지 계획부터 세워줘", "intent": "self.plan_change", "request_type": "query"},
   {"id": "obsidian_open", "utterance": "옵시디언 노트 열어줘", "intent": "obsidian.open", "request_type": "execute"},
@@ -90,9 +80,7 @@
   {"id": "learn_response_style", "utterance": "지금 내 대화체를 학습해서 다음 답변에 반영해줘", "intent": "preferences.learn_response_style", "request_type": "change"},
   {"id": "repeat_text", "utterance": "'회의 시작합니다'라고 읽어줘", "intent": "speech.repeat_text", "request_type": "execute"},
   {"id": "negated_media_play", "utterance": "음악 틀지 마", "intent": "media.play", "request_type": "prohibition", "negated": true},
-  {"id": "negated_camera_on", "utterance": "제스처 카메라 켜지 마세요", "intent": "interface.gesture_camera", "request_type": "prohibition", "negated": true},
   {"id": "negated_file_create", "utterance": "새 파일 만들지 말아줘", "intent": "filesystem.create_file", "request_type": "prohibition", "negated": true},
   {"id": "compound_document_and_alarm", "utterance": "회의록을 워드로 만들고 나서 30분 뒤 알람도 맞춰줘", "intent": "compound", "intent_any": ["word.create", "alarm.set_relative"], "request_type": "change", "compound": true},
-  {"id": "compound_search_and_message", "utterance": "오늘 날씨를 확인해줘 그리고 민수에게 카톡으로 알려줘", "intent": "compound", "intent_any": ["weather.current", "messaging.send"], "request_type": "query", "compound": true},
   {"id": "compound_app_and_document", "utterance": "계산기를 켜고 나서 결과를 엑셀로 정리해줘", "intent": "compound", "intent_any": ["windows.launch_app", "excel.create"], "request_type": "execute", "compound": true}
 ]

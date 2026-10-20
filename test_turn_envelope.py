@@ -10,9 +10,6 @@ class _Window:
     def show_assistant_text(self, _text):
         pass
 
-    def show_specialist_result(self, _text, _key):
-        pass
-
 
 class _Memory:
     def __init__(self):
@@ -71,10 +68,10 @@ def _bare_app(monkeypatch):
 def test_out_of_order_results_keep_exact_turn_attribution(monkeypatch):
     app = _bare_app(monkeypatch)
     first = main_qt.TurnEnvelope(
-        "turn-1", "session-a", "첫 요청", tuple(), "document", "workspace-a",
+        "turn-1", "session-a", "첫 요청", tuple(), memory_namespace="workspace-a",
     )
     second = main_qt.TurnEnvelope(
-        "turn-2", "session-b", "둘째 요청", tuple(), "coding", "workspace-b",
+        "turn-2", "session-b", "둘째 요청", tuple(), memory_namespace="workspace-b",
     )
 
     app._on_ai_response(main_qt.TurnResult(second, "둘째 응답"))

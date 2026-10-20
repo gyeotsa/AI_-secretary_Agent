@@ -20,7 +20,6 @@
 
 | 파일 | 분류 | 자동 수집하지 않는 이유 | 명시적 실행 예시 |
 |---|---|---|---|
-| `test_camera.py` | 실제 하드웨어 | 카메라 점유·프레임 캡처 | `python -X utf8 test_camera.py` |
 | `test_full_flow.py` | 라이브 통합 | LLM 호출; 메모리 저장과 음성은 선택적 부작용 | `python -X utf8 test_full_flow.py --prompt "안녕"` |
 | `test_gpu.py` | 환경 진단 | 로컬 CUDA/드라이버 상태 조회, 무거운 torch 초기화 | `python -X utf8 test_gpu.py` |
 | `test_ollama.py` | 라이브 네트워크 | Ollama GET/POST 호출 | `python -X utf8 test_ollama.py` |
@@ -37,7 +36,7 @@
 ## 판정 원칙
 
 - 자동 회귀 테스트는 오프라인·결정적이며 사용자 데이터와 장치를 변경하지 않는다.
-- 실제 서버, GPU/카메라, 스피커, 대화 메모리, GUI 입력을 검증하는 작업은 수동
+- 실제 서버, GPU, 스피커, 대화 메모리, GUI 입력을 검증하는 작업은 수동
   수락 진단으로 보고 자동 통과 수치에 포함하지 않는다.
 - 수동 진단의 성공은 해당 PC에서 실행한 시점의 증거일 뿐 다른 환경의 기능 완료를
   보장하지 않는다.

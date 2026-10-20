@@ -72,7 +72,7 @@
 - 연락처·할 일·리마인더·지도/교통
 - Windows UI Automation 우선, 화면 좌표 기반 pyautogui는 최후 fallback
 - 카카오톡 등 공식 자동화 API가 없는 앱은 오작동·약관 위험을 별도 표시
-- 카카오톡 로컬 UI 전송은 외부 전송 승인, 동일 프로세스·정확 수신자 창 검증 후 키 입력 — 구현·모의 E2E 검증됨, 실제 상대방 전송 수락 대기
+- 카카오톡은 메시지·연락처 조회만 유지한다. 전송은 2026-10-19 사용자 요청으로 제거했다.
 
 ## 설계 원칙
 
@@ -103,7 +103,7 @@
 - 내장 파일 읽기·목록, Workspace·Project Indexer, Semantic Memory·RAG Tool은
   직접 typed 결과 전환을 완료했다. 실제 경로·해시·인덱스·영속 저장·검색 출처를
   Evidence와 Artifact로 보존한다.
-- 내장 파일 쓰기·폴더 생성/삭제·명령 실행, 마이크·카메라 조회/캡처, 자동화
+- 내장 파일 쓰기·폴더 생성/삭제·명령 실행, 마이크 장치 조회, 자동화
   작업/엔진도 직접 typed 결과 전환을 완료했다. 저장 후 내용·프로세스 종료 코드·
   장치 열거·이미지 파일·Scheduler DB와 스레드 상태를 실제 Evidence로 사용한다.
 - 프로필·환경설정·Knowledge Graph·Multi-Agent·STT/감지·Scheduler 호환 API와
@@ -132,12 +132,9 @@ Plugin Registry 상태는 Command Center의 `권한/플러그인` 탭과 첫 실
 - Registry Tool schema와 실제 왕복 실행은 진단에서 통과했습니다.
 - Google/Microsoft Calendar는 OAuth가 연결된 공급자·계정만 Morning Brief가 조회합니다.
 - Gmail/Outlook/Slack/Teams/Notion과 SMTP는 자격증명 미설정 상태를 경고로 노출합니다.
-- 로컬 Office/HWP COM, 카메라, 마이크, 스피커는 설치·장치 상태와 사용자 라이브 수락을 별도
+- 로컬 Office/HWP COM, 마이크, 스피커는 설치·장치 상태와 사용자 라이브 수락을 별도
   검사합니다.
-- 제스처 제어는 핵심 Plugin 의존성이 아닙니다. `requirements-gesture.txt`의 고정 조합과
-  MediaPipe HandLandmarker 모델을 사용합니다. 이후 사용자 요청에 따라 카메라는 기본 자동
-  실행하며 설정/명령으로 끌 수 있습니다. 승인/취소 같은 명령 제스처는 별도 opt-in으로 기본
-  비활성입니다. 장치·권한 실패와 실제 활성 상태는 분리합니다.
+- 카메라·제스처 기능과 전용 의존성 명세는 2026-10-19 사용자 요청으로 제거했다.
 
 새 외부 서비스는 먼저 Registry capability, 권한 범위, 진단 probe, 실제 Evidence와 실패 복구를
 함께 구현해야 합니다. 버튼과 schema만 있는 연결은 로드맵 완료로 처리하지 않습니다.

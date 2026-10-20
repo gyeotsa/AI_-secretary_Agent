@@ -1,7 +1,6 @@
-"""Declarative catalog and natural-language routing for specialist workspaces."""
+"""Shared execution contracts for specialist tools."""
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 
@@ -38,7 +37,7 @@ class SpecialistWorkspaceSpec:
 
 
 class SpecialistWorkspaceRegistry:
-    """Single source of truth shared by buttons, voice routing and workspace UI."""
+    """Execution contracts used by specialist planning and result validation."""
 
     def __init__(self):
         self._items = {
@@ -95,18 +94,6 @@ class SpecialistWorkspaceRegistry:
 
     def get(self, key: str) -> SpecialistWorkspaceSpec | None:
         return self._items.get(str(key).casefold())
-
-    def match_open_command(self, text: str) -> SpecialistWorkspaceSpec | None:
-        value = " ".join(str(text or "").casefold().split())
-        open_action = re.search(
-            r"(?:모드|작업\s*공간|워크스페이스|전문가|그래프(?:\s*뷰)?).{0,12}(?:실행|열|시작|켜)"
-            r"|(?:실행|열|시작|켜).{0,12}(?:모드|작업\s*공간|워크스페이스|전문가|그래프(?:\s*뷰)?)",
-            value,
-        )
-        if not open_action:
-            return None
-        matches = [spec for spec in self.all() if any(hint.casefold() in value for hint in spec.utterance_hints)]
-        return matches[0] if len(matches) == 1 else None
 
 
 _registry = None
