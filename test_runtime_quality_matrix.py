@@ -50,7 +50,8 @@ def test_incomplete_multiline_payload_cannot_reach_execution(make_executor, deli
         f"memo.txt 파일을 만들어줘. 내용은 {delimiter}{body}{delimiter}", SESSION)
 
     assert not reached, "schema-valid truncated multiline content reached execution"
-    assert outcome.status == "awaiting_user"
+    assert outcome.status == "failed" and not outcome.response_generated
+    assert executor.dialogue_state.list(SESSION) == []
     assert executor.test_surface.calls == []
 
 
@@ -208,11 +209,13 @@ def test_correction_does_not_remove_the_new_literal_requirement(make_executor):
             "provider": "kakaotalk", "recipient": "김하이", "message": "내일  만나",
         })))
     executor.semantic_interpreter.SINGLE_PASS_CATALOG_CHARS = 0
-    _pending_send(executor)
+    pending = _pending_send(executor)
+    before = executor.dialogue_state.get_intent_state(pending.task_id)
 
     result = executor.execute_turn('"김하이"가 아니라 "박나래"에게 "내일  만나"라고 보내줘', SESSION)
 
-    assert result.status == "awaiting_user"
+    assert result.status == "failed" and not result.response_generated
+    assert executor.dialogue_state.get_intent_state(pending.task_id) == before
     assert executor.plan_calls == []
     assert executor.test_surface.calls == []
 

@@ -82,7 +82,7 @@ class ToolRegistryTests(unittest.TestCase):
             self.assertIn("sample.py", listing.raw_output)
 
     def test_project_indexer_tools_return_query_evidence(self):
-        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
             source = target / "sample.py"
             source.write_text("def hello():\n    return 'ok'\n", encoding="utf-8")

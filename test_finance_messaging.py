@@ -218,6 +218,7 @@ def test_desktop_message_runtime_closes_friend_add_before_typing():
 
 def test_single_global_namespace_uses_direct_chroma_filter():
     manager = VectorRAGManager.__new__(VectorRAGManager)
+    manager.documents = {}
     manager.namespace = "global"
     manager.reranker = None
     manager._all_lexical_candidates = lambda _query: []

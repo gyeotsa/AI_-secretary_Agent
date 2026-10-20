@@ -26,63 +26,65 @@ class LocalModel(Model, OllamaClient):
         return value
 
 
-def test_rejected_action_recovers_question_then_collects_reply_before_approval(make_executor):
-    question = "받을 분과 전할 내용을 알려주실래요?"
+def test_ungrounded_action_is_rejected_and_a_new_complete_request_still_needs_approval(make_executor):
     bad = _model_output(slots={"provider": "kakaotalk", "recipient": "없는사람", "message": "가짜본문"})
-    model = LocalModel(SEND_DISCOVERY, bad, bad, {"relation": "new", "needs_clarification": True, "response": question})
+    model = LocalModel(SEND_DISCOVERY, bad, bad)
     executor = make_executor(model=model)
     executor.semantic_interpreter.SINGLE_PASS_CATALOG_CHARS = 0
     first = executor.execute_turn("카톡 보내줘", SESSION)
-    assert first.status == "awaiting_user" and first.response == question
-    assert first.response_generated and executor.plan_calls == []
-    assert "없는사람" not in json.dumps(model.prompts[-1], ensure_ascii=False)
-    assert executor.dialogue_state.get_intent_state(first.task_id) is None
+    assert first.status == "failed" and not first.response_generated
+    assert executor.plan_calls == [] and model.outputs == []
+    assert len(model.prompts) == 3
+    assert executor.dialogue_state.list(SESSION) == []
 
     restarted = make_executor(model=LocalModel(SEND_DISCOVERY, _model_output(
-        relation="continue", slots={"provider": "kakaotalk", "recipient": "민수", "message": "내일  봐"})))
+        relation="new", slots={"provider": "kakaotalk", "recipient": "민수", "message": "내일  봐"})))
     restarted.semantic_interpreter.SINGLE_PASS_CATALOG_CHARS = 0
     final = restarted.execute_turn('민수에게 "내일  봐"라고 보내줘', SESSION)
-    assert final.task_id == first.task_id and final.status == "awaiting_approval"
+    assert final.task_id and final.status == "awaiting_approval"
     assert restarted.plan_calls[0].steps[0].tool_input["message"] == "내일  봐"
     assert restarted.test_surface.calls == []
 
 
-def test_recovery_keeps_confirmed_pending_state_and_only_asks_remaining_info(make_executor):
+def test_rejected_ungrounded_continuation_preserves_confirmed_pending_state(make_executor):
     bad = _model_output(relation="continue", slots={"recipient": "없는사람", "message": "가짜"})
-    model = LocalModel(SEND_DISCOVERY, bad, bad, {"relation": "continue", "needs_clarification": True,
-                                "response": "김하이님께 전할 내용은 무엇인가요?"})
+    model = LocalModel(SEND_DISCOVERY, bad, bad)
     executor = make_executor(model=model)
     executor.semantic_interpreter.SINGLE_PASS_CATALOG_CHARS = 0
     pending = _pending_send(executor)
     before = executor.dialogue_state.get_intent_state(pending.task_id)
+    question_before = executor.dialogue_state.get(SESSION, pending.task_id, executor._workspace_scope())
     outcome = executor.execute_turn("내용은 아직 생각 중이야", SESSION)
-    assert outcome.task_id == pending.task_id and outcome.status == "awaiting_user"
+    assert outcome.status == "failed" and not outcome.response_generated
     assert executor.dialogue_state.get_intent_state(pending.task_id) == before
+    assert executor.dialogue_state.get(SESSION, pending.task_id, executor._workspace_scope()) == question_before
     assert model.prompts[-1]["pending_request"]["slots"]["recipient"] == "김하이"
-    assert executor.plan_calls == []
+    assert executor.plan_calls == [] and model.outputs == [] and len(model.prompts) == 3
 
 
 @pytest.mark.parametrize("reply", ["카톡을 보냈습니다.", "지금 전송 중입니다."])
-def test_recovery_rejects_false_completion_and_activity(make_executor, reply):
+def test_ungrounded_action_does_not_request_freeform_completion_or_activity_claims(make_executor, reply):
     bad = _model_output(slots={"recipient": "없는사람"})
-    model = LocalModel(SEND_DISCOVERY, bad, bad, {
-        "relation": "new", "needs_clarification": False, "response": reply})
+    recovery = {"relation": "new", "needs_clarification": False, "response": reply}
+    model = LocalModel(SEND_DISCOVERY, bad, bad, recovery)
     executor = make_executor(model=model)
     executor.semantic_interpreter.SINGLE_PASS_CATALOG_CHARS = 0
     outcome = executor.execute_turn("카톡 보내줘", SESSION)
     assert outcome.status == "failed" and outcome.response != reply
     assert executor.plan_calls == []
-    assert model.outputs == [] and model.prompts[-1]["executed_tools"] == []
+    assert model.outputs == [recovery] and len(model.prompts) == 3
 
 
-def test_full_information_recovery_does_not_require_an_invented_missing_field(make_executor):
+def test_complete_user_information_does_not_authorize_an_ungrounded_model_contract(make_executor):
     reply = "입력하신 대상과 내용은 확인했지만 실행 명세 검증에 문제가 있어 전송하지 않았어요."
     bad = _model_output(slots={"recipient": "없는사람"})
-    executor = make_executor(model=LocalModel(SEND_DISCOVERY, bad, bad, {
-        "relation": "new", "needs_clarification": False, "response": reply}))
+    recovery = {"relation": "new", "needs_clarification": False, "response": reply}
+    model = LocalModel(SEND_DISCOVERY, bad, bad, recovery)
+    executor = make_executor(model=model)
     executor.semantic_interpreter.SINGLE_PASS_CATALOG_CHARS = 0
     outcome = executor.execute_turn('민수에게 "안녕"이라고 카톡 보내줘', SESSION)
-    assert outcome.response == reply and outcome.status == "failed"
+    assert outcome.status == "failed" and not outcome.response_generated
+    assert model.outputs == [recovery] and len(model.prompts) == 3
     assert not executor.dialogue_state.list(SESSION) and not executor.plan_calls
 
 
@@ -119,7 +121,7 @@ def test_unsupported_recovery_cannot_invent_missing_information(make_executor, a
     ("cancelled", "사용자 취소", "요청하신 대로 남은 작업을 중단했어요."),
     ("completed", "등록된 작업이 없습니다.", "지금 등록된 작업은 없어요."),
 ])
-def test_common_renderer_covers_runtime_outcomes_and_persists_questions(make_executor, status, canonical, generated):
+def test_common_renderer_preserves_failures_and_renders_other_runtime_outcomes(make_executor, status, canonical, generated):
     executor = make_executor()
     model = LocalModel(generated)
     executor.response_realizer = ResponseRealizer(model)
@@ -128,10 +130,11 @@ def test_common_renderer_covers_runtime_outcomes_and_persists_questions(make_exe
         executor.dialogue_state.create(SESSION, "원래 요청", canonical, [], task.task_id, executor._workspace_scope())
     outcome = ExecutionOutcome(canonical, status, "원래 요청", task_id=task.task_id)
     rendered = executor.render_outcome(outcome, "현재 요청", [{"role": "user", "content": "앞선 답변"}], SESSION)
-    assert rendered.status == status and rendered.response == generated
+    expected = canonical if status == "failed" else generated
+    assert rendered.status == status and rendered.response == expected
     assert executor.render_outcome(rendered, "현재 요청", session_id=SESSION) is rendered
-    assert len(model.prompts) == 1
-    assert executor.dialogue_state.get_task(SESSION, task.task_id).result == generated
+    assert len(model.prompts) == (0 if status == "failed" else 1)
+    assert executor.dialogue_state.get_task(SESSION, task.task_id).result == expected
     if status == "awaiting_user":
         assert executor.dialogue_state.get(SESSION, task.task_id).question == generated
 
@@ -157,8 +160,9 @@ def test_renderer_reconsiders_missing_facts_without_using_a_template():
     assert len(model.prompts) == 2
 
 
-def test_local_only_and_cancellation_contract():
-    kwargs = dict(tool_name="", user_request="상태", assistant_name="비서", address="", status="failed")
+def test_local_only_and_cancellation_contract(monkeypatch):
+    monkeypatch.setattr("core.response_realizer.is_gpt_enabled", lambda: False)
+    kwargs = dict(tool_name="", user_request="상태", assistant_name="비서", address="", status="awaiting_user")
     remote = LocalModel("should not run")
     remote.base_url = "https://example.com"
     assert ResponseRealizer(remote).realize("진단 정보", **kwargs).startswith("[시스템 상태:")

@@ -130,10 +130,13 @@ def test_legacy_keyword_approvals_migrate_without_trusting_or_losing_data(tmp_pa
     assert CodingExperienceStore(path).get_attempt(new_id, session_id="s", workspace_path="")["verified"]
 
 
-def test_rag_filters_legacy_unverified_wrong_identity_and_revoked_records(store, monkeypatch):
+def test_rag_filters_legacy_unverified_wrong_identity_and_revoked_records(store, tmp_path, monkeypatch):
     import core.coding_experience as experience_module
     from core.rag import VectorRAGManager
 
+    workspace = tmp_path / "project-a"
+    workspace.mkdir()
+    monkeypatch.setitem(SCOPE, "workspace_path", str(workspace))
     monkeypatch.setattr(experience_module, "get_coding_experience_store", lambda: store)
     rag = VectorRAGManager.__new__(VectorRAGManager)
     rag.documents = {}
@@ -166,6 +169,9 @@ def test_persisted_rag_document_is_rechecked_after_feedback(store, tmp_path, mon
     import core.coding_experience as experience_module
     from core.rag import VectorRAGManager
 
+    workspace = tmp_path / "project-a"
+    workspace.mkdir()
+    monkeypatch.setitem(SCOPE, "workspace_path", str(workspace))
     monkeypatch.setattr(experience_module, "get_coding_experience_store", lambda: store)
     monkeypatch.setattr("core.rag.Config.DB_PATH", str(tmp_path / "rag.db"))
     monkeypatch.setattr(VectorRAGManager, "_init_vector_rag", lambda self: None)

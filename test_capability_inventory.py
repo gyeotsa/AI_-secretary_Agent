@@ -52,6 +52,7 @@ def test_every_declared_intent_has_a_deterministic_representative_route():
     explicit_probes = {
         "filesystem.write_file": "sample.txt 파일 내용을 수정해줘",
         "speech.repeat_text": '"hello"를 읽어줘',
+        "web.research_and_apply_preference": "웹에서 조사해서 말투에 반영해줘",
     }
     failures = []
     for _plugin, intent in registry.get_all_intents():
@@ -69,3 +70,6 @@ def test_every_declared_intent_has_a_deterministic_representative_route():
             failures.append((intent.name, probe, resolved.intent_name))
 
     assert not failures, failures
+    style_change = router.resolve(explicit_probes["web.research_and_apply_preference"])
+    assert style_change.ready and style_change.slots["setting"] == "response_style"
+    assert router.resolve("웹 검색을 통해 학습").tool_name == "browser_research"
