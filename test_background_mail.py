@@ -327,7 +327,8 @@ class NaverIMAP(FakeIMAP):
         if command == "FETCH" and " FLAGS " in args[1]:
             meta, raw = result[1][0]
             flags = b"\\Seen" if int(args[0]) % 2 else b""
-            return "OK", [(meta + b" FLAGS (" + flags + b")", raw), b")"]
+            meta = meta.replace(b" BODY[", b" FLAGS (" + flags + b") BODY[", 1)
+            return "OK", [(meta, raw), b")"]
         return result
 
     def list(self):
@@ -337,6 +338,65 @@ class NaverIMAP(FakeIMAP):
     def status(self, mailbox, fields):
         self.calls.append(("STATUS", mailbox, fields))
         return self.status_reply
+
+
+def naver_backend(messages=None, *, validity=0):
+    account = MailAccountService(Vault())
+    account.save("fixture", "fixture-app-password")
+    server = NaverIMAP(messages)
+    server.uidvalidity_reply = ("UIDVALIDITY", [str(validity).encode()])
+    def reader(settings, checkpoint):
+        return ImapReader(settings, connection_factory=lambda *a, **kw: server, checkpoint=checkpoint)
+    return BackgroundMailService(naver=account, reader_factory=reader), server
+
+
+def test_naver_server_zero_uidvalidity_lists_reads_and_counts_drafts():
+    service, server = naver_backend()
+    listing = service.list_inbox("naver")
+    assert listing["observed_count"] == 1 and listing["items"][0]["unread"] is False
+    assert "<fixture-101@" not in json.dumps(listing)
+    detail = service.read_message("naver", listing["items"][0]["message_ref"])
+    assert "본문 공백" in detail["body"] and service.draft_count("naver") == 22
+    assert not {"STORE", "CLOSE", "EXPUNGE"} & {call[0] for call in server.calls}
+
+
+@pytest.mark.parametrize("header,value", [
+    ("Message-ID", "<replacement@example.test>"), ("To", "different@example.test"),
+])
+def test_naver_zero_epoch_rejects_reused_uid_body_with_changed_identity(header, value):
+    service, server = naver_backend()
+    listing = service.list_inbox("naver")
+    message = BytesParser(policy=policy.SMTP).parsebytes(server.messages[101])
+    message.replace_header(header, value)
+    server.messages[101] = message.as_bytes()
+    with pytest.raises(BackgroundMailError):
+        service.read_message("naver", listing["items"][0]["message_ref"])
+
+
+@pytest.mark.parametrize("validity", [0, 77])
+def test_naver_message_id_distinguishes_reused_zero_epoch_uids_only(validity):
+    service, server = naver_backend(validity=validity)
+    original = service.list_inbox("naver")
+    old_key = original["items"][0]["message_key"]
+    message = BytesParser(policy=policy.SMTP).parsebytes(server.messages[101])
+    message.replace_header("Message-ID", "<replacement@example.test>")
+    server.messages[101] = message.as_bytes()
+    new_key = service.list_inbox("naver")["items"][0]["message_key"]
+    if validity == 0:
+        assert new_key != old_key
+    else:
+        assert new_key == old_key == service._key("naver", "fixture@naver.com", [77, 101])
+
+
+def test_naver_missing_message_id_uses_headers_to_distinguish_reused_zero_epoch_uid():
+    message = BytesParser(policy=policy.SMTP).parsebytes(make_message())
+    del message["Message-ID"]
+    service, server = naver_backend({101: message.as_bytes()})
+    old_key = service.list_inbox("naver")["items"][0]["message_key"]
+    message.replace_header("Subject", "다른 메일")
+    server.messages[101] = message.as_bytes()
+    new_key = service.list_inbox("naver")["items"][0]["message_key"]
+    assert new_key != old_key
 
 
 def test_naver_same_analysis_contract_with_flags_body_and_actual_drafts():

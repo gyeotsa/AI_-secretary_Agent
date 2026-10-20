@@ -54,6 +54,20 @@ def test_saved_account_is_the_real_imap_source(service, monkeypatch):
     assert "fixture-private-password" not in str(result.to_dict())
 
 
+def test_imap_tool_schemas_allow_naver_zero_epoch_but_not_zero_message_uid():
+    from jsonschema import Draft202012Validator
+    tools = {tool.name: tool for tool in MailPlugin().get_tools()}
+    for name, options in (
+        ("mail_list_inbox", {"before_uid": 102, "uid_validity": 0}),
+        ("mail_read_message", {"uid": 101, "uid_validity": 0}),
+    ):
+        validator = Draft202012Validator(tools[name].input_schema)
+        assert not list(validator.iter_errors(options))
+        assert list(validator.iter_errors({**options, "uid_validity": False}))
+        uid_field = "before_uid" if name == "mail_list_inbox" else "uid"
+        assert list(validator.iter_errors({**options, uid_field: 0}))
+
+
 class SMTP:
     def __init__(self, service, *, change_after_login=False):
         self.service, self.change = service, change_after_login

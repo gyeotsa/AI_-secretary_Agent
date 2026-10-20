@@ -74,6 +74,17 @@ def test_same_boot_does_not_collect_or_notify(monkeypatch):
     app.mail_brief.finish_startup.assert_not_called()
 
 
+def test_diagnostic_mail_autostart_disable_never_starts_worker_or_reads_mail(monkeypatch):
+    app = app_with_brief(monkeypatch)
+    monkeypatch.setenv("JARVIS_DISABLE_MAIL_AUTOSTART", "1")
+    worker = Mock(side_effect=AssertionError("mail worker must not start"))
+    monkeypatch.setattr("main_qt.threading.Thread", worker)
+    app._start_startup_mail_brief()
+    worker.assert_not_called()
+    assert app._mail_startup_context is None and app.mail_brief.mock_calls == []
+    app._on_proactive_message.assert_not_called()
+
+
 def test_boot_detection_failure_is_safe_status_and_no_notification(monkeypatch):
     app = app_with_brief(monkeypatch)
     app.mail_brief.claim_startup.side_effect = MailBriefError("Windows 부팅 기준 확인 불가")

@@ -197,6 +197,53 @@ def test_malformed_mailbox_identity_reply_fails_closed_and_logs_out(reply):
     assert not commands(server, "FETCH") and server.calls[-1] == ("logout",)
 
 
+@pytest.mark.parametrize("host", ["imap.naver.com", "IMAP.NAVER.COM"])
+def test_naver_zero_uidvalidity_supports_list_pagination_and_body(host):
+    reader, server, _connections = make_reader()
+    reader.settings = ImapSettings(host, "fixture-user", "fixture-password")
+    server.uidvalidity_reply = ("UIDVALIDITY", [b"0"])
+    listing = reader.list_inbox()
+    assert listing["uid_validity"] == 0 and listing["items"][0]["uid"] == 101
+    page = reader.list_inbox(before_uid=102, uid_validity=0)
+    assert page["uid_validity"] == 0 and page["items"][0]["uid"] == 101
+    detail = reader.read_message(uid=101, uid_validity=0)
+    assert detail["uid_validity"] == 0 and "본문 공백" in detail["body"]
+    assert not {"STORE", "CLOSE", "EXPUNGE"} & {call[0] for call in server.calls}
+
+
+@pytest.mark.parametrize("host,validity", [
+    ("imap.example.test", 0), ("imap.gmail.com", 0), ("imap.naver.com.example.test", 0),
+    ("imap.naver.com", False), ("imap.naver.com", -1),
+    ("imap.naver.com", 4294967296), ("imap.naver.com", "0"),
+])
+@pytest.mark.parametrize("action", ["list", "read"])
+def test_zero_uidvalidity_exception_does_not_weaken_other_identity_inputs(host, validity, action):
+    reader, server, connections = make_reader()
+    reader.settings = ImapSettings(host, "fixture-user", "fixture-password")
+    with pytest.raises(MailReadError):
+        if action == "list":
+            reader.list_inbox(uid_validity=validity)
+        else:
+            reader.read_message(uid=101, uid_validity=validity)
+    assert not connections and not server.calls
+
+
+def test_naver_zero_uidvalidity_still_rejects_zero_message_uid_and_changed_epoch():
+    reader, server, connections = make_reader()
+    reader.settings = ImapSettings("imap.naver.com", "fixture-user", "fixture-password")
+    server.uidvalidity_reply = ("UIDVALIDITY", [b"0"])
+    with pytest.raises(MailReadError):
+        reader.read_message(uid=0, uid_validity=0)
+    assert not connections
+    with pytest.raises(MailReadError, match="메일함이 변경"):
+        reader.list_inbox(uid_validity=77)
+    assert not commands(server, "SEARCH")
+    server.search_reply = ("OK", [b"0"])
+    with pytest.raises(MailReadError):
+        reader.list_inbox()
+    assert not commands(server, "FETCH") and server.calls[-1] == ("logout",)
+
+
 @pytest.mark.parametrize("reply", [
     ("NO", [b"server-private-text"]), ("OK", [None]), ("OK", ["101"]),
     ("OK", [b"101 BAD"]), ("OK", [b"0"]), ("OK", [b"4294967296"]),

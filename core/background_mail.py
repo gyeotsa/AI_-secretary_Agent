@@ -19,6 +19,7 @@ from core.browser_mail import BrowserMailError
 from core.mail_accounts import MailAccountService
 from core.mail_runtime import ImapReader, mail_body
 from core.plugin import ToolCancelledError
+from core.permission import get_permission_manager
 from core.remote_runtime import OAuthCoordinator, SecureTokenVault
 from core.turn_context import check_turn_cancelled
 
@@ -167,6 +168,7 @@ class BackgroundMailService:
         self.disconnect()
 
     def _credentials(self, provider):
+        self._check_read_permission()
         if provider == "gmail":
             snapshot = self.gmail.active_revision()
             if not snapshot[0]:
@@ -179,10 +181,16 @@ class BackgroundMailService:
 
     def _check(self, provider, snapshot, generation, checkpoint):
         checkpoint()
+        self._check_read_permission()
         with self._state_lock:
             if generation != self._generation:
                 raise ToolCancelledError("메일 연결이 변경되어 이전 조회 결과를 폐기했습니다.")
         (self.gmail if provider == "gmail" else self.naver).check_revision(snapshot)
+
+    @staticmethod
+    def _check_read_permission():
+        if get_permission_manager().is_blocked("cloud_read"):
+            raise BackgroundMailError("권한 관리에서 클라우드 조회가 거절되어 메일을 조회할 수 없습니다.")
 
     def check_snapshot(self, provider, account):
         self._provider(provider)
@@ -363,18 +371,24 @@ class BackgroundMailService:
                     item = {**self._headers(data.get("payload", {}).get("headers")), "unread": "UNREAD" in labels,
                             "message_key": self._key(provider, account, identifier), "message_ref": binding + ":" + str(len(items))}
                     items.append(item)
-                    refs[item["message_ref"]] = (identifier, None, item)
+                    refs[item["message_ref"]] = (identifier, None, item, None)
                 self._gmail_identity(account, check, deadline)
             else:
                 reader = self.reader_factory(snapshot.imap_settings(), checkpoint=check)
                 listing = reader.list_inbox(limit=limit, include_flags=True)
                 for row in listing["items"]:
                     headers = row["headers"]
+                    identity = [listing["uid_validity"], row["uid"]]
+                    expected_headers = None
+                    if listing["uid_validity"] == 0:
+                        # shortcut: Naver's zero epoch cannot detect identical-header UID reuse; use a real epoch when available.
+                        expected_headers = {key: headers[key] for key in ("Message-ID", "From", "To", "Subject", "Date")}
+                        identity.append(expected_headers)
                     item = {"subject": headers["Subject"], "sender": headers["From"], "date": headers["Date"],
-                            "unread": row["unread"], "message_key": self._key(provider, account, [listing["uid_validity"], row["uid"]]),
+                            "unread": row["unread"], "message_key": self._key(provider, account, identity),
                             "message_ref": binding + ":" + str(len(items))}
                     items.append(item)
-                    refs[item["message_ref"]] = (row["uid"], listing["uid_validity"], item)
+                    refs[item["message_ref"]] = (row["uid"], listing["uid_validity"], item, expected_headers)
             check()
             with self._state_lock:
                 check()
@@ -408,7 +422,7 @@ class BackgroundMailService:
             if saved is None or entry is None:
                 raise BackgroundMailError("메일 목록이 변경되었습니다. 다시 조회하세요.")
             account, snapshot = saved
-            identifier, validity, item = entry
+            identifier, validity, item, expected_headers = entry
             check = lambda: self._check(provider, snapshot, generation, checkpoint)
             check()
             if provider == "gmail":
@@ -424,6 +438,8 @@ class BackgroundMailService:
             else:
                 reader = self.reader_factory(snapshot.imap_settings(), checkpoint=check)
                 detail = reader.read_message(uid=identifier, uid_validity=validity, include_html=True)
+                if expected_headers is not None and expected_headers != {key: detail["headers"].get(key) for key in expected_headers}:
+                    raise BackgroundMailError("선택한 메일 식별 정보가 변경되었습니다. 목록을 다시 조회하세요.")
                 metadata = {"subject": detail["headers"]["Subject"], "sender": detail["headers"]["From"], "date": detail["headers"]["Date"]}
                 body, truncated = detail["body"], detail["truncated"]
             if metadata != {key: item[key] for key in ("subject", "sender", "date")}:

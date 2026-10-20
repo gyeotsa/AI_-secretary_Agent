@@ -109,6 +109,12 @@ class ImapReader:
         self.checkpoint = checkpoint or (lambda: None)
         self.clock = clock
 
+    def _validity(self, value):
+        # Naver returns zero despite the standard; message UIDs still must be positive.
+        if type(value) is int and value == 0 and self.settings.host.casefold() == "imap.naver.com":
+            return value
+        return _uid(value, "UIDVALIDITY")
+
     @staticmethod
     def _ok(reply):
         if not isinstance(reply, tuple) or len(reply) != 2 or reply[0] != "OK":
@@ -137,7 +143,7 @@ class ImapReader:
             data = reply[1] if isinstance(reply, tuple) and len(reply) == 2 and reply[0] == "UIDVALIDITY" else None
             if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], bytes) or not re.fullmatch(rb"[0-9]{1,10}", data[0]):
                 raise MailReadError("메일함 UIDVALIDITY를 확인할 수 없습니다.")
-            validity = _uid(int(data[0]), "UIDVALIDITY")
+            validity = self._validity(int(data[0]))
             if expected_validity is not None and validity != expected_validity:
                 raise MailReadError("메일함이 변경되었습니다. 목록을 다시 조회한 뒤 메일을 선택하세요.")
             yield client, validity, check
@@ -183,7 +189,7 @@ class ImapReader:
                 or type(include_flags) is not bool):
             raise MailReadError("메일 조회 개수는 1~50, unread_only는 참/거짓이어야 합니다.")
         if uid_validity is not None:
-            _uid(uid_validity, "UIDVALIDITY")
+            self._validity(uid_validity)
         if before_uid is not None:
             _uid(before_uid)
             if uid_validity is None:
@@ -222,7 +228,7 @@ class ImapReader:
 
     def read_message(self, *, uid, uid_validity, include_html=False):
         _uid(uid)
-        _uid(uid_validity, "UIDVALIDITY")
+        self._validity(uid_validity)
         if type(include_html) is not bool:
             raise MailReadError("메일 본문 조회 설정이 올바르지 않습니다.")
         with self._inbox(uid_validity) as (client, validity, check):
