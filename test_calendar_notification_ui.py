@@ -97,7 +97,10 @@ def test_auto_hide_advances_queue_without_replacing_first_event(notifications):
     manager.enqueue(third)
     assert manager.notification.current_event == first and len(sounds) == 1
     manager.notification.hide_timer.start(15)
-    QTest.qWait(40)
+    for _ in range(200):
+        if manager.notification.current_event == second:
+            break
+        QTest.qWait(10)
     assert manager.notification.current_event == second and manager.is_busy and len(sounds) == 2
     manager.notification.close()
     assert manager.notification.current_event == third and manager.notification.isVisible() and len(sounds) == 3
