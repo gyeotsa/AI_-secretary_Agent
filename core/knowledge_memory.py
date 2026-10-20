@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from contextlib import contextmanager
 
 from config import Config
+from core.knowledge_sources import is_internal_knowledge
 
 
 class MemoryKind(str, Enum):
@@ -140,6 +141,8 @@ class KnowledgeMemoryStore:
             """)
 
     def remember(self, record: KnowledgeRecord, *, automatic: bool = True) -> str:
+        if is_internal_knowledge(record.source_uri, record.metadata):
+            raise MemoryPolicyError("아니스 개발·설치 자료는 개인 기억에 저장하지 않습니다.")
         if not record.content.strip() or not record.subject.strip():
             raise MemoryPolicyError("메모리의 subject와 content는 비어 있을 수 없습니다.")
         if automatic:
@@ -150,18 +153,22 @@ class KnowledgeMemoryStore:
         if record.epistemic_status in {EpistemicStatus.FACT, EpistemicStatus.INFERENCE} and not (record.source_uri or record.source_label):
             raise MemoryPolicyError("사실·추측 메모리에는 출처가 필요합니다.")
         with self._session() as conn:
-            existing = conn.execute("""
-                SELECT record_id FROM knowledge_records
+            existing_rows = conn.execute("""
+                SELECT * FROM knowledge_records
                 WHERE workspace_namespace=? AND subject=? AND predicate=?
-                  AND content=? AND status='active' LIMIT 1
-            """, (record.workspace_namespace, record.subject, record.predicate, record.content)).fetchone()
+                  AND content=? AND status='active'
+            """, (record.workspace_namespace, record.subject, record.predicate, record.content)).fetchall()
+            existing = next((row for row in existing_rows if not is_internal_knowledge(
+                row["source_uri"], json.loads(row["metadata"] or "{}"))), None)
             if existing:
                 return str(existing["record_id"])
             conflicts = conn.execute("""
-                SELECT record_id, metadata FROM knowledge_records
+                SELECT record_id, metadata, source_uri FROM knowledge_records
                 WHERE workspace_namespace=? AND subject=? AND predicate=?
                   AND status='active' AND content<>?
             """, (record.workspace_namespace, record.subject, record.predicate, record.content)).fetchall()
+            conflicts = [row for row in conflicts
+                         if not is_internal_knowledge(row["source_uri"], json.loads(row["metadata"] or "{}"))]
             conflict_ids = [row["record_id"] for row in conflicts]
             if conflict_ids:
                 record.metadata = {**record.metadata, "conflicts_with": conflict_ids}
@@ -230,7 +237,8 @@ class KnowledgeMemoryStore:
                 "SELECT * FROM knowledge_records WHERE " + " AND ".join(clauses) + " ORDER BY recorded_at DESC",
                 args,
             ).fetchall()
-        records = [self._from_row(row) for row in rows]
+        records = [self._from_row(row) for row in rows
+                   if not is_internal_knowledge(row["source_uri"], json.loads(row["metadata"] or "{}"))]
         if metadata_filter:
             records = [r for r in records if all(r.metadata.get(k) == v for k, v in metadata_filter.items())]
         tokens = set(query_tokens)
@@ -243,7 +251,9 @@ class KnowledgeMemoryStore:
     def get(self, record_id: str) -> Optional[KnowledgeRecord]:
         with self._session() as conn:
             row = conn.execute("SELECT * FROM knowledge_records WHERE record_id=?", (record_id,)).fetchone()
-        return self._from_row(row) if row else None
+        if row and not is_internal_knowledge(row["source_uri"], json.loads(row["metadata"] or "{}")):
+            return self._from_row(row)
+        return None
 
     def maintain_lifecycle(self, *, now: Optional[float] = None) -> Dict[str, Any]:
         """Retire expired evidence and expose unresolved conflicts without guessing."""

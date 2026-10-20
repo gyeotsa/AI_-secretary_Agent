@@ -1569,6 +1569,8 @@ class ToolExecutor:
         if not is_valid:
             return ToolRunResult.failed(tool_name="add_document",error=error_msg)
         raw = self.rag_manager.add_document(file_path)
+        if str(raw).startswith(("오류:", "문서 추가 오류:")):
+            return ToolRunResult.failed(tool_name="add_document", error=str(raw))
         doc_id = os.path.basename(file_path)
         key_builder = getattr(self.rag_manager, "_document_key", None)
         saved = self.rag_manager.documents.get(key_builder(doc_id) if key_builder else doc_id)
@@ -1603,9 +1605,11 @@ class ToolExecutor:
         if self.rag_manager is None:
             return ToolRunResult.failed(tool_name="list_documents",error="RAG 기능을 초기화할 수 없습니다.")
         output = self.rag_manager.list_documents()
+        from core.knowledge_sources import is_internal_knowledge
         namespace = getattr(self.rag_manager, "namespace", "global")
         documents = [item.get("doc_id", key) for key, item in self.rag_manager.documents.items()
-                     if item.get("namespace", "global") == namespace]
+                     if item.get("namespace", "global") == namespace
+                     and not is_internal_knowledge(item.get("source", ""), item)]
         return ToolRunResult.successful(
             tool_name="list_documents",raw_output=str(output),
             evidence=[Evidence("rag_catalog",f"RAG 문서 {len(documents)}개를 조회했습니다.",{"documents":documents,"count":len(documents)})],

@@ -11,6 +11,7 @@ from io import StringIO
 from config import Config
 from core.knowledge_memory import FreshnessPolicy
 from core.local_inference import serialized_inference
+from core.knowledge_sources import is_internal_knowledge
 
 
 class VectorRAGManager:
@@ -177,7 +178,14 @@ class VectorRAGManager:
     def _documents_snapshot(self) -> tuple[dict, ...]:
         """Return a stable view for retrieval while another thread writes."""
         with self._get_store_lock():
-            return tuple(self.documents.values())
+            return tuple(document for document in self.documents.values()
+                         if not is_internal_knowledge(document.get("source", ""), document))
+
+    def _internal_chunk_ids(self) -> set[str]:
+        with self._get_store_lock():
+            return {chunk["chunk_id"] for document in self.documents.values()
+                    if is_internal_knowledge(document.get("source", ""), document)
+                    for chunk in document.get("chunk_metadata", []) if chunk.get("chunk_id")}
 
     @staticmethod
     def _chunk_id(namespace: str, doc_id: str, index: int, content: str) -> str:
@@ -249,6 +257,9 @@ class VectorRAGManager:
     @serialized_inference
     def add_document(self, file_path: str, metadata: dict | None = None, *,
                      namespace: str | None = None) -> str:
+        if is_internal_knowledge(file_path, metadata):
+            return "오류: 아니스 개발·설치 파일은 개인 지식에 추가할 수 없습니다."
+        file_path = os.path.abspath(file_path)
         if not os.path.exists(file_path):
             return f"오류: 파일 '{file_path}'가 존재하지 않습니다."
         target_namespace = self._resolve_namespace(namespace)
@@ -335,6 +346,8 @@ class VectorRAGManager:
             raise ValueError("RAG에 추가할 텍스트가 비어 있습니다.")
         target_namespace = self._resolve_namespace(namespace)
         source = str(source_uri or f"memory://{doc_id}")
+        if is_internal_knowledge(source, metadata):
+            raise ValueError("아니스 개발·설치 자료는 개인 지식에 추가할 수 없습니다.")
         chunks = self.chunk_text(content)
         now = time.time()
         base_metadata = {
@@ -425,6 +438,8 @@ class VectorRAGManager:
 
     def sync_document(self, file_path: str, metadata: dict | None = None, *,
                       namespace: str | None = None) -> str:
+        if is_internal_knowledge(file_path, metadata):
+            return "오류: 아니스 개발·설치 파일은 개인 지식에 추가할 수 없습니다."
         target_namespace = self._resolve_namespace(namespace)
         doc_id = os.path.basename(file_path)
         key = self._document_key(doc_id, target_namespace)
@@ -449,6 +464,7 @@ class VectorRAGManager:
         with self._get_store_lock():
             scoped = list(self.documents.items())
         for key, document in scoped:
+            if is_internal_knowledge(document.get("source", ""), document): continue
             if document.get("namespace", "global") != target_namespace: continue
             if document.get("metadata", {}).get("source_type", "file") != "file": continue
             source = document.get("source", "")
@@ -631,6 +647,10 @@ class VectorRAGManager:
                 merged["rrf_score"] += 1.0 / (60 + rank)
                 merged["retrieval_channels"].append(channel)
         candidates = list(fused.values())
+        internal_ids = self._internal_chunk_ids()
+        candidates = [item for item in candidates
+                      if item.get("chunk_id") not in internal_ids
+                      and not is_internal_knowledge(item.get("source", ""), item)]
         if self.reranker and candidates:
             scores = self.reranker.predict([(query, item.get("content", "")) for item in candidates])
             for item, score in zip(candidates, scores):
@@ -687,8 +707,13 @@ class VectorRAGManager:
                 return []
             
             # 2. Reranker로 재정렬 (있으면)
-            chunks = initial_results["documents"][0]
-            metadatas = initial_results["metadatas"][0]
+            internal_ids = self._internal_chunk_ids()
+            allowed = [(chunk, meta) for chunk, meta in zip(
+                initial_results["documents"][0], initial_results["metadatas"][0])
+                if meta.get("chunk_id") not in internal_ids
+                and not is_internal_knowledge(meta.get("source", ""), meta)]
+            chunks = [chunk for chunk, _meta in allowed]
+            metadatas = [meta for _chunk, meta in allowed]
             
             if self.reranker:
                 # Reranker로 점수 계산
@@ -729,6 +754,8 @@ class VectorRAGManager:
         with self._get_store_lock():
             document_items = tuple(self.documents.items())
         for doc_id, doc_data in document_items:
+            if is_internal_knowledge(doc_data.get("source", ""), doc_data):
+                continue
             if doc_data.get("namespace", "global") not in allowed_namespaces:
                 continue
             records = doc_data.get("chunk_metadata") or [
@@ -774,8 +801,12 @@ class VectorRAGManager:
                     **document.get("metadata", {}), **chunk,
                 }
         filtered = []
+        internal_ids = self._internal_chunk_ids()
         for item in candidates:
             item = {**catalog.get(item.get("chunk_id", ""), {}), **item}
+            if (item.get("chunk_id") in internal_ids
+                    or is_internal_knowledge(item.get("source", ""), item)):
+                continue
             if (item.get("source_type") == "verified_coding_experience"
                     or str(item.get("source", "")).startswith("memory://coding-experience-")):
                 if not self._verified_coding_experience_candidate(item):

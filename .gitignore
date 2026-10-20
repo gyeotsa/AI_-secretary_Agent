@@ -98,3 +98,11 @@ data/models/mediapipe/*.task
 /architecture_inspect.png
 /greeting.pptx
 /tmpdozr9d5t/
+
+data/*.db-journal
+
+data/research_reports/
+
+/.pytest_*/
+
+/Jarvis 네이버 및 구글 계정.txt

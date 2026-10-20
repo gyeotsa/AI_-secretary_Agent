@@ -21,6 +21,7 @@ import time
 from config import Config
 from core.harness import SafetyLayer
 from core.knowledge_memory import KnowledgeRecord, MemoryKind, SensitiveMemoryPolicy
+from core.knowledge_sources import is_internal_knowledge, is_internal_path
 
 
 class ObsidianVaultError(ValueError):
@@ -42,6 +43,12 @@ class ObsidianVault:
         self._deleted_sessions: set[str] = set()
         configured = root or self._load_settings().get("vault_path") or Config.OBSIDIAN_VAULT_PATH
         self.root = Path(configured).expanduser().resolve()
+        if is_internal_path(self.root):
+            if root is not None:
+                raise ObsidianVaultError("아니스 개발·설치 폴더는 개인 Vault로 사용할 수 없습니다.")
+            self.root = (Path(Config.DB_PATH).resolve().parent / "AnisKnowledgeVault").resolve()
+            if is_internal_path(self.root):
+                raise ObsidianVaultError("개인 Vault를 저장할 수 있는 폴더가 필요합니다.")
         self.rag = rag
         self._ensure_structure()
 
@@ -53,6 +60,8 @@ class ObsidianVault:
 
     def configure(self, root: str | Path) -> Path:
         target = Path(root).expanduser().resolve()
+        if is_internal_path(target):
+            raise ObsidianVaultError("아니스 개발·설치 폴더는 개인 Vault로 사용할 수 없습니다.")
         target.mkdir(parents=True, exist_ok=True)
         if not target.is_dir():
             raise ObsidianVaultError("Vault 경로는 폴더여야 합니다.")
@@ -166,6 +175,8 @@ managed_by: anis
         return "\n".join([*lines, "---"])
 
     def upsert_record(self, record: KnowledgeRecord) -> Path:
+        if is_internal_knowledge(record.source_uri, record.metadata):
+            raise ObsidianVaultError("아니스 개발·설치 자료는 개인 Vault에 저장하지 않습니다.")
         reasons = SensitiveMemoryPolicy.detect(record.content, record.metadata)
         if reasons:
             raise ObsidianVaultError("민감정보가 포함된 기억은 Vault에 저장하지 않습니다.")
@@ -180,6 +191,7 @@ managed_by: anis
             "importance": self._importance(record), "confidence": record.confidence,
             "epistemic_status": record.epistemic_status.value, "topics": topics,
             "source_uri": record.source_uri, "source_label": record.source_label,
+            "source_metadata": record.metadata,
             "workspace": record.workspace_namespace, "status": record.status,
             "created": datetime.fromtimestamp(record.recorded_at).isoformat(),
             "updated": datetime.now().isoformat(), "managed_by": "anis",
@@ -306,7 +318,38 @@ managed_by: anis
 
     def _notes(self, include_raw: bool = False) -> list[Path]:
         roots = [self.root / "wiki"] + ([self.root / "raw"] if include_raw else [])
-        return sorted(path for root in roots for path in root.rglob("*.md") if path.is_file())
+        notes = []
+        for root in roots:
+            for path in root.rglob("*.md"):
+                try:
+                    self._read_personal_note(path)
+                except (OSError, ObsidianVaultError):
+                    continue
+                notes.append(path)
+        return sorted(notes)
+
+    def _is_personal_note(self, path: Path) -> bool:
+        resolved = path.resolve()
+        if (not resolved.is_relative_to(self.root) or not resolved.is_file()
+                or is_internal_path(resolved)):
+            return False
+        metadata, _title, _body = self._parse_note(resolved.read_text(encoding="utf-8", errors="replace"))
+        if metadata.get("managed_by") == "anis" and metadata.get("type") in {
+                "index", "topics_index", "actions_index"}:
+            return False
+        return not is_internal_knowledge(metadata.get("source_uri", ""), metadata)
+
+    def _read_personal_note(self, path: Path) -> str:
+        if not self._is_personal_note(path):
+            raise ObsidianVaultError("개인 지식으로 사용할 수 없는 문서입니다.")
+        content = path.read_text(encoding="utf-8", errors="replace")
+        metadata, _title, _body = self._parse_note(content)
+        if metadata.get("managed_by") == "anis" and str(metadata.get("type", "")).endswith("_map"):
+            content = "\n".join(line for line in content.splitlines()
+                                if all(self._resolve_link(link) for link in self.WIKILINK.findall(line)))
+            if not self.WIKILINK.search(content):
+                raise ObsidianVaultError("개인 지식이 없는 지도입니다.")
+        return content
 
     @staticmethod
     def _parse_note(content: str) -> tuple[dict[str, Any], str, str]:
@@ -324,7 +367,10 @@ managed_by: anis
                     try:
                         metadata[key.strip()] = json.loads(raw.strip())
                     except (json.JSONDecodeError, TypeError):
-                        metadata[key.strip()] = raw.strip()
+                        value = raw.strip()
+                        if len(value) >= 2 and value[0] == value[-1] == "'":
+                            value = value[1:-1].replace("''", "'")
+                        metadata[key.strip()] = value
         heading = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
         return metadata, heading.group(1).strip() if heading else "", body
 
@@ -333,7 +379,7 @@ managed_by: anis
         path = self._inside(self.root / relative)
         if path.suffix.casefold() != ".md" or not path.is_file():
             raise ObsidianVaultError("존재하는 Markdown 문서만 열 수 있습니다.")
-        content = path.read_text(encoding="utf-8", errors="replace")
+        content = self._read_personal_note(path)
         metadata, title, body = self._parse_note(content)
         return {
             "path": str(path), "relative_path": path.relative_to(self.root).as_posix(),
@@ -345,6 +391,10 @@ managed_by: anis
         target = self.root if not relative_path else self._inside(self.root / Path(relative_path))
         if target != self.root and not target.is_file():
             raise ObsidianVaultError("열려는 Vault 문서를 찾을 수 없습니다.")
+        if target != self.root:
+            visible = self._read_personal_note(target)
+            if visible.splitlines() != target.read_text(encoding="utf-8", errors="replace").splitlines():
+                raise ObsidianVaultError("개인 지식에서 제외된 자료를 포함한 원문은 열 수 없습니다.")
         uri = "obsidian://open?path=" + quote(str(target))
         os.startfile(uri)
         return uri
@@ -364,7 +414,7 @@ managed_by: anis
         note_data: dict[Path, dict[str, Any]] = {}
         aliases: dict[str, Path] = {}
         for path in self._notes(include_raw=include_raw):
-            content = path.read_text(encoding="utf-8", errors="replace")
+            content = self._read_personal_note(path)
             metadata, title, body = self._parse_note(content)
             relative = path.relative_to(self.root).as_posix()
             topic_values = metadata.get("topics", [])
@@ -451,8 +501,10 @@ managed_by: anis
         normalized = link.strip().replace("\\", "/").removesuffix(".md")
         direct = self.root / "wiki" / f"{normalized}.md"
         if direct.exists():
-            return direct.resolve()
-        candidates = [path for path in self._notes() if path.stem.casefold() == Path(normalized).name.casefold()]
+            return direct.resolve() if self._is_personal_note(direct) else None
+        candidates = [path for path in (self.root / "wiki").rglob("*.md")
+                      if path.stem.casefold() == Path(normalized).name.casefold()
+                      and self._is_personal_note(path)]
         return candidates[0].resolve() if len(candidates) == 1 else None
 
     def explore(self, query: str, *, depth: int = 2, max_notes: int = 24) -> list[dict[str, Any]]:
@@ -461,7 +513,7 @@ managed_by: anis
         tokens = set(re.findall(r"[0-9A-Za-z가-힣]+", query.casefold()))
         scored = []
         for path in self._notes():
-            content = path.read_text(encoding="utf-8", errors="replace")
+            content = self._read_personal_note(path)
             words = set(re.findall(r"[0-9A-Za-z가-힣]+", f"{path.stem} {content}".casefold()))
             score = len(tokens & words)
             if score:
@@ -473,7 +525,7 @@ managed_by: anis
             if path in visited or current_depth > depth:
                 continue
             visited.add(path)
-            content = path.read_text(encoding="utf-8", errors="replace")
+            content = self._read_personal_note(path)
             links = list(dict.fromkeys(self.WIKILINK.findall(content)))
             results.append({"path": str(path), "relative_path": str(path.relative_to(self.root)),
                             "depth": current_depth, "content": content, "links": links})
@@ -488,7 +540,7 @@ managed_by: anis
         target = rag or self.rag
         if target is None:
             raise ObsidianVaultError("RAG Manager가 연결되지 않았습니다.")
-        indexed, unchanged, errors, active_ids = [], [], [], set()
+        indexed, unchanged, errors = [], [], []
         state_path = self.root / ".anis" / "vault_index.db"
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_db = sqlite3.connect(state_path)
@@ -503,18 +555,24 @@ managed_by: anis
         for path in self._notes(include_raw=False):
             try:
                 relative = path.relative_to(self.root).as_posix()
-                active_relatives.add(relative)
                 doc_id = "obsidian-" + hashlib.sha256(relative.encode("utf-8")).hexdigest()[:20]
-                active_ids.add(doc_id)
-                content = path.read_text(encoding="utf-8", errors="replace")
+                content = self._read_personal_note(path)
+                metadata, _title, _body = self._parse_note(content)
+                if metadata.get("rag_index") is False:
+                    continue
+                active_relatives.add(relative)
                 digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                namespace = getattr(target, "namespace", "global")
+                namespace = str(metadata.get("workspace") or "global")
                 old = previous.get(relative)
                 if old and old["digest"] == digest and old["namespace"] == namespace:
                     unchanged.append(str(path)); continue
+                if old and old["namespace"] != namespace:
+                    target.remove_text_document(old["doc_id"], namespace=old["namespace"])
                 target.add_text_document(
                     content, doc_id=doc_id, namespace=namespace, source_uri=str(path),
-                    metadata={"source_type": "obsidian", "vault": str(self.root), "relative_path": relative},
+                    metadata={"source_type": "obsidian", "vault": str(self.root), "relative_path": relative,
+                              "source_uri": metadata.get("source_uri", ""),
+                              "source_metadata": metadata.get("source_metadata", {})},
                 )
                 state_db.execute("""INSERT OR REPLACE INTO rag_sync_state
                     VALUES (?,?,?,?,?)""", (relative, digest, doc_id, namespace, time.time()))
@@ -541,7 +599,7 @@ managed_by: anis
         broken, thin, duplicates = [], [], {}
         hashes: dict[str, list[str]] = {}
         for path in notes:
-            content = path.read_text(encoding="utf-8", errors="replace")
+            content = self._read_personal_note(path)
             if len(re.sub(r"---[\s\S]*?---", "", content, count=1).strip()) < 120:
                 thin.append(str(path.relative_to(self.root)))
             for link in self.WIKILINK.findall(content):
@@ -551,7 +609,7 @@ managed_by: anis
             hashes.setdefault(digest, []).append(str(path.relative_to(self.root)))
         duplicates = [items for items in hashes.values() if len(items) > 1]
         linked_targets = {Path(link).name.casefold() for path in notes
-                          for link in self.WIKILINK.findall(path.read_text(encoding="utf-8", errors="replace"))}
+                          for link in self.WIKILINK.findall(self._read_personal_note(path))}
         orphans = [str(path.relative_to(self.root)) for path in notes
                    if path.stem.casefold() not in linked_targets and path.name != "index.md"]
         return {"notes": len(notes), "broken_links": broken, "thin_pages": thin,

@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional
 
 from core.workspace import DEFAULT_EXCLUDED_DIRS, get_workspace_manager
+from core.knowledge_sources import is_internal_path
 
 
 @dataclass
@@ -46,6 +47,8 @@ class IgnoreRules:
     def __init__(self, root: Path):
         self.root = root
         self.rules: List[tuple[str, bool, bool]] = []
+        if is_internal_path(root):
+            return
         for current, dirs, files in os.walk(root):
             base_path = Path(current)
             if ".gitignore" in files:
@@ -70,6 +73,8 @@ class IgnoreRules:
             dirs[:] = [name for name in dirs if not self.ignored(base_path / name, True)]
 
     def ignored(self, path: Path, is_dir: bool = False) -> bool:
+        if is_internal_path(path):
+            return True
         rel = path.relative_to(self.root).as_posix()
         if any(part in DEFAULT_EXCLUDED_DIRS for part in PurePosixPath(rel).parts):
             return True
@@ -135,6 +140,9 @@ class ProjectIndexer:
                 self._ignore = None
             return True
         root = Path(path).resolve()
+        if is_internal_path(root):
+            self.set_project_root(None)
+            return False
         if not root.is_dir():
             return False
         with self._lock:
@@ -144,7 +152,7 @@ class ProjectIndexer:
 
     def _root(self) -> Optional[Path]:
         root = self.project_root
-        return Path(root) if root else None
+        return Path(root) if root and not is_internal_path(root) else None
 
     def _iter_files(self, root: Optional[Path] = None,
                     rules: Optional[IgnoreRules] = None) -> Iterable[Path]:
@@ -254,7 +262,7 @@ class ProjectIndexer:
 
     def _sync_changes(self, root_path: Optional[str] = None) -> Dict[str, int]:
         root = Path(root_path).resolve() if root_path else self._root()
-        if root is None or not root.is_dir():
+        if root is None or not root.is_dir() or is_internal_path(root):
             return {"added": 0, "updated": 0, "deleted": 0, "unchanged": 0}
         rules = IgnoreRules(root)
         with self._lock:
@@ -335,7 +343,7 @@ class ProjectIndexer:
         return {"languages": languages, "frameworks": sorted(set(frameworks)), "test_commands": commands}
 
     def search_files(self, query: str, search_type: str = "name") -> List[Dict[str, Any]]:
-        if not self.project_root or search_type not in {"name", "content", "extension"}:
+        if self._root() is None or search_type not in {"name", "content", "extension"}:
             return []
         column = {"name": "name", "content": "content_preview", "extension": "extension"}[search_type]
         with self._connect() as conn:
@@ -344,10 +352,11 @@ class ProjectIndexer:
                 f"WHERE project_root=? AND {column} LIKE ?", (self.project_root, f"%{query}%")
             ).fetchall()
         return [{"path": r[0], "name": r[1], "extension": r[2], "size": r[3],
-                 "modified_at": r[4], "content_preview": r[5]} for r in rows]
+                 "modified_at": r[4], "content_preview": r[5]} for r in rows
+                if not is_internal_path(r[0])]
 
     def search_symbols(self, query: str, symbol_type: Optional[str] = None) -> List[Dict[str, Any]]:
-        if not self.project_root:
+        if self._root() is None:
             return []
         sql = """SELECT s.name,s.type,s.line,s.end_line,s.docstring,f.path FROM symbols s
                  JOIN files f ON s.file_id=f.id WHERE f.project_root=? AND s.name LIKE ?"""
@@ -358,9 +367,12 @@ class ProjectIndexer:
         with self._connect() as conn:
             rows = conn.execute(sql, args).fetchall()
         return [{"name": r[0], "type": r[1], "line": r[2], "end_line": r[3],
-                 "docstring": r[4], "file_path": r[5]} for r in rows]
+                 "docstring": r[4], "file_path": r[5]} for r in rows
+                if not is_internal_path(r[5])]
 
     def get_file_info(self, path: str) -> Optional[FileInfo]:
+        if is_internal_path(path):
+            return None
         with self._connect() as conn:
             row = conn.execute("""SELECT path,name,extension,size,modified_at,is_text,content_preview
                                   FROM files WHERE path=?""", (str(Path(path).resolve()),)).fetchone()
@@ -374,6 +386,8 @@ class ProjectIndexer:
 
     def get_file_tree(self, root_path: Optional[str] = None) -> Dict[str, Any]:
         root = Path(root_path or self.project_root or os.getcwd()).resolve()
+        if is_internal_path(root):
+            return {"name": "", "path": "", "type": "directory", "children": []}
         rules = self._ignore
         if rules is None or rules.root != root:
             rules = IgnoreRules(root)

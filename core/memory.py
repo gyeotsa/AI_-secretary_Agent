@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 from config import Config
+from core.knowledge_sources import is_internal_knowledge
 import os
 import uuid
 from dataclasses import dataclass, asdict
@@ -420,7 +421,7 @@ class SemanticMemoryManager:
         row = cursor.fetchone()
         conn.close()
         
-        if row:
+        if row and not is_internal_knowledge(metadata=json.loads(row[4]) if row[4] else {}):
             return SemanticMemory(
                 id=row[0],
                 key=row[1],
@@ -451,12 +452,14 @@ class SemanticMemoryManager:
             if bounded_limit == 0:
                 rows = []
             else:
-                cursor.execute(query + " LIMIT ?", (category, bounded_limit))
+                cursor.execute(query, (category,))
                 rows = cursor.fetchall()
         conn.close()
         
         memories = []
         for row in rows:
+            if is_internal_knowledge(metadata=json.loads(row[4]) if row[4] else {}):
+                continue
             memories.append(SemanticMemory(
                 id=row[0],
                 key=row[1],
@@ -465,7 +468,7 @@ class SemanticMemoryManager:
                 metadata=json.loads(row[4]) if row[4] else {},
                 timestamp=row[5]
             ))
-        return memories
+        return memories if limit is None else memories[:max(0, int(limit))]
         
     def search_memories(self, query: str, category: Optional[str] = None, limit: int = 10) -> List[SemanticMemory]:
         """메모리 검색"""
@@ -478,22 +481,22 @@ class SemanticMemoryManager:
                 FROM semantic_memory 
                 WHERE category = ? AND (content LIKE ? OR key LIKE ?)
                 ORDER BY timestamp DESC 
-                LIMIT ?
-            """, (category, f"%{query}%", f"%{query}%", limit))
+            """, (category, f"%{query}%", f"%{query}%"))
         else:
             cursor.execute("""
                 SELECT id, key, category, content, metadata, timestamp 
                 FROM semantic_memory 
                 WHERE content LIKE ? OR key LIKE ?
                 ORDER BY timestamp DESC 
-                LIMIT ?
-            """, (f"%{query}%", f"%{query}%", limit))
+            """, (f"%{query}%", f"%{query}%"))
         
         rows = cursor.fetchall()
         conn.close()
         
         memories = []
         for row in rows:
+            if is_internal_knowledge(metadata=json.loads(row[4]) if row[4] else {}):
+                continue
             memories.append(SemanticMemory(
                 id=row[0],
                 key=row[1],
@@ -502,7 +505,7 @@ class SemanticMemoryManager:
                 metadata=json.loads(row[4]) if row[4] else {},
                 timestamp=row[5]
             ))
-        return memories
+        return memories[:max(0, int(limit))]
         
     def delete_memory(self, key: str) -> bool:
         """메모리 삭제"""
@@ -672,6 +675,8 @@ def build_memory_context(session_id: str, max_episodes: int = 20, include_semant
     if episodes:
         context_parts.append("## 최근 대화 기록")
         for ep in episodes:
+            if is_internal_knowledge(metadata=ep.metadata):
+                continue
             time_str = datetime.fromtimestamp(ep.timestamp).strftime("%H:%M:%S")
             context_parts.append(f"[{time_str}] {ep.role}: {ep.content}")
         context_parts.append("")
