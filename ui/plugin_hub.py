@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 
 from core.mcp_bridge import connect_mcp, load_saved_mcp_plugins, manifest_for_url, saved_mcp_count
 from .theme import set_widget_style
+from .readable_details import format_details
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -190,7 +191,7 @@ class PluginHub(QDialog):
             if query and query not in text.casefold():
                 continue
             state = "연결됨" if status.connected is True or status.connection_state == "not_applicable" else "확인 필요"
-            item = QListWidgetItem(f"{status.name}\n{state} · 도구 실행 {status.runtime_state}")
+            item = QListWidgetItem(f"{status.name}\n{state} · 도구 실행 {format_details(status.runtime_state)}")
             item.setData(Qt.ItemDataRole.UserRole, status)
             self.list.addItem(item)
         if self.list.count():
@@ -202,13 +203,15 @@ class PluginHub(QDialog):
         status = current.data(Qt.ItemDataRole.UserRole) if current else None
         if status is None:
             return
-        issues = "\n".join(f"• {item}" for item in status.diagnostics) or "• 발견된 문제가 없습니다."
         self.details.setPlainText(
             f"{status.name}  v{status.version}\n\n"
-            f"설치: {status.installation_state}\n연결: {status.connection_state}\n"
-            f"인증: {status.authentication_state}\n계약: {status.contract_state}\n"
-            f"실행: {status.runtime_state}\n검증: {status.verification_state}\n\n"
-            f"{status.runtime_summary}\n\n진단\n{issues}"
+            + format_details({
+                "설치": status.installation_state, "연결": status.connection_state,
+                "인증": status.authentication_state, "도구 준비": status.contract_state,
+                "실행": status.runtime_state, "검증": status.verification_state,
+                "실행 요약": status.runtime_summary,
+                "확인할 사항": status.diagnostics or "발견된 문제가 없습니다.",
+            })
         )
 
     def add_file(self):
@@ -362,7 +365,7 @@ class PluginHub(QDialog):
                 QMessageBox.warning(self, title, f"재연결 성공 {connected}개 · 실패 {failed}개. 실패한 연결은 플러그인 진단에서 확인하세요.")
                 return
             message = f"MCP 재연결 성공 {connected}개 · 실패 0개."
-        QMessageBox.information(self, "작업 결과", str(message))
+        QMessageBox.information(self, "작업 결과", format_details(message))
 
     def _failed(self, message):
         self._running = False

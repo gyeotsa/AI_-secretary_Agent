@@ -343,6 +343,31 @@ class ContinuityStore:
                 ORDER BY s.updated_at DESC,s.session_key LIMIT ?""", (max(1, min(int(limit), 10000)),))
             return [dict(row) for row in rows]
 
+    def delete_session_transcript(self, source_id: str, session_id: str) -> int:
+        """Forget imported chat text without deleting independent task evidence."""
+        with self._lock, self._db:
+            row = self._db.execute(
+                "SELECT session_key FROM sessions WHERE source_id=? AND session_id=?",
+                (source_id, session_id),
+            ).fetchone()
+            if row is None:
+                return 0
+            session_key = row["session_key"]
+            deleted = self._db.execute(
+                "DELETE FROM events WHERE session_key=? AND kind='message'", (session_key,)
+            ).rowcount
+            plan = self._db.execute(
+                "SELECT goal FROM plans WHERE session_key=? ORDER BY updated_at DESC LIMIT 1",
+                (session_key,),
+            ).fetchone()
+            if plan is None and not self._db.execute(
+                    "SELECT 1 FROM events WHERE session_key=? LIMIT 1", (session_key,)).fetchone():
+                self._db.execute("DELETE FROM sessions WHERE session_key=?", (session_key,))
+            else:
+                self._db.execute("UPDATE sessions SET title=? WHERE session_key=?",
+                                 (plan["goal"] if plan else "도구 실행 기록", session_key))
+            return deleted
+
     def _step_rows(self, session_key: str | None = None, enabled_only: bool = False) -> list[dict]:
         query = """SELECT st.*,p.goal,p.session_key,p.external_id AS external_plan_id,
             s.provider,s.workspace_path,s.title AS session_title,s.source_id,src.enabled,

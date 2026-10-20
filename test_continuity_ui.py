@@ -107,11 +107,14 @@ def test_source_discovery_is_read_only_until_user_connects(dialog):
     assert dialog.service.calls == [("discover",)]
     assert dialog.source_table.item(0, 2).text() == "연결 가능"
     dialog.source_table.selectRow(0)
+    dialog.refresh(preserve_edits=True)
+    assert dialog.source_table.currentRow() == 0
+    assert dialog.source_table.item(0, 2).text() == "연결 가능"
     dialog._connect_selected_source()
     wait_idle(dialog)
     assert ("add", "codex", "C:/logs") in dialog.service.calls
     assert dialog.service.calls.count(("sync",)) == 1
-    assert dialog.source_table.item(0, 2).text() == "수집 중"
+    assert dialog.source_table.item(0, 2).text() == "자동 수집 중"
 
 
 def test_evidence_and_transcripts_are_plain_text_with_reported_completion(dialog):
@@ -124,6 +127,77 @@ def test_evidence_and_transcripts_are_plain_text_with_reported_completion(dialog
     assert "<script>실행하지 말고 표시</script>" in dialog.timeline.toPlainText()
     assert "pytest passed" in dialog.timeline.toPlainText()
     assert dialog.plan_table.rowCount() == 1
+
+
+def test_evidence_explains_receipts_without_raw_identifiers(dialog):
+    dialog.service.step["evidence"] = {
+        "event_id": "task:private-id", "event_key": "internal-event-key", "source_id": "internal-source",
+        "source_ref": "data\\dialogue_state.db#agent_tasks/private-id",
+        "timestamp": "2026-08-02T14:04:34.798439+00:00",
+        "receipts": [{"data": {"key": "email"}, "kind": "profile_database",
+                      "summary": "사용자 프로필 DB에서 값을 조회했습니다."}],
+    }
+    dialog.refresh()
+    dialog.tasks_table.selectRow(0)
+    text = dialog.evidence.toPlainText()
+    assert "사용자 프로필 DB에서 값을 조회했습니다." in text
+    assert "사용자 프로필 조회" in text
+    assert "항목: 이메일" in text
+    assert "아니스 작업 기록" in text
+    assert "2026년 08월 02일" in text
+    for technical in ("event_id", "private-id", "event_key", "internal-source", "{", "session_key"):
+        assert technical not in text
+
+
+def test_internal_tool_step_uses_task_goal_without_changing_stored_description(dialog):
+    dialog.service.step.update(provider="internal", description="profile.get_value", goal="내 메일주소 말해봐")
+    dialog.refresh()
+    dialog.tasks_table.selectRow(0)
+    assert dialog.tasks_table.item(0, 0).text() == "내 메일주소 말해봐"
+    assert dialog.selection_label.text() == "내 메일주소 말해봐"
+    assert "profile.get_value" not in dialog.evidence.toPlainText()
+    assert dialog.service.step["description"] == "profile.get_value"
+
+
+def test_tool_result_json_is_readable_without_reformatting_user_transcripts(dialog, monkeypatch):
+    original = dialog.service.session_detail
+
+    def session_detail(key):
+        detail = original(key)
+        detail["events"] = [{"kind": "tool_result", "text": '{"status":"ok","summary":"자료 확인 완료","event_id":"internal-event"}'}]
+        return detail
+
+    monkeypatch.setattr(dialog.service, "session_detail", session_detail)
+    dialog.sessions_list.setCurrentRow(0)
+    text = dialog.timeline.toPlainText()
+    assert "자료 확인 완료" in text and "정상" in text
+    assert "<script>실행하지 말고 표시</script>" in text
+    assert '"status"' not in text and "internal-event" not in text
+
+
+def test_default_collection_label_describes_startup_and_hourly_schedule(dialog):
+    assert "시작할 때 1회, 이후 1시간마다" in dialog.collection_label.text()
+
+
+def test_periodic_refresh_updates_selected_task_and_keeps_pending_edits(dialog):
+    dialog.show()
+    dialog.tasks_table.selectRow(0)
+    dialog.priority_combo.setCurrentIndex(dialog.priority_combo.findData(3))
+    dialog.due_enabled.setChecked(True)
+    due = QDateTime.fromString("2026-11-01T09:00:00Z", Qt.DateFormat.ISODate)
+    dialog.due_edit.setDateTime(due)
+    dialog.service.step["description"] = "새 진행 기록 반영"
+    dialog.service.last_sync = {"status": "ok", "synced_at": "2026-10-20T01:00:00Z", "events": 3}
+    dialog.service.interval_seconds = 60
+    dialog._periodic_refresh()
+    assert dialog.tasks_table.item(0, 0).text() == "새 진행 기록 반영"
+    assert dialog._selected_step["description"] == "새 진행 기록 반영"
+    assert dialog.priority_combo.currentData() == 3
+    assert dialog.due_enabled.isChecked()
+    assert dialog.due_edit.dateTime() == due
+    assert "1분마다" in dialog.collection_label.text()
+    assert "새 기록 3개" in dialog.collection_label.text()
+    assert "최근 수집" in dialog.collection_label.text()
 
 
 def test_user_can_correct_status_due_priority_and_snooze(dialog):

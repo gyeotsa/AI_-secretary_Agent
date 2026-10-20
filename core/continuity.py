@@ -61,7 +61,7 @@ class ContinuityService:
 
     def __init__(self, store=None, *, memory_path=None, dialogue_path=None,
                  plan_path=None, journal_path=None, notification_policy=None,
-                 interval_seconds=15):
+                 interval_seconds=3600):
         from config import Config
         self.store = store or ContinuityStore()
         base = Path(Config.DB_PATH).parent
@@ -124,6 +124,12 @@ class ContinuityService:
 
     def session_detail(self, session_key, limit=500):
         return self.store.session_detail(session_key, limit=limit)
+
+    def delete_session_transcript(self, session_id):
+        """Call after deleting the source conversation so collection cannot restore it."""
+        with self._sync_lock:
+            return self.store.delete_session_transcript(
+                self.internal_source["source_id"], session_id)
 
     def dashboard(self):
         result = self.store.dashboard()
@@ -321,13 +327,14 @@ class ContinuityService:
             with _read_database(self.paths["plans"]) as conn:
                 plans = {row["plan_id"]: dict(row) for row in conn.execute("SELECT * FROM plan_runs")}
                 for row in conn.execute("SELECT * FROM step_attempts ORDER BY id"):
-                    attempts[(row["plan_id"], row["step_id"])] = dict(row)
+                    attempts.setdefault(row["plan_id"], {})[row["step_id"]] = dict(row)
         previous = cursor.get("tasks", {})
         seen, events = {}, []
         for row in rows:
             task_id = row["task_id"]
             plan = plans.get(row.get("plan_id"), {})
-            signature = _digest([row, plan])
+            task_attempts = attempts.get(row.get("plan_id"), {})
+            signature = _digest([row, plan, task_attempts])
             seen[task_id] = signature
             if previous.get(task_id) == signature:
                 continue
@@ -340,7 +347,7 @@ class ContinuityService:
                 if not isinstance(step, dict):
                     continue
                 step_id = str(step.get("id") or index + 1)
-                attempt = attempts.get((row.get("plan_id"), step_id), {})
+                attempt = task_attempts.get(step_id, {})
                 receipt = _json(attempt.get("observation"), {})
                 proof = receipt.get("evidence") or []
                 status = step.get("status", "pending")
@@ -358,7 +365,8 @@ class ContinuityService:
                 normalized.append({"id": step_id, "description": step.get("description") or step.get("step") or row["goal"],
                     "status": status, "dependencies": step.get("dependencies", []),
                     "verification": "verified" if verified else "reported", "evidence": proof})
-            stamp = max(_timestamp(plan.get("updated_at")), _timestamp(row["updated_at"]))
+            stamp = max(_timestamp(plan.get("updated_at")), _timestamp(row["updated_at"]),
+                        *(_timestamp(attempt.get("created_at")) for attempt in task_attempts.values()))
             events.append(self._event("plan", row["session_id"], stamp,
                 {"plan_id": task_id, "goal": row["goal"], "steps": normalized,
                  "verification": "reported", "authoritative": True,

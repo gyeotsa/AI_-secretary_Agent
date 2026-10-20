@@ -2,8 +2,8 @@
 from __future__ import annotations
 from .theme import set_widget_style
 
-import json
 import threading
+import re
 from datetime import datetime, timedelta, timezone
 
 from PyQt6.QtCore import QObject, QDateTime, Qt, QTimer, pyqtSignal
@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 from .dialog_theme import apply_dark_dialog_theme
+from .readable_details import format_details
 
 STATUS_LABELS = {"pending": "할 일", "confirmed": "할 일", "in_progress": "진행 중",
                  "blocked": "막힘", "done": "완료", "cancelled": "취소", "suggested": "확인할 제안"}
@@ -21,13 +22,18 @@ PROVIDER_LABELS = {"internal": "아니스", "codex": "Codex", "claude_code": "Cl
 
 
 def _text(value):
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False, indent=2, default=str)
-    return str(value or "")
+    return format_details(value)
 
 
 def _step_key(row):
     return str(row.get("step_id") or row.get("id") or "")
+
+
+def _step_title(row):
+    text = str(row.get("description") or row.get("title") or row.get("goal") or "작업 이어가기")
+    if row.get("provider") == "internal" and re.fullmatch(r"[a-z][a-z0-9]*(?:[._][a-z0-9_]+)+", text):
+        return str(row.get("goal") or "작업 단계")
+    return text
 
 
 def _status_text(row):
@@ -58,6 +64,7 @@ class ContinuityDialog(QDialog):
         super().__init__(parent)
         self.service = service
         self._snapshot, self._selected_step, self._selected_session = {}, None, None
+        self._source_candidates = []
         self._event_limit = 500
         self._busy, self._sync_thread = False, None
         self._bridge = _SyncBridge(self)
@@ -107,12 +114,16 @@ class ContinuityDialog(QDialog):
         heading.addWidget(title)
         heading.addStretch()
         self.refresh_button = self._button("목록 새로고침", self.refresh, heading)
-        self.sync_button = self._button("연결된 로그 동기화", self.sync, heading)
+        self.sync_button = self._button("지금 수집 · 재시도", self.sync, heading)
         layout.addLayout(heading)
         self.summary_label = QLabel()
         self.summary_label.setTextFormat(Qt.TextFormat.PlainText)
         self.summary_label.setObjectName("dialogGuide")
         layout.addWidget(self.summary_label)
+        self.collection_label = QLabel()
+        self.collection_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.collection_label.setWordWrap(True)
+        layout.addWidget(self.collection_label)
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_dashboard(), "다음 할 일")
         self.tabs.addTab(self._build_sessions(), "세션 · 계획")
@@ -153,7 +164,7 @@ class ContinuityDialog(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("소스와 워크스페이스별 전체 세션"))
+        controls.addWidget(QLabel("프로그램과 작업 폴더별 세션"))
         controls.addStretch()
         self.manual_plan_button = self._button("선택 세션에 계획 작성", self._create_manual_plan, controls)
         self.manual_plan_button.setEnabled(False)
@@ -187,7 +198,7 @@ class ContinuityDialog(QDialog):
     def _build_sources(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        guide = QLabel("외부 로그는 연결한 폴더만 수집합니다. 폴더를 찾은 뒤 원하는 소스를 선택해 연결하세요.")
+        guide = QLabel("아니스가 시작될 때 한 번, 실행 중에는 주기적으로 새 기록을 수집합니다. 외부 로그는 연결한 폴더만 자동 수집합니다.")
         guide.setWordWrap(True)
         layout.addWidget(guide)
         self.source_table = self._table(["로그 폴더", "프로그램", "상태", "최근 수집 오류"])
@@ -247,24 +258,77 @@ class ContinuityDialog(QDialog):
         return editor
 
     def _periodic_refresh(self):
-        # Do not replace pending user edits when the periodic timer fires.
-        if self.isVisible() and not self._busy and self._selected_step is None:
-            self.refresh()
+        if self.isVisible() and not self._busy:
+            self.refresh(preserve_edits=True)
 
-    def refresh(self):
+    def refresh(self, *, preserve_edits=False):
+        selected = self._selected_step
+        source = self._table_selection(self.source_table)
+        scroll = [(view, view.verticalScrollBar().value()) for view in (self.evidence, self.timeline)] if preserve_edits else []
+        edits = None
+        if preserve_edits and selected:
+            current = (self.status_combo.currentData(), self.priority_combo.currentData(),
+                       self.due_enabled.isChecked(), self.due_edit.dateTime())
+            original_due = QDateTime.fromString(str(selected.get("due_at") or ""), Qt.DateFormat.ISODate)
+            if (current[:3] != (selected.get("status"), selected.get("priority", 0), original_due.isValid())
+                    or current[2] and current[3] != original_due):
+                edits = current
         try:
             self._snapshot = self.service.dashboard()
             self._render_tasks()
             self._render_sessions(self.service.list_sessions(limit=10000))
-            self._render_sources(self.service.sources())
+            self._render_sources(self.service.sources(), self._source_candidates)
+            if source:
+                for index in range(self.source_table.rowCount()):
+                    row = self.source_table.item(index, 0).data(Qt.ItemDataRole.UserRole)
+                    if (row.get("provider"), row.get("path")) == (source.get("provider"), source.get("path")):
+                        self.source_table.selectRow(index)
+                        break
+            if selected:
+                for table in (self.tasks_table, self.plan_table):
+                    for index in range(table.rowCount()):
+                        row = table.item(index, 0).data(Qt.ItemDataRole.UserRole)
+                        if _step_key(row) == _step_key(selected):
+                            table.selectRow(index)
+                            break
+                    if self._selected_step:
+                        break
+                if edits:
+                    if not self._selected_step:
+                        self._set_step(selected)
+                    self.status_combo.setCurrentIndex(self.status_combo.findData(edits[0]))
+                    self.priority_combo.setCurrentIndex(self.priority_combo.findData(edits[1]))
+                    self.due_enabled.setChecked(edits[2])
+                    self.due_edit.setDateTime(edits[3])
             self.summary_label.setText(
                 f"다음 할 일 {len(self._snapshot.get('next_actions', []))} · "
                 f"대기 {len(self._snapshot.get('blocked', []))} · "
                 f"확인할 제안 {len(self._snapshot.get('suggested', []))} · "
                 f"세션 {self.sessions_list.count()}"
             )
+            self._render_collection_status()
+            for view, position in scroll:
+                view.verticalScrollBar().setValue(position)
         except Exception as exc:
             self._show_error(f"목록을 읽지 못했습니다: {exc}")
+
+    def _render_collection_status(self):
+        report = self._snapshot.get("sync") or getattr(self.service, "last_sync", {})
+        seconds = float(getattr(self.service, "interval_seconds", 3600))
+        interval = (f"{seconds / 3600:g}시간" if seconds >= 3600 else
+                    f"{seconds / 60:g}분" if seconds >= 60 else f"{seconds:g}초")
+        pieces = [f"자동 수집 · 시작할 때 1회, 이후 {interval}마다"]
+        if report.get("synced_at"):
+            pieces.append("최근 수집 " + _date_text(report["synced_at"]))
+            pieces.append(f"새 기록 {report.get('events', 0)}개")
+        else:
+            pieces.append("첫 수집 대기 중")
+        if report.get("pending_bytes"):
+            pieces.append(f"초기 기록 {report['pending_bytes'] / 1048576:.1f} MB 남음")
+        errors = report.get("errors")
+        if errors:
+            pieces.append("확인이 필요한 문제\n" + _text(errors))
+        self.collection_label.setText(" · ".join(pieces))
 
     def _render_tasks(self):
         if not hasattr(self, "tasks_table"):
@@ -284,7 +348,7 @@ class ContinuityDialog(QDialog):
     def _append_step(table, row, *, include_provider=False):
         index = table.rowCount()
         table.insertRow(index)
-        values = [row.get("description") or row.get("title") or row.get("goal") or "작업 이어가기", _status_text(row)]
+        values = [_step_title(row), _status_text(row)]
         if include_provider:
             values.append(PROVIDER_LABELS.get(row.get("provider"), row.get("provider", "")))
         values.append(_date_text(row.get("due_at")))
@@ -308,13 +372,15 @@ class ContinuityDialog(QDialog):
 
     @staticmethod
     def _evidence_text(row):
-        return "\n".join([
-            _text(row.get("description") or row.get("title")), f"상태: {_status_text(row)}",
-            f"목표: {_text(row.get('goal'))}", f"프로젝트: {_text(row.get('workspace_path'))}",
-            f"세션: {_text(row.get('session_key'))}", f"마감: {_date_text(row.get('due_at'))}",
-            f"최근 변경: {_date_text(row.get('updated_at'))}", f"대기 이유: {_text(row.get('waiting_reason'))}",
-            "", "진행 근거", _text(row.get("evidence") or row.get("source_ref") or "근거 없음"),
-        ])
+        title = _step_title(row)
+        overview = {"description": title, "status": _status_text(row),
+                    "goal": row.get("goal") if row.get("goal") != title else None, "workspace_path": row.get("workspace_path"),
+                    "provider": row.get("provider"),
+                    "due_at": _date_text(row["due_at"]) if row.get("due_at") else None,
+                    "updated_at": _date_text(row["updated_at"]) if row.get("updated_at") else None,
+                    "waiting_reason": row.get("waiting_reason")}
+        proof = _text(row.get("evidence") or {"source_ref": row.get("source_ref")})
+        return _text(overview) + "\n\n진행 근거\n" + (proof or "아직 확인된 근거가 없습니다.")
 
     def _set_step(self, row):
         self._selected_step = row
@@ -329,7 +395,7 @@ class ContinuityDialog(QDialog):
         self.confirm_done_button.setVisible(bool(row) and row.get("status") == "done" and row.get("verification") == "reported")
         self.confirm_done_button.setEnabled(editable)
         if row:
-            self.selection_label.setText(_text(row.get("description") or row.get("title")))
+            self.selection_label.setText(_step_title(row))
             self.status_combo.setCurrentIndex(max(0, self.status_combo.findData(row.get("status"))))
             self.priority_combo.setCurrentIndex(max(0, self.priority_combo.findData(row.get("priority", 0))))
             date = QDateTime.fromString(str(row.get("due_at") or ""), Qt.DateFormat.ISODate)
@@ -369,7 +435,7 @@ class ContinuityDialog(QDialog):
         if not self._selected_step or self._busy:
             return
         row = self._selected_step
-        description, accepted = QInputDialog.getText(self, "다음 할 일 등록", "할 일", text=_text(row.get("description") or row.get("title")))
+        description, accepted = QInputDialog.getText(self, "다음 할 일 등록", "할 일", text=_step_title(row))
         if accepted and description.strip():
             self._run_operation(lambda: self.service.confirm_suggestion(row["session_key"], description.strip()),
                                 "다음 할 일을 등록하는 중…", "선택한 제안을 다음 할 일로 등록했습니다.")
@@ -380,7 +446,7 @@ class ContinuityDialog(QDialog):
         self.sessions_list.clear()
         selected_item = None
         for row in rows:
-            title = row.get("title") or row.get("goal") or row.get("session_key", "세션")
+            title = _text(row.get("title") or row.get("goal") or "이름 없는 세션")
             item = QListWidgetItem(f"{title}\n{PROVIDER_LABELS.get(row.get('provider'), row.get('provider', ''))} · {row.get('workspace_path') or '작업 폴더 미지정'}")
             item.setData(Qt.ItemDataRole.UserRole, row)
             self.sessions_list.addItem(item)
@@ -415,12 +481,18 @@ class ContinuityDialog(QDialog):
             self.plan_summary.setText(f"계획 단계 {len(current_steps)}개 · 완료 기록 {complete}개 (검증/사용자 확인 {verified}개)")
             for row in detail.get("steps", []):
                 self._append_step(self.plan_table, {**session, **row})
-            pieces = [f"세션: {_text(session.get('title') or session.get('session_key'))}", f"프로젝트: {_text(session.get('workspace_path'))}"]
+            pieces = [f"세션: {_text(session.get('title') or session.get('goal') or '이름 없는 세션')}", f"작업 폴더: {_text(session.get('workspace_path'))}"]
             if detail.get("has_more"):
                 pieces.append(f"전체 {detail.get('event_count')}개 중 최근 {len(detail.get('events', []))}개 기록")
             for label, key in (("계획 버전", "plans"), ("대화", "messages"), ("실행 기록", "events"), ("상태 변경 이력", "history")):
+                records = detail.get(key, [])
+                if not records:
+                    continue
                 pieces.extend(["", label])
-                pieces.extend(_text(record) for record in detail.get(key, []))
+                for record in records:
+                    if key == "events" and record.get("kind") == "tool_result":
+                        record = {**record, "text": _text(record.get("text"))}
+                    pieces.append(_text(record) + "\n")
             self.timeline.setPlainText("\n".join(pieces))
         except Exception as exc:
             self._show_error(f"세션을 읽지 못했습니다: {exc}")
@@ -433,7 +505,7 @@ class ContinuityDialog(QDialog):
         row = self._table_selection(self.plan_table)
         self._set_step(row)
         if row:
-            self.selection_label.setText(_text(row.get("description")) + " · " + _status_text(row))
+            self.selection_label.setText(_step_title(row) + " · " + _status_text(row))
 
     def _create_manual_plan(self):
         if not self._selected_session or self._busy:
@@ -454,21 +526,22 @@ class ContinuityDialog(QDialog):
             index = self.source_table.rowCount()
             self.source_table.insertRow(index)
             registered = bool(row.get("id") or row.get("source_id"))
-            state = ("수집 중" if row.get("enabled") else "일시정지") if registered else ("연결 가능" if row.get("exists") else "폴더 없음")
+            state = ("자동 수집 중" if row.get("enabled") else "일시정지") if registered else ("연결 가능" if row.get("exists") else "폴더 없음")
             if row.get("pending_bytes") and row.get("enabled"):
                 state += f" · {row['pending_bytes'] / 1048576:.1f} MB 남음"
             if row.get("skipped_records"):
                 state += f" · 생략 {row['skipped_records']}개"
             values = (row.get("path", ""), PROVIDER_LABELS.get(row.get("provider"), row.get("provider", "")), state, row.get("last_error", ""))
             for col, value in enumerate(values):
-                item = QTableWidgetItem(str(value or ""))
+                item = QTableWidgetItem(_text(value))
                 if col == 0:
                     item.setData(Qt.ItemDataRole.UserRole, row)
                 self.source_table.setItem(index, col, item)
 
     def _discover_sources(self):
         try:
-            self._render_sources(self.service.sources(), self.service.discover_sources())
+            self._source_candidates = self.service.discover_sources()
+            self._render_sources(self.service.sources(), self._source_candidates)
             self.status_label.setText("후보 폴더를 찾았습니다. '선택 폴더 연결'로 수집을 시작합니다.")
         except Exception as exc:
             self._show_error(f"로그 폴더를 찾지 못했습니다: {exc}")
@@ -574,4 +647,4 @@ class ContinuityDialog(QDialog):
         self._show_error("작업 실패: " + message)
 
     def _show_error(self, message):
-        self.status_label.setText(str(message))
+        self.status_label.setText(_text(message))

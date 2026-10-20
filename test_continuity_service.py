@@ -61,6 +61,70 @@ def test_internal_sync_keeps_session_and_verified_plan_evidence(tmp_path):
     assert "검토" in service.answer_now()
 
 
+def test_deleted_chat_transcript_is_purged_but_independent_tasks_and_sources_remain(tmp_path):
+    service, memory, tasks, *_ = setup_service(tmp_path)
+    memory.save_message("chat", "user", "삭제할 대화 원문")
+    task = tasks.create_task("chat", "독립된 작업")
+    tasks.update_task(task.task_id, plan=[{"id": "one", "description": "계속할 일", "status": "pending"}])
+    memory.save_message("chat-only", "user", "대화만 있는 세션")
+    service.sync()
+    external = service.store.add_source("codex", str(tmp_path / "external"))
+    service.store.ingest_batch(external["source_id"], "synthetic", [{
+        "event_id": "outside", "session_id": "chat", "kind": "message", "role": "user",
+        "timestamp": "2026-10-01T00:00:00Z", "text": "다른 앱의 기록", "payload": {},
+    }], {})
+    memory.delete_session("chat")
+    memory.delete_session("chat-only")
+
+    assert service.delete_session_transcript("chat") == 1
+    assert service.delete_session_transcript("chat-only") == 1
+    service.sync()
+    sessions = service.list_sessions()
+    assert not any(s["session_id"] == "chat-only" for s in sessions)
+    internal = next(s for s in sessions if s["provider"] == "internal")
+    detail = service.session_detail(internal["session_key"])
+    assert internal["title"] == "독립된 작업"
+    assert detail["messages"] == []
+    assert detail["steps"][0]["description"] == "계속할 일"
+    outside = next(s for s in sessions if s["provider"] == "codex")
+    assert service.session_detail(outside["session_key"])["messages"][0]["text"] == "다른 앱의 기록"
+
+
+def test_chat_purge_waits_for_inflight_collection(tmp_path, monkeypatch):
+    import threading
+
+    service, memory, *_ = setup_service(tmp_path)
+    memory.save_message("chat", "user", "수집 중 삭제할 원문")
+    read, resume, deleted = threading.Event(), threading.Event(), threading.Event()
+    original = service._read_messages
+
+    def paused_read(path, cursor):
+        result = original(path, cursor)
+        read.set()
+        assert resume.wait(5)
+        return result
+
+    monkeypatch.setattr(service, "_read_messages", paused_read)
+    sync_thread = threading.Thread(target=service.sync)
+    delete_thread = threading.Thread(target=lambda: (
+        service.delete_session_transcript("chat"), deleted.set()))
+    sync_thread.start()
+    try:
+        assert read.wait(5)
+        memory.delete_session("chat")
+        delete_thread.start()
+        assert not deleted.wait(0.05)
+    finally:
+        resume.set()
+        sync_thread.join(5)
+        if delete_thread.ident is not None:
+            delete_thread.join(5)
+    assert not sync_thread.is_alive() and not delete_thread.is_alive()
+    assert deleted.is_set()
+    assert service.list_sessions() == []
+    assert service.sync()["events"] == 0
+
+
 def test_awaiting_work_is_blocked(tmp_path):
     service, memory, tasks, plans, _ = setup_service(tmp_path)
     task = tasks.create_task("s", "승인 필요")
@@ -70,6 +134,81 @@ def test_awaiting_work_is_blocked(tmp_path):
     board = service.dashboard()
     assert not board["next_actions"]
     assert len(board["blocked"]) == 1
+
+
+def test_internal_sync_refreshes_evidence_recorded_after_plan(tmp_path):
+    service, _, tasks, plans, _ = setup_service(tmp_path)
+    task = tasks.create_task("s", "보고서")
+    step = PlanStep("draft", "초안 작성", status=StepStatus.COMPLETED)
+    plan = PlanDAG("보고서", [step])
+    plans.save_plan(plan)
+    tasks.update_task(task.task_id, plan_id=plan.plan_id)
+    service.sync()
+    assert service.dashboard()["recent"][0]["verification"] == "reported"
+
+    plans.record_attempt(plan.plan_id, step, "retry", ToolRunResult.successful(
+        tool_name="write_file", raw_output="saved",
+        evidence=[Evidence("file", "초안 저장 확인", {"path": "draft.md"})]), "")
+    assert service.sync()["events"] == 1
+    refreshed = service.dashboard()["recent"][0]
+    assert refreshed["verification"] == "verified"
+    assert refreshed["evidence"]["receipts"][0]["summary"] == "초안 저장 확인"
+    assert service.sync()["events"] == 0
+
+
+def test_default_hourly_collection_still_runs_immediately_on_start(tmp_path, monkeypatch):
+    from queue import Queue
+
+    service, memory, *_ = setup_service(tmp_path)
+    assert service.interval_seconds == 3600
+    memory.save_message("s", "user", "시작할 때 수집할 기록")
+    intervals = Queue()
+    original_wait = service._stop.wait
+
+    def capture_wait(seconds):
+        intervals.put(seconds)
+        return original_wait(seconds)
+
+    monkeypatch.setattr(service._stop, "wait", capture_wait)
+    try:
+        service.start()
+        assert intervals.get(timeout=5) == 3600
+        assert service.last_sync["status"] == "ok"
+        assert service.last_sync["events"] == 1
+    finally:
+        service.stop()
+
+
+def test_start_collects_immediately_then_periodically_and_restarts(tmp_path, monkeypatch):
+    from queue import Queue
+
+    service, memory, *_ = setup_service(tmp_path)
+    reports = Queue()
+    original_sync = service.sync
+
+    def capture_sync():
+        report = original_sync()
+        reports.put(report)
+        return report
+
+    monkeypatch.setattr(service, "sync", capture_sync)
+    service.interval_seconds = 1
+    memory.save_message("s", "user", "시작 전 기록")
+    try:
+        service.start()
+        thread = service._thread
+        service.start()
+        assert service._thread is thread
+        assert reports.get(timeout=5)["events"] == 1
+        memory.save_message("s", "user", "실행 중 기록")
+        assert reports.get(timeout=5)["events"] == 1
+        service.stop()
+        assert not thread.is_alive()
+        memory.save_message("s", "user", "정지 중 기록")
+        service.start()
+        assert reports.get(timeout=5)["events"] == 1
+    finally:
+        service.stop()
 
 
 def test_waiting_task_blocks_existing_pending_plan(tmp_path):

@@ -6,7 +6,10 @@
 
 ## 사용
 
-- 상단 작업 관리 버튼의 메뉴에서 **통합 리마인더**를 연다.
+- 사이드바의 **작업 및 리마인더 → 통합 리마인더**를 연다.
+- 아니스를 켜면 연결된 로그를 한 번 수집하고, 실행 중에는 1시간마다 새 기록을 수집한다.
+  화면을 열거나 수집 버튼을 누를 필요가 없다. 수집 시각과 오류는 화면에서 확인할 수 있으며,
+  `지금 수집` 버튼은 즉시 다시 확인하고 싶을 때 사용한다.
 - 채팅의 `지금 뭐 해야 돼?`, `다음 할 일`, `/now`, `/reminders`도 같은 목록을 연다.
   진행 중인 실행을 취소하지 않고 조회한다.
 - `연결 · 알림`에서 기본 로그 폴더를 찾거나 직접 지정한다. Codex는 `CODEX_HOME`
@@ -15,6 +18,8 @@
 - `다음 할 일`에서 진행/완료/차단 상태, 우선순위, 마감, 미루기를 설정한다.
   `세션 · 계획`에서는 원문 출처, 계획 변경 이력, 실행 기록을 볼 수 있다.
   최근 500개 기록부터 표시하고 이전 기록을 추가로 볼 수 있다.
+- 진행 근거와 세션 기록은 설명·출처·확인 시각을 중심으로 표시한다. 내부 식별자와 JSON은
+  표시하지 않으며, 자동 갱신 중에도 선택한 항목과 저장 전 편집 내용은 유지한다.
 - 대화만 있는 세션은 다음 행동을 직접 등록하거나 여러 단계의 계획을 작성할 수 있다.
 - 마감·7일 이상 미진행 알림은 선택적으로 켠다. 앱이 실행 중일 때 동작한다.
   집중/방해 금지 정책과 하루 단위 중복 방지를 적용한다. 보류 중 완료된 작업은 알리지 않는다.
@@ -22,7 +27,7 @@
 개발 환경에서 GUI 없이 연결/초기 수집할 수도 있다.
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\continuity_sync.py --connect codex "C:\Users\ice31\.codex" --max-seconds 60
+.\.venv\Scripts\python.exe scripts\continuity_sync.py --connect codex "$env:USERPROFILE\.codex" --max-seconds 60
 .\.venv\Scripts\python.exe scripts\continuity_sync.py --max-seconds 60 --now
 ```
 
@@ -55,7 +60,7 @@ Codex의 `update_plan`, Claude Code의 `TodoWrite`, `TaskCreate/TaskUpdate`와 �
 
 ## 용량과 수집 범위
 
-대용량 기록은 2초 안팎의 수집 배치와 파일별 바이트 오프셋으로 처리한다. 앱은 15초마다
+대용량 기록은 2초 안팎의 수집 배치와 파일별 바이트 오프셋으로 처리한다. 앱은 1시간마다
 이어 수집한다. 부분 기록은 다음 완성된 줄까지 기다리고, 파일 교체·축소·재작성은 재검사한다.
 커서와 이벤트는 같은 트랜잭션으로 저장해 재시작/중복 읽기에 대응한다.
 
@@ -73,7 +78,7 @@ Codex의 `update_plan`, Claude Code의 `TodoWrite`, `TaskCreate/TaskUpdate`와 �
 ## 검증
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest test_continuity_adapters.py test_continuity_store.py test_continuity_service.py test_continuity_ui.py -q
+.\.venv\Scripts\python.exe -m pytest test_continuity_adapters.py test_continuity_store.py test_continuity_service.py test_continuity_ui.py test_readable_details.py -q
 ```
 
 합성 로그로 부분 UTF-8/JSON, 중복, 파일 재작성, 대형 레코드, 계획 도구 실패, 단계 의존성,

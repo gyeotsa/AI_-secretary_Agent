@@ -48,6 +48,26 @@ def hub(tmp_path, monkeypatch):
     instance.close()
 
 
+def test_plugin_details_translate_runtime_states_without_changing_status(hub):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QListWidgetItem
+
+    status = SimpleNamespace(name="sample", version="1.0", installation_state="confirmed",
+                             connection_state="not_applicable", authentication_state="unchecked",
+                             contract_state="confirmed", runtime_state="unchecked",
+                             verification_state="unchecked", runtime_summary="실행 기록이 없습니다.",
+                             diagnostics=["먼저 계정을 연결하세요."])
+    item = QListWidgetItem()
+    item.setData(Qt.ItemDataRole.UserRole, status)
+    hub._show_details(item)
+    text = hub.details.toPlainText()
+    assert "설치: 확인됨" in text
+    assert "해당 없음" in text and "확인 전" in text
+    assert "먼저 계정을 연결하세요." in text
+    assert "not_applicable" not in text and "unchecked" not in text
+    assert status.installation_state == "confirmed"
+
+
 def test_standalone_mail_uses_background_account_settings_without_chrome(hub, monkeypatch):
     import ui.browser_login_dialog as login_module
     import core.background_mail as mail_module
