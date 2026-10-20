@@ -134,16 +134,26 @@ def test_missing_audio_libraries_remain_text_only(monkeypatch):
 
 def test_microphone_worker_reports_via_signal_not_direct_ui():
     from main_qt import JarvisApp
-    sent, displayed = [], []
+    sent, displayed, states, statuses = [], [], [], []
     app = JarvisApp.__new__(JarvisApp)
-    app.hardware_manager = SimpleNamespace(start_continuous_listen=lambda *a: "ready")
+    app._microphone_requested = True
+    app._microphone_generation = 1
+    app.permission_manager = SimpleNamespace(request_permission=lambda _permission: True)
+    app.hardware_manager = SimpleNamespace(start_continuous_listen=lambda *a: "ready", microphone_active=True)
     app.audio_processor = None
     app.signals = SimpleNamespace(microphone_status=SimpleNamespace(emit=sent.append))
-    app.window = SimpleNamespace(show_assistant_text=displayed.append)
+    app.window = SimpleNamespace(show_assistant_text=displayed.append, set_microphone_state=states.append,
+                                 status_label=SimpleNamespace(setText=statuses.append))
+    app.last_response = ""
     app._start_continuous_listen()
-    assert sent == ["ready"] and displayed == []
+    assert sent == [{"message": "ready", "enabled": True, "generation": 1}]
+    assert displayed == states == statuses == []
     app._on_microphone_status(sent[0])
-    assert displayed == ["ready"]
+    assert states == [True] and statuses == ["마이크 ON"] and displayed == []
+    app._on_microphone_status("[성공] 마이크 연결: test mic (장치 1). '아니스'라고 불러주세요.")
+    assert displayed == [] and app.last_response == ""
+    app._on_microphone_status("오류: 마이크 입력 장치를 열 수 없습니다.")
+    assert displayed[-1] == "오류: 마이크 입력 장치를 열 수 없습니다."
     app._runtime_shutdown_started = True
     app._on_microphone_status("late status")
-    assert displayed == ["ready"]
+    assert displayed == ["오류: 마이크 입력 장치를 열 수 없습니다."]

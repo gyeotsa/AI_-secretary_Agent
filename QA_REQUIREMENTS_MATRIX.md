@@ -1,10 +1,12 @@
 # ANIS 전 영역 요구사항·수락 추적 매트릭스
 
+2026-10-19 범위 변경: 작업공간 UI·카메라/제스처 전체·카카오톡 전송은 사용자 요청으로 제거한다. 지식 그래프는 설정 및 도구에서 유지한다. U08은 범위 제외이며 아래의 과거 실행 기록은 재구현·전송 지시가 아니다.
+
 작성 기준: 2026-08-31 독립 요구사항 감사. 이 문서는 구현 목록이나 테스트 개수를 제품 완성도로 환산하지 않는다.
 
 ## 1. 범위와 판정 원칙
 
-사용자가 반복해서 지정한 범위는 **강화학습을 제외한 전체 제품**이다. 자연스러운 대화, 명령 이해, 작업 수행, 모든 전문가 작업공간, 역할별 팀, 메모리/RAG, 시각·음성·제스처, 외부 서비스와 로컬 운영을 포함한다. 배포 파일 제작·모델 번들·호스팅은 2026-09-01 사용자 결정에 따라 제품이 더 완성된 뒤 별도 단계에서 진행한다. 모델 자체의 역량 차이를 제외하고 Codex 수준의 신뢰성을 목표로 하되, 동등함을 확인했다는 의미는 아니다.
+사용자가 반복해서 지정한 범위는 **강화학습을 제외한 전체 제품**이다. 자연스러운 대화, 명령 이해, 작업 수행, 전문 도구, 역할별 팀, 메모리/RAG, 시각·음성, 외부 서비스와 로컬 운영을 포함한다. 배포 파일 제작·모델 번들·호스팅은 2026-09-01 사용자 결정에 따라 제품이 더 완성된 뒤 별도 단계에서 진행한다. 모델 자체의 역량 차이를 제외하고 Codex 수준의 신뢰성을 목표로 하되, 동등함을 확인했다는 의미는 아니다.
 
 - 아래 `R01`–`R27`은 `AGENT_RUNTIME_ROADMAP.md`의 27개 상위 방향과 같은 번호다. `U*`는 사용자 고유 요구사항, `O*`는 큰 운영 항목을 분리한 수락 단위, `GAP-*`는 감사에서 발견한 결함/공백이다. 이후에도 번호를 재사용하거나 재정렬하지 않는다.
 - **자동 검증(A)**: 독립적인 오라클이 있는 계약·단위·회귀·통합 테스트. Mock 성공은 원격 서비스나 실제 장치 성공으로 승격하지 않는다.
@@ -28,7 +30,7 @@
 | GAP-06 | **인물 분리 실패가 무변경 mask로 감춰질 수 있다.** `core/mockup_subject_runtime.py::segment`는 BiRefNet 실패 후 GrabCut, 다시 실패하면 전체 255 alpha를 반환한다. `status`의 모델 준비 확인도 `config.json` 존재 중심이다. | foreground/background 비율, alpha 실효성, backend와 fallback 사유를 검증·보고한다. 전체 불투명 mask를 배경 제거 성공으로 보고하지 않는다. 실제 모델 가중치 로드/다양한 인물 사진 평가가 필요하다. MediaPipe/InsightFace/SAM2가 설치됐다고 추정하지 않는다. |
 | GAP-07 | **자유로운 이미지 편집 범위가 문구보다 좁다.** `core/mockup_generation.py::SDXLGenerationBackend.generate_background`는 text-to-image이고 전달받은 `reference_paths`를 사용하지 않는다. SD1.5 IP-Adapter 경로와 레이어 편집은 있으나 일반 inpainting/ControlNet/FLUX 경로는 확인되지 않았다. | 레이어 편집과 생성형 픽셀 편집의 지원 범위를 분리한다. 지원하지 않는 명령을 성공으로 처리하지 않는다. 실제 reference conditioning·영역 mask·피사체 보존이 필요한 편집 경로는 사용자 사용 사례와 VRAM 한도에 맞게 구현·실측해야 한다. |
 | GAP-08 | **이미지 임베딩/학습을 과대 해석하면 안 된다.** `core/mockup_style_index.py`는 CLIP 실패 시 결정적 시각 descriptor로 fallback한다. `core/mockup_post_training.py`는 dataset manifest와 학습 명령 문자열을 만들지만 참조하는 `train_dreambooth_lora_sdxl.py`는 저장소에서 확인되지 않는다. | CLIP/descriptor 구분을 UI와 근거에 보존하고 검색 적합도를 평가한다. 실행되지 않은 학습을 완료로 표시하지 않는다. 강화학습은 사용자 결정에 따라 적용하지 않는다. 선택적 LoRA 역시 별도 요청/검증 없이는 제품 완성으로 계산하지 않는다. |
-| GAP-09 | **카메라 기본값 문서가 상충한다.** `PLUGIN_ROADMAP.md`, `AGENT_RUNTIME_ROADMAP.md`의 2026-08-21 설명은 기본 비활성이다. `GESTURE_INTERFACE.md`, 현재 `core/assistant_settings.py`는 카메라 기본 활성, 명령형 제스처는 별도 opt-in이다. | 사용자가 요청한 카메라 기본 켜짐과 명령 실행 제스처의 별도 동의를 구분해 문서를 정리한다. 실제 장치 실패 시 설정값만으로 “켜짐”이라고 말하지 않는 계약을 유지한다. |
+| GAP-09 | 카메라·제스처 기능 범위 제외. | 2026-10-19 사용자 요청으로 기능과 현재 설치·사용 지침을 제거한다. 과거 기본값 상충은 활성 결함으로 추적하지 않는다. |
 | GAP-10 | **일반 모델과 디자인 전용 역할이 문서에서 구별되지 않는다.** `MODEL_ROUTING.md`의 일반 Vision `gemma3:4b` 자체는 틀리지 않지만, `config.py`/`core/model_registry.py`의 `OLLAMA_DESIGN_VISION_MODEL=qwen2.5vl:7b`, `style_vision`, `visual_critic`, `design_planning`, `subject_analysis` 구분을 충분히 설명하지 않는다. | 각 워크스페이스의 실제 선택 모델·fallback·로드/해제·실행 흔적을 공개한다. 전용 역할 코드가 있는 것과 실제 모델 준비/사용/품질 수락을 구분한다. |
 | GAP-11 | **수집되지 않는 배포 테스트가 있다.** 감사 당시 `test_packaging_entrypoint.py`의 4개 테스트가 `pytest.ini`의 명시적 `python_files` 목록에 없다. `QA_MASTER_AUDIT.md`에서 계획한 `manual_acceptance/`도 존재하지 않는다. | 테스트 수집 목록과 실제 파일을 자동 대조한다. 장치/계정 import 부작용이 있는 구형 수동 스크립트는 명시적 수동 진입점으로 옮기거나 격리한다. 이번 감사는 `pytest.ini`를 변경하지 않았다. |
 | GAP-12 | **계획 문서의 외부 프로그램/서비스 일부는 실행 경로가 없다.** `PLUGIN_ROADMAP.md`의 IDE CLI, GitHub Issues/PR/CI, Docker, 연락처/할 일/지도·교통, 범용 브라우저 업로드·게시·결제 등은 해당 전용 구현/수락 근거가 확인되지 않았다. 로컬 Git이나 브라우저 열기가 대체 근거는 아니다. | 기능별로 구현할 실제 업무와 서비스/계정을 확정하고 입력→승인→실행→검증 경로를 만든다. 범용 빈 도구를 추가하거나 “연결 가능”을 완료로 계산하지 않는다. 결제/게시 같은 고위험 작업은 별도 명시 승인 계약이 필요하다. |
@@ -44,7 +46,7 @@
 | --- | --- | --- | --- | --- | --- |
 | R01 / P1,P5 | 목표·대상·제약·계획·산출물·승인 상태가 한 작업으로 이어지고 재시작/취소/재개가 상태와 일치한다. | `core/dialogue_state.py`, `core/plan_runtime.py`; `test_dialogue_runtime.py::test_full_task_lifecycle_status_priority_pause_resume_and_cancel`, `test_unified_task_state_persists_intent_plan_artifacts_and_evidence` | 작업 동시 진행, pending 만료, 승인 직후 취소, process crash의 교차 조합과 상태 불변식 검사. | 실제 앱 재시작 중 작업/승인 경계를 복원하고 중복 실행이 없는지 확인. | 작업 상태와 중단 이유를 사용자가 이해하며 다른 작업으로 자연스럽게 전환할 수 있음. |
 | R02 / P1 | 긴 대화에서 필요한 정보만 유지하고 다른 주제·작업공간 정보가 섞이지 않는다. | `core/conversation_context.py`, `core/context_lifecycle.py`; `test_dialogue_runtime.py::test_pending_and_recent_intent_are_isolated_by_workspace`, `test_memory_consolidation.py::test_limited_session_history_returns_latest_messages_in_chronological_order` | 장기 다중 주제 held-out 대화, 요약 압축 후 지시 보존, 정보 부족 표현 검증. | 실제 모델의 context 한도와 장시간 대화 메모리/지연 실측. | 말투·길이·맥락 적절성을 사람 rubric으로 평가. 단순 문자열 매칭은 대체 불가. |
-| R03 / P1,P2 | 새 요청은 이전 작업과 독립이며 “그것/아까/조금 더”는 올바른 현재 대상을 참조한다. | `core/conversation_context.py`, `core/utterance_scope.py`; `test_conversation_context.py::test_independent_message_request_never_receives_previous_stock_context`, `test_explicit_topic_switch_does_not_inherit_previous_design_context`, `test_elliptical_visual_edit_uses_recent_context_without_domain_keywords` | 부정·정정·주제 전환·동명이인·복수 대상·인용문이 혼합된 보류 발화 확대. | 실제 음성 인식 오류까지 포함해 금융 분석→카카오톡→시안 수정 연속 수행. | 사용자가 전환/정정 설명을 반복하지 않아도 기대 작업이 선택됨. |
+| R03 / P1,P2 | 새 요청은 이전 작업과 독립이며 “그것/아까/조금 더”는 올바른 현재 대상을 참조한다. | `core/conversation_context.py`, `core/utterance_scope.py`; `test_conversation_context.py::test_independent_message_request_never_receives_previous_stock_context`, `test_explicit_topic_switch_does_not_inherit_previous_design_context`, `test_elliptical_visual_edit_uses_recent_context_without_domain_keywords` | 부정·정정·주제 전환·동명이인·복수 대상·인용문이 혼합된 보류 발화 확대. | 실제 음성 인식 오류까지 포함해 금융 분석→메일→문서 수정 연속 수행. | 사용자가 전환/정정 설명을 반복하지 않아도 기대 작업이 선택됨. |
 | R04 / P2 | 일반·비정형 한국어 지시의 동작/대상/제약을 보존하며 낮은 확신을 숨기지 않는다. | `core/intent_router.py`, `core/structured_output.py`; `test_routing_dataset.py::test_realistic_user_utterance_routing_dataset`, `test_routing_is_stable_under_harmless_spacing_and_punctuation` | 학습/수정에 사용하지 않은 희귀 표현·오타·반말·완곡 요청·금지 요청 corpus, 잘못 실행한 비율 별도 측정. | 실제 planner/model 응답으로 schema·도구 선택·제약 준수 비교. | 재설명 빈도 및 이해 정확도에 대한 사용자 평가. |
 | R05 / P2,P6 | 실제 가능한 도구만 선택하며 복합 요청의 필요한 기능을 빠뜨리지 않는다. | `core/tool_loadout.py`, `core/capability_audit.py`; `test_capability_inventory.py::test_complete_registry_capability_inventory_has_no_contract_or_permission_errors`, `test_capability_router.py::test_compound_request_uses_multi_tool_loadout_instead_of_fast_path` | 등록 여부 외에 실제 호출 가능한 dependency/인증/출력 검증, GUI 진입 경로 포함 inventory 확장. | YouTube 검색·재생, 파일/문서·브라우저·전문가 복합 작업을 현재 설치 환경에서 끝까지 확인. | 사용자가 시도한 업무가 기능 목록과 일치하고 미지원은 명료하게 안내됨. |
 | R06 / P1,P2 | 필수 정보만 한 번에 묻고 답변을 원 요청에 연결한다. 안전 관련 모호함은 임의 추정하지 않는다. | `core/dialogue_state.py`; `test_dialogue_runtime.py::test_clarification_answer_resumes_original_request`, `test_capability_router.py::test_close_intent_collision_asks_one_explainable_question_without_execution` | 질문 반복/루프, 답변 도중 새 요청, 일부 답변, 취소, 모호한 수신자 테스트. | 실제 모델에서 확인 질문의 유용성과 빠진 slot 재사용 확인. | 질문이 과도하지 않고 사용자가 의도한 작업을 재작성할 필요가 없음. |
@@ -79,7 +81,7 @@
 | --- | --- | --- | --- | --- | --- |
 | R21 / P9 | Word/Excel/PowerPoint/HWP·PDF 생성/편집은 실제 내용과 서식을 보존하고 재열기/렌더링으로 검증한다. | `core/office_runtime.py`, `plugins/office_editing.py`, 문서별 plugins; `test_p9_office_runtime.py::test_docx_template_edit_preserves_run_format_and_package_styles`, `test_xlsx_template_edit_preserves_cell_style`, `test_pptx_template_edit_preserves_layout_parts`, `test_rendered_pdf_visual_qa_rejects_blank_and_accepts_content` | 복잡한 표·수식·병합·차트·각주·개체·다국어·폰트 부재/기존 template round-trip. | 실제 Office/HWP COM 버전별 열기→편집→저장→재열기, PDF/Office export 시각 검사. | 문서 내용과 가독성·수식·레이아웃이 목적에 충분. |
 | R22 / P9 | 메일·캘린더·Drive/OneDrive·Notion·Slack/Teams는 실계정 연결 및 초안/승인/원격 반영/재조회가 구별된다. | `core/remote_runtime.py`, `plugins/cloud_communication.py`, `plugins/mail.py`; `test_p9_remote_runtime.py::test_oauth_pkce_complete_and_secret_free_status`, `test_expired_oauth_token_is_refreshed`, `test_google_calendar_and_slack_requery_remote_ids`, `test_plugin_keeps_draft_and_apply_separate` | provider별 pagination/rate limit/token expiry/중복/부분 반영·수정/취소 검증. Mock remote ID는 실제 수신 근거가 아님. | 사용자가 선택한 계정에서 OAuth→조회→승인 작업→원격 재조회/수신. 서비스별로 별도 수락. | 실제 수신/이벤트·문서 상태와 말한 결과가 일치. |
-| R23 / P10 | API/CLI/COM/UIA 우선으로 창·수신자·입력창·본문·실제 반영을 확인하고 좌표/검색창 입력을 전송으로 오인하지 않는다. | `core/windows_automation.py`, `core/desktop_messaging.py`, `plugins/windows_control.py`; `test_p10_runtime.py::test_windows_policy_never_silently_uses_coordinates`, `test_desktop_messaging_uia_hardening.py` | 친구 추가창/동명 채팅/포커스 변경/중복 탐색/보내기 단축키/전송 후 검증 실패·timeout 부정 사례. | 실제 KakaoTalk 버전/DPI/UI 언어에서 지정 수신자 **형택**에게 승인된 테스트 전송·수신 확인. 해당 라이브 테스트는 주 담당자가 조율하며 이 감사는 보내지 않음. | 사용자가 승인한 사람/내용만 전달되고 미확인은 성공으로 보고되지 않음. |
+| R23 / P9 | Windows 앱 제어와 카카오톡 메시지·연락처 조회를 제공한다. 전송 기능은 범위에서 제외한다. | `core/windows_automation.py`, `plugins/desktop_messaging.py`; Windows 제어 및 읽기 전용 조회 계약. | 창·프로세스·입력창 혼동 및 조회 오류 검증. | 실제 앱의 정확한 창과 조회 본문 확인. | 전송 없이 요청한 조회와 앱 제어가 수행됨. |
 | R24 / P10 | 이미지 순서·참조 역할·영역·프레임 시각을 보존해 시각 근거로 답하고 OCR/표/차트/영상의 한계를 표시한다. | `core/vision_runtime.py`, `plugins/multimodal_runtime.py`; `test_p10_runtime.py::test_multi_image_vision_preserves_order_and_hashes`, `test_screen_region_capture_records_dimensions_and_hash`, `test_video_frames_have_monotonic_timeline` | 참조 이미지와 제작용 이미지 혼동, 회전/저해상도/표·숫자 OCR, 잘못된 파일/빈 프레임. | 현재 Vision 모델로 실제 이미지·문서·화면·영상 평가. 이미지 이해 품질을 schema 유효성과 분리. | 중요한 텍스트/객체·관계를 놓치거나 잘못 단정하지 않음. |
 | R25 / P10 | 정확한 호출·음성 입력·후보 재평가·장치 복구를 제공하고 미호출/에코/무음의 행동 실행을 막는다. | `core/hardware.py`, `core/voice_runtime.py`; `test_hardware_devices.py::test_only_exact_first_wake_word_opens_voice_command`, `test_faster_whisper_rejects_low_confidence_hallucination`, `test_microphone_auto_selects_default_native_rate` | 사투리/작은 목소리/유사 호출어/TV 소리/긴 무음/빠른 정정/장치 변경 corpus. | 실제 마이크·오디오 드라이버·모델로 오인식/미인식/지연·절전 복귀 측정. | 호출 및 명령 수정이 자연스럽고 뜻하지 않은 실행이 없음. |
 | R26 / P10 | 선택한 목소리로 실제 재생하고 문장 품질·prebuffer·끼어들기·취소·종료가 일치한다. | `core/custom_tts.py`, `core/audio_processor.py`, `core/tts_normalizer.py`; `test_custom_tts.py::test_selected_custom_voice_does_not_fall_back_to_windows_voice`, `test_custom_tts_playback_failure_is_not_reported_as_user_cancellation`, `test_tts_quality_and_settings.py::test_streaming_tts_prebuffers_and_preserves_all_pcm` | 숫자/URL/코드/긴 문장 발음·stream 끊김/소켓 종료/다중 발화·상태 경합. | 실제 스피커·STT 동시 가동 및 GPT-SoVITS 출력 청취·barge-in 기록. | 자연스러움/발음/시작 지연/중단 반응을 사용자 청취 평가. TTS만 통과해 전체 수락으로 확장하지 않음. |
@@ -96,8 +98,8 @@
 | U05 / R10,R24 | 렌더링한 **실제 결과**를 재검수하고 불합격은 원인/제한된 교정/재시도 예산과 함께 처리한다. 검수 실패·미실행을 승인으로 기록하지 않는다. | `core/mockup_design.py`, `core/mockup_pipeline_policy.py`; `test_mockup_architecture.py::test_visual_review_contract_uses_scene_facts_not_subjective_gaze`, `QA_MASTER_AUDIT.md`의 2026-08-30 검수 장애 격리 기록. | 모델 주관 평가와 결정적 픽셀/geometry 검사 구분, JSON만 바뀐 실패·근거 없는 검수·요청 밖 자동 교정 방지. | 실제 Vision 재검수의 오탐/미탐과 자동 교정 전후 결과를 보관·채점. | 사용자가 승인한 결과만 스타일 메모리/품질 승인으로 축적. |
 | U06 / R24 | 미리보기 기본 중앙 fit, 확대/축소·드래그 pan, 스케치·사진 버튼/drag-drop·폰트 GUI가 실제 편집 요청으로 연결된다. | `ui/specialist_workspaces.py`; `test_specialist_workspaces.py::test_mockup_preview_defaults_to_centered_fit_and_supports_drag_pan`, `test_edit_reference_drop_box_accepts_local_image_urls`, `test_mockup_workspace_exposes_zoom_sketch_font_and_drop_guidance_controls` | resize/DPI·다중 사진·잘못된 파일·임시 스케치 경로 권한·저장 시 현재 revision 보존. | 실제 Windows Explorer→첨부 영역 drag-drop, 스케치→Vision 전달, 창 크기/DPI별 조작. | 탭/도구가 찾기 쉽고 스케치 의미가 결과에 반영됨. |
 | U07 / R19,R24 | 2.5D 노드/연결선으로 뇌 형태를 이루고 360도 회전 및 내부로 이동하는 확대가 연속적이다. 내부 노드가 실제 Obsidian 노트/링크 정보에 연결된다. | `ui/brain_orbit.py`, `ui/knowledge_graph_workspace.py`, `core/knowledge_graph.py`, `core/obsidian_vault.py`; `test_brain_graph_transition.py::test_brain_network_is_dense_bilateral_and_lobed`, `test_brain_yaw_crosses_full_turn_without_projection_snap`, `test_deep_zoom_uses_explicit_states_and_embedded_existing_graph`, `test_spatial_nodes_select_locally_and_double_click_opens_workspace` | empty/대형 graph·삭제 노트·선택 충돌·회전 경계·숨은 노드 hit-test·프레임 budget. | 실제 vault 및 다양한 창 크기/DPI/GPU에서 노드→상세→원본 열기·성능 실측. | 화면 캡처를 띄우는 느낌이 아니라 공간 안으로 진입하며 원하는 정보를 선택할 수 있음. |
-| U08 / R24 | 한 손은 회전/상하좌우 navigation, 두 손만 zoom. 속도 반영·사용자 민감도·매핑 설정·release/hysteresis가 있고 오작동이 외부 실행을 유발하지 않는다. | `core/gesture_runtime.py`, `core/interface_control.py`; `test_gesture_runtime_multihand.py::test_swipe_uses_horizontal_hysteresis_release_and_cooldown`, `test_two_hand_tracking_keeps_identity_when_detector_order_changes`, `test_gesture_configuration.py::test_gesture_dialog_previews_and_saves_complete_configuration`, `test_brain_graph_transition.py::test_one_hand_rotates_but_only_two_hands_can_zoom` | 좌/우 손 순서 교체·조명/occlusion·dropout·gesture 경합·고/저 민감도·intentional vs neutral motion. | 실제 카메라에서 여러 거리/속도/두 손/손실/재획득 시 오탐/인식률·지연 기록. | 직접 조절한 민감도와 동작이 직관적이고 폴더 선택 등 원치 않은 창이 열리지 않음. |
-| U09 / R15,R25 | 채팅창 숨김/복원, 뇌 화면 중심 배치, 카메라 켜기/끄기, 종료/장치 수명주기와 실제 상태 표시가 일치한다. | `main_qt.py`, `core/assistant_settings.py`; `test_ui_device_acceptance.py::test_chat_panel_toggle_changes_real_visibility_and_restores_it`, `test_camera_persistence_follows_verified_runtime_state`, `test_shutdown_continues_after_one_cleanup_failure_and_detaches_ui_bridge` | 설정 persistence·카메라 실패·device hotplug·숨겨진 animation timer·종료 중 callback. | 실제 장치와 창 최소화/복원·앱 종료/재시작·권한 거부. | 제어가 눈에 보이고 상태/권한 안내와 현실이 일치. |
+| U08 / R24 | 범위 제외: 카메라·손 제스처 전체 제거. | 2026-10-19 사용자 결정. | 해당 없음. | 해당 없음. | 그래프의 마우스 탐색은 유지. |
+| U09 / R15,R25 | 채팅창 숨김/복원, 뇌 화면 중심 배치, 종료 수명주기와 실제 상태 표시가 일치한다. | `main_qt.py`; `test_ui_device_acceptance.py::test_chat_panel_toggle_changes_real_visibility_and_restores_it`, `test_shutdown_continues_after_one_cleanup_failure_and_detaches_ui_bridge` | 숨겨진 animation timer·종료 중 callback. | 창 최소화/복원·앱 종료/재시작. | 제어가 눈에 보이고 상태 안내와 현실이 일치. |
 | U10 / R21,R23 | Photoshop 등 “전문가” 이름으로 제공되는 모든 도구가 약속한 편집·저장 업무를 실제 수행한다. | `core/specialist_workspaces.py`, `plugins/photoshop.py`; 현재 GAP-01/02 발견. | 실제 도구 inventory→workspace 계약의 실행 가능성 대조, 조회-only를 수정 완료로 승인하는 부정 테스트. | 정식 앱/문서 형식에서 편집→저장→재열기·전후 비교. | 빈 작업공간이나 열기만 가능한 기능을 완성된 전문가로 보여주지 않음. |
 | U11 / R05,R13,R22,R23 | 계획된 기능도 사용자에게 지원/미지원/계정 필요 상태를 정확히 제시하고 필요한 플러그인/MCP를 실제 업무 경로에 연결한다. | `PLUGIN_ROADMAP.md`, `core/capability_audit.py`, `core/plugin.py`; GAP-12. | 선언만 있고 진입 경로/실행/검증 없는 capability 탐지, connector별 schema/version/권한 검사. | 선택된 IDE/GitHub/Docker/연락처·할 일 등 실제 서비스별 end-to-end. | 어떤 업무가 추가됐는지 확인. 플러그인 수나 MCP 연결 수를 기능 품질로 대체하지 않음. |
 
@@ -110,7 +112,7 @@
 | O03 / R27 | 시험 corpus·평가 rubric·표본수·빌드 버전이 있는 품질 게이트로 답변/도구/전문가 품질을 평가한다. | `core/evaluation_runtime.py`, `core/quality_metrics.py`; `test_acceptance_runtime.py::test_quality_gate_rejects_lucky_single_sample`, `test_evaluation_runtime.py::test_specialist_quality_metrics_need_real_sample_volume` | held-out 다양성·케이스별 oracle·회귀 누락·평가자 일치도·다른 빌드의 근거 재사용 방지. | 실제 모델·도구 평가와 사용자 corpus; 동일 업무의 비교 benchmark가 없으므로 Codex와의 수치 차이는 산정 불가. | 자연스러움/정확성/과도한 질문/실제 성과를 사람 기준으로 평가. |
 | O04 / R27 | 배포 파일이 현재 코드와 일치하고 깨끗한 Windows에서 설치→모델 준비→실제 기능 실행→재시작→제거/복구가 된다. | `packaging/bootstrap_manifest.json`, `core/productization.py`, `test_packaging_entrypoint.py`, `test_packaging_runtime.py::test_frozen_runtime_configures_bundled_model_and_browser_paths` | **GAP-03/11/13**, packaged resources/모델/Playwright 경로, offline bootstrap·중단/재개·checksum·disk-full. | 깨끗한 테스트 계정/PC에서 실제 설치 묶음과 핵심 서비스 실행. `OK` smoke만으로 완료하지 않음. | 설치·초기 모델 준비·오류 복구가 문서대로 가능. |
 | O05 / R27,R14 | migration/update 실패가 사용자 데이터·설정·승인 상태를 망가뜨리지 않고 복구 가능하다. | `core/productization.py`; `test_p12_productization.py::test_migration_update_and_rollback`, `test_update_rejects_traversal` | 실제 이전 DB schema/대용량 파일/중간 종료/동시 실행/백업 hash·rollback 검증. | 이전 배포본→현재 배포본 실제 업그레이드·의도적 실패 후 복원. | 기억·작업공간·예약·설정이 보존됨. |
-| O06 / R27,R14 | 실환경 수락 원장이 케이스·버전·유효한 증거와 연결되어 과거/빈/변조된 기록이 전체 완료를 만들지 못한다. | `core/acceptance_runtime.py`; `test_acceptance_runtime.py::test_live_acceptance_cannot_pass_without_operator_and_complete_evidence`, `test_expired_live_evidence_does_not_count_as_complete`, `test_local_evidence_must_exist_and_be_nonempty` | **GAP-04**, case-specific report schema, artifact hash·source revision·읽기 시 재검증, 수락 범위와 증거 범위 불일치. | 12개 원장 항목을 해당 실제 환경에서 실행해 보고서/산출물 연결. | 사용자 수락이 필요한 케이스에 명시적 평가 기록이 있음. |
+| O06 / R27,R14 | 실환경 수락 원장이 케이스·버전·유효한 증거와 연결되어 과거/빈/변조된 기록이 전체 완료를 만들지 못한다. | `core/acceptance_runtime.py`; `test_acceptance_runtime.py::test_live_acceptance_cannot_pass_without_operator_and_complete_evidence`, `test_expired_live_evidence_does_not_count_as_complete`, `test_local_evidence_must_exist_and_be_nonempty` | **GAP-04**, case-specific report schema, artifact hash·source revision·읽기 시 재검증, 수락 범위와 증거 범위 불일치. | 10개 원장 항목을 해당 실제 환경에서 실행해 보고서/산출물 연결. | 사용자 수락이 필요한 케이스에 명시적 평가 기록이 있음. |
 
 ## 6. 현재 실환경 원장의 의미와 부족한 근거
 
@@ -123,10 +125,8 @@
 | conversation_human_eval | not_run | 일반·드문 발화·후속 정정·다중 주제 corpus의 실제 응답과 사람 평가. |
 | specialist_human_eval | not_run | 모든 제공 작업공간별 실제 과제, 산출물, 기준별 검수와 사람 평가. |
 | mockup_visual_eval | not_run | 현재 미리보기 기반 연속 편집, 실제 생성 이미지, 요청 충족/유지 영역/미감 평가. |
-| camera_gesture | not_run | 실제 두 손 zoom/한 손 navigation·민감도·손실 복구의 관측 보고서. |
 | microphone_stt | not_run | 실제 마이크·소음·호출어/미호출어·에코·정정 발화의 녹음/관측 보고서. |
 | speaker_tts | not_run | 실제 재생 오디오와 장치 보고서, 청취·barge-in 평가. |
-| kakao_delivery | not_run | 정확한 수신자/내용/송신 후 화면 및 수신 확인. 원격 receipt를 모의 값으로 채우지 않음. |
 | mail_delivery | not_run | 실제 Message ID·서버 재조회·수신 증거. |
 | oauth_roundtrip | not_run | 선택 provider/account에서 실제 인증·token refresh·remote ID 동작. |
 | office_com | not_run | 실제 Office/HWP 앱에서 저장한 산출물과 재열기/application report. |
@@ -152,7 +152,7 @@
 | 기억/RAG | R16,R18,R19,U07 |
 | 전문가 작업공간 | R17,R20,R21,U02,U03,U04,U05,U06,U10 |
 | 멀티모달 | R24,R25,R26,U04,U05,U06 |
-| 제스처/UI | R15,U06,U07,U08,U09 |
+| UI | R15,U06,U07,U09 (U08 범위 제외) |
 | 외부 연동 | R20,R21,R22,R23,U10,U11 |
 | 운영 | R27,O01,O02,O03,O04,O05,O06 |
 
@@ -184,7 +184,6 @@
 - `PROJECT_REVIEW.md`: 시점별 재평가·구현 수락·잔여 과제. 날짜가 다른 “완료”를 합쳐 최종 완성으로 해석하지 않는다.
 - `MODEL_ROUTING.md`: 일반 모델/VRAM 정책. 디자인 전용 역할 구분은 GAP-10.
 - `MOCKUP_GENERATION.md`: 생성 backend·검증·한계. 레거시 auto/Pillow 설명과 현재 Qt layer graph/검수 경계를 버전별 구분해야 한다.
-- `GESTURE_INTERFACE.md`: 한/두 손·민감도·카메라·안전 정책. 과거 기본 비활성 문서와 GAP-09 대조.
 - `OBSIDIAN_KNOWLEDGE.md`: 원문/승인 기억/증분·역동기화·그래프. 저장과 검색, 실제 답변 사용을 별도 검증한다.
 - `PLUGIN_ROADMAP.md`: 기존/계획 서비스 범위. 미구현 서비스·조회-only 범위를 GAP-01/12로 남긴다.
 - `P12_PRODUCTIZATION.md`, `DEPLOYMENT.md`: bootstrap 엔진과 배포 자산/설치본은 다른 단계. GAP-03/04/13.
@@ -198,7 +197,7 @@
 2. **범용 회귀 검증을 강화한다:** 대화/복합 요청/승인·복구/전문가 현재 revision/수락 우회의 다양한 부정 사례, 테스트 수집 누락(GAP-11), 코드-only shell 탐지. 이번 사용자 사례만 hardcode하지 않는다.
 3. **실제 실행 경로의 공백을 구현한다:** Photoshop 편집, 필요한 생성형 영역 편집, OS worker 격리, 실제 배포 manifest. 각각 구현 범위를 확정하고 수락 기준을 먼저 정한다.
 4. **계정/장치/설치 환경에서 검증한다:** 실제 앱을 여는 것과 업무 완료를 구분한다. 사용자에게 이미 승인받은 시험도 수신자·내용·범위·중복 방지 조건은 계속 지킨다.
-5. **사람 평가가 필요한 품질을 평가한다:** 대화·전문가 결과·시안·음성·제스처는 자동 테스트만으로 “완벽” 판정하지 않는다. 사용자가 기대하는 사용 사례와 rubric을 연결한다.
+5. **사람 평가가 필요한 품질을 평가한다:** 대화·전문 도구 결과·시안·음성은 자동 테스트만으로 “완벽” 판정하지 않는다. 사용자가 기대하는 사용 사례와 rubric을 연결한다.
 
 사용자 선택이 실제로 필요한 항목은 배포 호스팅/배포할 자산, 신규 원격 서비스·사용 계정, Adobe/Office 등 사용 가능한 정식 앱, 미구현 계획 서비스의 실제 업무 범위다. 이미 구현된 문제의 원인 분석과 안전한 로컬 회귀 작업까지 이 선택을 기다릴 필요는 없다. “모든 것 승인”은 아무 계정이나 쓰거나 결제/메시지를 임의로 수행할 권한으로 확대하지 않는다.
 
@@ -261,7 +260,7 @@
 | Drive/OneDrive/Notion | HTTP 메타데이터 목록→SQLite 카탈로그 | `test_remote_draft_and_catalog_are_persisted`는 로컬 fake 항목의 영속성이다. | GAP-15의 부분/전체 동기화와 본문/RAG 범위 구분, 실계정 전체 페이지·삭제/변경 동작. |
 | Obsidian | `core/obsidian_vault.py`의 로컬 Markdown vault, `plugins/obsidian.py`, `core/knowledge_graph.py` | 로컬 파일/링크/증분 동기화 코드가 근거다. | Obsidian REST API나 외부 플러그인이 자동 정리하는 시스템이라고 설명하지 않는다. 사용자가 실제 vault에서 편집한 내용의 역동기화·그래프·답변 사용을 실환경에서 확인한다. |
 | Photoshop / Office / HWP | 타입 편집/복사 저장 또는 네이티브 COM adapter 존재. Office의 일부 시각 QA는 별도 process worker 사용 | fake COM·합성 파일·독립 worker 테스트는 계약과 실패 경계를 증명한다. | 정식 설치 앱과 실제 형식/폰트/색 프로필·reopen 수락. 미설치일 때 unavailable이 정확해야 한다. |
-| 카카오톡 | `plugins/desktop_messaging.py`와 로컬 UI 자동화 실행·수신자/창 검증 경로 | 모의 창·화면·응답 검증은 실제 메시지 전달이 아니다. | 지정 수신자 **형택**에게 허용된 테스트의 중복 여부·정확 내용·실제 도착 확인. 수신자 선택은 이미 사용자에게 받았으므로 다시 물을 필요가 없다. |
+| 카카오톡 | `plugins/desktop_messaging.py`의 메시지·연락처 조회 | 모의 조회 계약은 실제 조회 품질을 대신하지 않는다. | 2026-10-19 사용자 요청으로 전송 제거. 실제 조회 결과의 본문·대상 일치를 별도로 확인한다. |
 
 ### 11.4 읽기 전용으로 확인한 현재 근거 상태
 
@@ -284,8 +283,8 @@
 다음은 다시 선택을 받을 문제가 아니다.
 
 - **강화학습 제외**는 이미 결정됐다. 필수 잔여 작업으로 되살리지 않는다.
-- **카메라 기본 켜짐**, 한 손 navigation/두 손 zoom, 민감도·매핑 UI는 이미 정해졌다. `core/assistant_settings.py`의 `gesture_camera_enabled=true`, `gesture_command_enabled=false`, `main_qt.py::_schedule_gesture_autostart`와 `_set_gesture_camera_sync`가 현재 동작 근거다. `GESTURE_INTERFACE.md`는 이에 맞고 `PLUGIN_ROADMAP.md`의 2026-08-21 절 및 `AGENT_RUNTIME_ROADMAP.md` P10의 “기본 비활성”은 오래된 설명이다. 카메라 영상 처리 활성과 승인/취소 같은 **명령 제스처 opt-in**을 분리해 문서를 바로잡으면 된다. 사용자 선택이 없어 생긴 기능 오류가 아니다.
-- **카카오톡 시험 수신자 형택**은 이미 정해졌다. 같은 테스트를 다시 전송할지는 이전 결과의 실제 상태와 현재 시험 목적에 따라 판단해야 하며, 무응답을 무전송으로 추정해 중복 전송하지 않는다.
+- **카메라·제스처 전체 제거**는 2026-10-19 사용자 결정이다. 과거 기본값·매핑·실장치 수락 요구는 활성 범위에서 제외한다.
+- **카카오톡 전송 제거**는 2026-10-19 사용자 결정이다. 과거 시험 수신자와 전송 승인은 새로운 실행 권한으로 사용하지 않는다. 조회 기능은 유지한다.
 - 코드 오류·빈 진입 경로·검증 우회·현재 미리보기 상태 보존·외부 상태를 성공으로 과장하는 문제는 사용자에게 설계 책임을 돌리지 않고 수정할 대상이다.
 
 ### 11.6 2026-09-01 현재 마일스톤 범위
@@ -307,7 +306,7 @@
 
 이 변경을 `pytest.ini`의 정규 수집 목록에 포함한 중간 전체 회귀는 **1869 passed, 17 skipped, 4 deselected**였다. 후속 교정까지 포함한 최종 결과는 11.8에 기록한다. skipped/deselected 항목은 외부 계정·장치·Windows 권한·integration 표식처럼 별도 환경이 필요한 계약이며, 이를 통과로 계산하지 않는다.
 
-실제 손 동작, 마이크 발화, 스피커 청취, 시안 미감/대화 자연스러움의 평가는 **사용자 선택**과 별개의 **L/U 수락 참여**다. 카메라를 여는 데 성공하거나 합성 landmark가 통과했다고 완료로 바꾸지 않는다. 현재 원장 기준으로 이 수락들이 남아 있고, 모델 차이를 제외한 Codex 수준 동등성을 입증할 공통 과제·held-out 대화·기준별 사람 평가도 아직 연결되지 않았다.
+실제 마이크 발화, 스피커 청취, 시안 미감/대화 자연스러움의 평가는 **사용자 선택**과 별개의 **L/U 수락 참여**다. 카메라·손 동작 수락은 제거 범위이며 모델 차이를 제외한 Codex 수준 동등성을 입증할 공통 과제·held-out 대화·기준별 사람 평가는 별도로 연결한다.
 
 ### 11.8 2026-09-07 후속 교정과 최종 자동 검증
 
@@ -315,7 +314,7 @@
 | --- | --- | --- |
 | 현재 미리보기·문구별 수정 | 현재 scene의 문구로 대상 span을 해석하고, 따옴표 없는 대상·복합 지시·문구 교체를 검증한다. 다른 문구/배치/장식의 변경을 차단하며 Pillow fallback에서도 각 span의 글꼴·색상·크기·굵기를 그린다. `test_mockup_text_style_runs.py`, `test_mockup_preview_history.py`에 회귀가 있다. | 실제 사진/설치 글꼴/VLM 해석과 사용자 미감. |
 | Office 결과 묶음 | PDF와 모든 페이지 PNG를 `commit_artifact_bundle`로 함께 사전 검증하고 중간 교체 실패는 rollback한다. 게시 경계의 취소·손상 파일·범위 밖 결과도 검사한다. `test_plugin_process_isolation.py`의 실제 별도 worker와 finalizer 회귀가 근거다. | 설치 Office/HWP COM의 실제 문서. 전원 차단/프로세스 강제 종료 시 전체 묶음의 원자성은 보장하지 않는다. |
-| 카카오톡 입력·포커스 | 검색 요소 identity·UIA 입력 read-back을 유지하고 선택/Enter에 foreground·동일 요소·키보드 포커스 검사를 적용한다. 전역 Ctrl+A와 무검증 첫 결과 Enter를 제거한다. `test_desktop_messaging_uia_hardening.py`가 모의 창 전환과 요소 교체를 검증한다. | 형택에게 실제 전달된 내용과 중복 여부. 이번 자동 회귀는 메시지를 보내지 않았다. |
+| 카카오톡 입력·포커스 | 검색 요소 identity·UIA 입력 read-back을 유지하고 선택/Enter에 foreground·동일 요소·키보드 포커스 검사를 적용한다. 전역 Ctrl+A와 무검증 첫 결과 Enter를 제거한다. `test_desktop_messaging_uia_hardening.py`가 모의 창 전환과 요소 교체를 검증한다. | 요청한 대상에게 실제 전달된 내용과 중복 여부. 이번 자동 회귀는 메시지를 보내지 않았다. |
 | 수락 증거·비동기 UI | 원격 증거는 문자열 ID가 아닌 검증 상태/방법/공급자/작업/대상/시각/hash 구조를 요구한다. 등록 시각과 실제 확인 시각 중 이른 시각부터 만료를 계산해 재등록으로 유효기간이 갱신되지 않는다. 잘못된 render/adjustment 응답에도 busy를 복구하고 비활성 요청 응답은 무시한다. `test_acceptance_runtime.py`, `test_mockup_preview_history.py`가 근거다. | 구조화 증거만으로 실제 계정·장치·사람 수락이 생기지 않는다. 해당 실행의 증거를 별도 기록해야 한다. |
 | GAP-11 테스트 수집 | 레거시 12개 진단을 import-safe로 바꾸고 부작용 없는 자동 테스트 2개만 기본 수집에 추가했다. 나머지는 명시적 CLI 실행으로 분리했다. 세부 내용은 `QA_TEST_CLASSIFICATION.md`에 기록했다. | 카메라·TTS·Ollama 등 실제 진단의 명시적 실행. |
 

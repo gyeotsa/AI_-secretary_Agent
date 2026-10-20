@@ -102,6 +102,9 @@ class HardwareManager:
         self._stt_load_lock = threading.Lock()
         self._stt_load_attempt = 0
         self._listener_start_lock = threading.Lock()
+        self._listener_generation = 0
+        self._listener_stop_event = threading.Event()
+        self._input_stream = None
         self._closed = False
 
     def ensure_stt_model(self, *, retry: bool = False):
@@ -503,20 +506,46 @@ class HardwareManager:
 
     def start_continuous_listen(self, on_text_callback, audio_processor=None) -> str:
         """호출어로 시작하는 음성 명령을 지속적으로 감지합니다."""
+        generation = self._listener_generation
         with self._listener_start_lock:
-            return self._start_continuous_listen_locked(on_text_callback, audio_processor)
+            return self._start_continuous_listen_locked(on_text_callback, audio_processor, generation)
 
-    def _start_continuous_listen_locked(self, on_text_callback, audio_processor=None) -> str:
+    @property
+    def microphone_active(self) -> bool:
+        return (self.running and self._input_stream is not None
+                and self._stream_ready.is_set() and not self._stream_error
+                and not self._listener_stop_event.is_set())
+
+    def _microphone_start_error(self, stop_event):
+        if not self._stream_ready.wait(timeout=5):
+            self.stop_continuous_listen()
+            return "오류: 마이크 입력 장치 초기화 시간이 초과되었습니다."
+        if stop_event.is_set():
+            return "음성 감지 시작을 취소했습니다."
+        if self._stream_error:
+            return f"오류: 마이크 입력 장치를 열 수 없습니다: {self._stream_error}"
+        return ""
+
+    def _start_continuous_listen_locked(self, on_text_callback, audio_processor=None, generation=None) -> str:
+        if self._closed:
+            return "오류: 음성 런타임이 종료되었습니다."
+        if generation is not None and generation != self._listener_generation:
+            return "음성 감지 시작을 취소했습니다."
         if not SOUND_AVAILABLE:
             return "오류: sounddevice, whisper가 설치되지 않았습니다."
         if self.running:
             return "이미 음성 감지가 실행 중입니다."
+        if any(worker and worker.is_alive() for worker in (
+                self.continuous_listen_thread, self.wakeword_thread, self.clap_thread)):
+            return "오류: 이전 마이크 입력을 종료 중입니다. 잠시 후 다시 켜 주세요."
         self._manual_stop = False
+        stop_event = threading.Event()
+        self._listener_stop_event = stop_event
         try:
             self.ensure_stt_model(retry=True)
         except RuntimeError as exc:
             return f"오류: {exc} 텍스트 입력은 계속 사용할 수 있습니다."
-        if self._manual_stop:
+        if stop_event.is_set() or self._closed or generation != self._listener_generation:
             return "음성 감지 시작을 취소했습니다."
         self.running = True
         self._recovery_attempts = getattr(self, "_recovery_attempts", 0)
@@ -531,10 +560,17 @@ class HardwareManager:
         def continuous_detect():
             try:
                 info, native_rate = self._select_microphone()
+                if stop_event.is_set():
+                    return
                 chunk_size = max(256, int(native_rate * 0.1))
                 print(f"[마이크] 입력 장치 연결: {info['name']} (index={info['index']}, {native_rate}Hz)")
-                with sd.InputStream(device=info["index"], samplerate=native_rate, channels=1,
-                                    dtype="float32", blocksize=chunk_size) as stream:
+                stream = sd.InputStream(device=info["index"], samplerate=native_rate, channels=1,
+                                        dtype="float32", blocksize=chunk_size)
+                self._input_stream = stream
+                if stop_event.is_set():
+                    stream.close()
+                    return
+                with stream:
                     self._stream_ready.set()
                     wake_buffer = np.array([], dtype=np.float32)
                     command_buffer = np.array([], dtype=np.float32)
@@ -548,8 +584,10 @@ class HardwareManager:
                     speech_threshold = self.MIN_SPEECH_RMS
                     wake_voice_chunks = []
                     voiced_seconds = 0.0
-                    while self.running:
+                    while self.running and not stop_event.is_set():
                         chunk, overflowed = stream.read(chunk_size)
+                        if stop_event.is_set():
+                            break
                         chunk = chunk[:, 0].copy()
                         if overflowed:
                             print("[마이크] 입력 버퍼 overflow 감지")
@@ -598,6 +636,8 @@ class HardwareManager:
                                 if sum(wake_voice_chunks) < 2:
                                     continue
                                 wake_result = self._transcribe_audio(wake_buffer)
+                                if stop_event.is_set():
+                                    break
                                 text = (self._select_wake_candidate(wake_result) or
                                         self._trusted_transcription_text(wake_result)).lower()
                                 wake_command = self.extract_wake_command(text)
@@ -668,6 +708,8 @@ class HardwareManager:
                                             self._transcribe_audio(full_utterance)
                                         ) if full_utterance.size else ""
                                     )
+                                    if stop_event.is_set():
+                                        break
                                     recovered = self.extract_wake_command(transcription)
                                     text = recovered if recovered is not None else command_prefix
                                     if text:
@@ -697,6 +739,8 @@ class HardwareManager:
                                 listening_started = None
                                 voiced_seconds = 0.0
             except Exception as exc:
+                if stop_event.is_set():
+                    return
                 self._stream_error = str(exc)
                 should_recover = self.running and self._stream_ready.is_set() and not self._manual_stop
                 self.running = False
@@ -706,19 +750,25 @@ class HardwareManager:
                     self._recovery_attempts += 1
                     delay = min(4.0, 0.25 * (2 ** (self._recovery_attempts - 1)))
                     def recover():
-                        time.sleep(delay)
-                        if not self._manual_stop and not self.running:
-                            print("[마이크] 장치 변경·절전 복귀 자동 재연결 시도")
-                            print(self.start_continuous_listen(self.on_text_detected, self.audio_processor))
+                        if stop_event.wait(delay):
+                            return
+                        with self._listener_start_lock:
+                            if not stop_event.is_set() and not self.running and not self._closed:
+                                print("[마이크] 장치 변경·절전 복귀 자동 재연결 시도")
+                                print(self._start_continuous_listen_locked(
+                                    self.on_text_detected, self.audio_processor, generation))
                     threading.Thread(target=recover, daemon=True).start()
+            finally:
+                if self._listener_stop_event is stop_event:
+                    self._input_stream = None
+                    self.running = False
+                    self._stream_ready.set()
         
         self.continuous_listen_thread = threading.Thread(target=continuous_detect, daemon=True)
         self.continuous_listen_thread.start()
-        if not self._stream_ready.wait(timeout=5):
-            self.running = False
-            return "오류: 마이크 입력 장치 초기화 시간이 초과되었습니다."
-        if self._stream_error:
-            return f"오류: 마이크 입력 장치를 열 수 없습니다: {self._stream_error}"
+        error = self._microphone_start_error(stop_event)
+        if error:
+            return error
         wake_word = get_assistant_settings().wake_word
         return (f"[성공] 마이크 연결: {self.microphone_info['name']} "
                 f"(장치 {self.microphone_device}). '{wake_word}'라고 불러주세요.")
@@ -726,59 +776,93 @@ class HardwareManager:
     def stop_continuous_listen(self) -> str:
         # Also cancel a start that is still loading, before any stream exists.
         self._manual_stop = True
-        if not self.running:
-            return "음성 감지가 실행 중이지 않습니다."
-        
-        self._manual_stop = True
+        self._listener_generation += 1
+        self._listener_stop_event.set()
         self.running = False
-        if self.continuous_listen_thread:
-            self.continuous_listen_thread.join(timeout=2)
+        self._stream_ready.set()
+        stream = self._input_stream
+        if stream is not None:
+            try:
+                stream.abort()
+            except Exception:
+                pass
+        for worker in (self.continuous_listen_thread, self.wakeword_thread, self.clap_thread):
+            if worker and worker is not threading.current_thread():
+                worker.join(timeout=2)
         
         return "[성공] 음성 감지가 중지되었습니다."
 
     def start_wakeword_detection(self) -> str:
+        generation = self._listener_generation
         with self._listener_start_lock:
-            return self._start_wakeword_detection_locked()
+            return self._start_wakeword_detection_locked(generation)
 
-    def _start_wakeword_detection_locked(self) -> str:
+    def _start_wakeword_detection_locked(self, generation=None) -> str:
+        if self._closed:
+            return "오류: 음성 런타임이 종료되었습니다."
+        if generation is not None and generation != self._listener_generation:
+            return "웨이크워드 감지 시작을 취소했습니다."
         if not SOUND_AVAILABLE:
             return "오류: sounddevice, whisper가 설치되지 않았습니다."
         if self.running:
             return "웨이크워드 감지가 이미 실행 중입니다."
+        if any(worker and worker.is_alive() for worker in (
+                self.continuous_listen_thread, self.wakeword_thread, self.clap_thread)):
+            return "오류: 이전 마이크 입력을 종료 중입니다. 잠시 후 다시 켜 주세요."
         self._manual_stop = False
+        stop_event = threading.Event()
+        self._listener_stop_event = stop_event
         try:
             self.ensure_stt_model(retry=True)
         except RuntimeError as exc:
             return f"오류: {exc}"
-        if self._manual_stop:
+        if stop_event.is_set() or self._closed or generation != self._listener_generation:
             return "웨이크워드 감지 시작을 취소했습니다."
         self.running = True
+        self._stream_ready.clear()
+        self._stream_error = ""
         
         def detect_wakeword():
             print(f"[마이크] 웨이크워드 감지 시작... '{get_assistant_settings().wake_word}' 라고 말하세요!")
-            info, native_rate = self._select_microphone()
-            while self.running:
-                try:
-                    duration = 2
-                    recording = sd.rec(
-                        int(duration * native_rate), samplerate=native_rate, channels=1,
-                        dtype="float32", device=info["index"]
-                    )
-                    sd.wait()
-                    audio = self._to_16khz(recording[:, 0], native_rate)
-                    result = self._transcribe_audio(audio)
-                    text = self._trusted_transcription_text(result).lower()
-                    
-                    if self.extract_wake_command(text) is not None:
-                        print(f"\n[웨이크워드] 감지! '{text}'")
-                        self._on_wakeword_detected()
-                
-                except Exception as e:
-                    print(f"웨이크워드 감지 오류: {e}")
-                    time.sleep(1)
+            try:
+                info, native_rate = self._select_microphone()
+                if stop_event.is_set():
+                    return
+                stream = sd.InputStream(samplerate=native_rate, channels=1,
+                                        dtype="float32", device=info["index"])
+                self._input_stream = stream
+                if stop_event.is_set():
+                    stream.close()
+                    return
+                with stream:
+                    self._stream_ready.set()
+                    while self.running and not stop_event.is_set():
+                        recording, _ = stream.read(int(2 * native_rate))
+                        if stop_event.is_set():
+                            break
+                        audio = self._to_16khz(recording[:, 0], native_rate)
+                        result = self._transcribe_audio(audio)
+                        if stop_event.is_set():
+                            break
+                        text = self._trusted_transcription_text(result).lower()
+                        if self.extract_wake_command(text) is not None:
+                            print(f"\n[웨이크워드] 감지! '{text}'")
+                            self._on_wakeword_detected()
+            except Exception as exc:
+                if not stop_event.is_set():
+                    self._stream_error = str(exc)
+                    print(f"웨이크워드 감지 오류: {exc}")
+            finally:
+                if self._listener_stop_event is stop_event:
+                    self._input_stream = None
+                    self.running = False
+                    self._stream_ready.set()
         
         self.wakeword_thread = threading.Thread(target=detect_wakeword, daemon=True)
         self.wakeword_thread.start()
+        error = self._microphone_start_error(stop_event)
+        if error:
+            return error
         
         return f"[성공] 웨이크워드 감지가 시작되었습니다! '{get_assistant_settings().wake_word}' 라고 말해보세요."
 
@@ -786,34 +870,43 @@ class HardwareManager:
         print(f"[{get_assistant_settings().assistant_name}] 네? 어떤 도움이 필요하신가요?")
 
     def stop_wakeword_detection(self) -> str:
-        self._manual_stop = True
-        if not self.running:
-            return "웨이크워드 감지가 실행 중이지 않습니다."
-        
-        self.running = False
-        if self.wakeword_thread:
-            self.wakeword_thread.join(timeout=2)
-        
+        self.stop_continuous_listen()
         return "[성공] 웨이크워드 감지가 중지되었습니다."
 
     def start_clap_detection(self) -> str:
+        generation = self._listener_generation
+        with self._listener_start_lock:
+            return self._start_clap_detection_locked(generation)
+
+    def _start_clap_detection_locked(self, generation) -> str:
         if getattr(self, "_closed", False):
             return "오류: 음성 런타임이 종료되었습니다."
+        if generation != self._listener_generation:
+            return "박수 감지 시작을 취소했습니다."
         if not SOUND_AVAILABLE:
             return "오류: sounddevice, librosa가 설치되지 않았습니다."
         
         if self.running:
             return "박수 감지가 이미 실행 중입니다."
+        if any(worker and worker.is_alive() for worker in (
+                self.continuous_listen_thread, self.wakeword_thread, self.clap_thread)):
+            return "오류: 이전 마이크 입력을 종료 중입니다. 잠시 후 다시 켜 주세요."
         
+        self._manual_stop = False
+        stop_event = threading.Event()
+        self._listener_stop_event = stop_event
         self.running = True
+        self._stream_ready.clear()
+        self._stream_error = ""
         self.clap_count = 0
         self.last_clap_time = 0
         
         def detect_clap():
             print("[마이크] 박수 감지 시작... 박수를 쳐보세요!")
-            info, native_rate = self._select_microphone()
             
             def audio_callback(indata, frames, callback_time, status):
+                if stop_event.is_set():
+                    return
                 if status:
                     print(status)
                 
@@ -832,15 +925,35 @@ class HardwareManager:
                             self._on_clap_detected()
                             self.clap_count = 0
             
-            with sd.InputStream(
-                callback=audio_callback, channels=1, samplerate=native_rate,
-                device=info["index"], dtype="float32"
-            ):
-                while self.running:
-                    time.sleep(0.1)
+            try:
+                info, native_rate = self._select_microphone()
+                if stop_event.is_set():
+                    return
+                stream = sd.InputStream(callback=audio_callback, channels=1, samplerate=native_rate,
+                                        device=info["index"], dtype="float32")
+                self._input_stream = stream
+                if stop_event.is_set():
+                    stream.close()
+                    return
+                with stream:
+                    self._stream_ready.set()
+                    while self.running and not stop_event.wait(0.1):
+                        pass
+            except Exception as exc:
+                if not stop_event.is_set():
+                    self._stream_error = str(exc)
+                    print(f"박수 감지 오류: {exc}")
+            finally:
+                if self._listener_stop_event is stop_event:
+                    self._input_stream = None
+                    self.running = False
+                    self._stream_ready.set()
         
         self.clap_thread = threading.Thread(target=detect_clap, daemon=True)
         self.clap_thread.start()
+        error = self._microphone_start_error(stop_event)
+        if error:
+            return error
         
         return "✅ 박수 감지가 시작되었습니다! 두 번 박수를 쳐보세요."
 
@@ -848,23 +961,13 @@ class HardwareManager:
         print("[마이크] 두 번 박수 감지")
 
     def stop_clap_detection(self) -> str:
-        if not self.running:
-            return "박수 감지가 실행 중이지 않습니다."
-        
-        self.running = False
-        if self.clap_thread:
-            self.clap_thread.join(timeout=2)
-        
+        self.stop_continuous_listen()
         return "✅ 박수 감지가 중지되었습니다."
 
     def shutdown(self) -> None:
         """Do not let a late model loader reopen input after the app closes."""
         self._closed = True
-        self._manual_stop = True
-        self.running = False
-        for worker in (self.continuous_listen_thread, self.wakeword_thread, self.clap_thread):
-            if worker is not None and worker is not threading.current_thread():
-                worker.join(timeout=2)
+        self.stop_continuous_listen()
 
 
 # Singleton instance

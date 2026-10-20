@@ -6,7 +6,6 @@ import pytest
 from types import SimpleNamespace
 
 import core.hardware as hardware
-import core.multimodal as multimodal
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +73,12 @@ def _bare_hardware_manager():
     manager.microphone_info = None
     manager.running = False
     manager._listener_start_lock = threading.Lock()
+    manager._listener_generation = 0
+    manager._listener_stop_event = threading.Event()
+    manager._input_stream = None
+    manager._closed = False
+    manager.wakeword_thread = None
+    manager.clap_thread = None
     manager.continuous_listen_thread = None
     manager._stream_ready = threading.Event()
     manager._stream_error = ""
@@ -273,52 +278,163 @@ def test_continuous_listener_submits_after_silence(monkeypatch):
     assert received == ["테스트 명령"]
 
 
-class _FakeCapture:
-    def __init__(self, opened, frame=None):
-        self.opened = opened
-        self.frame = frame
-        self.released = False
+def test_stop_aborts_input_and_discards_transcription_without_stopping_tts(monkeypatch):
+    manager = _bare_hardware_manager()
+    manager.whisper_model = object()
+    entered, release = threading.Event(), threading.Event()
+    received = []
 
-    def isOpened(self):
-        return self.opened
+    class Stream:
+        aborted = False
+        closed = False
 
-    def read(self):
-        return (self.frame is not None, self.frame)
+        def __enter__(self):
+            return self
 
-    def release(self):
-        self.released = True
+        def __exit__(self, *args):
+            self.closed = True
+
+        def read(self, frames):
+            return np.full((frames, 1), 0.01, dtype=np.float32), False
+
+        def abort(self):
+            self.aborted = True
+
+    stream = Stream()
+    monkeypatch.setattr(hardware, "SOUND_AVAILABLE", True)
+    monkeypatch.setattr(manager, "_select_microphone", lambda: ({"index": 1, "name": "test mic"}, 16000))
+    manager.microphone_info = {"index": 1, "name": "test mic"}
+    monkeypatch.setattr(hardware.sd, "InputStream", lambda **kwargs: stream)
+    monkeypatch.setattr(hardware.sd, "stop", lambda *a, **k: pytest.fail("mic OFF must not stop TTS playback"))
+    monkeypatch.setattr(manager, "_select_wake_candidate", lambda result: "자비스 테스트 명령")
+
+    def transcribe(audio):
+        entered.set()
+        assert release.wait(3)
+        return {"text": "자비스 테스트 명령"}
+
+    monkeypatch.setattr(manager, "_transcribe_audio", transcribe)
+    assert "성공" in manager.start_continuous_listen(received.append)
+    assert manager.microphone_active and entered.wait(3)
+    stopper = threading.Thread(target=manager.stop_continuous_listen)
+    stopper.start()
+    assert manager._listener_stop_event.wait(3)
+    release.set()
+    stopper.join(3)
+    assert not stopper.is_alive()
+    assert stream.aborted and stream.closed
+    assert not manager.running and not manager.microphone_active and received == []
 
 
-def test_camera_falls_back_to_working_device_and_backend(monkeypatch, tmp_path):
-    manager = multimodal.MultimodalManager()
-    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    captures = []
+def test_stop_during_device_open_closes_stream_without_starting_it(monkeypatch):
+    manager = _bare_hardware_manager()
+    manager.whisper_model = object()
+    entered, release = threading.Event(), threading.Event()
 
-    def fake_capture(index, backend):
-        capture = _FakeCapture(index == 1 and backend == 22, frame if index == 1 and backend == 22 else None)
-        captures.append(capture)
-        return capture
+    class Stream:
+        closed = False
 
-    monkeypatch.setattr(multimodal.Config, "CAMERA_INDEX", "auto")
-    monkeypatch.setattr(manager, "_camera_backends", lambda: [("FIRST", 11), ("SECOND", 22)])
-    monkeypatch.setattr(multimodal.cv2, "VideoCapture", fake_capture)
-    def fake_imwrite(path, image):
-        with open(path, "wb") as output:
-            output.write(b"fake-jpeg")
-        return True
+        def __init__(self, **kwargs):
+            entered.set()
+            assert release.wait(3)
 
-    monkeypatch.setattr(multimodal.cv2, "imwrite", fake_imwrite)
-    monkeypatch.setattr(multimodal.time, "sleep", lambda _: None)
-    monkeypatch.setattr(manager.safety, "validate_path", lambda path: (True, ""))
+        def close(self):
+            self.closed = True
 
-    result = manager.capture_camera_frame(str(tmp_path / "capture.jpg"))
+        def __enter__(self):
+            pytest.fail("cancelled device must not start recording")
 
-    assert "카메라 1(SECOND, 640x480)" in result
-    assert all(capture.released for capture in captures)
+    streams = []
+
+    def create_stream(**kwargs):
+        stream = Stream(**kwargs)
+        streams.append(stream)
+        return stream
+
+    monkeypatch.setattr(hardware, "SOUND_AVAILABLE", True)
+    monkeypatch.setattr(manager, "_select_microphone", lambda: ({"index": 1, "name": "test mic"}, 16000))
+    monkeypatch.setattr(hardware.sd, "InputStream", create_stream)
+    results = []
+    starter = threading.Thread(target=lambda: results.append(manager.start_continuous_listen(lambda text: None)))
+    starter.start()
+    assert entered.wait(3)
+    stopper = threading.Thread(target=manager.stop_continuous_listen)
+    stopper.start()
+    assert manager._listener_stop_event.wait(3)
+    release.set()
+    starter.join(3)
+    stopper.join(3)
+    assert not starter.is_alive() and not stopper.is_alive()
+    assert streams[0].closed and "취소" in results[0]
+    assert not manager.running and not manager.microphone_active
 
 
-def test_invalid_camera_index_configuration_is_reported(monkeypatch):
-    manager = multimodal.MultimodalManager()
-    monkeypatch.setattr(multimodal.Config, "CAMERA_INDEX", "front")
-    result = manager.capture_camera_frame()
-    assert "CAMERA_INDEX는 auto 또는 0 이상의 정수" in result
+def test_stop_cancels_start_waiting_for_start_lock(monkeypatch):
+    manager = _bare_hardware_manager()
+    entered, release = threading.Event(), threading.Event()
+
+    class StartLock:
+        def __enter__(self):
+            entered.set()
+            assert release.wait(3)
+
+        def __exit__(self, *args):
+            pass
+
+    manager._listener_start_lock = StartLock()
+    monkeypatch.setattr(manager, "ensure_stt_model", lambda **kwargs: pytest.fail("cancelled start loaded STT"))
+    results = []
+    starter = threading.Thread(target=lambda: results.append(manager.start_continuous_listen(lambda text: None)))
+    starter.start()
+    assert entered.wait(3)
+    manager.stop_continuous_listen()
+    release.set()
+    starter.join(3)
+    assert not starter.is_alive() and "취소" in results[0]
+
+
+def test_microphone_can_restart_after_stop(monkeypatch):
+    manager = _bare_hardware_manager()
+    manager.whisper_model = object()
+
+    class Stream:
+        closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.closed = True
+
+        def read(self, frames):
+            time.sleep(0.01)
+            return np.zeros((frames, 1), dtype=np.float32), False
+
+        def abort(self):
+            pass
+
+    monkeypatch.setattr(hardware, "SOUND_AVAILABLE", True)
+    manager.microphone_info = {"index": 1, "name": "test mic"}
+    monkeypatch.setattr(manager, "_select_microphone", lambda: (manager.microphone_info, 16000))
+    monkeypatch.setattr(hardware.sd, "InputStream", lambda **kwargs: Stream())
+    for _ in range(2):
+        assert "성공" in manager.start_continuous_listen(lambda text: None)
+        stream = manager._input_stream
+        assert manager.microphone_active
+        manager.stop_continuous_listen()
+        assert stream.closed and not manager.microphone_active
+    assert manager._listener_generation == 2
+
+
+@pytest.mark.parametrize("method", ["start_wakeword_detection", "start_clap_detection"])
+def test_legacy_detectors_report_device_failure_and_can_stop(monkeypatch, method):
+    manager = _bare_hardware_manager()
+    manager.whisper_model = object()
+    monkeypatch.setattr(hardware, "SOUND_AVAILABLE", True)
+    monkeypatch.setattr(manager, "_select_microphone", lambda: (_ for _ in ()).throw(RuntimeError("no test input")))
+    assert getattr(manager, method)().startswith("오류:")
+    worker = manager.wakeword_thread if "wakeword" in method else manager.clap_thread
+    worker.join(3)
+    assert not worker.is_alive() and manager._stream_error == "no test input"
+    assert not manager.running and not manager.microphone_active
+    manager.stop_continuous_listen()

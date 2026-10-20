@@ -428,6 +428,94 @@ def test_long_chat_is_scrollable_without_growing_window_or_hiding_input():
         app.processEvents()
 
 
+def test_research_report_is_readable_clickable_and_archives_its_canonical_text(tmp_path, monkeypatch):
+    from pathlib import Path
+    from PyQt6.QtCore import Qt, QUrl
+    from PyQt6.QtGui import QTextDocument
+    from config import Config
+    from ui.codex_shell import QDesktopServices
+
+    app = _app()
+    monkeypatch.setattr(Config.API_CONFIG, "DB_PATH", str(tmp_path / "assistant.db"))
+    directory = tmp_path / "research_reports"
+    directory.mkdir()
+    markdown = directory / "actual report.md"
+    markdown.write_text("실제 보고서", encoding="utf-8")
+    data = directory / "actual report.json"
+    data.write_text("{}", encoding="utf-8")
+    report = (
+        "# 조사 결과: 인스타\n\n## 수집 근거 분석\n\n"
+        "- 자료의 주장: 과정 소개 영상에서 저장 비율이 높았습니다. [S1]\n\n"
+        "<script>alert('외부 지시')</script>\n\n"
+        "<img src='file:///untrusted-image.png'>\n\n"
+        "![요청하지 않은 이미지](file:///untrusted-markdown-image.png)\n\n"
+        "[S1 공식 자료](https://example.org/study)\n\n"
+        f"[보고서 열기]({markdown})\n[수집 자료 JSON]({data})"
+    )
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url))
+    window = JarvisMainWindow()
+    try:
+        window.show_user_text("인스타 트렌드를 조사해줘")
+        window.show_assistant_text(report)
+        app.processEvents()
+        label = window.assistant_text_label
+        assert label.textFormat() == Qt.TextFormat.RichText
+        assert label.property("canonicalText") == report
+        assert label.textInteractionFlags() & Qt.TextInteractionFlag.LinksAccessibleByMouse
+        assert not label.openExternalLinks()
+        assert "<script" not in label.text().casefold() and "<img" not in label.text().casefold()
+        document = QTextDocument()
+        document.setHtml(label.text())
+        assert document.toPlainText().startswith("조사 결과: 인스타")
+        assert "## 수집 근거 분석" not in document.toPlainText()
+        assert "https://example.org/study" in label.text()
+        assert QUrl.fromLocalFile(str(markdown)).toString(QUrl.ComponentFormattingOption.FullyEncoded) in label.text()
+        from ui.theme import theme_manager
+        theme = theme_manager()
+        original_mode = theme.mode
+        try:
+            for mode in ("dark", "light"):
+                theme.set_mode(mode, persist=False)
+                assert theme.colors["accent"] in label.text()
+        finally:
+            theme.set_mode(original_mode, persist=False)
+        label.linkActivated.emit("https://example.org/study")
+        label.linkActivated.emit(str(markdown))
+        label.linkActivated.emit(QUrl.fromLocalFile(str(data)).toString())
+        label.linkActivated.emit("javascript:alert(1)")
+        label.linkActivated.emit("file://untrusted-host/share/report.md")
+        label.linkActivated.emit("file:relative-report.md")
+        label.linkActivated.emit("file:///invalid%00report.md")
+        outside = tmp_path / "outside.md"
+        outside.write_text("범위 밖 파일", encoding="utf-8")
+        label.linkActivated.emit(QUrl.fromLocalFile(str(outside)).toString())
+        assert [url.scheme() for url in opened] == ["https", "file", "file"]
+        assert Path(opened[1].toLocalFile()) == markdown
+
+        window.show_user_text("다음 질문")
+        archived = window._archived_messages[-1]
+        assert archived.property("canonicalText") == report
+        assert archived.textFormat() == Qt.TextFormat.RichText
+        archived.linkActivated.emit("https://example.org/study")
+        assert len(opened) == 4
+        code = "```python\nprint('<script>원문</script>')\n```"
+        window.show_assistant_text(code)
+        assert window.assistant_text_label.textFormat() == Qt.TextFormat.PlainText
+        assert window.assistant_text_label.text() == code
+        assert window.assistant_text_label.property("canonicalText") == code
+        window.show_user_text(report)
+        assert window.user_text_label.textFormat() == Qt.TextFormat.PlainText
+        assert window.user_text_label.text() == report
+        assert window._archived_messages[-1].textFormat() == Qt.TextFormat.PlainText
+        assert window._archived_messages[-1].text() == code
+    finally:
+        window._allow_close = True
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
 def test_superseded_turn_result_never_reaches_ui_or_tts():
     _app()
     jarvis = JarvisApp.__new__(JarvisApp)
@@ -466,7 +554,6 @@ def test_standalone_wake_word_uses_generated_conversation():
     jarvis.signals.ai_response_ready.connect(jarvis._on_ai_response)
     jarvis.tool_executor = _SpeechTools()
     jarvis.hardware_manager = _Hardware()
-    jarvis._active_specialist_key = ""
     jarvis.memory = _Memory()
     jarvis.messages = []
     jarvis.session_id = "wake-chat-session"
@@ -481,3 +568,447 @@ def test_standalone_wake_word_uses_generated_conversation():
     assert jarvis.window.assistants[-1] == "응, 무슨 일이야?"
     assert jarvis.executor.calls == ["자비스"]
     assert jarvis._is_processing_ai is False
+
+
+def _session_routing_app(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from core.memory import ConversationMemory
+    from core.workspace import WorkspaceManager
+
+    jarvis = JarvisApp.__new__(JarvisApp)
+    jarvis.memory = ConversationMemory(str(tmp_path / "conversations.db"))
+    jarvis.workspace_manager = WorkspaceManager(str(tmp_path / "workspaces.json"))
+    jarvis.workspace_manager.get_git_status = lambda *_args: {"is_repository": False}
+    jarvis.signals = AppSignals()
+    jarvis.signals.workspace_state_ready.connect(jarvis._on_workspace_state_ready)
+    jarvis._runtime_shutdown_started = False
+    jarvis.window = Mock()
+    jarvis.rag_manager = Mock(namespace="global")
+    jarvis.rag_manager.set_namespace.side_effect = (
+        lambda namespace: setattr(jarvis.rag_manager, "namespace", namespace)
+    )
+    jarvis.project_indexer = Mock(project_root=None)
+    jarvis.project_indexer.set_project_root.side_effect = (
+        lambda path: setattr(jarvis.project_indexer, "project_root", path)
+    )
+    jarvis.user_profile = Mock()
+    jarvis.state_machine = _StateMachine()
+    jarvis._run_idle_memory_maintenance = Mock()
+    jarvis._cancel_pending_work = Mock()
+    jarvis._is_processing_ai = False
+    jarvis.session_id = jarvis.memory.create_session("일반 대화")
+    jarvis.messages = []
+    jarvis.last_response = ""
+    monkeypatch.setattr("main_qt.threading.Thread", Mock())
+    return jarvis
+
+
+def _project_chat(jarvis, path, title, content):
+    path.mkdir()
+    assert jarvis.workspace_manager.set_workspace(str(path))
+    jarvis.memory.set_namespace(jarvis.workspace_manager.get_namespace())
+    session_id = jarvis.memory.create_session(title)
+    jarvis.memory.save_message(session_id, "user", content)
+    jarvis._activate_workspace_context()
+    return session_id
+
+
+def test_sidebar_chat_selection_restores_project_before_next_message(tmp_path, monkeypatch):
+    jarvis = _session_routing_app(tmp_path, monkeypatch)
+    first_path, second_path = tmp_path / "project-a", tmp_path / "project-b"
+    first = _project_chat(jarvis, first_path, "첫 프로젝트", "첫 질문")
+    second = _project_chat(jarvis, second_path, "둘째 프로젝트", "둘째 질문")
+
+    jarvis._select_session(first)
+
+    assert jarvis.session_id == first
+    assert jarvis.workspace_manager.get_workspace_path() == str(first_path.resolve())
+    first_namespace = jarvis.workspace_manager.namespace_for(first_path)
+    assert jarvis.memory.workspace_namespace == jarvis.rag_manager.namespace == first_namespace
+    assert jarvis.project_indexer.project_root == str(first_path.resolve())
+    assert jarvis.messages == [{"role": "user", "content": "첫 질문"}]
+    jarvis.memory.save_message(jarvis.session_id, "assistant", "첫 답변")
+
+    jarvis._select_session(second)
+    assert jarvis.workspace_manager.get_workspace_path() == str(second_path.resolve())
+    assert jarvis.messages == [{"role": "user", "content": "둘째 질문"}]
+    assert jarvis.memory.workspace_namespace == jarvis.rag_manager.namespace == (
+        jarvis.workspace_manager.namespace_for(second_path)
+    )
+    assert jarvis.memory.load_session(first)[-1] == {"role": "assistant", "content": "첫 답변"}
+    assert jarvis.last_response == ""
+
+
+def test_general_and_missing_project_chats_do_not_inherit_selected_folder(tmp_path, monkeypatch):
+    jarvis = _session_routing_app(tmp_path, monkeypatch)
+    general = jarvis.session_id
+    project = tmp_path / "selected-project"
+    project_chat = _project_chat(jarvis, project, "프로젝트 대화", "프로젝트 질문")
+    jarvis._select_session(project_chat)
+
+    jarvis._select_session(general)
+
+    assert not jarvis.workspace_manager.is_set()
+    assert jarvis.memory.workspace_namespace == jarvis.rag_manager.namespace == "global"
+    assert jarvis.project_indexer.project_root is None
+    jarvis._create_session("새 일반 대화")
+    assert jarvis.memory.workspace_namespace == "global"
+    assert len(jarvis.memory.list_session_details()) == 2
+
+    jarvis.memory.set_namespace("workspace-unavailable")
+    unavailable = jarvis.memory.create_session("폴더를 찾을 수 없는 대화")
+    jarvis.memory.save_message(unavailable, "user", "남아 있는 기록")
+    jarvis._select_session(project_chat)
+    jarvis._select_session(unavailable)
+
+    assert not jarvis.workspace_manager.is_set()
+    assert jarvis.project_indexer.project_root is None
+    assert jarvis.memory.workspace_namespace == jarvis.rag_manager.namespace == "workspace-unavailable"
+    assert jarvis.messages == [{"role": "user", "content": "남아 있는 기록"}]
+    jarvis._create_session("같은 프로젝트의 새 대화")
+    assert {item["workspace_namespace"] for item in jarvis.memory.list_session_details()} == {
+        "workspace-unavailable"
+    }
+
+
+def test_folder_selection_loads_or_creates_chat_in_that_project(tmp_path, monkeypatch):
+    jarvis = _session_routing_app(tmp_path, monkeypatch)
+    first_path, second_path, empty_path = (
+        tmp_path / "project-a", tmp_path / "project-b", tmp_path / "empty-project"
+    )
+    first = _project_chat(jarvis, first_path, "첫 프로젝트", "첫 질문")
+    second = _project_chat(jarvis, second_path, "둘째 프로젝트", "둘째 질문")
+    jarvis._select_session(first)
+
+    jarvis._on_workspace_selected(str(second_path))
+
+    assert jarvis.session_id == second
+    assert jarvis.messages == [{"role": "user", "content": "둘째 질문"}]
+    empty_path.mkdir()
+    jarvis._on_workspace_selected(str(empty_path))
+    assert jarvis.session_id not in {first, second}
+    assert jarvis.messages == []
+    assert jarvis.memory.workspace_namespace == jarvis.workspace_manager.namespace_for(empty_path)
+    assert [item["session_id"] for item in jarvis.memory.list_session_details()] == [jarvis.session_id]
+    assert jarvis.memory.load_session(first) == [{"role": "user", "content": "첫 질문"}]
+
+
+def test_busy_chat_selection_preserves_session_and_project(tmp_path, monkeypatch):
+    jarvis = _session_routing_app(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    other = _project_chat(jarvis, project, "다른 대화", "다른 질문")
+    jarvis._select_session(other)
+    active = jarvis.session_id
+    scope = jarvis.memory.workspace_namespace
+    jarvis._is_processing_ai = True
+
+    jarvis._select_session("missing-session")
+
+    assert jarvis.session_id == active
+    assert jarvis.memory.workspace_namespace == scope
+    assert jarvis.workspace_manager.get_workspace_path() == str(project.resolve())
+    assert jarvis.messages == [{"role": "user", "content": "다른 질문"}]
+
+
+def test_folder_new_chat_uses_clicked_project_and_preserves_existing_chats(tmp_path, monkeypatch):
+    jarvis = _session_routing_app(tmp_path, monkeypatch)
+    first_path, second_path = tmp_path / "project-a", tmp_path / "project-b"
+    first = _project_chat(jarvis, first_path, "첫 프로젝트", "첫 질문")
+    second = _project_chat(jarvis, second_path, "둘째 프로젝트", "둘째 질문")
+    jarvis._select_session(second)
+    namespace = jarvis.workspace_manager.namespace_for(first_path)
+
+    jarvis._create_project_chat(namespace)
+
+    created = jarvis.session_id
+    assert created not in {first, second}
+    assert jarvis.messages == []
+    assert jarvis.workspace_manager.get_workspace_path() == str(first_path.resolve())
+    assert jarvis.memory.workspace_namespace == jarvis.rag_manager.namespace == namespace
+    assert {s["session_id"] for s in jarvis.memory.list_session_details()} == {first, created}
+    assert jarvis.memory.load_session(first) == [{"role": "user", "content": "첫 질문"}]
+    assert jarvis.memory.load_session(second) == [{"role": "user", "content": "둘째 질문"}]
+
+    jarvis._create_project_chat("global")
+    assert jarvis.session_id not in {first, second, created}
+    assert not jarvis.workspace_manager.is_set()
+    assert jarvis.memory.workspace_namespace == jarvis.rag_manager.namespace == "global"
+    assert jarvis.project_indexer.project_root is None
+
+
+def test_unavailable_folder_new_chat_warns_without_changing_current_project(tmp_path, monkeypatch):
+    jarvis = _session_routing_app(tmp_path, monkeypatch)
+    missing_path = tmp_path / "removed-project"
+    previous = _project_chat(jarvis, missing_path, "기존 대화", "보존할 질문")
+    namespace = jarvis.workspace_manager.namespace_for(missing_path)
+    missing_path.rmdir()
+    other = _project_chat(jarvis, tmp_path / "other-project", "다른 대화", "다른 질문")
+    jarvis._select_session(other)
+    current_namespace = jarvis.memory.workspace_namespace
+    before = jarvis.memory.list_session_details(all_workspaces=True)
+
+    jarvis._create_project_chat(namespace)
+
+    assert jarvis.session_id == other
+    assert jarvis.memory.workspace_namespace == jarvis.rag_manager.namespace == current_namespace
+    assert jarvis.memory.list_session_details(all_workspaces=True) == before
+    jarvis.window.show_assistant_text.assert_called()
+    assert jarvis.memory.load_session(previous) == [{"role": "user", "content": "보존할 질문"}]
+
+
+def test_uncatalogued_folder_new_chat_does_not_inherit_current_project_path(tmp_path, monkeypatch):
+    jarvis = _session_routing_app(tmp_path, monkeypatch)
+    namespace = "workspace-legacy"
+    jarvis.memory.set_namespace(namespace)
+    previous = jarvis.memory.create_session("기존 대화")
+    other = _project_chat(jarvis, tmp_path / "other-project", "다른 대화", "다른 질문")
+    jarvis._select_session(other)
+
+    jarvis._create_project_chat(namespace)
+
+    assert not jarvis.workspace_manager.is_set()
+    assert jarvis.memory.workspace_namespace == jarvis.rag_manager.namespace == namespace
+    assert jarvis.project_indexer.project_root is None
+    assert {s["session_id"] for s in jarvis.memory.list_session_details()} == {
+        previous, jarvis.session_id
+    }
+
+
+def test_removing_other_project_keeps_current_scope_and_preserves_files_and_chats(tmp_path, monkeypatch):
+    from core.workspace import WorkspaceManager
+
+    jarvis = _session_routing_app(tmp_path, monkeypatch)
+    removed_path, active_path = tmp_path / "remove-project", tmp_path / "active-project"
+    removed = _project_chat(jarvis, removed_path, "남길 대화", "남길 질문")
+    marker = removed_path / "keep.txt"
+    marker.write_text("실제 파일은 남아야 함", encoding="utf-8")
+    jarvis.memory.set_session_pinned(removed, True)
+    active = _project_chat(jarvis, active_path, "현재 대화", "현재 질문")
+    jarvis._select_session(active)
+    namespace = jarvis.workspace_manager.namespace_for(removed_path)
+    active_namespace = jarvis.memory.workspace_namespace
+
+    jarvis._remove_project(namespace)
+
+    assert jarvis.session_id == active
+    assert jarvis.memory.workspace_namespace == jarvis.rag_manager.namespace == active_namespace
+    assert jarvis.workspace_manager.get_workspace_path() == str(active_path.resolve())
+    assert jarvis.messages == [{"role": "user", "content": "현재 질문"}]
+    assert marker.read_text(encoding="utf-8") == "실제 파일은 남아야 함"
+    assert jarvis.memory.load_session(removed) == [{"role": "user", "content": "남길 질문"}]
+    detail = next(s for s in jarvis.memory.list_session_details(all_workspaces=True)
+                  if s["session_id"] == removed)
+    assert detail["workspace_namespace"] == "global"
+    assert detail["title"] == "남길 대화" and detail["is_pinned"]
+    restored = WorkspaceManager(str(tmp_path / "workspaces.json"))
+    assert [p.namespace for p in restored.list_workspaces(include_unavailable=True)] == [active_namespace]
+    jarvis.window.set_project_workspaces.assert_called()
+    jarvis.window.refresh_session_list.assert_called()
+
+
+def test_removing_active_project_selects_general_chat_and_removes_only_catalog_entry(tmp_path, monkeypatch):
+    jarvis = _session_routing_app(tmp_path, monkeypatch)
+    general = jarvis.session_id
+    path = tmp_path / "active-project"
+    active = _project_chat(jarvis, path, "프로젝트 대화", "질문 보존")
+    jarvis._select_session(active)
+    namespace = jarvis.memory.workspace_namespace
+
+    jarvis._remove_project(namespace)
+
+    assert not jarvis.workspace_manager.is_set()
+    assert jarvis.workspace_manager.list_workspaces(include_unavailable=True) == []
+    assert jarvis.memory.workspace_namespace == jarvis.rag_manager.namespace == "global"
+    assert jarvis.project_indexer.project_root is None
+    assert jarvis.session_id in {general, active}
+    assert {s["session_id"] for s in jarvis.memory.list_session_details()} == {general, active}
+    assert path.is_dir()
+    assert jarvis.memory.load_session(active) == [{"role": "user", "content": "질문 보존"}]
+
+
+def test_busy_project_actions_preserve_current_chat_catalog_and_scope(tmp_path, monkeypatch):
+    jarvis = _session_routing_app(tmp_path, monkeypatch)
+    first = _project_chat(jarvis, tmp_path / "project-a", "첫 대화", "첫 질문")
+    second = _project_chat(jarvis, tmp_path / "project-b", "현재 대화", "현재 질문")
+    jarvis._select_session(second)
+    first_namespace = jarvis.workspace_manager.namespace_for(tmp_path / "project-a")
+    active_namespace = jarvis.memory.workspace_namespace
+    before = jarvis.memory.list_session_details(all_workspaces=True)
+    catalog = jarvis.workspace_manager.list_workspaces(include_unavailable=True)
+    jarvis._is_processing_ai = True
+
+    jarvis._create_project_chat(first_namespace)
+    jarvis._remove_project(first_namespace)
+
+    assert jarvis.session_id == second
+    assert jarvis.memory.workspace_namespace == jarvis.rag_manager.namespace == active_namespace
+    assert jarvis.memory.list_session_details(all_workspaces=True) == before
+    assert jarvis.workspace_manager.list_workspaces(include_unavailable=True) == catalog
+    assert jarvis.memory.load_session(first) == [{"role": "user", "content": "첫 질문"}]
+
+
+def test_clearing_project_keeps_catalog_but_does_not_restore_folder(tmp_path):
+    from core.workspace import WorkspaceManager
+
+    project = tmp_path / "project"
+    project.mkdir()
+    state_path = str(tmp_path / "workspaces.json")
+    manager = WorkspaceManager(state_path)
+    assert manager.set_workspace(str(project), alias="저장된 프로젝트")
+
+    manager.clear_workspace()
+
+    assert not manager.is_set()
+    assert manager.get_workspace_path() is None
+    assert manager.get_namespace() == "global"
+    assert manager.get_info().path == ""
+    restored = WorkspaceManager(state_path)
+    assert not restored.is_set()
+    assert restored.list_workspaces()[0].alias == "저장된 프로젝트"
+    project.rmdir()
+    assert restored.list_workspaces() == []
+    assert restored.list_workspaces(include_unavailable=True)[0].namespace == (
+        manager.namespace_for(project)
+    )
+
+
+def test_clearing_project_index_hides_previous_project_files(tmp_path, monkeypatch):
+    from core.project_indexer import ProjectIndexer
+    from core.workspace import WorkspaceManager
+
+    manager = WorkspaceManager(str(tmp_path / "workspaces.json"))
+    monkeypatch.setattr("core.project_indexer.get_workspace_manager", lambda: manager)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "example.py").write_text("def project_function():\n    return 1\n", encoding="utf-8")
+    indexer = ProjectIndexer(str(tmp_path / "project-index.db"))
+    assert indexer.set_project_root(str(project))
+    assert indexer.sync_changes()["added"] == 1
+    assert indexer.search_files("example")
+    assert indexer.search_symbols("project_function")
+
+    assert indexer.set_project_root(None)
+
+    assert indexer.project_root is None
+    assert indexer.search_files("example") == []
+    assert indexer.search_symbols("project_function") == []
+    assert indexer.set_project_root(str(project))
+    assert indexer.search_files("example")
+
+
+def test_sidebar_rename_pin_and_delete_update_storage_and_clear_raw_copies(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    jarvis = _session_routing_app(tmp_path, monkeypatch)
+    active = jarvis.session_id
+    other = jarvis.memory.create_session("삭제할 대화")
+    jarvis.memory.save_message(other, "user", "임시 기록")
+    jarvis.executor = Mock()
+    jarvis.memory_pipeline = Mock()
+    jarvis.obsidian_vault = Mock()
+    jarvis.continuity_service = Mock()
+
+    jarvis._rename_session(other, "변경한 이름")
+    jarvis._pin_session(other, True)
+    detail = next(item for item in jarvis.memory.list_session_details() if item["session_id"] == other)
+    assert detail["title"] == "변경한 이름" and detail["is_pinned"]
+    jarvis._delete_session(other)
+
+    assert jarvis.session_id == active
+    assert jarvis.memory.load_session(other) == []
+    assert [item["session_id"] for item in jarvis.memory.list_session_details()] == [active]
+    jarvis.executor.dialogue_state.clear_session.assert_called_once_with(other)
+    jarvis.memory_pipeline.delete_session.assert_called_once_with(other)
+    jarvis.obsidian_vault.delete_session_archive.assert_called_once_with(other)
+    jarvis.continuity_service.delete_session_transcript.assert_called_once_with(other)
+    assert jarvis.window.refresh_session_list.call_count == 3
+
+    jarvis._is_processing_ai = True
+    jarvis._delete_session(active)
+    assert jarvis.memory.list_sessions()[0][0] == active
+
+    jarvis._is_processing_ai = False
+    jarvis._delete_session(active)
+    assert jarvis.session_id != active
+    assert jarvis.messages == []
+    assert len(jarvis.memory.list_sessions()) == 1
+
+
+def test_workspace_refresh_keeps_gui_responsive_and_never_overlaps_scans(tmp_path):
+    from unittest.mock import Mock
+
+    _app()
+    jarvis = JarvisApp.__new__(JarvisApp)
+    path = str(tmp_path / "project")
+    entered, release = threading.Event(), threading.Event()
+    info = SimpleNamespace(path=path, name="project", alias="프로젝트")
+    scan_threads = []
+    gui_threads = []
+
+    def refresh_info(scanned_path):
+        scan_threads.append(threading.get_ident())
+        assert scanned_path == path
+        entered.set()
+        assert release.wait(timeout=3)
+        return info
+
+    jarvis.workspace_manager = Mock()
+    jarvis.workspace_manager.is_set.return_value = True
+    jarvis.workspace_manager.get_info.return_value = info
+    jarvis.workspace_manager.get_workspace_path.return_value = path
+    jarvis.workspace_manager.refresh_info.side_effect = refresh_info
+    jarvis.workspace_manager.get_git_status.return_value = {"is_repository": False}
+    jarvis.project_indexer = Mock()
+    jarvis.window = Mock()
+    jarvis.window.set_workspace_info.side_effect = lambda *_args: gui_threads.append(threading.get_ident())
+    jarvis._runtime_shutdown_started = False
+    jarvis._workspace_refresh_running = False
+    jarvis.signals = AppSignals()
+    jarvis.signals.workspace_state_ready.connect(jarvis._on_workspace_state_ready)
+    main_thread = threading.get_ident()
+    try:
+        started_at = time.monotonic()
+        jarvis._refresh_workspace_state()
+        assert time.monotonic() - started_at < 0.5
+        assert entered.wait(timeout=1)
+        heartbeat = []
+        QTimer.singleShot(0, lambda: heartbeat.append(True))
+        assert _pump_until(lambda: bool(heartbeat), timeout=0.5)
+        jarvis._refresh_workspace_state()
+        assert jarvis.workspace_manager.refresh_info.call_count == 1
+        assert jarvis._workspace_refresh_running is True
+    finally:
+        release.set()
+    assert _pump_until(lambda: not jarvis._workspace_refresh_running)
+    assert scan_threads and all(thread_id != main_thread for thread_id in scan_threads)
+    assert gui_threads == [main_thread]
+    jarvis.workspace_manager.get_git_status.assert_called_once_with(path)
+    jarvis.project_indexer.sync_changes.assert_called_once_with(root_path=path)
+    jarvis.window.set_workspace_info.assert_called_once_with("프로젝트", path, {"is_repository": False})
+
+
+def test_stale_or_shutdown_workspace_results_do_not_change_display():
+    from unittest.mock import Mock
+
+    jarvis = JarvisApp.__new__(JarvisApp)
+    jarvis.workspace_manager = Mock()
+    jarvis.workspace_manager.get_workspace_path.return_value = "current-project"
+    jarvis.window = Mock()
+    jarvis._runtime_shutdown_started = False
+    jarvis._workspace_refresh_running = True
+    result = {
+        "path": "previous-project",
+        "info": SimpleNamespace(path="previous-project", name="old", alias="이전 프로젝트"),
+        "git_status": {"is_repository": False}, "error": "",
+    }
+
+    jarvis._on_workspace_state_ready(result)
+
+    assert jarvis._workspace_refresh_running is False
+    jarvis.window.set_workspace_info.assert_not_called()
+    jarvis._runtime_shutdown_started = True
+    jarvis._workspace_refresh_running = True
+    result["path"] = "current-project"
+    jarvis._on_workspace_state_ready(result)
+    assert jarvis._workspace_refresh_running is False
+    jarvis.window.set_workspace_info.assert_not_called()

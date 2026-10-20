@@ -1459,19 +1459,39 @@ class ToolExecutor:
 
         try:
             print(f"[STT] {duration}초 동안 말씀하세요...")
-            if self.hardware_manager is None:
+            hardware = self.hardware_manager
+            if hardware is None:
                 return ToolRunResult.failed(tool_name="listen", error="하드웨어 관리자를 초기화하지 못했습니다.")
-            device_info, sample_rate = self.hardware_manager._select_microphone()
-            recording = sd.rec(
-                int(duration * sample_rate),
-                samplerate=sample_rate,
-                channels=1,
-                dtype="float32",
-                device=device_info["index"],
-            )
-            sd.wait()
-            audio = self.hardware_manager._to_16khz(recording[:, 0], sample_rate)
-            result = self.hardware_manager._transcribe_audio(audio)
+            from core.permission import get_permission_manager
+            from core.turn_context import check_turn_cancelled
+            generation = getattr(hardware, "_listener_generation", 0)
+
+            def check():
+                check_turn_cancelled()
+                return (not get_permission_manager().is_blocked("microphone")
+                        and not getattr(hardware, "_manual_stop", False)
+                        and generation == getattr(hardware, "_listener_generation", 0))
+
+            if not check():
+                return ToolRunResult.cancelled(tool_name="listen", message="마이크가 꺼져 있어 녹음을 중단했습니다.")
+            device_info, sample_rate = hardware._select_microphone()
+            blocks, remaining = [], int(duration * sample_rate)
+            with sd.InputStream(samplerate=sample_rate, channels=1, dtype="float32",
+                                device=device_info["index"]) as stream:
+                while remaining > 0:
+                    if not check():
+                        return ToolRunResult.cancelled(tool_name="listen", message="마이크가 꺼져 있어 녹음을 중단했습니다.")
+                    count = min(remaining, max(1, sample_rate // 10))
+                    block, _overflowed = stream.read(count)
+                    blocks.append(block.copy())
+                    remaining -= count
+            if not check():
+                return ToolRunResult.cancelled(tool_name="listen", message="마이크가 꺼져 있어 녹음을 중단했습니다.")
+            recording = np.concatenate(blocks, axis=0)
+            audio = hardware._to_16khz(recording[:, 0], sample_rate)
+            result = hardware._transcribe_audio(audio)
+            if not check():
+                return ToolRunResult.cancelled(tool_name="listen", message="마이크가 꺼져 있어 음성 인식 결과를 폐기했습니다.")
             text = result["text"].strip()
 
             if text:
@@ -1541,29 +1561,6 @@ class ToolExecutor:
             )
         except Exception as e:
             return ToolRunResult.failed(tool_name="list_audio_input_devices", error=f"마이크 장치 조회 오류: {e}")
-
-    def list_camera_devices(self):
-        if self.multimodal_manager is None:
-            return ToolRunResult.failed(tool_name="list_camera_devices", error="카메라 기능을 초기화하지 못했습니다.")
-        try:
-            devices = self.multimodal_manager.list_camera_devices()
-            output = (
-                "사용 가능한 카메라:\n" + "\n".join(
-                    f"- {item['index']}: {item['backend']} / {item['width']}x{item['height']}"
-                    for item in devices
-                )
-                if devices else "프레임을 읽을 수 있는 카메라가 없습니다."
-            )
-            return ToolRunResult.successful(
-                tool_name="list_camera_devices",
-                raw_output=output,
-                evidence=[Evidence("camera_devices", f"프레임 읽기 검사를 통과한 카메라 {len(devices)}개를 조회했습니다.", {
-                    "count": len(devices),
-                    "devices": devices,
-                })],
-            )
-        except Exception as e:
-            return ToolRunResult.failed(tool_name="list_camera_devices", error=f"카메라 장치 조회 오류: {e}")
 
     def add_document(self, file_path: str):
         if self.rag_manager is None:
@@ -1881,36 +1878,6 @@ class ToolExecutor:
         except Exception as e:
             return ToolRunResult.failed(tool_name="write_excel_cell", error=f"셀 쓰기 오류: {e}")
 
-
-
-    def capture_camera(self, save_path: Optional[str] = None):
-        """카메라에서 프레임을 캡처합니다."""
-        if self.multimodal_manager is None:
-            return ToolRunResult.failed(tool_name="capture_camera", error="카메라 기능을 초기화하지 못했습니다.")
-        try:
-            result = self.multimodal_manager.capture_camera_frame_details(save_path)
-            captured = Path(result["path"])
-            image_hash = hashlib.sha256(captured.read_bytes()).hexdigest()
-            raw_output = (
-                f"카메라 {result['camera_index']}({result['backend']}, "
-                f"{result['width']}x{result['height']})의 프레임을 저장했습니다: {captured}"
-            )
-            return ToolRunResult.successful(
-                tool_name="capture_camera",
-                raw_output=raw_output,
-                evidence=[Evidence("camera_capture", "저장된 카메라 이미지 파일의 크기와 해시를 확인했습니다.", {
-                    **result,
-                    "sha256": image_hash,
-                })],
-                artifacts=[Artifact("image", str(captured), {
-                    "width": result["width"],
-                    "height": result["height"],
-                    "sha256": image_hash,
-                })],
-            )
-        except Exception as e:
-            return ToolRunResult.failed(tool_name="capture_camera", error=f"카메라 캡처 오류: {e}")
-
     def _request_tool_permissions(self, tool_name: str, tool_input: Optional[dict] = None) -> tuple[bool, str]:
         """모든 진입점에서 동일하게 적용되는 중앙 권한 검사."""
         try:
@@ -2041,9 +2008,7 @@ class ToolExecutor:
             "write_excel_cell": self.write_excel_cell,
             "create_directory": self.create_directory,
             "delete_directory": self.delete_directory,
-            "capture_camera": self.capture_camera,
             "list_audio_input_devices": self.list_audio_input_devices,
-            "list_camera_devices": self.list_camera_devices,
             # Workspace 관련 도구 추가
             "set_workspace": self.set_workspace,
             "get_workspace_info": self.get_workspace_info,
@@ -2512,7 +2477,7 @@ def _get_legacy_tools_schema() -> list[dict]:
                 "properties": {
                     "file_path": {
                         "type": "string",
-                        "description": "생성할 엑셀 파일 경로 (예: C:/Users/ice31/Desktop/test.xlsx)",
+                        "description": "생성할 엑셀 파일의 전체 경로 (예: C:/Documents/test.xlsx)",
                     },
                     "data": {
                         "type": "array",
@@ -2581,25 +2546,6 @@ def _get_legacy_tools_schema() -> list[dict]:
                 },
                 "required": ["dir_path"],
             },
-        },
-        {
-            "name": "capture_camera",
-            "description": "카메라에서 프레임을 캡처합니다.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "save_path": {
-                        "type": "string",
-                        "description": "저장할 경로 (선택사항, 지정하지 않으면 임시 파일에 저장)",
-                    },
-                },
-                "required": [],
-            },
-        },
-        {
-            "name": "list_camera_devices",
-            "description": "현재 실제 프레임을 읽을 수 있는 카메라 장치 목록을 확인합니다.",
-            "input_schema": {"type": "object", "properties": {}, "required": []},
         },
         {
             "name": "list_audio_input_devices",

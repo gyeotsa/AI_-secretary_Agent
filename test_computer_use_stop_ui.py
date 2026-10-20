@@ -79,7 +79,6 @@ def bare_app(qt_app):
     app._active_turn_context = TurnExecutionContext("current", "session")
     app.session_id = "session"
     app._runtime_shutdown_started = False
-    app._queued_specialist_payloads = {"old": {}}
     app._queued_dispatch_inflight = {"old"}
     app.executor = SimpleNamespace(current_agent_task_id="", dialogue_state=None)
     return app
@@ -142,7 +141,7 @@ def test_emergency_stop_cancels_real_turn_queue_and_pending_permission(qt_app):
     app.executor.handle_control_command.assert_called_once_with("running 취소", "session")
     state.transition_task.assert_called_once_with("queued", "cancelled", result="새 사용자 입력으로 대체됨")
     assert not app._is_processing_ai and not app._computer_use_active
-    assert not app._queued_specialist_payloads and not app._queued_dispatch_inflight
+    assert not app._queued_dispatch_inflight
     assert app._permission_result is False and app._permission_event.is_set()
     app._cancel_speech_only.assert_called_once_with()
     app._reset_all.assert_called_once_with()
@@ -245,6 +244,10 @@ def test_cancelled_worker_clears_current_processing_and_allows_new_chat(qt_app, 
     app.memory = Mock()
     app.memory.create_session.return_value = "new-session"
     app.memory.load_session.return_value = []
+    app.memory.workspace_namespace = "global"
+    app.memory.list_session_details.return_value = [
+        {"session_id": "new-session", "workspace_namespace": "global"},
+    ]
     app._run_idle_memory_maintenance = Mock()
     app._run_next_queued_task = Mock()
     context = app._active_turn_context

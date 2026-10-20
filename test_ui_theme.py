@@ -9,12 +9,9 @@ from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QTabWidget, QVBo
 from ui.theme import theme_manager, ThemeManager, LIGHT, DARK
 from ui.main_window import (JarvisMainWindow, PermissionRequestDialog, PermissionSettingsDialog,
                             TTSVoiceDialog, SessionManagerDialog, TaskManagerDialog, PluginDiagnosticsDialog)
-from ui.gesture_settings import GestureSettingsDialog
-from ui.specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindow
 from ui.command_center import FirstRunWizard
 from ui.mail_account_dialog import MailAccountDialog
 from ui.continuity_dialog import ContinuityDialog
-from core.specialist_workspaces import get_specialist_workspace_registry
 from test_continuity_ui import Service
 from test_dialog_theme import Account, Registry, contrast
 
@@ -36,11 +33,6 @@ def desktop(tmp_path):
 
 
 def make_window(kind, tmp_path):
-    registry = get_specialist_workspace_registry()
-    if kind == 'mockup':
-        from ui.specialist_workspaces import MockupWorkspaceWindow
-        runtime = SimpleNamespace(list_profiles=lambda: [], generation_status=lambda: {'ready':False, 'base_ready':False, 'adapter_ready':False, 'cuda':False})
-        return MockupWorkspaceWindow(registry.get('mockup'), runtime=runtime)
     if kind == 'graph':
         from ui.knowledge_graph_workspace import KnowledgeGraphWindow
         from core.obsidian_vault import ObsidianVault
@@ -60,16 +52,13 @@ def make_window(kind, tmp_path):
     if kind == 'tasks': return TaskManagerDialog(SimpleNamespace(list_tasks=lambda *a, **kw: []), '', '')
     if kind == 'plugins': return PluginDiagnosticsDialog(Registry())
     if kind == 'mail': return MailAccountDialog(Account())
-    if kind == 'gesture': return GestureSettingsDialog()
-    if kind == 'hub': return SpecialistHubDialog(registry.all())
-    if kind in ('document', 'photoshop'): return SpecialistWorkspaceWindow(registry.get(kind))
     if kind == 'setup': return FirstRunWizard(SimpleNamespace())
     if kind == 'reminder': return ContinuityDialog(Service())
     raise AssertionError(kind)
 
 
 @pytest.mark.parametrize('kind', ['main','permission','permissions','voice','sessions','tasks',
-                                  'plugins','mail','gesture','hub','document','photoshop','setup','reminder','mockup','graph','command'])
+                                  'plugins','mail','setup','reminder','graph','command'])
 def test_all_windows_switch_live_and_render(desktop, tmp_path, kind):
     app, manager = desktop
     window = make_window(kind, tmp_path)

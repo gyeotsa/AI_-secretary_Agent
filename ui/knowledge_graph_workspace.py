@@ -5,10 +5,11 @@ from .theme import set_widget_style, theme_manager, theme_color
 import html
 import math
 import random
+import re
 from pathlib import Path
 
 from PyQt6.QtCore import QFileSystemWatcher, QPointF, QRectF, QTimer
-from PyQt6.QtGui import QColor, QBrush, QPen, QPainter
+from PyQt6.QtGui import QColor, QBrush, QPen, QPainter, QTextCursor, QTextDocument
 from PyQt6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPushButton, QSlider, QSplitter, QTextBrowser, QVBoxLayout, QWidget,
@@ -18,13 +19,69 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from core.obsidian_vault import ObsidianVault, get_obsidian_vault
-from ui.specialist_workspaces import STYLE
+from core.assistant_settings import SETTING_DEFINITIONS
+from .readable_details import format_details
+STYLE = """
+QMainWindow, QDialog { background: #080d16; }
+QWidget { color: #dce8f5; font-family: "Segoe UI"; font-size: 12px; }
+QTextBrowser { font-size: 14px; padding: 12px; }
+QFrame#panel {
+    background: #0d1624; border: 1px solid #203247; border-radius: 12px;
+}
+QListWidget, QTextEdit, QLineEdit, QComboBox {
+    color: #e8f2fb; background: #0a121e; border: 1px solid #253a51;
+    border-radius: 9px; padding: 7px; selection-background-color: #1f6178;
+}
+QListWidget:focus, QTextEdit:focus, QLineEdit:focus, QComboBox:focus { border-color: #4bc7de; }
+QListWidget::item { padding: 7px; border-radius: 5px; }
+QListWidget::item:selected { background: #18394b; color: #f3fbff; }
+QPushButton {
+    color: #cbeaf2; background: #132338; border: 1px solid #29455f;
+    border-radius: 8px; padding: 8px 12px; font-weight: 600;
+}
+QPushButton:hover { color: #ffffff; background: #19314a; border-color: #4bbbd0; }
+QPushButton:pressed { background: #0e1b2b; }
+QLabel#heading { color: #eaf8ff; font-size: 19px; font-weight: 650; }
+QLabel#section { color: #70d8e9; font-size: 13px; font-weight: 650; }
+QLabel#muted { color: #7f96aa; }
+QSplitter::handle { background: transparent; width: 8px; }
+QScrollBar:vertical { background: transparent; width: 9px; margin: 2px; }
+QScrollBar::handle:vertical { background: #2b4258; min-height: 28px; border-radius: 4px; }
+QToolTip { color: #eaf7ff; background: #101d2d; border: 1px solid #29445f; padding: 5px; }
+QTabWidget::pane { border: 1px solid #29445f; border-radius: 8px; top: -1px; }
+QTabBar::tab {
+    color: #9bb4c9; background: #101b2a; border: 1px solid #29445f;
+    padding: 8px 16px; margin-right: 3px; min-width: 96px;
+}
+QTabBar::tab:selected { color: #ffffff; background: #17667c; border-color: #57d3e7; font-weight: 700; }
+QTabBar::tab:hover:!selected { color: #eaf8ff; background: #183047; }
+"""
 
 NODE_COLORS = {
     "preference": "#f59eeb", "project": "#5eead4", "task": "#fbbf66",
     "fact": "#67b9ff", "case": "#c4a7ff", "conversation_pattern": "#fb7185",
     "topics_map": "#45d5e8", "actions_map": "#7dd3fc", "index": "#91a4b7",
 }
+
+
+class _NotePreview(QTextBrowser):
+    def loadResource(self, resource_type, url):
+        # Notes may contain untrusted image/file URLs; previews never fetch resources.
+        return None
+
+
+def _note_title(value):
+    title = str(value or "")
+    prefix, _, key = title.rpartition(" ")
+    setting = SETTING_DEFINITIONS.get(key)
+    if setting and prefix in {"", "사용자 설정", "사용자 프로필"}:
+        return f"{prefix} {setting.label}".strip()
+    return title
+
+
+def _readable_links(text):
+    return re.sub(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]",
+                  lambda match: format_details(_note_title(match.group(2) or match.group(1).rsplit("/", 1)[-1])), text)
 
 
 class GraphNodeItem(QGraphicsEllipseItem):
@@ -39,8 +96,9 @@ class GraphNodeItem(QGraphicsEllipseItem):
                       self.GraphicsItemFlag.ItemSendsGeometryChanges)
         self.setAcceptHoverEvents(True)
         self.setBrush(QBrush(QColor(NODE_COLORS.get(node.get("type"), "#7693aa"))))
-        self.setPen(QPen(theme_color("border"), 2)); self.setToolTip(node.get("label", ""))
-        label = QGraphicsSimpleTextItem(str(node.get("label", ""))[:26], self)
+        title = _note_title(node.get("label", ""))
+        self.setPen(QPen(theme_color("border"), 2)); self.setToolTip(title)
+        label = QGraphicsSimpleTextItem(title[:26], self)
         label.setBrush(QBrush(theme_color("text"))); label.setPos(-label.boundingRect().width() / 2, size / 2 + 5)
 
     def mousePressEvent(self, event):
@@ -237,7 +295,7 @@ class KnowledgeGraphWindow(QMainWindow):
         self.vault = vault or get_obsidian_vault()
         self.current_note = ""
         self._facets_loaded = False
-        self.setWindowTitle("JARVIS · Knowledge Graph")
+        self.setWindowTitle("아니스 · 지식 그래프")
         self.resize(1380, 820)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
         set_widget_style(self, STYLE)
@@ -249,7 +307,7 @@ class KnowledgeGraphWindow(QMainWindow):
         root = QWidget(); outer = QVBoxLayout(root)
         outer.setContentsMargins(18, 16, 18, 16); outer.setSpacing(10)
         header = QHBoxLayout()
-        heading = QLabel("Knowledge Graph"); heading.setObjectName("heading")
+        heading = QLabel("지식 그래프"); heading.setObjectName("heading")
         self.stats = QLabel(); self.stats.setObjectName("muted")
         header.addWidget(heading); header.addStretch(); header.addWidget(self.stats)
         outer.addLayout(header)
@@ -281,8 +339,8 @@ class KnowledgeGraphWindow(QMainWindow):
 
         side = QFrame(); side.setObjectName("panel"); side_layout = QVBoxLayout(side)
         title = QLabel("기억 미리보기"); title.setObjectName("section"); side_layout.addWidget(title)
-        self.preview = QTextBrowser(); self.preview.setOpenExternalLinks(False)
-        self.preview.setHtml("<p>노드를 선택하면 원문과 메타데이터가 표시됩니다.</p>")
+        self.preview = _NotePreview(); self.preview.setOpenExternalLinks(False); self.preview.setOpenLinks(False)
+        self.preview.setHtml("<p>기억을 선택하면 내용과 출처를 읽을 수 있습니다.</p>")
         side_layout.addWidget(self.preview, 1)
         buttons = QHBoxLayout()
         self.open_button = QPushButton("Obsidian에서 열기"); self.open_button.setEnabled(False)
@@ -328,13 +386,18 @@ class KnowledgeGraphWindow(QMainWindow):
         if self._facets_loaded: return
         for combo, key in ((self.type_filter, "types"), (self.action_filter, "actions"),
                            (self.topic_filter, "topics")):
-            for value in facets.get(key, []): combo.addItem(str(value), str(value))
+            for value in facets.get(key, []): combo.addItem(format_details(value), str(value))
         self._facets_loaded = True
 
     def refresh_graph(self):
         center = self.current_note if self.local_toggle.isChecked() and self.current_note else None
+        query = self.search.text()
+        for key, setting in SETTING_DEFINITIONS.items():
+            for prefix in ("", "사용자 설정 ", "사용자 프로필 "):
+                if query == prefix + setting.label:
+                    query = prefix + key
         payload = self.vault.build_graph(
-            query=self.search.text(), types=self._selected(self.type_filter),
+            query=query, types=self._selected(self.type_filter),
             actions=self._selected(self.action_filter), topics=self._selected(self.topic_filter),
             min_importance=self.importance.value() / 100, center=center, depth=2,
         )
@@ -350,12 +413,28 @@ class KnowledgeGraphWindow(QMainWindow):
             QMessageBox.warning(self, "기억 미리보기", str(exc)); return
         self.current_note = note["relative_path"]; self.open_button.setEnabled(True)
         meta = note["metadata"]
-        rows = "".join(f"<tr><td><b>{html.escape(str(key))}</b></td><td>{html.escape(str(value))}</td></tr>"
-                       for key, value in meta.items())
-        self.preview.setHtml(
-            f"<h2>{html.escape(note['title'])}</h2><p>{html.escape(note['relative_path'])}</p>"
-            f"<table cellspacing='7'>{rows}</table><hr><pre style='white-space:pre-wrap'>{html.escape(note['body'])}</pre>"
-        )
+        details = format_details({key: meta[key] for key in (
+            "type", "action", "topics", "source_label", "status", "importance", "confidence",
+            "epistemic_status", "created", "updated", "count", "session_count",
+        ) if key in meta})
+        body = note["body"]
+        if meta.get("managed_by") == "anis":
+            original_heading = f"# {note['title']}\n"
+            if body.startswith(original_heading):
+                body = f"# {_note_title(note['title'])}\n" + body[len(original_heading):]
+            content, separator, relationships = body.rpartition("\n\n## 관계\n")
+            if separator:
+                body = content + separator + _readable_links(relationships)
+            elif meta.get("type") in {"actions_map", "topics_map", "index", "actions_index", "topics_index"}:
+                body = _readable_links(body)
+        self.preview.document().setMarkdown(body, QTextDocument.MarkdownFeature.MarkdownDialectGitHub
+                                            | QTextDocument.MarkdownFeature.MarkdownNoHTML)
+        cursor = self.preview.textCursor()
+        if not re.search(r"^#\s+", body, re.MULTILINE):
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            cursor.insertHtml(f"<h2>{html.escape(_note_title(note['title']))}</h2>")
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml(f"<hr><h3>기억 정보</h3><p style='white-space:pre-wrap; line-height:150%'>{html.escape(details)}</p>")
         if self.local_toggle.isChecked(): self.refresh_graph()
 
     def open_note(self, relative_path: str):

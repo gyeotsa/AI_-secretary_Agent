@@ -1,6 +1,6 @@
 import sys
 # Frozen builds re-enter this executable for isolated stateless tools. Bypass
-# all Qt, model, camera and runtime initialization in those worker processes.
+# all Qt, model and runtime initialization in those worker processes.
 if __name__ == "__main__" and "--plugin-worker" in sys.argv:
     from core.plugin_worker import main as _plugin_worker_main
     raise SystemExit(_plugin_worker_main(sys.argv[sys.argv.index("--plugin-worker") + 1:]))
@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from datetime import datetime
-from PyQt6.QtWidgets import QApplication, QDialog
+from PyQt6.QtWidgets import QApplication, QDialog, QInputDialog, QMessageBox
 from PyQt6.QtCore import QDate, QTimer, QObject, Qt, pyqtSignal
 from PyQt6.QtGui import QIcon
 from config import Config, request_windows_permissions
@@ -32,7 +32,8 @@ from core.workspace import get_workspace_manager
 from core.project_indexer import get_project_indexer
 from core.permission import get_permission_manager
 from core.executor import get_executor, ExecutionOutcome
-from core.turn_context import TurnExecutionContext, bind_turn_context
+from core.turn_context import TurnExecutionContext, bind_turn_context, current_turn_context
+from core.user_question import question_choices
 from core.semantic_request import select_conversation_history
 from core.plugin import ToolCancelledError
 from core.mail_brief import MailBriefError, get_mail_brief_service
@@ -44,7 +45,6 @@ from core.continuity import ContinuityService, is_continuity_query
 from core.response_presenter import present_channels
 from core.runtime_services import get_runtime_service_manager
 from core.assistant_settings import get_assistant_settings
-from core.specialist_workspaces import get_specialist_workspace_registry
 from core.specialist_team import SpecialistTeamRuntime
 from core.memory_consolidator import ConversationMemoryConsolidator
 from core.obsidian_vault import get_obsidian_vault
@@ -53,15 +53,11 @@ from core.task_contracts import get_supervisor_runtime
 from core.workflow_runtime import MorningBriefService, WorkflowRuntime
 from core.diagnostics_runtime import DiagnosticsRuntime
 from core.command_center import CommandCenterRuntime
-from core.gesture_runtime import (
-    GestureRuntime,
-    normalize_gesture_mapping,
-    normalize_gesture_sensitivity,
-)
 from core.interface_control import get_interface_control_bridge
 from core.observer import get_observer_layer
 from ui.command_center import FirstRunWizard
 from ui.calendar_notification import CalendarNotificationManager
+from ui.action_notification import RequestNotificationManager
 from ui.computer_use_control import EmergencyStopHotkey
 
 
@@ -87,11 +83,11 @@ class TurnEnvelope:
     session_id: str
     user_text: str
     conversation_history: tuple
-    specialist_key: str = ""
     memory_namespace: str = "global"
     workspace_path: str = ""
     execution: TurnExecutionContext | None = None
     workflow_context: tuple = ()
+    execution_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -102,6 +98,8 @@ class TurnResult:
     response_text: str
     status: str = "completed"
     error_code: str = ""
+    question: str = ""
+    task_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -178,6 +176,7 @@ class AppSignals(QObject):
     # 권한 요청용 시그널: (permission_name, permission_description)
     permission_request = pyqtSignal(str, str)
     permission_action_request = pyqtSignal(object)
+    ui_permission_ready = pyqtSignal(object)
     # 권한 응답용 시그널: (result_bool)
     permission_response = pyqtSignal(bool)
     progress_update = pyqtSignal(object)
@@ -187,13 +186,11 @@ class AppSignals(QObject):
     mail_brief_progress = pyqtSignal(object)
     control_response_ready = pyqtSignal(object)
     voice_text_detected = pyqtSignal(str)
-    microphone_status = pyqtSignal(str)
-    gesture_action = pyqtSignal(str)
-    gesture_motion = pyqtSignal(object)
-    gesture_status = pyqtSignal(object)
+    microphone_status = pyqtSignal(object)
     interface_surface = pyqtSignal(str)
     computer_use_event = pyqtSignal(object)
     emergency_stop_requested = pyqtSignal()
+    workspace_state_ready = pyqtSignal(object)
 
 
 class JarvisApp:
@@ -223,7 +220,6 @@ class JarvisApp:
         )
         self.user_profile = get_user_profile()
         self.assistant_settings = get_assistant_settings()
-        self.specialist_workspaces = get_specialist_workspace_registry()
         self.window.set_assistant_identity(self.assistant_settings.assistant_name)
         self.rag_manager = get_rag_manager()
         self.obsidian_vault = get_obsidian_vault(rag=self.rag_manager)
@@ -243,25 +239,24 @@ class JarvisApp:
         self.workspace_manager = get_workspace_manager()
         self.supervisor_runtime = get_supervisor_runtime()
         self.specialist_team_runtime = SpecialistTeamRuntime(
-            self.rag_manager, namespace_provider=self.workspace_manager.get_namespace,
+            self.rag_manager, namespace_provider=lambda: self.memory.workspace_namespace,
             event_pipeline=self.memory_pipeline,
             supervisor=self.supervisor_runtime,
         )
-        self.window.set_specialist_team_runtime(self.specialist_team_runtime)
         self.project_indexer = get_project_indexer()
+        self.signals = AppSignals()
+        self.request_notifications = RequestNotificationManager(self.window)
+        self._microphone_requested = False
+        self._microphone_generation = 0
+        self.signals.workspace_state_ready.connect(self._on_workspace_state_ready)
+        self._workspace_refresh_running = False
         self._activate_workspace_context(initial=True)
         self.permission_manager = get_permission_manager()
         self.window.set_permission_manager(self.permission_manager)
         self.executor = get_executor()
         self.window.set_dialogue_state_store(self.executor.dialogue_state)
         self.automation_engine = get_automation_engine()
-        self.signals = AppSignals()  # <-- 여기로 옮겼어요!
-        self.signals.gesture_action.connect(self._on_gesture_action)
-        self.signals.gesture_motion.connect(self.window.apply_gesture_motion)
-        self.signals.gesture_status.connect(self.window.set_gesture_camera_status)
         self.signals.interface_surface.connect(self.window.open_interface_surface)
-        self.window.gesture_camera_requested.connect(self._request_gesture_camera)
-        self.window.gesture_settings_requested.connect(self._apply_gesture_configuration)
 
         self.diagnostics_runtime = DiagnosticsRuntime(
             tool_executor=self.tool_executor, workspace_manager=self.workspace_manager,
@@ -282,25 +277,7 @@ class JarvisApp:
             memory_maintenance=lambda: self._run_idle_memory_maintenance(force=True),
             context_provider=self._command_center_context,
         )
-        gesture_configuration = self._load_gesture_configuration()
-        self.gesture_runtime = GestureRuntime(
-            actions={
-                "motion": lambda payload: self.signals.gesture_motion.emit(payload),
-                "stop_tts": lambda: self.signals.gesture_action.emit("stop_tts"),
-                "approve": lambda: self.signals.gesture_action.emit("approve"),
-                "cancel": lambda: self.signals.gesture_action.emit("cancel"),
-                "next_workspace": lambda: self.signals.gesture_action.emit("next_workspace"),
-                "toggle_chat": lambda: self.signals.gesture_action.emit("toggle_chat"),
-            },
-            sensitivity=gesture_configuration["sensitivity"],
-            enable_command_gestures=gesture_configuration["command_gestures_enabled"],
-            gesture_mapping=gesture_configuration["gesture_mapping"],
-        )
         interface_bridge = get_interface_control_bridge()
-        interface_bridge.register("set_gesture_camera", self._set_gesture_camera_sync)
-        interface_bridge.register("get_gesture_status", self.gesture_runtime.status)
-        interface_bridge.register("set_gesture_configuration", self._apply_gesture_configuration)
-        interface_bridge.register("get_gesture_configuration", self.gesture_runtime.configuration)
         interface_bridge.register("open_surface", self._open_interface_surface)
         self.command_center_runtime = CommandCenterRuntime(
             supervisor=self.supervisor_runtime, specialist_team=self.specialist_team_runtime,
@@ -312,35 +289,23 @@ class JarvisApp:
         )
         self.window.set_command_center_runtime(
             self.command_center_runtime, workflow_runtime=self.workflow_runtime,
-            diagnostics=self.diagnostics_runtime, gesture_runtime=self.gesture_runtime,
+            diagnostics=self.diagnostics_runtime,
             context_provider=self._command_center_context,
             control_callback=lambda command: self.executor.handle_control_command(
                 command, self.session_id,
             ),
         )
-        self.window.set_gesture_camera_status(self.gesture_runtime.status())
         
         # 권한 요청 결과 저장용 변수
         self._permission_result = None
         self._permission_event = threading.Event()
         
-        # PermissionManager에 UI callback 연결
-        def permission_callback(permission):
-            if not permission.persist_decision:
-                return self._request_action_permission(permission)
-            self._permission_result = None
-            self._permission_event.clear()
-            # 시그널로 메인 스레드에 요청 보내기
-            self.signals.permission_request.emit(permission.name, permission.description)
-            # 결과 기다리기 (최대 30초)
-            if self._permission_event.wait(timeout=30):
-                return self._permission_result
-            return False
-        self.permission_manager.set_request_callback(permission_callback)
+        self.permission_manager.set_request_callback(self._request_action_permission)
         
         # 권한 요청 시그널 연결 (메인 스레드에서 실행)
         self.signals.permission_request.connect(self._on_permission_request)
         self.signals.permission_action_request.connect(self._on_action_permission_request)
+        self.signals.ui_permission_ready.connect(self._on_ui_permission_ready)
         # 권한 응답 시그널 연결 (필요시)
         self.signals.permission_response.connect(self._on_permission_response)
         
@@ -353,7 +318,6 @@ class JarvisApp:
         self._is_processing_ai = False
         self._speech_generation = 0
         self._queued_dispatch_inflight = set()
-        self._queued_specialist_payloads = {}
         
         # 콘솔 리더 초기화
         self.console_reader = ConsoleReader()
@@ -367,14 +331,16 @@ class JarvisApp:
         self.signals.mail_brief_ready.connect(self._on_startup_mail_brief)
         self.signals.mail_brief_progress.connect(self._on_startup_mail_progress)
         self.signals.control_response_ready.connect(self._on_control_response)
-        self.signals.voice_text_detected.connect(self._on_user_input)
+        self.signals.voice_text_detected.connect(self._on_voice_text_detected)
         self.signals.microphone_status.connect(self._on_microphone_status)
         self.signals.tts_finished.connect(self._reset_all)
         self.signals.automation_result.connect(self._on_automation_result)
         self.automation_engine.set_result_callback(self.signals.automation_result.emit)
-        print(f"[Automation] 시작 상태: {self.automation_engine.start()}")
+        if not self.permission_manager.is_blocked("automation"):
+            print(f"[Automation] 시작 상태: {self.automation_engine.start()}")
         self.proactive_policy = ProactiveNotificationPolicy(self.notify_user)
-        self.proactive_policy.start()
+        if not self.permission_manager.is_blocked("proactive_read"):
+            self.proactive_policy.start()
         self.continuity_service = ContinuityService(
             memory_path=self.memory.episode_manager.db_path,
             dialogue_path=self.executor.dialogue_state.db_path,
@@ -396,10 +362,17 @@ class JarvisApp:
         self.window.session_created.connect(self._create_session)
         self.window.session_deleted.connect(self._delete_session)
         self.window.session_reset.connect(self._reset_session)
+        self.window.session_renamed.connect(self._rename_session)
+        self.window.session_pin_changed.connect(self._pin_session)
+        self.window.project_chat_created.connect(self._create_project_chat)
+        self.window.project_removed.connect(self._remove_project)
         self.window.task_control_requested.connect(self._on_task_control_requested)
-        self.window.specialist_prompt_submitted.connect(self._on_specialist_prompt_submitted)
         self.window.voice_output_toggled.connect(self._on_voice_output_toggled)
-        self._active_specialist_key = ""
+        self.window.microphone_toggled.connect(self._on_microphone_toggled)
+        self.window.permission_changed.connect(self._on_permission_changed)
+        self.window.permission_action_requested.connect(self._on_ui_permission_action)
+        self.microphone_timer = QTimer()
+        self.microphone_timer.timeout.connect(self._refresh_microphone_state)
         
         self.heartbeat_timer = QTimer()
         self.heartbeat_timer.timeout.connect(lambda: None)
@@ -407,7 +380,7 @@ class JarvisApp:
 
         self.workspace_timer = QTimer()
         self.workspace_timer.timeout.connect(self._refresh_workspace_state)
-        self.workspace_timer.start(5000)
+        self.workspace_timer.start(30000)
 
         self.memory_maintenance_timer = QTimer()
         self.memory_maintenance_timer.timeout.connect(self._run_idle_memory_maintenance)
@@ -432,8 +405,6 @@ class JarvisApp:
         if (os.getenv("JARVIS_SKIP_FIRST_RUN_WIZARD") != "1"
                 and FirstRunWizard.should_show()):
             QTimer.singleShot(700, self._show_first_run_wizard)
-        else:
-            self._schedule_gesture_autostart()
 
     def _check_calendar_reminders(self):
         if self._runtime_shutdown_started:
@@ -486,14 +457,7 @@ class JarvisApp:
         wizard.exec()
         if wizard.result() == QDialog.DialogCode.Accepted:
             self.window.show_command_center()
-        self._schedule_gesture_autostart()
 
-    def _schedule_gesture_autostart(self):
-        if (os.getenv("JARVIS_DISABLE_CAMERA_AUTOSTART") == "1"
-                or os.getenv("PYTEST_CURRENT_TEST")
-                or self.assistant_settings.get("gesture_camera_enabled").casefold() != "true"):
-            return
-        QTimer.singleShot(650, lambda: self._request_gesture_camera(True, persist=False))
     
     def _init_ui(self):
         # 시스템 프롬프트 설정
@@ -532,7 +496,7 @@ class JarvisApp:
             print("[마이크] 자동 시작을 진단 설정으로 건너뜁니다.")
         else:
             print("[마이크] 자동으로 음성 감지를 시작합니다...")
-            threading.Thread(target=self._start_continuous_listen, daemon=True).start()
+            self._on_microphone_toggled(True)
         
         print(
             f"\n{self.assistant_settings.assistant_name}가 준비되었습니다! "
@@ -550,10 +514,24 @@ class JarvisApp:
     def _select_session(self, session_id: str):
         if self._is_processing_ai:
             self.window.show_assistant_text("현재 작업이 끝난 뒤 세션을 전환해 주세요, 보스.")
+            self.window.refresh_session_list()
+            return
+        session = next((item for item in self.memory.list_session_details(all_workspaces=True)
+                        if item["session_id"] == session_id), None)
+        if session is None:
+            self.window.refresh_session_list()
             return
         if session_id != self.session_id:
             self._run_idle_memory_maintenance(force=True)
+        namespace = session["workspace_namespace"]
+        if namespace != self.memory.workspace_namespace:
+            project = next((item for item in self.workspace_manager.list_workspaces(include_unavailable=True)
+                            if item.namespace == namespace), None)
+            if project is None or not self.workspace_manager.set_workspace(project.path):
+                self.workspace_manager.clear_workspace()
+            self._activate_workspace_context(namespace=namespace)
         self.session_id = session_id
+        self.last_response = ""
         self.messages = self.memory.load_session(session_id)
         self.window.set_current_session(session_id)
         self.window.clear_conversation_display()
@@ -569,6 +547,42 @@ class JarvisApp:
             return
         self._select_session(self.memory.create_session(title))
 
+    def _create_project_chat(self, namespace: str):
+        if self._is_processing_ai:
+            self.window.show_assistant_text("현재 작업이 끝난 뒤 새 채팅을 만들어 주세요.")
+            return
+        project = next((item for item in self.workspace_manager.list_workspaces(include_unavailable=True)
+                        if item.namespace == namespace), None)
+        if project is not None:
+            if not self.workspace_manager.set_workspace(project.path):
+                self.window.show_assistant_text("프로젝트 폴더에 접근할 수 없습니다. 폴더 위치를 확인해 주세요.")
+                return
+        else:
+            self.workspace_manager.clear_workspace()
+        self._activate_workspace_context(namespace=namespace)
+        self._create_session("새 대화")
+
+    def _remove_project(self, namespace: str):
+        if not namespace or namespace == "global":
+            return
+        if self._is_processing_ai:
+            self.window.show_assistant_text("현재 작업이 끝난 뒤 폴더를 제거해 주세요.")
+            return
+        active = self.memory.workspace_namespace == namespace
+        try:
+            self.memory.detach_workspace(namespace)
+            self.workspace_manager.remove_workspace(namespace)
+        except Exception:
+            QMessageBox.warning(self.window, "폴더 제거", "프로젝트 연결을 정리하지 못했습니다. 저장소 접근 권한과 디스크 상태를 확인해 주세요.")
+            self.window.refresh_session_list()
+            return
+        if active:
+            self.workspace_manager.clear_workspace()
+            self._activate_workspace_context()
+            self._select_session(self.session_id)
+        self.window.set_project_workspaces(self.workspace_manager.list_workspaces(include_unavailable=True))
+        self.window.refresh_session_list()
+
     def _reset_session(self, session_id: str):
         if self._is_processing_ai and session_id == self.session_id:
             self.window.show_assistant_text("현재 작업 중인 세션은 리셋할 수 없습니다, 보스.")
@@ -580,18 +594,38 @@ class JarvisApp:
             self.last_response = ""
             self.window.clear_conversation_display()
 
+    def _rename_session(self, session_id: str, title: str):
+        title = title.strip()
+        if title and self.memory.rename_session(session_id, title):
+            self.window.refresh_session_list()
+
+    def _pin_session(self, session_id: str, pinned: bool):
+        if self.memory.set_session_pinned(session_id, pinned):
+            self.window.refresh_session_list()
+
     def _delete_session(self, session_id: str):
         if self._is_processing_ai and session_id == self.session_id:
             self.window.show_assistant_text("현재 작업 중인 세션은 삭제할 수 없습니다, 보스.")
             return
         self.executor.dialogue_state.clear_session(session_id)
         self.memory.delete_session(session_id)
+        cleanup_errors = []
+        for service, method in ((self.memory_pipeline, "delete_session"),
+                                (self.obsidian_vault, "delete_session_archive"),
+                                (self.continuity_service, "delete_session_transcript")):
+            try:
+                getattr(service, method)(session_id)
+            except Exception:
+                cleanup_errors.append(method)
         if session_id == self.session_id:
             remaining = self.memory.list_sessions()
             if remaining:
                 self._select_session(remaining[0][0])
             else:
                 self._select_session(self.memory.create_session("새 대화"))
+        self.window.refresh_session_list()
+        if cleanup_errors:
+            QMessageBox.warning(self.window, "대화 삭제", "대화는 삭제했지만 일부 원문 사본을 정리하지 못했습니다. 저장소 접근 권한과 디스크 상태를 확인해 주세요.")
 
     def _on_task_control_requested(self, task_id: str, action: str):
         """Route Task UI actions through the same validated Executor control contract."""
@@ -676,10 +710,10 @@ class JarvisApp:
             for event_type in ("computer_use.started", "computer_use.step", "computer_use.finished"):
                 bus.unsubscribe(event_type, self._computer_use_event_callback)
     
-    def _on_user_input(self, text: str, existing_task_id=None, specialist_payload=None):
+    def _on_user_input(self, text: str, existing_task_id=None, *, execution_text=""):
         self._last_user_activity = time.time()
         continuity = getattr(self, "continuity_service", None)
-        if (continuity is not None and existing_task_id is None and specialist_payload is None
+        if (continuity is not None and existing_task_id is None
                 and is_continuity_query(text)):
             # Reading the next-action list must not cancel an in-flight task.
             response = continuity.answer_now()
@@ -696,7 +730,7 @@ class JarvisApp:
             is_control = (
                 getattr(self, "_is_processing_ai", False)
                 and hasattr(getattr(self, "executor", None), "is_control_command")
-                and self.executor.is_control_command(text)
+                and self.executor.is_control_command(execution_text or text)
             )
             if not is_control:
                 self._cancel_pending_work()
@@ -711,27 +745,17 @@ class JarvisApp:
                 text = stripped
                 print("[WakeWord] 실행 요청에서 호출어 제거됨")
 
-        workspace_registry = getattr(self, "specialist_workspaces", None)
-        specialist = workspace_registry.match_open_command(text) if workspace_registry else None
-        if specialist is not None:
-            self.window.open_specialist_workspace(specialist.key)
-            response = f"{specialist.title} 작업공간을 열었어요. 이 창에서도 채팅으로 작업을 이어갈 수 있어요."
-            self.notify_user(response, request=text)
-            self.state_machine.go_idle()
-            return
-
-        
         # LISTENING 상태에서 사운드바 활성화: speaking=False, audio level 설정
         self.window.set_soundbar_speaking(False)
         self.window.set_soundbar_audio_level(50)  # 임시로 50% 레벨로 설정
         
         if self._is_processing_ai:
-            if hasattr(self.executor, "is_control_command") and self.executor.is_control_command(text):
+            if hasattr(self.executor, "is_control_command") and self.executor.is_control_command(execution_text or text):
                 self.messages.append({"role": "user", "content": text})
                 self.memory.save_message(self.session_id, "user", text)
                 thread = threading.Thread(
                     target=self._process_control_command,
-                    args=(text, self.session_id, getattr(self, "_active_turn_id", "")),
+                    args=(execution_text or text, self.session_id, getattr(self, "_active_turn_id", "")),
                     daemon=True,
                 )
                 thread.start()
@@ -751,9 +775,6 @@ class JarvisApp:
         self.state_machine.start_processing()
         
         # AI 호출을 별도 스레드로 처리
-        specialist_key = ""
-        if isinstance(specialist_payload, dict):
-            specialist_key = str(specialist_payload.get("workspace", "")).strip()
         workspace_manager = getattr(self, "workspace_manager", None)
         workspace_path = (
             workspace_manager.get_workspace_path() or "" if workspace_manager is not None else ""
@@ -770,7 +791,6 @@ class JarvisApp:
             session_id=self.session_id,
             user_text=text,
             conversation_history=select_conversation_history(text, self.messages),
-            specialist_key=specialist_key,
             memory_namespace=str(
                 getattr(getattr(self, "memory", None), "workspace_namespace", "global")
                 or "global"
@@ -779,12 +799,13 @@ class JarvisApp:
             execution=execution,
             workflow_context=tuple(self._command_center_context().items())
                 if getattr(self, "user_profile", None) is not None else (),
+            execution_text=execution_text,
         )
         self._active_turn_id = turn.turn_id
         self.messages.append({"role": "user", "content": text})
         thread = threading.Thread(
             target=self._process_ai,
-            args=(turn, existing_task_id, specialist_payload),
+            args=(turn, existing_task_id),
             daemon=True,
         )
         thread.start()
@@ -804,22 +825,14 @@ class JarvisApp:
             outcome = outcome.outcome
         response_text = self._personalize_address(outcome.response)
         self.window.show_assistant_text(response_text)
-        if hasattr(self.window, "show_specialist_result"):
-            self.window.show_specialist_result(response_text, self._active_specialist_key)
         self.messages.append({"role": "assistant", "content": response_text})
         self.memory.save_message(self.session_id, "assistant", response_text)
         if getattr(outcome, "next_goal", ""):
             self.executor.enqueue_goal(outcome.next_goal, self.session_id, priority=100)
         QTimer.singleShot(0, self._run_next_queued_task)
     
-    def _on_specialist_prompt_submitted(self, payload):
-        if not isinstance(payload, dict):
-            payload = {"workspace": "document", "instruction": str(payload), "attachments": []}
-        instruction = str(payload.get("instruction", "")).strip()
-        if instruction:
-            self._on_user_input(instruction, specialist_payload=payload)
 
-    def _process_ai(self, turn, existing_task_id=None, specialist_payload=None):
+    def _process_ai(self, turn, existing_task_id=None):
         if isinstance(turn, TurnEnvelope):
             envelope = turn
         else:
@@ -831,16 +844,12 @@ class JarvisApp:
                 session_id=self.session_id,
                 user_text=text_value,
                 conversation_history=select_conversation_history(text_value, self.messages),
-                specialist_key=(
-                    str(specialist_payload.get("workspace", "")).strip()
-                    if isinstance(specialist_payload, dict) else ""
-                ),
                 memory_namespace=str(
                     getattr(getattr(self, "memory", None), "workspace_namespace", "global")
                     or "global"
                 ),
             )
-        text = envelope.user_text
+        text = envelope.execution_text or envelope.user_text
         if envelope.execution is None:
             envelope = replace(envelope, execution=TurnExecutionContext(
                 envelope.turn_id, envelope.session_id, envelope.workspace_path,
@@ -871,30 +880,6 @@ class JarvisApp:
         conversation_history = [dict(item) for item in envelope.conversation_history]
         
         try:
-            if specialist_payload:
-                workspace_key = str(specialist_payload.get("workspace", "document"))
-                with bind_turn_context(execution):
-                    outcome, team_run = self.specialist_team_runtime.execute_workspace_request(
-                        workspace_key, text,
-                        attachments=list(specialist_payload.get("attachments") or ()),
-                        invoke_executor=lambda request, allowed_tool_names=None,
-                                               execution_context="": self.executor.execute_turn(
-                            request, envelope.session_id, conversation_history,
-                            report_progress, existing_task_id,
-                            allowed_tool_names, execution_context,
-                        ),
-                    )
-                    execution.checkpoint()
-                    self.executor.record_acceptance(
-                        outcome, dict(team_run.artifacts.get("quality_verdict") or {}),
-                        session_id=envelope.session_id, workspace_path=envelope.workspace_path,
-                    )
-                response_text = outcome.response
-                print(f"[SpecialistTeam] run={team_run.run_id} status={team_run.status}")
-                self.signals.ai_response_ready.emit(TurnResult(
-                    envelope, response_text, getattr(outcome, "status", "completed")
-                ))
-                return
             # Declarative workflow triggers are part of the real conversation
             # path.  The trigger vocabulary lives only in workflows.json.
             workflow_runtime = getattr(self, "workflow_runtime", None)
@@ -959,6 +944,8 @@ class JarvisApp:
                 envelope,
                 response_text,
                 getattr(outcome, "status", "completed") if 'outcome' in locals() else "completed",
+                question=getattr(outcome, "question", "") if 'outcome' in locals() else "",
+                task_id=getattr(outcome, "task_id", "") if 'outcome' in locals() else "",
             ))
         except ToolCancelledError:
             self.signals.ai_response_ready.emit(TurnResult(envelope, "", "cancelled"))
@@ -994,7 +981,8 @@ class JarvisApp:
         self.window.show_assistant_text(self._personalize_address(message))
 
     def _start_startup_mail_brief(self):
-        if self._runtime_shutdown_started or self._mail_startup_context is not None:
+        if (os.getenv("JARVIS_DISABLE_MAIL_AUTOSTART") == "1"
+                or self._runtime_shutdown_started or self._mail_startup_context is not None):
             return
         context = TurnExecutionContext(turn_id=uuid.uuid4().hex, session_id="startup-mail")
         self._mail_startup_context = context
@@ -1164,8 +1152,6 @@ class JarvisApp:
         calendar = getattr(self.window, "calendar_dialog", None)
         if calendar is not None:
             calendar.refresh()
-        if hasattr(self.window, "show_specialist_result"):
-            self.window.show_specialist_result(response_text, turn.specialist_key)
         workspace_manager = getattr(self, "workspace_manager", None)
         if workspace_manager is not None and workspace_manager.is_set():
             workspace_info = workspace_manager.get_info()
@@ -1195,9 +1181,14 @@ class JarvisApp:
         if turn.user_text:
             self.memory.save_message(turn.session_id, "user", turn.user_text)
         self.memory.save_message(turn.session_id, "assistant", response_text)
+        refresh_sessions = getattr(self.window, "refresh_session_list", None)
+        if callable(refresh_sessions):
+            refresh_sessions()
         self._archive_obsidian_exchange_async(
             turn.user_text, response_text, session_id=turn.session_id
         )
+        if isinstance(result, TurnResult):
+            self._offer_pending_question(result)
         # Provider/transport failures are useful in diagnostics and chat
         # history, but must never become durable user knowledge or preferences.
         if turn_status != "failed":
@@ -1263,7 +1254,6 @@ class JarvisApp:
                         state.transition_task(task.task_id, "cancelled", result="새 사용자 입력으로 대체됨")
             except Exception as exc:
                 print(f"[Queue] 이전 대기 작업 취소 실패: {exc}")
-        getattr(self, "_queued_specialist_payloads", {}).clear()
         getattr(self, "_queued_dispatch_inflight", set()).clear()
 
     def _cancel_speech_only(self):
@@ -1380,8 +1370,7 @@ class JarvisApp:
                 print(f"[Queue] 동일 대기 작업 재디스패치 차단: {task.task_id}")
                 return
             inflight.add(task.task_id)
-            specialist_payload = self._queued_specialist_payloads.pop(task.task_id, None)
-            self._on_user_input(task.goal, task.task_id, specialist_payload)
+            self._on_user_input(task.goal, task.task_id)
     
     def _on_command_triggered(self, command: str):
         self.state_machine.start_processing()
@@ -1393,13 +1382,9 @@ class JarvisApp:
             result = self.mode_manager.activate_game_mode()
             self.notify_user(result, request=command)
         elif command == "LISTEN_START":
-            # 지속적인 음성 감지 시작
-            thread = threading.Thread(target=self._start_continuous_listen, daemon=True)
-            thread.start()
+            self._on_microphone_toggled(True)
         elif command == "LISTEN_STOP":
-            # 지속적인 음성 감지 중지
-            thread = threading.Thread(target=self._stop_continuous_listen, daemon=True)
-            thread.start()
+            self._on_microphone_toggled(False)
         elif command == "SPEAK":
             # 마지막 응답 다시 읽어주기
             if self.last_response:
@@ -1421,29 +1406,95 @@ class JarvisApp:
         self.state_machine.start_responding()
         QTimer.singleShot(1000, lambda: self.state_machine.go_idle())
     
-    def _start_continuous_listen(self):
+    def _on_microphone_toggled(self, enabled):
+        self._microphone_generation = getattr(self, "_microphone_generation", 0) + 1
+        self._microphone_requested = bool(enabled)
+        self._microphone_switching = True
+        self.window.set_microphone_state(bool(enabled), busy=bool(enabled))
+        self.microphone_timer.start(1000) if enabled else self.microphone_timer.stop()
+        target = self._start_continuous_listen if enabled else self._stop_continuous_listen
+        threading.Thread(target=target, args=(self._microphone_generation,), daemon=True).start()
+
+    def _start_continuous_listen(self, generation=None):
         if getattr(self, "_runtime_shutdown_started", False):
             return
-        # 지속적인 음성 감지 시작
-        result = self.hardware_manager.start_continuous_listen(self._on_continuous_text_detected, self.audio_processor)
-        print(result)
-        self.signals.microphone_status.emit(result)
-    
-    def _stop_continuous_listen(self):
-        # 지속적인 음성 감지 중지
+        if generation is None:
+            generation = getattr(self, "_microphone_generation", 0)
+        if not self._microphone_start_valid(generation):
+            return
+        try:
+            if not self.permission_manager.request_permission("microphone"):
+                result = "마이크 사용 권한이 허용되지 않았습니다."
+            elif not self._microphone_start_valid(generation):
+                return
+            else:
+                result = self.hardware_manager.start_continuous_listen(
+                    self._on_continuous_text_detected, self.audio_processor)
+                if not self._microphone_start_valid(generation):
+                    if not self._microphone_requested:
+                        self.hardware_manager.stop_continuous_listen()
+                    return
+        except Exception as exc:
+            result = f"마이크를 시작하지 못했습니다. ({type(exc).__name__})"
+        self.signals.microphone_status.emit({
+            "message": result, "enabled": self.hardware_manager.microphone_active,
+            "generation": generation})
+
+    def _microphone_start_valid(self, generation):
+        return (not getattr(self, "_runtime_shutdown_started", False)
+                and getattr(self, "_microphone_requested", False)
+                and generation == getattr(self, "_microphone_generation", 0))
+
+    def _stop_continuous_listen(self, generation=None):
+        if generation is not None and generation != getattr(self, "_microphone_generation", 0):
+            return
         result = self.hardware_manager.stop_continuous_listen()
-        print(result)
-        self.signals.microphone_status.emit(result)
+        self.signals.microphone_status.emit({"message": result, "enabled": False,
+                                            "generation": generation})
 
     def _on_microphone_status(self, result):
         if getattr(self, "_runtime_shutdown_started", False):
             return
+        if isinstance(result, dict):
+            if result["generation"] != getattr(self, "_microphone_generation", 0):
+                return
+            self._microphone_switching = False
+            enabled = bool(result["enabled"] and self._microphone_requested)
+            self._microphone_requested = enabled
+            self.window.set_microphone_state(enabled)
+            if not enabled:
+                self.microphone_timer.stop()
+            self.window.status_label.setText("마이크 ON" if enabled else result["message"])
+            return
+        if result.startswith("[성공] 마이크 연결:"):
+            return
         self.window.show_assistant_text(result)
         self.last_response = result
+
+    def _refresh_microphone_state(self):
+        if not self._microphone_requested or getattr(self, "_microphone_switching", False):
+            return
+        if not self.permission_manager.check_permission("microphone"):
+            self._on_microphone_toggled(False)
+        else:
+            self.window.set_microphone_state(self.hardware_manager.microphone_active)
     
     def _on_continuous_text_detected(self, text: str):
-        # 하드웨어 worker에서 Qt GUI thread로 안전하게 전달
-        self.signals.voice_text_detected.emit(text)
+        if getattr(self, "_microphone_requested", False):
+            self.signals.voice_text_detected.emit(text)
+
+    def _on_voice_text_detected(self, text):
+        if (getattr(self, "_microphone_requested", False)
+                and self.permission_manager.check_permission("microphone")):
+            self._on_user_input(text)
+
+    def _on_permission_changed(self, permission_id, allowed):
+        if permission_id == "microphone" and not allowed:
+            self._on_microphone_toggled(False)
+        elif permission_id == "automation":
+            self.automation_engine.start() if allowed else self.automation_engine.stop()
+        elif permission_id == "proactive_read":
+            self.proactive_policy.start() if allowed else self.proactive_policy.stop()
     
     def _speak_with_check(self, text: str, speech_generation=None):
         if not self._tts_enabled():
@@ -1524,10 +1575,15 @@ class JarvisApp:
     
     def _on_workspace_selected(self, folder_path: str):
         # Workspace가 선택되면 처리
+        if self._is_processing_ai:
+            self.window.show_assistant_text("현재 작업이 끝난 뒤 프로젝트를 전환해 주세요, 보스.")
+            return
         print(f"[Workspace] 선택됨: {folder_path}")
         success = self.workspace_manager.set_workspace(folder_path)
         if success:
             self._activate_workspace_context()
+            sessions = self.memory.list_sessions()
+            self._select_session(sessions[0][0] if sessions else self.memory.create_session("새 대화"))
             info = self.workspace_manager.get_info()
             print(f"[Workspace] 설정 완료: {info.name} (파일: {info.file_count}개)")
             # Personal Memory에 즐겨찾기 경로로 추가
@@ -1539,7 +1595,7 @@ class JarvisApp:
             self.window.set_workspace_info("")
             print(f"[Workspace] 설정 실패: 유효하지 않은 경로")
 
-    def _activate_workspace_context(self, initial: bool = False):
+    def _activate_workspace_context(self, initial: bool = False, namespace: str = ""):
         """Apply one project scope to indexing, memory, RAG, and UI."""
         if not initial:
             # A worker must never inherit a newly selected project's mutable
@@ -1549,7 +1605,12 @@ class JarvisApp:
                 self._cancel_pending_work()
                 self._is_processing_ai = False
                 self.state_machine.go_idle()
+        self.window.set_project_workspaces(self.workspace_manager.list_workspaces(include_unavailable=True))
         if not self.workspace_manager.is_set():
+            self.memory.set_namespace(namespace or "global")
+            self.rag_manager.set_namespace(namespace or "global")
+            self.project_indexer.set_project_root(None)
+            self.window.set_workspace_info("")
             return
         info = self.workspace_manager.get_info()
         namespace = self.workspace_manager.get_namespace()
@@ -1557,44 +1618,93 @@ class JarvisApp:
         self.rag_manager.set_namespace(namespace)
         self.project_indexer.set_project_root(info.path)
         self.window.set_workspace_info(
-            info.alias or info.name, info.path, self.workspace_manager.get_git_status()
+            info.alias or info.name, info.path
         )
-
-        def index_workspace():
-            result = self.project_indexer.sync_changes()
-            profile = self.project_indexer.detect_project_profile()
-            action = "복원" if initial else "선택"
-            print(f"[Workspace] {action} 및 인덱싱 완료: {result}; {profile}")
-
-        threading.Thread(target=index_workspace, daemon=True).start()
+        self._refresh_workspace_state()
 
     def _refresh_workspace_state(self):
-        if not self.workspace_manager.is_set():
+        if (getattr(self, "_runtime_shutdown_started", False)
+                or getattr(self, "_workspace_refresh_running", False)
+                or not self.workspace_manager.is_set()):
             return
         info = self.workspace_manager.get_info()
-        self.window.set_workspace_info(
-            info.alias or info.name, info.path, self.workspace_manager.get_git_status()
-        )
-        threading.Thread(target=self.project_indexer.sync_changes, daemon=True).start()
+        self._workspace_refresh_running = True
+
+        def refresh():
+            result = {"path": info.path, "info": info, "git_status": None, "error": ""}
+            try:
+                result["info"] = self.workspace_manager.refresh_info(info.path)
+                result["git_status"] = self.workspace_manager.get_git_status(info.path)
+                self.project_indexer.sync_changes(root_path=info.path)
+            except Exception as exc:
+                result["error"] = type(exc).__name__
+            self.signals.workspace_state_ready.emit(result)
+
+        threading.Thread(target=refresh, daemon=True).start()
+
+    def _on_workspace_state_ready(self, result):
+        self._workspace_refresh_running = False
+        if (getattr(self, "_runtime_shutdown_started", False)
+                or result["path"] != self.workspace_manager.get_workspace_path()):
+            return
+        info = result["info"]
+        self.window.set_workspace_info(info.alias or info.name, info.path, result["git_status"])
+        if result["error"]:
+            print(f"[Workspace] 백그라운드 갱신 실패: {result['error']}")
     
     def _request_action_permission(self, permission):
-        """A late reply can only complete its own one-time action request."""
+        """Each worker waits for its own explicit choice without blocking Qt."""
         from core.turn_context import check_turn_cancelled
-        request = {"name": permission.name, "description": permission.description,
-                   "event": threading.Event(), "cancelled": threading.Event(), "result": False}
+        request = {"id": uuid.uuid4().hex, "name": permission.name,
+                   "description": permission.description,
+                   "permission_id": getattr(permission, "id", ""),
+                   "persist_decision": getattr(permission, "persist_decision", False),
+                   "context": current_turn_context(),
+                   "microphone_generation": getattr(self, "_microphone_generation", 0),
+                   "event": threading.Event(), "cancelled": threading.Event(), "result": None}
         self.signals.permission_action_request.emit(request)
         try:
             for _ in range(1200):  # 120 seconds, while allowing turn cancellation.
                 check_turn_cancelled()
+                if not self._permission_request_valid(request):
+                    break
                 if request["event"].wait(0.1):
-                    return request["result"] is True
-            return False
+                    if request["result"] is not None:
+                        return request["result"] is True
+                    break
+            return None if request["persist_decision"] else False
         finally:
             request["cancelled"].set()
+
+    def _permission_request_valid(self, request):
+        context = request.get("context")
+        manager = getattr(self, "permission_manager", None)
+        permission_id = request.get("permission_id")
+        return (not getattr(self, "_runtime_shutdown_started", False)
+                and not request["cancelled"].is_set()
+                and not (context is not None and context.cancelled)
+                and not (manager is not None and permission_id and manager.is_blocked(permission_id))
+                and (request.get("permission_id") != "microphone"
+                     or self._microphone_start_valid(request["microphone_generation"])))
 
     def _on_action_permission_request(self, request):
         if request["cancelled"].is_set():
             request["event"].set()
+            return
+        manager = getattr(self, "request_notifications", None)
+        if manager is not None:
+            def finish(value=None):
+                if self._permission_request_valid(request):
+                    request["result"] = value
+                request["event"].set()
+            note = ("선택한 허용·거절은 권한 관리에 저장됩니다."
+                    if request.get("persist_decision") else "이번 동작에만 적용됩니다.")
+            if not manager.enqueue(
+                    request["id"], request["name"], request["description"] + "\n\n" + note,
+                    [("거절", False), ("허용", True)], finish,
+                    on_cancel=lambda: finish(),
+                    is_valid=lambda: self._permission_request_valid(request)):
+                finish()
             return
         try:
             allowed = self.window.request_permission(
@@ -1606,6 +1716,72 @@ class JarvisApp:
         finally:
             request["event"].set()
 
+    def _on_ui_permission_action(self, permission_id, description, action):
+        def check():
+            allowed = self.permission_manager.request_permission(permission_id)
+            self.signals.ui_permission_ready.emit({
+                "permission_id": permission_id, "allowed": allowed, "action": action})
+        threading.Thread(target=check, daemon=True).start()
+
+    def _on_ui_permission_ready(self, result):
+        if getattr(self, "_runtime_shutdown_started", False):
+            return
+        if result["allowed"] and self.permission_manager.check_permission(result["permission_id"]):
+            result["action"]()
+        else:
+            self.window.status_label.setText("권한이 허용되지 않아 실행하지 않았습니다. 권한 관리에서 변경할 수 있습니다.")
+
+    def _offer_pending_question(self, result):
+        manager = getattr(self, "request_notifications", None)
+        if manager is None or result.status not in {"awaiting_user", "awaiting_input", "awaiting_approval"}:
+            return
+        turn = result.turn
+        store = getattr(getattr(self, "executor", None), "dialogue_state", None)
+        task = (store.get_task(turn.session_id, result.task_id, turn.workspace_path)
+                if store is not None and result.task_id else None)
+        waiting = {"awaiting_user", "awaiting_input", "awaiting_approval"}
+        if result.task_id and (task is None or task.status not in waiting):
+            return
+        question = result.question or result.response_text
+        def valid():
+            if (getattr(self, "_runtime_shutdown_started", False)
+                    or self.session_id != turn.session_id
+                    or getattr(self, "_active_turn_id", "") != turn.turn_id
+                    or (turn.execution is not None and turn.execution.cancelled)):
+                return False
+            if task is not None:
+                current = store.get_task(turn.session_id, task.task_id, turn.workspace_path)
+                return bool(current and current.status == task.status and current.updated_at == task.updated_at)
+            return True
+        approval = result.status == "awaiting_approval"
+        if approval:
+            # Approval must be bound to a stored task, never an ID parsed from prose.
+            if task is None or task.status != "awaiting_approval":
+                return
+            choices = [("승인", ("approve", "")), ("작업 취소", ("cancel", "")),
+                       ("나중에", ("later", ""))]
+        else:
+            choices = [(label, ("answer", value)) for label, value in question_choices(question)]
+            choices.extend([("직접 답변", ("write", "")), ("나중에", ("later", ""))])
+        def answer(choice):
+            action, value = choice
+            if not valid() or action == "later":
+                return
+            if approval:
+                label = "승인" if action == "approve" else "취소"
+                self._on_user_input(f"작업 {label}", execution_text=f"{task.task_id} {label}")
+                return
+            if action == "write":
+                value, accepted = QInputDialog.getText(self.window, "아니스에게 답변", question)
+                if not accepted or not value.strip() or not valid():
+                    return
+            if task is not None:
+                self._on_user_input(value, execution_text=f"{task.task_id} 재개: {value}")
+            else:
+                self._on_user_input(value)
+        manager.enqueue("question:" + turn.turn_id, "승인이 필요해요" if approval else "답변이 필요해요",
+                        question, choices, answer, is_valid=valid)
+
     def _on_permission_request(self, permission_name: str, permission_description: str):
         """메인 스레드에서 권한 요청 대화상자를 보여주고 결과를 반환"""
         result = self.window.request_permission(permission_name, permission_description)
@@ -1616,126 +1792,26 @@ class JarvisApp:
         """권한 응답 처리 (필요시)"""
         pass
 
-    def _on_gesture_action(self, action: str):
-        """Apply camera gestures only on the Qt thread and only to explicit controls."""
-        if action == "stop_tts":
-            self.audio_processor.cancel_playback()
-            self._reset_all()
-        elif action == "approve" and not self._permission_event.is_set():
-            self._permission_result = True
-            self._permission_event.set()
-        elif action == "cancel":
-            self.audio_processor.cancel_playback()
-            if not self._permission_event.is_set():
-                self._permission_result = False
-                self._permission_event.set()
-            self._reset_all()
-        elif action == "next_workspace":
-            self.window.cycle_specialist_workspace()
-        elif action == "toggle_chat":
-            self.window.toggle_chat_panel()
-
-    def _load_gesture_configuration(self) -> dict:
-        try:
-            mapping = json.loads(self.assistant_settings.get("gesture_mapping"))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            mapping = {}
-        return {
-            "sensitivity": normalize_gesture_sensitivity(
-                self.assistant_settings.get("gesture_sensitivity")
-            ),
-            "command_gestures_enabled": (
-                self.assistant_settings.get("gesture_command_enabled").casefold() == "true"
-            ),
-            "gesture_mapping": normalize_gesture_mapping(mapping),
-        }
-
-    def _apply_gesture_configuration(self, payload: dict | None = None) -> dict:
-        """Apply a UI/tool configuration and persist only explicit saves."""
-        source = dict(payload or {})
-        persist_value = source.pop("persist", False)
-        persist = (
-            persist_value if isinstance(persist_value, bool)
-            else str(persist_value).strip().casefold() in {"1", "true", "yes", "on", "사용", "켜짐"}
-        )
-        current = self.gesture_runtime.configuration()
-        command_value = source.get(
-            "command_gestures_enabled", current["command_gestures_enabled"]
-        )
-        command_enabled = (
-            command_value if isinstance(command_value, bool)
-            else str(command_value).strip().casefold() in {"1", "true", "yes", "on", "사용", "켜짐"}
-        )
-        configuration = {
-            "sensitivity": normalize_gesture_sensitivity(
-                source.get("sensitivity", current["sensitivity"])
-            ),
-            "command_gestures_enabled": command_enabled,
-            "gesture_mapping": normalize_gesture_mapping(
-                source.get("gesture_mapping", current["gesture_mapping"])
-            ),
-        }
-        applied = self.gesture_runtime.configure(**configuration)
-        if persist:
-            self.assistant_settings.set("gesture_sensitivity", str(applied["sensitivity"]))
-            self.assistant_settings.set(
-                "gesture_command_enabled",
-                "true" if applied["command_gestures_enabled"] else "false",
-            )
-            self.assistant_settings.set(
-                "gesture_mapping",
-                json.dumps(applied["gesture_mapping"], ensure_ascii=False, separators=(",", ":")),
-            )
-        self.signals.gesture_status.emit(self.gesture_runtime.status())
-        return applied
 
     def _open_interface_surface(self, surface: str):
         value = str(surface or "")
         self.signals.interface_surface.emit(value)
         return {"surface": value, "requested": True}
 
-    def _request_gesture_camera(self, enabled: bool, *, persist: bool = True):
-        """Never block the Qt thread while a device or permission dialog is pending."""
-        threading.Thread(
-            target=self._set_gesture_camera_sync,
-            args=(bool(enabled),), kwargs={"persist": persist},
-            daemon=True, name="jarvis-gesture-control",
-        ).start()
 
-    def _set_gesture_camera_sync(self, enabled: bool, *, persist: bool = True) -> dict:
-        enabled = bool(enabled)
-        try:
-            if enabled:
-                if not self.permission_manager.request_permission("camera"):
-                    status = self.gesture_runtime.status()
-                    status["error"] = "카메라 권한이 차단되어 있습니다. 상단 A 버튼에서 허용할 수 있습니다."
-                else:
-                    status = self.gesture_runtime.start().__dict__
-            else:
-                status = self.gesture_runtime.stop().__dict__
-        except Exception as exc:
-            status = self.gesture_runtime.status()
-            status["error"] = str(exc)
-        # Persist observed runtime truth, not merely the requested state. A
-        # denied permission or missing camera must not silently re-enable the
-        # device at every subsequent startup.
-        if persist:
-            self.assistant_settings.set(
-                "gesture_camera_enabled", "true" if status.get("running") else "false"
-            )
-        self.signals.gesture_status.emit(status)
-        return status
-    
     def _on_close_requested(self):
         # 종료 버튼 클릭시 프로그램 자체 종료
         self._shutdown_runtime()
         self.app.quit()
 
     def _shutdown_runtime(self):
-        """Release cameras, background services and model processes exactly once."""
+        """Release background services and model processes exactly once."""
         if getattr(self, "_runtime_shutdown_started", False):
             return
         self._runtime_shutdown_started = True
+        notifications = getattr(self, "request_notifications", None)
+        if notifications is not None:
+            notifications.shutdown()
         self._shutdown_computer_use_controls()
         self._shutdown_errors = []
         engine = getattr(self, "automation_engine", None)
@@ -1755,7 +1831,6 @@ class JarvisApp:
             ("automation_engine", "stop"),
             ("continuity_service", "stop"),
             ("hardware_manager", "shutdown"),
-            ("gesture_runtime", "stop"),
             ("proactive_policy", "stop"),
             ("runtime_services", "stop"),
             ("tool_executor", "shutdown_tts"),
@@ -1785,11 +1860,7 @@ class JarvisApp:
         # Bound UI handlers otherwise keep a closed JarvisApp alive and allow
         # later tool calls to target a stale window/device runtime.
         bridge = get_interface_control_bridge()
-        for name in (
-            "set_gesture_camera", "get_gesture_status",
-            "set_gesture_configuration", "get_gesture_configuration", "open_surface",
-        ):
-            bridge.unregister(name)
+        bridge.unregister("open_surface")
     
     def run(self):
         return self.app.exec()

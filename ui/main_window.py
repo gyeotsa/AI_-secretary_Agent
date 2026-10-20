@@ -11,15 +11,13 @@ from PyQt6.QtWidgets import QTextEdit, QInputDialog
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal, QTimer, QRect, QRectF, QEvent
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen, QRadialGradient, QBrush, QPainterPath
 from core.state_machine import State
-from core.specialist_workspaces import get_specialist_workspace_registry
-from .specialist_workspaces import SpecialistHubDialog, SpecialistWorkspaceWindow, MockupWorkspaceWindow
 from .knowledge_graph_workspace import KnowledgeGraphWindow
 from .command_center import CommandCenterDialog
 from .brain_orbit import BrainOrbitWidget
-from .gesture_settings import GestureSettingsDialog
 from .dialog_theme import apply_dark_dialog_theme
-from .codex_shell import install_shell, refresh_sessions, archive_turn, open_tab
+from .codex_shell import install_shell, refresh_sessions, archive_turn, open_tab, set_assistant_message
 from .plugin_hub import PluginHub
+from .readable_details import format_details
 
 MAIN_STYLE = """
 QWidget { color: #dce8f5; font-family: "Segoe UI"; font-size: 12px; }
@@ -438,6 +436,8 @@ class PermissionRequestDialog(QDialog):
 class PermissionSettingsDialog(QDialog):
     """저장된 권한을 한 화면에서 확인하고 영구 허용/차단하는 대화상자."""
 
+    permission_changed = pyqtSignal(str, bool)
+
     def __init__(self, permission_manager, parent=None):
         super().__init__(parent)
         self.permission_manager = permission_manager
@@ -451,7 +451,8 @@ class PermissionSettingsDialog(QDialog):
                           border-radius: 6px; padding: 7px 16px; }
         """)
         layout = QVBoxLayout(self)
-        intro = QLabel("허용된 권한은 다시 묻지 않고 실행하며, 차단된 권한은 요청창 없이 거부합니다.")
+        intro = QLabel("아직 결정하지 않은 권한은 실행할 때 확인합니다. 허용·차단 선택은 저장되며, "
+                       "차단한 권한은 실행하지 않습니다. Computer Use 등 개별 행동 승인은 별도로 확인합니다.")
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
@@ -463,23 +464,22 @@ class PermissionSettingsDialog(QDialog):
             row = QFrame()
             row_layout = QHBoxLayout(row)
             labels = QVBoxLayout()
-            name = QLabel(f"{permission.name}  ({permission.id})")
+            name = QLabel(permission.name)
+            name.setTextFormat(Qt.TextFormat.PlainText)
             set_widget_style(name, "font-weight: bold; color: #ffffff;")
             description = QLabel(permission.description)
+            description.setWordWrap(True)
             set_widget_style(description, "color: #8db8c0;")
             labels.addWidget(name)
             labels.addWidget(description)
             row_layout.addLayout(labels, 1)
             toggle = QCheckBox("허용")
+            toggle.setAccessibleName(f"{permission.name} 허용")
             toggle.setChecked(self.permission_manager.check_permission(permission.id))
-            if permission.level.value == "safe":
-                toggle.setEnabled(False)
-                toggle.setToolTip("안전 권한은 항상 허용됩니다.")
-            else:
-                toggle.toggled.connect(
-                    lambda checked, permission_id=permission.id:
-                    self._set_permission(permission_id, checked)
-                )
+            toggle.toggled.connect(
+                lambda checked, permission_id=permission.id:
+                self._set_permission(permission_id, checked)
+            )
             row_layout.addWidget(toggle)
             rows.addWidget(row)
         rows.addStretch()
@@ -494,6 +494,7 @@ class PermissionSettingsDialog(QDialog):
             self.permission_manager.grant_permission(permission_id)
         else:
             self.permission_manager.revoke_permission(permission_id)
+        self.permission_changed.emit(permission_id, allowed)
 
 
 class TTSVoiceDialog(QDialog):
@@ -767,7 +768,7 @@ class TaskManagerDialog(QDialog):
         self.state_store = state_store
         self.session_id = session_id
         self.workspace_path = workspace_path
-        self.setWindowTitle("JARVIS 작업 관리")
+        self.setWindowTitle("아니스 · 작업 목록")
         self.resize(820, 580)
         set_widget_style(self, """
             QDialog, QListWidget, QTextEdit { background-color: #0a0a1a; color: #d8faff; }
@@ -779,11 +780,12 @@ class TaskManagerDialog(QDialog):
                           border-radius: 6px; padding: 7px 12px; }
         """)
         layout = QVBoxLayout(self)
-        scope = workspace_path or "Workspace 없음"
-        layout.addWidget(QLabel(f"현재 세션 · {scope}"))
+        scope = workspace_path or "작업 폴더를 선택하지 않음"
+        layout.addWidget(QLabel(f"현재 대화 · {scope}"))
         content = QHBoxLayout()
         self.task_list = QListWidget()
         self.task_list.setMinimumWidth(330)
+        self.task_list.setWordWrap(True)
         self.details = QTextEdit()
         self.details.setReadOnly(True)
         content.addWidget(self.task_list, 1)
@@ -816,8 +818,10 @@ class TaskManagerDialog(QDialog):
         )
         for task in tasks:
             item = QListWidgetItem(
-                f"{task.task_id} [{task.status}]\n{task.goal[:70]}"
+                f"{task.goal[:70]}{'…' if len(task.goal) > 70 else ''}\n"
+                + format_details({"status": task.status})
             )
+            item.setToolTip(task.goal)
             item.setData(Qt.ItemDataRole.UserRole, task)
             self.task_list.addItem(item)
         if self.task_list.count():
@@ -834,14 +838,13 @@ class TaskManagerDialog(QDialog):
         if not task:
             self.details.clear()
             return
-        self.details.setPlainText(
-            f"상태: {task.status}\n목표: {task.goal}\n"
-            f"확인 질문: {task.pending_question or '-'}\n"
-            f"Intent: {task.intent_name or '-'}\n마지막 도구: {task.last_tool or '-'}\n"
-            f"검증 상태: {task.verification_status or '-'}\n"
-            f"Artifact: {len(task.artifacts)}개 · Evidence: {len(task.evidence)}개\n"
-            f"갱신 시각: {task.updated_at}"
-        )
+        self.details.setPlainText(format_details({
+            "goal": task.goal, "status": task.status,
+            "pending_question": task.pending_question,
+            "verification_status": task.verification_status,
+            "artifacts": task.artifacts, "evidence": task.evidence,
+            "updated_at": task.updated_at,
+        }))
         self.resume_button.setEnabled(task.status in {"paused", "interrupted"})
         self.cancel_button.setEnabled(task.status in {"queued", "running", "paused", "interrupted", "awaiting_user"})
         self.delete_button.setEnabled(task.status in {
@@ -876,7 +879,7 @@ class PluginDiagnosticsDialog(QDialog):
         super().__init__(parent)
         apply_dark_dialog_theme(self)
         self.plugin_registry = plugin_registry
-        self.setWindowTitle("Plugin 상태 및 진단")
+        self.setWindowTitle("플러그인 상태 및 진단")
         self.resize(760, 520)
         layout = QVBoxLayout(self)
         guide = QLabel("등록 · 설치 · 연결 · 인증 · 계약 · 실제 실행 검증은 서로 다른 상태입니다.")
@@ -964,7 +967,7 @@ class PluginDiagnosticsDialog(QDialog):
             return
         diagnostics = "\n".join(f"- {item}" for item in status.diagnostics) or "- 발견된 문제가 없습니다."
         self.details.setPlainText(
-            f"Plugin: {status.name}\nVersion: {status.version}\n"
+            f"플러그인: {status.name}\n버전: {status.version}\n"
             f"등록: {'확인' if status.registered else '실패'}\n"
             f"설치: {self._mark(status.installed, status.installation_state)}\n"
             f"연결: {self._mark(status.connected, status.connection_state)}\n"
@@ -987,14 +990,18 @@ class JarvisMainWindow(QWidget):
     workspace_selected = pyqtSignal(str)  # Workspace 선택 시그널
     # 권한 요청 시그널: (permission_name, permission_description) -> return bool
     permission_requested = pyqtSignal(str, str)
+    permission_changed = pyqtSignal(str, bool)
+    permission_action_requested = pyqtSignal(str, str, object)
+    microphone_toggled = pyqtSignal(bool)
     session_selected = pyqtSignal(str)
     session_created = pyqtSignal(str)
     session_deleted = pyqtSignal(str)
     session_reset = pyqtSignal(str)
     task_control_requested = pyqtSignal(str, str)
-    specialist_prompt_submitted = pyqtSignal(object)
-    gesture_camera_requested = pyqtSignal(bool)
-    gesture_settings_requested = pyqtSignal(object)
+    session_renamed = pyqtSignal(str, str)
+    session_pin_changed = pyqtSignal(str, bool)
+    project_chat_created = pyqtSignal(str)
+    project_removed = pyqtSignal(str)
     voice_output_toggled = pyqtSignal(bool)
     calendar_schedule_changed = pyqtSignal(object)
     
@@ -1010,6 +1017,7 @@ class JarvisMainWindow(QWidget):
         self.audio_processor = audio_processor
         self.current_workspace_path = ""
         self.current_workspace_name = ""
+        self.project_workspaces = []
         self.permission_manager = None
         self.tts_settings_manager = None
         self.memory_manager = None
@@ -1024,17 +1032,9 @@ class JarvisMainWindow(QWidget):
         self.command_center_dialog = None
         self.continuity_service = None
         self.continuity_dialog = None
-        self.gesture_camera_running = False
-        self.gesture_camera_status = {}
-        self.gesture_configuration = {
-            "sensitivity": 60,
-            "command_gestures_enabled": False,
-            "gesture_mapping": {},
-        }
+        self.knowledge_graph_window = None
         self.chat_collapsed = False
         self.current_session_id = ""
-        self.specialist_registry = get_specialist_workspace_registry()
-        self.specialist_windows = {}
         
         # 원형 사운드바 상태 변수
         self.soundbar_bar_count = 80
@@ -1151,14 +1151,6 @@ class JarvisMainWindow(QWidget):
         self.calendar_btn.clicked.connect(self.show_local_calendar)
         tab_layout.addWidget(self.calendar_btn)
 
-        self.specialist_btn = QPushButton("S")
-        self.specialist_btn.setObjectName("toolbarButton")
-        set_widget_style(self.specialist_btn, button_style)
-        self.specialist_btn.setFixedSize(35, 35)
-        self.specialist_btn.setToolTip("전문가 작업공간")
-        self.specialist_btn.clicked.connect(self.show_specialist_hub)
-        tab_layout.addWidget(self.specialist_btn)
-
         self.command_center_btn = QPushButton("◎")
         self.command_center_btn.setObjectName("toolbarButton")
         self.command_center_btn.setFixedSize(35, 35)
@@ -1166,22 +1158,7 @@ class JarvisMainWindow(QWidget):
         self.command_center_btn.clicked.connect(self.show_command_center)
         tab_layout.addWidget(self.command_center_btn)
 
-        self.gesture_camera_btn = QPushButton("G")
-        self.gesture_camera_btn.setObjectName("toolbarButton")
-        self.gesture_camera_btn.setFixedSize(35, 35)
-        self.gesture_camera_btn.setToolTip("손 제스처 카메라 · 로컬 처리")
-        self.gesture_camera_btn.clicked.connect(
-            lambda: self.gesture_camera_requested.emit(not self.gesture_camera_running)
-        )
-        tab_layout.addWidget(self.gesture_camera_btn)
 
-        self.gesture_settings_btn = QPushButton("G⚙")
-        self.gesture_settings_btn.setObjectName("toolbarButton")
-        self.gesture_settings_btn.setFixedSize(42, 35)
-        self.gesture_settings_btn.setToolTip("손 제스처 민감도·동작 매핑")
-        self.gesture_settings_btn.clicked.connect(self.show_gesture_settings)
-        tab_layout.addWidget(self.gesture_settings_btn)
-        
         tab_layout.addStretch()
         
         self.minimize_btn = QPushButton("─")
@@ -1261,10 +1238,8 @@ class JarvisMainWindow(QWidget):
         self.text_input.returnPressed.connect(self._on_text_submitted)
         
         self.brain_orbit = BrainOrbitWidget(self)
-        self.brain_orbit.set_surfaces(self.specialist_registry.all())
         self.brain_orbit.surface_requested.connect(self.open_interface_surface)
         self.brain_orbit.graph_note_open_requested.connect(self.open_knowledge_graph_note)
-        self.brain_orbit.camera_toggle_requested.connect(self.gesture_camera_requested.emit)
 
         self.chat_toggle_btn = QPushButton("채팅 숨기기  ↓")
         self.chat_toggle_btn.setObjectName("chatToggle")
@@ -1516,6 +1491,9 @@ class JarvisMainWindow(QWidget):
                         painter.drawLine(int(inner_x), int(inner_y), int(outer_x), int(outer_y))
     
     def start_animations(self):
+        # The chat shell has no rotating background; its visible soundbars own their timers.
+        if hasattr(self, "sidebar"):
+            return
         self.arc_timer = QTimer()
         self.arc_timer.timeout.connect(self.update_arc)
         self.arc_timer.start(20)
@@ -1772,7 +1750,6 @@ class JarvisMainWindow(QWidget):
         self.welcome.hide()
         self.user_text_label.setText(text)
         self.user_text_label.show()
-        refresh_sessions(self)
         QTimer.singleShot(0, self._reveal_user_prompt)
 
     def _reveal_user_prompt(self):
@@ -1783,11 +1760,17 @@ class JarvisMainWindow(QWidget):
     def show_assistant_text(self, text: str):
         self._follow_reply = True
         self.welcome.hide()
-        self.assistant_text_label.setText(text)
+        set_assistant_message(self.assistant_text_label, text)
         self.assistant_text_label.show()
         # Wait for wrapping/layout to settle. A long prompt may be taller than
         # the viewport, so resetting to content top would hide the new reply.
         self._reply_scroll_timer.start(0)
+
+    def _refresh_research_theme(self, _mode):
+        for label in [self.assistant_text_label, *self._archived_messages]:
+            text = label.property("canonicalText") or ""
+            if text.startswith("# 조사 결과:"):
+                set_assistant_message(label, text)
 
     def _reveal_assistant_reply(self):
         self.message_scroll.widget().layout().activate()
@@ -1889,6 +1872,13 @@ class JarvisMainWindow(QWidget):
             self.workspace_label.setText("Workspace: 없음")
             set_widget_style(self.workspace_label, "color: #999999; padding: 4px;")
 
+    def set_project_workspaces(self, workspaces):
+        self.project_workspaces = workspaces
+        refresh_sessions(self)
+
+    def refresh_session_list(self):
+        refresh_sessions(self)
+
     def set_assistant_identity(self, name: str):
         """Keep the runtime identity without placing a name badge in the title bar."""
         self.assistant_identity = " ".join(str(name or "").strip().split()) or "JARVIS"
@@ -1914,15 +1904,37 @@ class JarvisMainWindow(QWidget):
     def set_permission_manager(self, permission_manager):
         self.permission_manager = permission_manager
 
+    def run_with_permission(self, permission_id, description, callback):
+        if self.permission_manager is None:
+            QMessageBox.warning(self, "권한 확인", "권한 관리자가 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요.")
+            return
+        self.permission_action_requested.emit(permission_id, description, callback)
+
     def show_permission_settings(self):
         if self.permission_manager is None:
             QMessageBox.warning(self, "권한 관리", "권한 관리자가 아직 준비되지 않았습니다.")
             return
-        return open_tab(self, PermissionSettingsDialog(self.permission_manager, self), "권한 관리", "permissions")
+        dialog = PermissionSettingsDialog(self.permission_manager, self)
+        dialog.permission_changed.connect(self.permission_changed)
+        return open_tab(self, dialog, "권한 관리", "permissions")
 
     def set_tts_settings_manager(self, settings_manager, prepare_callback=None):
         self.tts_settings_manager = settings_manager
         self.tts_prepare_callback = prepare_callback
+
+    def set_microphone_state(self, enabled: bool, busy: bool = False):
+        button = self.microphone_btn
+        button.blockSignals(True)
+        button.setChecked(bool(enabled))
+        button.setEnabled(True)
+        button.setText("마이크 연결 중…" if busy and enabled else "마이크 ON" if enabled else "마이크 OFF")
+        description = ("마이크를 연결 중입니다. 클릭하면 취소합니다." if busy and enabled
+                       else "마이크 입력이 켜져 있습니다. 클릭하면 끕니다." if enabled
+                       else "마이크 입력이 꺼져 있습니다. 클릭하면 켭니다.")
+        button.setToolTip(description)
+        button.setAccessibleName(button.text())
+        button.setAccessibleDescription(description)
+        button.blockSignals(False)
 
     def set_voice_output_enabled(self, enabled: bool):
         button = self.voice_output_btn
@@ -1990,14 +2002,11 @@ class JarvisMainWindow(QWidget):
             self.plugin_hub.registry = plugin_registry
             self.plugin_hub.refresh()
 
-    def set_specialist_team_runtime(self, runtime):
-        self.specialist_team_runtime = runtime
 
     def set_command_center_runtime(self, runtime, **services):
         self.command_center_runtime = runtime
         self.command_center_services = dict(services)
         self.command_center_services.setdefault("surface_callback", self.open_interface_surface)
-        self.command_center_services.setdefault("gesture_callback", self.gesture_camera_requested.emit)
 
     def set_continuity_service(self, service):
         self.continuity_service = service
@@ -2067,59 +2076,13 @@ class JarvisMainWindow(QWidget):
             "mail": self.show_mail_inbox,
             "calendar": self.show_local_calendar,
             "voice": self.show_tts_voice_settings,
-            "specialists": self.show_specialist_hub,
-            "gesture": self.show_gesture_settings,
+            "knowledge_graph": self.open_knowledge_graph,
         }
         callback = actions.get(surface)
         if callback is not None:
             return callback()
-        return self.open_specialist_workspace(surface)
+        return None
 
-    def apply_gesture_motion(self, payload: dict):
-        if hasattr(self, "brain_orbit"):
-            self.brain_orbit.apply_gesture_motion(payload)
-        if self.command_center_dialog is not None:
-            self.command_center_dialog.apply_gesture_motion(payload)
-
-    def set_gesture_camera_status(self, status: dict):
-        self.gesture_camera_status = dict(status or {})
-        self.gesture_camera_running = bool(status.get("running"))
-        self.gesture_camera_btn.setText("G●" if self.gesture_camera_running else "G")
-        error = str(status.get("error") or "")
-        self.gesture_camera_btn.setToolTip(
-            error or ("손 제스처 카메라 실행 중 · 영상은 저장되지 않음"
-                      if self.gesture_camera_running else "손 제스처 카메라 꺼짐")
-        )
-        self.brain_orbit.set_camera_status(status)
-        self.set_gesture_configuration(status)
-        if self.command_center_dialog is not None:
-            self.command_center_dialog.set_gesture_camera_status(status)
-
-    def set_gesture_configuration(self, configuration: dict):
-        if not isinstance(configuration, dict):
-            return
-        for key in ("sensitivity", "command_gestures_enabled", "gesture_mapping"):
-            if key in configuration:
-                self.gesture_configuration[key] = configuration[key]
-        sensitivity = int(self.gesture_configuration.get("sensitivity", 60) or 60)
-        self.brain_orbit.set_gesture_sensitivity(sensitivity)
-        if self.command_center_dialog is not None:
-            self.command_center_dialog.brain_map.set_gesture_sensitivity(sensitivity)
-
-    def show_gesture_settings(self):
-        status = {
-            **self.gesture_camera_status,
-            "running": self.gesture_camera_running,
-            **self.gesture_configuration,
-        }
-        dialog = GestureSettingsDialog(self.gesture_configuration, status, self)
-        dialog.preview_changed.connect(
-            lambda config: self.gesture_settings_requested.emit({**config, "persist": False})
-        )
-        dialog.settings_saved.connect(
-            lambda config: self.gesture_settings_requested.emit({**config, "persist": True})
-        )
-        return open_tab(self, dialog, "제스처 설정", "gesture")
 
     def show_plugin_diagnostics(self):
         if self.plugin_registry is None:
@@ -2140,62 +2103,20 @@ class JarvisMainWindow(QWidget):
             )
         return open_tab(self, self.mail_inbox_dialog, "메일 조회", "mail")
 
-    def show_specialist_hub(self):
-        dialog = SpecialistHubDialog(self.specialist_registry.all(), self)
-        dialog.workspace_requested.connect(self.open_specialist_workspace)
-        return open_tab(self, dialog, "전문가 작업공간", "specialists")
 
-    def open_specialist_workspace(self, key: str):
-        spec = self.specialist_registry.get(key)
-        if spec is None:
-            QMessageBox.warning(self, "전문가 작업공간", f"등록되지 않은 작업공간입니다: {key}")
-            return None
-        window = self.specialist_windows.get(spec.key)
-        if window is None:
-            # Top-level ownership lets workspaces participate in normal Windows Z-order.
-            if spec.key == "mockup":
-                window = MockupWorkspaceWindow(
-                    spec, team_runtime=getattr(self, "specialist_team_runtime", None)
-                )
-            elif spec.key == "knowledge_graph":
-                window = KnowledgeGraphWindow()
-            else:
-                window = SpecialistWorkspaceWindow(spec)
-            if hasattr(window, "prompt_submitted"):
-                window.prompt_submitted.connect(self.specialist_prompt_submitted.emit)
-            self.specialist_windows[spec.key] = window
-        open_tab(self, window, spec.title, f"specialist:{spec.key}")
-        return window
-
-    def cycle_specialist_workspace(self):
-        """Move to the next real specialist surface without opening a shell."""
-        specs = list(self.specialist_registry.all())
-        if not specs:
-            return None
-        visible_key = next(
-            (key for key, window in self.specialist_windows.items() if window.isVisible()),
-            "",
-        )
-        keys = [spec.key for spec in specs]
-        next_index = (keys.index(visible_key) + 1) % len(keys) if visible_key in keys else 0
-        return self.open_specialist_workspace(keys[next_index])
+    def open_knowledge_graph(self):
+        if self.knowledge_graph_window is None:
+            self.knowledge_graph_window = KnowledgeGraphWindow()
+        open_tab(self, self.knowledge_graph_window, "지식 그래프", "knowledge_graph")
+        return self.knowledge_graph_window
 
     def open_knowledge_graph_note(self, relative_path: str):
         """Open the graph workspace with the double-clicked Vault note selected."""
-        window = self.open_specialist_workspace("knowledge_graph")
+        window = self.open_knowledge_graph()
         if window is not None and relative_path and hasattr(window, "show_note"):
             window.show_note(relative_path)
         return window
 
-    def show_specialist_result(self, text: str, workspace_key: str = ""):
-        # Main-chat responses must not leak into every open specialist window.
-        if not workspace_key:
-            return
-        for key, window in self.specialist_windows.items():
-            if key != workspace_key:
-                continue
-            if window.isVisible() and hasattr(window, "show_result"):
-                window.show_result(text)
 
     def show_task_manager(self):
         if self.dialogue_state_store is None:
