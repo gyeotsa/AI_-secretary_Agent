@@ -5,15 +5,17 @@ import hashlib
 import os
 import sys
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit, quote_plus
 import ipaddress
 import socket
 import time
+import tempfile
 from urllib.request import Request, urlopen
 
+from config import Config
 from core.plugin import BasePlugin, IntentSchema, SlotSchema, ToolSchema
 from core.tool_result import Artifact, Evidence, ToolRunResult
 from core.research import PlaywrightPageFetcher, PromptInjectionGuard, ResearchAgent, ResearchCache
@@ -52,21 +54,21 @@ class BrowserPlugin(BasePlugin):
                     "query": {"type": "string"},
                     "max_results": {"type": "integer", "default": 5},
                 }, "required": ["query"]}, ["browser"]),
-            ToolSchema("browser_research", "검색 결과 페이지를 실제 방문해 교차검증 보고서를 만듭니다", {
+            ToolSchema("browser_research", "질문에 맞는 자료를 AI가 검색·수집하고 출처 평가, 근거 기반 분석과 추천 보고서를 저장합니다", {
                 "type": "object", "properties": {
                     "query": {"type": "string"}, "max_sources": {"type": "integer", "minimum": 2, "maximum": 8, "default": 5},
                     "profile": {"type": "string", "default": "default"},
                     "ttl_seconds": {"type": "number", "minimum": 60, "maximum": 86400, "default": 3600},
                     "force_refresh": {"type": "boolean", "default": False},
                 }, "required": ["query"], "additionalProperties": False,
-            }, ["browser"], timeout_seconds=180, max_retries=1, cancellable=True),
+            }, ["browser"], timeout_seconds=360, max_retries=0, cancellable=True),
             ToolSchema("browser_research_and_apply_preference", "웹 조사 근거를 요약해 사용자 설정과 RAG에 검증 저장합니다", {
                 "type": "object", "properties": {
                     "query": {"type": "string"},
                     "setting": {"type": "string", "enum": ["response_style"]},
                     "max_sources": {"type": "integer", "minimum": 2, "maximum": 8, "default": 5},
                 }, "required": ["query", "setting"], "additionalProperties": False,
-            }, ["browser"], side_effect="change", timeout_seconds=240, max_retries=1, cancellable=True),
+            }, ["browser"], side_effect="change", timeout_seconds=360, max_retries=1, cancellable=True),
             ToolSchema("browser_learning_status", "웹 조사 학습이 설정과 RAG에 반영됐는지 확인합니다", {
                 "type": "object", "properties": {
                     "setting": {"type": "string", "enum": ["response_style"]},
@@ -187,11 +189,12 @@ class BrowserPlugin(BasePlugin):
                 "web.search",
                 "최신·외부 정보를 실제 웹에서 검색",
                 "browser_research",
-                ["검색", "찾아봐", "알아봐", "확인해", "최신", "신형", "새로 나온", "출시"],
+                ["검색", "찾아봐", "알아봐", "확인해", "최신", "신형", "새로 나온", "출시",
+                 "조사", "리서치", "자료 수집", "트렌드", "트랜드"],
                 [SlotSchema("query", "검색할 전체 질문",
                             "웹에서 무엇을 검색할지 알려주세요, 보스.")],
                 execution_hints=[
-                    "검색", "찾아", "알아봐", "확인", "알려", "무엇", "뭐",
+                    "검색", "찾아", "알아봐", "확인", "알려", "무엇", "뭐", "조사", "분석", "추천",
                 ],
                 follow_up_hints=[
                     "그럼", "그러면", "관련해서", "더 찾아", "다른", "맞아", "응", "어떤",
@@ -200,11 +203,22 @@ class BrowserPlugin(BasePlugin):
                     r"(?:20)?\d{2}년.*(?:최신|신형|새로|출시)",
                     r"(?:최신|신형|최근|새로 나온).*(?:이름|무엇|뭐|알려|찾아)",
                     r"(?:검색|찾아봐|알아봐|확인해)",
+                    r"(?:조사|리서치|자료(?:를)?\s*수집|트렌드|트랜드)",
+                    r"(?:인기|유행|시장|동향|현황|최신|트렌드|트랜드).{0,100}(?:추천|분석)",
                 ],
                 freshness="live",
                 requires_sources=True,
             )
         ]
+
+    def intent_applicable(self, intent_name, text):
+        style_change = (re.search(r"(?:말투|응답\s*스타일)", text)
+                        and re.search(r"(?:학습|반영|적용)\s*(?:해|하(?:고|여|자|세요)|시켜)", text))
+        if intent_name == "web.research_and_apply_preference":
+            return bool(style_change)
+        if intent_name == "web.search":
+            return not style_change
+        return True
 
     @staticmethod
     def _extract_url_literals(text: str) -> List[str]:
@@ -691,21 +705,8 @@ class BrowserPlugin(BasePlugin):
     @staticmethod
     def _search_candidates(query: str, limit: int):
         if DDGS is None: raise RuntimeError("DDGS 검색 라이브러리가 설치되지 않았습니다.")
-        queries = [query, f"{query} official 공식"]
-        identity = re.match(r"^(.+?)\s+([^\s]+)\s+캐릭터(?:\s|$)", query)
-        if identity:
-            game_name, character_name = identity.groups()
-            queries[1:1] = [
-                f'"{character_name}" "{game_name}" 대사 대화',
-                f'"{character_name}" "{game_name}" 성격 말투',
-            ]
-        with DDGS() as ddgs:
-            rows = []
-            for search_query in queries:
-                try:
-                    rows.extend(ddgs.text(search_query, max_results=limit))
-                except Exception:
-                    continue
+        with DDGS(timeout=12) as ddgs:
+            rows = list(ddgs.text(query, max_results=limit))
         seen, results = set(), []
         for row in rows:
             url = str(row.get("href", "")).strip()
@@ -713,14 +714,6 @@ class BrowserPlugin(BasePlugin):
                 seen.add(url)
                 results.append({"url": url, "title": str(row.get("title", "")),
                                 "snippet": str(row.get("body", ""))})
-        if identity:
-            game_name, character_name = identity.groups()
-            results.sort(
-                key=lambda item: BrowserPlugin._candidate_learning_score(
-                    item, game_name, character_name,
-                ),
-                reverse=True,
-            )
         return results
 
     @staticmethod
@@ -740,8 +733,62 @@ class BrowserPlugin(BasePlugin):
     def _get_research_agent(self):
         if self._research_agent is None:
             fetcher = PlaywrightPageFetcher(self._validate_url, self._guard_route)
-            self._research_agent = ResearchAgent(self._search_candidates, fetcher, ResearchCache())
+            self._research_agent = ResearchAgent(
+                self._search_candidates, fetcher, ResearchCache(), reasoner=self._research_reasoner,
+                passage_ranker=self._research_passage_candidates,
+            )
         return self._research_agent
+
+    def _research_passage_candidates(self, question, passages):
+        from core.local_inference import inference_deadline, local_inference
+        from core.rag import get_rag_manager
+        import numpy as np
+
+        with inference_deadline(30), local_inference(self._research_checkpoint):
+            embedding = get_rag_manager().embedding_model
+            if embedding is None:
+                raise ValueError("조사 문단을 검색할 임베딩 모델이 없습니다.")
+            vectors = np.asarray(embedding(input=[question, *[item["content"] for item in passages]]), dtype=float)
+            self._research_checkpoint()
+            if vectors.ndim != 2 or len(vectors) != len(passages) + 1 or not np.isfinite(vectors).all():
+                raise ValueError("조사 문단의 임베딩 결과가 올바르지 않습니다.")
+            norms = np.linalg.norm(vectors, axis=1)
+            if not np.isfinite(norms).all() or not np.all(norms > 0):
+                raise ValueError("빈 조사 문단 벡터는 사용할 수 없습니다.")
+            vectors = vectors / norms[:, None]
+            scores = vectors[1:] @ vectors[0]
+            ranked = sorted(range(len(passages)), key=lambda index: -float(scores[index]))
+            return [passages[index]["id"] for index in ranked[:6]]
+
+    def _research_reasoner(self, messages, *, json_schema=None):
+        from core.llm import OllamaClient, get_llm_client
+        from core.local_inference import inference_deadline
+        self._research_checkpoint()
+        client = get_llm_client("reasoning")
+        with inference_deadline(60):
+            structured = getattr(client, "chat_structured", None)
+            provider_options = {}
+            provider = getattr(structured, "__self__", None)
+            if isinstance(provider, OllamaClient):
+                # Reserve the bounded output budget for the JSON result.
+                provider_options = {
+                    "think": False,
+                    "local_only": urlparse(provider.base_url).hostname in {"localhost", "127.0.0.1", "::1"},
+                }
+            answer = structured(
+                messages, json_schema=json_schema or {"type": "object"}, context_window=8192,
+                request_timeout=60, max_output_tokens=2048,
+                **provider_options,
+            ) if callable(structured) else client.chat(messages)
+        self._research_checkpoint()
+        return answer
+
+    def _research_checkpoint(self):
+        from core.turn_context import check_turn_cancelled
+        check_turn_cancelled()
+        context = self.get_execution_context()
+        if context:
+            context.raise_if_cancelled()
 
     def _research_web(self, data):
         query = str(data.get("query", "")).strip()
@@ -751,18 +798,188 @@ class BrowserPlugin(BasePlugin):
                 query, max_sources=int(data.get("max_sources", 5)), profile=str(data.get("profile", "default")),
                 ttl_seconds=float(data.get("ttl_seconds", 3600)), force_refresh=bool(data.get("force_refresh", False)))
             if not report.sources:
-                return ToolRunResult.failed(tool_name="browser_research", error="실제로 방문해 검증할 수 있는 검색 결과가 없습니다.")
+                detail = " ".join(getattr(report, "limitations", [])[:4])
+                return ToolRunResult.failed(tool_name="browser_research", error=f"읽을 수 있는 조사 자료가 없습니다. {detail}")
             payload = report.to_dict()
+            self._research_checkpoint()
+            files = self._save_research_report(payload)
             return ToolRunResult.successful(tool_name="browser_research", raw_output=json.dumps(payload, ensure_ascii=False),
-                evidence=[Evidence("research_report", "검색 결과를 실제 방문하고 본문·날짜·출처·상충 여부를 분석했습니다.", {
+                evidence=[Evidence("research_report", "공개 자료의 본문과 인용 연결을 확인하고 조사 결과를 저장했습니다. 의미·신뢰도 평가는 AI 판단입니다.", {
                     "source_count": len(report.sources), "claim_count": len(report.claims),
                     "conflict_count": len(report.conflicts), "cache_hit": report.cache_hit,
                     "expires_at": report.expires_at,
                 })], artifacts=[Artifact("url", source.url, {"source_id": source.source_id,
                     "official": source.official, "published_at": source.published_at,
-                    "modified_at": source.modified_at}) for source in report.sources])
+                    "modified_at": source.modified_at}) for source in report.sources] + files)
         except Exception as exc:
-            return ToolRunResult.failed(tool_name="browser_research", error=f"Research 실행 실패: {exc}")
+            from core.plugin import ToolCancelledError
+            if isinstance(exc, ToolCancelledError):
+                raise
+            return ToolRunResult.failed(tool_name="browser_research", error=f"정보 조사 실행 실패 ({type(exc).__name__})")
+
+    def _save_research_report(self, payload):
+        from core.artifact_transaction import commit_artifact_bundle
+        from core.turn_context import current_turn_context
+        directory = Path(Config.DB_PATH).resolve().parent / "research_reports"
+        directory.mkdir(parents=True, exist_ok=True)
+        report_id = hashlib.sha256(
+            f"{payload['query']}|{payload['created_at']}".encode("utf-8")
+        ).hexdigest()[:20]
+        markdown_path = directory / f"{report_id}.md"
+        json_path = directory / f"{report_id}.json"
+        payload["report_files"] = {"markdown": str(markdown_path), "json": str(json_path)}
+        payload["rag_saved"] = False
+        context = current_turn_context()
+        with tempfile.TemporaryDirectory(prefix=".research-", dir=directory) as staging:
+            stage = Path(staging)
+            def publish(*, checkpoint=True):
+                (stage / "report.md").write_text(self._render_research_report(payload, include_files=False), encoding="utf-8")
+                (stage / "report.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                if checkpoint:
+                    self._research_checkpoint()
+                return commit_artifact_bundle({stage / "report.md": markdown_path, stage / "report.json": json_path})
+            receipts = publish()
+            self._research_checkpoint()
+            trusted = {source["source_id"]: source for source in payload.get("sources", [])
+                       if isinstance(source, dict) and isinstance(source.get("source_id"), str)
+                       and source.get("reliability") in {"high", "medium"}
+                       and isinstance(source.get("content"), str)}
+            excerpts, seen_quotes, cited_sources = [], set(), set()
+            for field_name in ("claims", "recommendations"):
+                for item in payload.get(field_name, []):
+                    if not isinstance(item, dict) or item.get("kind") == "excerpt":
+                        continue
+                    citations, evidence = item.get("citations"), item.get("evidence")
+                    if (not isinstance(citations, list) or not citations
+                            or not all(isinstance(key, str) and key in trusted for key in citations)
+                            or not isinstance(evidence, list)):
+                        continue
+                    for reference in evidence:
+                        if not isinstance(reference, dict):
+                            continue
+                        source_id, quote = reference.get("source_id"), reference.get("quote")
+                        if not isinstance(source_id, str) or source_id not in citations or not isinstance(quote, str):
+                            continue
+                        normalized = " ".join(quote.split())
+                        key = (source_id, normalized)
+                        if (len(normalized) < 10 or key in seen_quotes
+                                or normalized not in " ".join(trusted[source_id]["content"].split())):
+                            continue
+                        seen_quotes.add(key)
+                        cited_sources.add(source_id)
+                        excerpts.append({"kind": "excerpt", "text": quote, "citations": [source_id]})
+            # Reuse source evidence without turning the model's interpretation into memory.
+            indexed = {"query": payload["query"], "created_at": payload["created_at"], "claims": excerpts,
+                       "sources": [{key: source.get(key, "") for key in (
+                           "source_id", "url", "title", "published_at", "modified_at", "reliability")}
+                           for source_id, source in trusted.items() if source_id in cited_sources],
+                       "limitations": ["AI가 선택한 출처 원문 발췌이며, 사실의 진실성이 확인되었다는 뜻은 아닙니다."]}
+            analyzed = bool(excerpts)
+            if not analyzed:
+                payload.setdefault("limitations", []).append("최종 분석·추천에서 신뢰도와 본문 일치를 확인한 인용이 없어 RAG에 등록하지 않았습니다.")
+            rag_manager = None
+            doc_id = f"research-{report_id}"
+            namespace = context.memory_namespace if context else "global"
+            try:
+                if analyzed:
+                    from core.rag import get_rag_manager
+                    rag_manager = get_rag_manager()
+                    rag_manager.add_text_document(
+                        self._render_research_report(indexed, include_files=False), doc_id=doc_id,
+                        namespace=namespace,
+                        source_uri=str(markdown_path), metadata={
+                            "source_type": "web", "topic": "research", "recorded_at": payload["created_at"],
+                            "expires_at": payload["expires_at"], "evidence_status": "ai_selected_source_quotes",
+                        },
+                    )
+                    payload["rag_saved"] = True
+                receipts = publish()
+            except Exception as exc:
+                from core.plugin import ToolCancelledError
+                payload["rag_saved"] = False
+                if rag_manager is not None:
+                    try:
+                        rag_manager.remove_text_document(doc_id, namespace=namespace)
+                    except Exception:
+                        payload["rag_cleanup_failed"] = True
+                        payload.setdefault("limitations", []).append(
+                            "이번 조사의 미완료 RAG 기록을 제거하지 못해 일부 기록이 남았을 수 있습니다.")
+                payload.setdefault("limitations", []).append("RAG 저장에 실패했습니다. 보고서 파일에서 결과를 확인할 수 있습니다.")
+                cancelled = isinstance(exc, ToolCancelledError)
+                # Record only the rollback outcome for this already-published report after cancellation.
+                try:
+                    receipts = publish(checkpoint=not cancelled)
+                finally:
+                    if cancelled:
+                        detail = " 일부 RAG 기록이 남았을 수 있습니다." if payload.get("rag_cleanup_failed") else ""
+                        raise ToolCancelledError(f"{exc}{detail}") from exc
+        return [Artifact("file", str(path), {"format": path.suffix.lstrip("."),
+                     "sha256": receipt["sha256"], "size": receipt["size"]}) for path, receipt in receipts.items()]
+
+    @staticmethod
+    def _render_research_report(payload, *, include_files=True):
+        created = datetime.fromtimestamp(payload.get("created_at", time.time()), timezone.utc).astimezone().isoformat(timespec="seconds")
+        plan = payload.get("plan") or {}
+        title = plan.get("topic") or payload.get("query", "")
+        lines = [f"# 조사 결과: {title}", "", f"조사 시각: {created}"]
+        if title != payload.get("query", ""):
+            lines.extend(["", f"요청: {payload.get('query', '')}"])
+        if payload.get("cache_hit"):
+            lines.append("유효기간 내 저장된 조사 결과를 사용했습니다. 최신 자료가 필요하면 다시 조사해 달라고 요청하세요.")
+        if plan.get("objective") and plan["objective"] != payload.get("query"):
+            lines.extend(["", str(plan["objective"])])
+        if plan.get("source_strategy"):
+            lines.extend(["", f"조사 범위: {plan['source_strategy']}"])
+        lines.extend(["", "## 수집 근거 분석", ""])
+        for claim in payload.get("claims", []):
+            label = {"inference": "해석", "excerpt": "원문 발췌"}.get(claim.get("kind"), "자료의 주장")
+            citations = ", ".join(claim.get("citations", []))
+            lines.append(f"- {label}: {claim['text']} [{citations}]")
+            if claim.get("caveat"):
+                lines.append(f"  한계: {claim['caveat']}")
+        if not payload.get("claims"):
+            lines.append("질문을 뒷받침하는 분석 근거를 확보하지 못했습니다.")
+        if payload.get("recommendations"):
+            lines.extend(["", "## 실행 제안 (AI 추천)", ""])
+            for item in payload["recommendations"]:
+                lines.append(f"- {item['text']} [{', '.join(item.get('citations', []))}]")
+                if item.get("caveat"):
+                    lines.append(f"  한계: {item['caveat']}")
+        if payload.get("conflicts"):
+            lines.extend(["", "## 출처 간 차이", ""])
+            lines.append(f"상충하는 정보 {len(payload['conflicts'])}건이 있어 출처의 조건과 시점을 함께 확인해야 합니다.")
+            for item in payload["conflicts"]:
+                lines.append(f"- {item.get('claim', item.get('description', '자료의 주장이 서로 다릅니다.'))} [{', '.join(item.get('citations', []))}]")
+                if item.get("explanation"):
+                    lines.append(f"  차이: {item['explanation']}")
+                lines.extend(f"  - {variant}" for variant in item.get("variants", []))
+        quotes = {}
+        for field in ("claims", "recommendations", "conflicts"):
+            for item in payload.get(field, []):
+                references = item.get("evidence")
+                for reference in references if isinstance(references, list) else []:
+                    if not isinstance(reference, dict):
+                        continue
+                    source_id, quote = reference.get("source_id"), reference.get("quote")
+                    if isinstance(source_id, str) and isinstance(quote, str) and quote.strip():
+                        quotes.setdefault((source_id, quote), None)
+        if quotes:
+            lines.extend(["", "## 분석에 사용한 원문", ""])
+            for source_id, quote in quotes:
+                lines.extend([f"[{source_id}]", "", *("    " + line for line in quote.splitlines()), ""])
+        if payload.get("limitations"):
+            lines.extend(["", "## 한계와 미확인 사항", ""])
+            lines.extend(f"- {item}" for item in payload["limitations"])
+        lines.extend(["", "## 출처", ""])
+        for source in payload.get("sources", []):
+            lines.append(f"- [{source['source_id']}] [{source.get('title') or source['url']}]({source['url']})")
+            reliability = {"high": "높음", "medium": "보통", "low": "낮음", "unassessed": "미평가"}.get(source.get("reliability"), "미평가")
+            lines.append(f"  게시: {source.get('published_at') or '확인 불가'} · 수정: {source.get('modified_at') or '확인 불가'} · 신뢰도(AI 평가): {reliability}")
+        if include_files and payload.get("report_files"):
+            lines.extend(["", f"[보고서 열기]({payload['report_files']['markdown']})", f"[수집 자료 JSON]({payload['report_files']['json']})"])
+            lines.append("RAG 저장을 완료하지 못했고 일부 기록이 남았을 수 있습니다." if payload.get("rag_cleanup_failed") else
+                         "출처와 유효기간을 포함해 RAG에 저장했습니다." if payload.get("rag_saved") else "RAG에는 저장되지 않았습니다.")
+        return "\n".join(lines)
 
     def _research_and_apply_preference(self, data):
         query = str(data.get("query", "")).strip()
@@ -1190,7 +1407,6 @@ class BrowserPlugin(BasePlugin):
         try:
             with DDGS() as ddgs:
                 rows = list(ddgs.text(query, max_results=limit))
-                rows.extend(ddgs.text(f"{query} official 공식", max_results=limit))
             candidates = [
                 {
                     "title": str(row.get("title", "")).strip(),
@@ -1203,25 +1419,7 @@ class BrowserPlugin(BasePlugin):
                 and urlparse(str(row.get("href"))).netloc
             ]
             deduplicated = {item["url"]: item for item in candidates}
-            blocked_hosts = ("tiktok.com", "pinterest.", "facebook.com", "instagram.com")
-
-            def source_score(item):
-                host = (urlparse(item["url"]).hostname or "").casefold()
-                title = item["title"].casefold()
-                score = 0
-                if any(term in title for term in ("official", "공식", "newsroom", "media center")):
-                    score += 20
-                if any(term in host for term in ("newsroom", "media", "press")):
-                    score += 10
-                if any(term in host for term in blocked_hosts):
-                    score -= 100
-                if "forum" in host or "reddit.com" in host:
-                    score -= 20
-                return score
-
-            results = sorted(
-                deduplicated.values(), key=source_score, reverse=True
-            )[:limit]
+            results = list(deduplicated.values())[:limit]
             if not results:
                 return ToolRunResult.failed(
                     tool_name="browser_web_search",
@@ -1262,12 +1460,7 @@ class BrowserPlugin(BasePlugin):
         if tool_name == "browser_research":
             try:
                 payload = json.loads(result)
-                claims = payload.get("claims", [])[:5]
-                lines = [f"- {claim['text']} [{', '.join(claim['citations'])}]" for claim in claims]
-                if payload.get("conflicts"):
-                    lines.append(f"상충하는 정보 {len(payload['conflicts'])}건이 있어 출처별 값을 함께 확인해야 합니다.")
-                lines.extend(f"[{source['source_id']}] {source['url']}" for source in payload.get("sources", []))
-                return "\n".join(lines) if lines else "검증 가능한 주장을 찾지 못했습니다."
+                return self._render_research_report(payload)
             except (json.JSONDecodeError, KeyError, TypeError):
                 return result
         if tool_name != "browser_web_search":

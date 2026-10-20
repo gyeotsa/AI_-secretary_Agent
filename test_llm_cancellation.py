@@ -144,6 +144,53 @@ def test_cancelled_call_takes_precedence_over_invalid_limit(monkeypatch):
         _offline_ollama().chat_structured([], request_timeout=0, max_output_tokens=0)
 
 
+def test_structured_execution_preserves_device_policy_and_model_profile(monkeypatch):
+    client, calls = _offline_ollama(), []
+    profile = client.profile
+    class Response:
+        def raise_for_status(self): pass
+        def json(self): return {"message": {"content": "complete"}, "done": True}
+    def post(_url, *, json, **_kwargs):
+        calls.append(json)
+        return Response()
+    monkeypatch.setattr("core.llm.post_json", post)
+    assert client.chat_structured([]) == "complete"
+    assert "num_gpu" not in calls[0]["options"]
+    assert client.chat([]) == "complete"
+    assert "num_gpu" not in calls[1]["options"]
+    assert client.model == "test-only" and client.profile is profile
+
+
+@pytest.mark.parametrize("think", [None, False, True])
+def test_thinking_override_is_top_level_and_only_applies_to_one_call(monkeypatch, think):
+    client, calls = _offline_ollama(), []
+    profile = client.profile
+    class Response:
+        def raise_for_status(self): pass
+        def json(self): return {"message": {"content": "{}"}, "done": True}
+    def post(_url, *, json, **_kwargs):
+        calls.append(json)
+        return Response()
+    monkeypatch.setattr("core.llm.post_json", post)
+    assert client.chat_structured([], think=think) == "{}"
+    assert "think" not in calls[0]["options"]
+    if think is None:
+        assert "think" not in calls[0]
+    else:
+        assert calls[0]["think"] is think
+    client.chat([])
+    client.chat_prose([])
+    assert all("think" not in payload for payload in calls[1:])
+    assert client.profile is profile
+
+
+@pytest.mark.parametrize("think", [0, 1, "false", "true", [], {}])
+def test_invalid_thinking_override_never_dispatches(monkeypatch, think):
+    monkeypatch.setattr("core.llm.post_json", lambda *a, **k: pytest.fail("invalid think dispatched"))
+    with pytest.raises(ValueError, match="think must be a boolean or None"):
+        _offline_ollama().chat_structured([], think=think)
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 def test_output_limit_truncation_never_becomes_completed_text(monkeypatch, cancel):
     context = TurnExecutionContext("limited-output", "test")

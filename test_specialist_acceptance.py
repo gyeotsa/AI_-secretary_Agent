@@ -46,6 +46,54 @@ def test_research_real_report_requires_body_and_grounded_claim_links():
     assert SpecialistTeamRuntime._review_execution(research_payload(), contract("research"))["passed"]
 
 
+def cited_research_payload():
+    value = research_payload()
+    report = json.loads(value["tool_outputs"][0]["raw_output"])
+    report["claims"] = [{"text": "발표 자료에 따르면 출시 시점은 2026년 9월 초다.",
+        "citations": ["S1"], "kind": "fact",
+        "evidence": [{"source_id": "S1", "quote": "새 제품은 2026년 9월 8일 출시됩니다."}]}]
+    report["recommendations"] = [{"text": "해당 출시 시점에 맞춘 소개 영상을 준비해 보세요.",
+        "citations": ["S1"], "kind": "recommendation", "caveat": "조회수 상승은 보장하지 않습니다.",
+        "evidence": [{"source_id": "S1", "quote": "새 제품은 2026년 9월 8일 출시됩니다."}]}]
+    value["tool_outputs"][0]["raw_output"] = json.dumps(report, ensure_ascii=False)
+    return value
+
+
+def test_research_summary_and_recommendation_links_use_actual_quoted_evidence():
+    value = cited_research_payload()
+    report = json.loads(value["tool_outputs"][0]["raw_output"])
+    # Source line wrapping must not invalidate an otherwise exact quotation.
+    report["sources"][0]["content"] = "새 제품은 2026년\n  9월 8일 출시됩니다."
+    value["tool_outputs"][0]["raw_output"] = json.dumps(report, ensure_ascii=False)
+    review = SpecialistTeamRuntime._review_execution(value, contract("research"))
+    assert review["passed"]
+    assert len(review["criteria_results"][1]["claim_checks"]) == 2
+
+
+@pytest.mark.parametrize("mutation", ["invented_quote", "short_quote", "unknown_source", "missing_citation_quote",
+                                      "invalid_evidence", "recommendation_only_bad_quote"])
+def test_research_rejects_fabricated_or_incomplete_quoted_evidence(mutation):
+    value = cited_research_payload()
+    report = json.loads(value["tool_outputs"][0]["raw_output"])
+    claim = report["recommendations"][0]
+    if mutation == "invented_quote":
+        claim["evidence"][0]["quote"] = "이 제품이 반드시 인기 있을 것이라고 발표했습니다."
+    elif mutation == "short_quote":
+        claim["evidence"][0]["quote"] = "제품"
+    elif mutation == "unknown_source":
+        claim["evidence"][0]["source_id"] = "S999"
+    elif mutation == "missing_citation_quote":
+        report["sources"].append({**report["sources"][0], "source_id": "S2"})
+        claim["citations"].append("S2")
+    elif mutation == "invalid_evidence":
+        claim["evidence"] = {"source_id": "S1", "quote": "새 제품은 2026년 9월 8일 출시됩니다."}
+    else:
+        report["claims"] = []
+        claim["evidence"][0]["quote"] = "존재하지 않는 출시 전망을 인용합니다."
+    value["tool_outputs"][0]["raw_output"] = json.dumps(report, ensure_ascii=False)
+    assert not SpecialistTeamRuntime._review_execution(value, contract("research"))["passed"]
+
+
 @pytest.mark.parametrize("mutation", ["unknown_source", "invented_claim", "empty_body", "mismatched_hash", "no_claims"])
 def test_research_rejects_content_or_citation_failures(mutation):
     value = research_payload()
@@ -130,6 +178,31 @@ class ReviewClient:
             "evidence": [{"artifact_id": artifact["id"],
                           "quote": "존재하지 않는 인용" if self.invented_quote else artifact["content"][:100]}]}
             for item in request["criteria"]]}
+
+
+def test_research_semantic_review_uses_grounded_excerpts_and_keeps_recommendation_limits():
+    value = cited_research_payload()
+    report = json.loads(value["tool_outputs"][0]["raw_output"])
+    report["sources"][0]["content"] += "\n읽지 않은 다른 부분입니다." * 4000
+    report["limitations"] = ["인용 발췌를 바탕으로 분석했으며 계정별 반응은 확인하지 못했습니다."]
+    value["tool_outputs"][0]["raw_output"] = json.dumps(report, ensure_ascii=False)
+
+    class CapturingClient(ReviewClient):
+        def chat_structured(self, messages, json_schema=None):
+            self.request = json.loads(messages[-1]["content"])
+            return super().chat_structured(messages, json_schema)
+
+    client = CapturingClient()
+    verdict = review_requirement_fulfillment(value, contract("research"),
+        {"acceptance": ["근거와 추천의 한계를 설명한다"]}, "새 제품 소개 영상 아이디어 추천해줘",
+        client_provider=lambda: client)
+    assert verdict["passed"]
+    captured = client.request["artifacts"][0]["content"]
+    assert "새 제품은 2026년 9월 8일 출시됩니다." in captured
+    assert "조회수 상승은 보장하지 않습니다." in captured
+    assert report["limitations"][0] in captured
+    assert "읽지 않은 다른 부분입니다." not in captured
+    assert any("출처 전체 문맥" in limit for limit in verdict["limitations"])
 
 
 @pytest.mark.parametrize("options", [{"invented_quote": True}, {"missing": True}, {"passed": False}])

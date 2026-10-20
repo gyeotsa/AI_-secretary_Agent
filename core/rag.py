@@ -2,6 +2,7 @@ import os
 import re
 import json
 import csv
+import copy
 import hashlib
 import inspect
 import time
@@ -104,7 +105,8 @@ class VectorRAGManager:
                 )
             requested_device = Config.RAG_DEVICE
             if requested_device == "auto":
-                requested_device = "cuda" if torch.cuda.is_available() else "cpu"
+                # Keep GPU memory available for the local conversational model.
+                requested_device = "cpu"
             if requested_device == "cuda" and not torch.cuda.is_available():
                 print("[RAG] CUDA를 사용할 수 없어 CPU로 fallback합니다.")
                 requested_device = "cpu"
@@ -122,7 +124,7 @@ class VectorRAGManager:
             try:
                 from sentence_transformers import CrossEncoder
                 reranker_path = Config.RAG_RERANKER_MODEL_PATH
-                self.reranker = CrossEncoder(os.path.abspath(reranker_path)) if reranker_path else None
+                self.reranker = CrossEncoder(os.path.abspath(reranker_path), device=requested_device) if reranker_path else None
             except ImportError:
                 print("[RAG] Reranker 모듈이 없어서 키워드 기반 리랭킹을 사용합니다.")
                 self.reranker = None
@@ -150,20 +152,27 @@ class VectorRAGManager:
                     self.documents = {}
     
     def _save(self):
-        try:
-            # A GUI turn and a specialist workspace can persist memories at the
-            # same time.  Serialize one immutable snapshot and atomically swap
-            # it into place so neither thread can truncate the other's JSON.
-            with self._get_store_lock():
-                snapshot = json.loads(json.dumps(self.documents, ensure_ascii=False))
-                temp_path = (
-                    f"{self.rag_file}.tmp.{os.getpid()}.{threading.get_ident()}"
-                )
+        # Keep failed writes visible to callers, including research rollback.
+        with self._get_store_lock():
+            snapshot = json.loads(json.dumps(self.documents, ensure_ascii=False))
+            temp_path = f"{self.rag_file}.tmp.{os.getpid()}.{threading.get_ident()}"
+            try:
                 with open(temp_path, "w", encoding="utf-8") as f:
                     json.dump(snapshot, f, ensure_ascii=False, indent=2)
-                os.replace(temp_path, self.rag_file)
-        except Exception as e:
-            print(f"[RAG] 파일 저장 오류: {e}")
+                for attempt in range(3):
+                    try:
+                        os.replace(temp_path, self.rag_file)
+                        break
+                    except PermissionError as exc:
+                        # Windows scanners/readers can briefly deny an atomic replace.
+                        if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 2:
+                            raise
+                        time.sleep(0.05 * (attempt + 1))
+            finally:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
     def _documents_snapshot(self) -> tuple[dict, ...]:
         """Return a stable view for retrieval while another thread writes."""
@@ -265,7 +274,9 @@ class VectorRAGManager:
                 item.update(base_metadata)
                 item["chunk_id"] = self._chunk_id(target_namespace, doc_id, index, item["content"])
             with self._get_store_lock():
-                self.documents[self._document_key(doc_id, target_namespace)] = {
+                key = self._document_key(doc_id, target_namespace)
+                previous = self.documents.get(key)
+                self.documents[key] = {
                     "chunks": chunks,
                     "chunk_metadata": chunk_records,
                     "source": file_path,
@@ -275,7 +286,14 @@ class VectorRAGManager:
                     "recorded_at": now,
                     "metadata": base_metadata,
                 }
-                self._save()
+                try:
+                    self._save()
+                except Exception:
+                    if previous is None:
+                        self.documents.pop(key, None)
+                    else:
+                        self.documents[key] = previous
+                    raise
             
             # Vector DB에 추가 (사용 가능하면)
             if self.use_vector_rag:
@@ -332,13 +350,21 @@ class VectorRAGManager:
             })
         key = f"{target_namespace}::{doc_id}"
         with self._get_store_lock():
+            previous = self.documents.get(key)
             self.documents[key] = {
                 "chunks": chunks, "chunk_metadata": records, "source": source,
                 "namespace": target_namespace, "doc_id": doc_id,
                 "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                 "recorded_at": now, "metadata": base_metadata,
             }
-            self._save()
+            try:
+                self._save()
+            except Exception:
+                if previous is None:
+                    self.documents.pop(key, None)
+                else:
+                    self.documents[key] = previous
+                raise
         if self.use_vector_rag:
             existing_ids = self.collection.get(where={"$and": [
                 {"doc_id": doc_id}, {"namespace": target_namespace},
@@ -363,7 +389,11 @@ class VectorRAGManager:
             removed = self.documents.pop(key, None)
             if removed is None:
                 return False
-            self._save()
+            try:
+                self._save()
+            except Exception:
+                self.documents[key] = removed
+                raise
         if self.use_vector_rag:
             ids = self.collection.get(where={"$and": [
                 {"doc_id": doc_id}, {"namespace": namespace},
@@ -378,7 +408,11 @@ class VectorRAGManager:
         with self._get_store_lock():
             document = self.documents.pop(key, None)
             if document is None: return False
-            self._save()
+            try:
+                self._save()
+            except Exception:
+                self.documents[key] = document
+                raise
         if self.use_vector_rag:
             try:
                 ids = self.collection.get(where={"$and": [
@@ -441,10 +475,10 @@ class VectorRAGManager:
                             namespace: str | None = None) -> bool:
         target_namespace = self._resolve_namespace(namespace)
         with self._get_store_lock():
-            document = self.documents.get(
-                self._document_key(os.path.basename(doc_id), target_namespace)
-            )
+            key = self._document_key(os.path.basename(doc_id), target_namespace)
+            document = self.documents.get(key)
             if not document or document.get("metadata", {}).get("source_type") != "web": return False
+            previous = copy.deepcopy(document)
             verified_at = float(verified_at or time.time())
             metadata = document["metadata"]
             metadata["recorded_at"] = verified_at
@@ -455,7 +489,11 @@ class VectorRAGManager:
             for chunk in document.get("chunk_metadata", []):
                 chunk["recorded_at"] = metadata["recorded_at"]
                 chunk["expires_at"] = metadata["expires_at"]
-            self._save()
+            try:
+                self._save()
+            except Exception:
+                self.documents[key] = previous
+                raise
         return True
     
     @serialized_inference

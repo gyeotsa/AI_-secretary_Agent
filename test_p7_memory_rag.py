@@ -1,4 +1,6 @@
+import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,6 +9,53 @@ from core.knowledge_memory import (
     MemoryPolicyError,
 )
 from core.rag import VectorRAGManager
+from config import Config
+
+
+@pytest.mark.parametrize("requested,cuda_available,expected", [
+    ("auto", True, "cpu"), ("auto", False, "cpu"),
+    ("cpu", True, "cpu"), ("cuda", True, "cuda"), ("cuda", False, "cpu"),
+])
+def test_rag_devices_reserve_gpu_by_default_and_respect_explicit_selection(
+        tmp_path, monkeypatch, requested, cuda_available, expected):
+    embedding_path, reranker_path = tmp_path / "embedding", tmp_path / "reranker"
+    embedding_path.mkdir()
+    reranker_path.mkdir()
+    calls = {}
+    embedding_model, reranker, collection = object(), object(), object()
+
+    def embedding(**kwargs):
+        calls["embedding"] = kwargs
+        return embedding_model
+
+    def cross_encoder(path, **kwargs):
+        calls["reranker"] = {"path": path, **kwargs}
+        return reranker
+
+    def get_collection(**kwargs):
+        calls["collection"] = kwargs
+        return collection
+
+    client = SimpleNamespace(get_or_create_collection=get_collection)
+    monkeypatch.setitem(sys.modules, "chromadb", SimpleNamespace(PersistentClient=lambda **kwargs: client))
+    monkeypatch.setitem(sys.modules, "chromadb.utils", SimpleNamespace(
+        embedding_functions=SimpleNamespace(SentenceTransformerEmbeddingFunction=embedding)))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: cuda_available)))
+    monkeypatch.setitem(sys.modules, "sentence_transformers", SimpleNamespace(CrossEncoder=cross_encoder))
+    monkeypatch.setattr(Config.API_CONFIG, "RAG_DEVICE", requested)
+    monkeypatch.setattr(Config.API_CONFIG, "RAG_EMBEDDING_MODEL_PATH", str(embedding_path))
+    monkeypatch.setattr(Config.API_CONFIG, "RAG_RERANKER_MODEL_PATH", str(reranker_path))
+    manager = VectorRAGManager.__new__(VectorRAGManager)
+    manager.data_dir = str(tmp_path)
+    manager.documents = {"kept": {"chunks": ["기존 저장 자료"]}}
+    manager.use_vector_rag = False
+    manager._init_vector_rag()
+    assert manager.use_vector_rag
+    assert calls["embedding"] == {"model_name": str(embedding_path), "device": expected}
+    assert calls["reranker"] == {"path": str(reranker_path), "device": expected}
+    assert calls["collection"] == {"name": "jarvis_rag_bge_m3", "embedding_function": embedding_model}
+    assert manager.embedding_model is embedding_model and manager.reranker is reranker
+    assert manager.documents == {"kept": {"chunks": ["기존 저장 자료"]}}
 
 
 def memory_store(tmp_path):

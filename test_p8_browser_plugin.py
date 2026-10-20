@@ -13,6 +13,11 @@ from core.style_learning import StyleLearningStore
 @pytest.fixture(autouse=True)
 def isolate_style_learning_store(monkeypatch, tmp_path):
     monkeypatch.setattr("core.style_learning._style_learning_store", StyleLearningStore(tmp_path / "styles.json"))
+    from config import Config
+    monkeypatch.setattr(Config.API_CONFIG, "DB_PATH", str(tmp_path / "assistant.db"))
+    monkeypatch.setattr("core.rag.get_rag_manager", lambda: type("Rag", (), {
+        "add_text_document": lambda self, text, **kwargs: kwargs["doc_id"],
+    })())
 
 
 def test_browser_research_returns_visited_sources_and_claim_evidence(monkeypatch):
@@ -47,7 +52,7 @@ def test_research_presenter_keeps_claim_level_citations_and_conflict_warning():
     rendered = plugin.present_result("browser_research", payload)
     assert "[S1, S2]" in rendered
     assert "상충하는 정보 1건" in rendered
-    assert "[S1] https://one.example" in rendered
+    assert "[S1] [https://one.example](https://one.example)" in rendered
 
 
 def test_compound_web_learning_routes_and_persists_setting_and_rag(monkeypatch):

@@ -474,7 +474,8 @@ class OllamaClient(BaseLLMClient):
                         *, context_window: Optional[int] = None,
                         request_timeout: Optional[float] = None,
                         max_output_tokens: Optional[int] = None,
-                        local_only: bool = False) -> str:
+                        local_only: bool = False,
+                        think: Optional[bool] = None) -> str:
         """Call-local limits; never mutate the shared role profile.
 
         Explicit request_timeout includes queue wait and owned HTTP polling.
@@ -483,14 +484,15 @@ class OllamaClient(BaseLLMClient):
         """
         return self._chat(messages, json_schema, context_window=context_window,
                           request_timeout=request_timeout, max_output_tokens=max_output_tokens,
-                          local_only=local_only)
+                          local_only=local_only, think=think)
 
     @serialized_inference
     def _chat(self, messages: List[Dict], json_schema: Optional[Dict] = None,
               *, context_window: Optional[int] = None, prose: bool = False,
               request_timeout: Optional[float] = None,
               max_output_tokens: Optional[int] = None,
-              local_only: bool = False) -> str:
+              local_only: bool = False,
+              think: Optional[bool] = None) -> str:
         metric_started = time.perf_counter()
         check_inference_deadline()
         remember_idle_model((self.base_url, self.model), self.release)
@@ -507,6 +509,8 @@ class OllamaClient(BaseLLMClient):
                 isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int)
                 or max_output_tokens <= 0):
             raise ValueError("max_output_tokens must be a positive integer")
+        if think is not None and not isinstance(think, bool):
+            raise ValueError("think must be a boolean or None")
         try:
             # 역할을 하나의 문자열로 평탄화하면 작은 로컬 모델이 최근 사용자
             # 발화와 과거 assistant 응답을 혼동하기 쉽다. Ollama의 chat
@@ -545,6 +549,8 @@ class OllamaClient(BaseLLMClient):
                 payload["options"]["num_ctx"] = context_window
             if json_schema:
                 payload["format"] = json_schema
+            if think is not None:
+                payload["think"] = think
 
             if max_output_tokens is not None:
                 # A call may tighten, but never enlarge, a positive role limit.

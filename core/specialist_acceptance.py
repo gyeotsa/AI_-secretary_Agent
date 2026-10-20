@@ -296,18 +296,33 @@ def _research_checks(payload: dict, artifacts: list[dict]) -> dict[str, dict]:
                 continue
             local_sources[identifier] = source
             sources[f"{report_index}:{identifier}"] = source
-        for claim in report["claims"]:
+        recommendations = report.get("recommendations", [])
+        if not isinstance(recommendations, list):
+            errors.append("추천 데이터 형식 오류")
+            recommendations = []
+        for claim in [*report["claims"], *recommendations]:
             if not isinstance(claim, dict):
                 errors.append("주장 데이터 형식 오류")
                 continue
             text, citations = claim.get("text"), claim.get("citations")
             linked = (isinstance(text, str) and bool(text.strip()) and isinstance(citations, list)
                       and bool(citations) and all(isinstance(key, str) and key in local_sources for key in citations))
-            # Existing ResearchAgent derives claims from fetched source sentences.
-            # Non-extractive inference needs a separate semantic review, not a
-            # fabricated success from merely having a citations array.
-            supported = linked and any(text in local_sources[key]["content"] for key in citations)
-            claims.append({"text": text, "citations": citations, "verified": bool(supported)})
+            quotes = claim.get("evidence")
+            if quotes is not None and quotes != []:
+                # Quote matching proves an evidence link; the semantic reviewer
+                # still decides whether the conclusion follows from that evidence.
+                supported = linked and isinstance(quotes, list) and all(
+                    isinstance(item, dict) and isinstance(item.get("source_id"), str)
+                    and item["source_id"] in citations and isinstance(item.get("quote"), str)
+                    and len(" ".join(item["quote"].split())) >= 10
+                    and " ".join(item["quote"].split()) in
+                    " ".join(local_sources[item["source_id"]]["content"].split())
+                    for item in quotes)
+                supported = supported and set(citations) == {item["source_id"] for item in quotes}
+            else:
+                supported = linked and any(text in local_sources[key]["content"] for key in citations)
+            claims.append({"text": text, "citations": citations, "verified": bool(supported),
+                           "kind": claim.get("kind", "excerpt")})
     source_ok = bool(sources) and not errors
     claim_ok = source_ok and bool(claims) and all(item["verified"] for item in claims)
     return {
@@ -317,7 +332,7 @@ def _research_checks(payload: dict, artifacts: list[dict]) -> dict[str, dict]:
         "research_claims": _check(claim_ok, "보고서의 각 주요 주장과 수집 본문의 인용 연결을 확인했습니다." if claim_ok
                                   else "실제 보고서가 없거나 주요 주장과 수집 본문의 연결이 검증되지 않았습니다.",
                                   claim_checks=claims,
-                                  limitations=["추출된 주장과 인용의 연결 검사이며 출처 자체의 진실성이나 추론 품질 보장은 아닙니다."]),
+                                  limitations=["본문 인용 연결 검사이며 출처의 진실성이나 요약·추천의 의미 타당성은 별도 검수가 필요합니다."]),
     }
 
 
@@ -376,9 +391,29 @@ def review_requirement_fulfillment(payload: dict, contract: dict, plan: dict,
             if value.get("_tool_name") in {"coding_apply_patch", "coding_execute_request"}:
                 documents.append({"id": f"diff_{index}", "content": str(value.get("diff", ""))})
             if isinstance(value.get("sources"), list) and isinstance(value.get("claims"), list):
+                sources = value["sources"]
+                if value.get("_tool_name") == "browser_research":
+                    sources = []
+                    for source in value["sources"]:
+                        excerpts = []
+                        content = " ".join(str(source.get("content", "")).split())
+                        for claim in [*value["claims"], *value.get("recommendations", [])]:
+                            for quote in claim.get("evidence") or []:
+                                if (quote.get("source_id") == source.get("source_id")
+                                        and " ".join(str(quote.get("quote", "")).split()) in content):
+                                    excerpts.append(quote["quote"])
+                            if not claim.get("evidence") and claim.get("text") in source.get("content", ""):
+                                excerpts.append(claim["text"])
+                        sources.append({key: source.get(key) for key in (
+                            "source_id", "url", "title", "published_at", "retrieved_at",
+                            "relevance", "reliability", "assessment", "official")})
+                        sources[-1]["cited_excerpts"] = list(dict.fromkeys(excerpts))
+                    # shortcut: review sees cited excerpts, inspect full source context for disputed conclusions.
                 documents.append({"id": f"report_{index}", "content": json.dumps({
-                    "query": value.get("query"), "claims": value["claims"], "sources": value["sources"],
-                    "conflicts": value.get("conflicts", []),
+                    "query": value.get("query"), "claims": value["claims"], "sources": sources,
+                    "conflicts": value.get("conflicts", []), "plan": value.get("plan"),
+                    "recommendations": value.get("recommendations", []),
+                    "limitations": value.get("limitations", []),
                 }, ensure_ascii=False)})
         if not documents or not all(item["content"].strip() for item in documents):
             raise ValueError("의미 검수에 사용할 실제 산출물 본문이 없습니다.")
@@ -459,6 +494,8 @@ def review_requirement_fulfillment(payload: dict, contract: dict, plan: dict,
                 "inspected_artifacts": [{key: value for key, value in item.items() if key != "content"}
                                         for item in documents],
                 "nontext_artifacts_not_semantically_reviewed": ignored_artifacts,
-                "limitations": ["모델 의미 검수는 휴리스틱 판단이며 사람 수락이나 완전한 기능 증명은 아닙니다."]}
+                "limitations": ["모델 의미 검수는 휴리스틱 판단이며 사람 수락이나 완전한 기능 증명은 아닙니다."]
+                    + (["웹 조사 의미 검수는 본문에서 대조한 인용 발췌를 사용하며 출처 전체 문맥을 재검수하지 않습니다."]
+                       if contract.get("workspace_key") == "research" else [])}
     except Exception as exc:
         return {"passed": False, "status": "needs_review", "reason": f"의미 검수 미완료: {exc}", "attempts": attempts}

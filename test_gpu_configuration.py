@@ -7,7 +7,7 @@ from core.rag import VectorRAGManager
 
 
 @pytest.mark.integration
-def test_configured_gpu_is_used_by_torch_whisper_and_rag():
+def test_configured_gpu_is_used_by_torch_whisper_and_rag(monkeypatch):
     if not torch.cuda.is_available():
         pytest.skip("CUDA GPU가 없는 환경")
     assert "RTX 4060" in torch.cuda.get_device_name(0)
@@ -19,6 +19,7 @@ def test_configured_gpu_is_used_by_torch_whisper_and_rag():
     assert hardware.stt_engine == Config.STT_ENGINE
     assert hardware.whisper_model.model.device == "cuda"
 
+    monkeypatch.setattr(Config.API_CONFIG, "RAG_DEVICE", "cuda")
     rag = VectorRAGManager()
     assert rag.use_vector_rag
     assert rag.embedding_model._model.device.type == "cuda"
