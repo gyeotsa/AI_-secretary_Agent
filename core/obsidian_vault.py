@@ -39,6 +39,7 @@ class ObsidianVault:
                  settings_path: str | Path | None = None):
         self.settings_path = Path(settings_path or Path(Config.DB_PATH).with_name("obsidian_settings.json"))
         self._lock = threading.RLock()
+        self._deleted_sessions: set[str] = set()
         configured = root or self._load_settings().get("vault_path") or Config.OBSIDIAN_VAULT_PATH
         self.root = Path(configured).expanduser().resolve()
         self.rag = rag
@@ -217,12 +218,38 @@ managed_by: anis
         timestamp = datetime.now().isoformat(timespec="seconds")
         entry = f"\n## {timestamp}\n\n**사용자**\n{safe_user}\n\n**아니스**\n{safe_assistant}\n"
         with self._lock:
+            if session_id in self._deleted_sessions:
+                return path
             existing = path.read_text(encoding="utf-8") if path.exists() else (
                 "---\ntype: raw_conversation\nrag_index: false\nmanaged_by: anis\n---\n# Conversation Archive\n"
             )
             self._atomic_write(path, existing.rstrip() + "\n" + entry)
             self._track_repeated_pattern(session_id, safe_user)
         return path
+
+    def delete_session_archive(self, session_id: str) -> int:
+        """Remove only Anis-generated raw archives, including prior month files."""
+        removed = 0
+        with self._lock:
+            # A queued archive thread must not recreate a conversation after deletion.
+            self._deleted_sessions.add(session_id)
+            base = self._inside(self.root / "raw" / "conversations")
+            for month in base.iterdir():
+                if (not re.fullmatch(r"\d{4}-\d{2}", month.name) or month.is_symlink()
+                        or getattr(month, "is_junction", lambda: False)() or not month.is_dir()):
+                    continue
+                path = month / f"{self._slug(session_id, 'default')}.md"
+                if path.is_symlink() or not path.is_file():
+                    continue
+                path = self._inside(path)
+                with path.open(encoding="utf-8") as handle:
+                    header = handle.read(512).split("---", 2)
+                if len(header) < 3 or not {"type: raw_conversation", "managed_by: anis"}.issubset(
+                        header[1].splitlines()):
+                    continue
+                path.unlink()
+                removed += 1
+        return removed
 
     @staticmethod
     def _pattern_signature(text: str) -> tuple[str, str]:

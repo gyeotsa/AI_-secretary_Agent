@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from core.project_indexer import ProjectIndexer
+from core.project_indexer import IgnoreRules, ProjectIndexer
 from core.memory import ConversationMemory
 from core.project_bootstrap import ProjectBootstrapper
 from core.rag import VectorRAGManager
@@ -23,6 +23,212 @@ def test_workspace_catalog_alias_settings_and_restore(tmp_path):
     assert restored.current_workspace == str(project.resolve())
     assert restored.get_info().settings["auto_index"] is True
     assert restored.list_workspaces()[0].alias == "업무 프로젝트"
+
+
+def test_workspace_metadata_reads_do_not_walk_the_project(tmp_path, monkeypatch):
+    import os
+
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "main.py").write_text("pass", encoding="utf-8")
+    manager = WorkspaceManager(str(tmp_path / "workspaces.json"))
+    walk = os.walk
+    traversals = []
+
+    def tracked_walk(path):
+        traversals.append(path)
+        yield from walk(path)
+
+    monkeypatch.setattr("core.workspace.os.walk", tracked_walk)
+    assert manager.set_workspace(str(project))
+    for _ in range(5):
+        assert manager.get_info().path == str(project.resolve())
+    assert traversals == []
+    assert manager.refresh_info(str(project)).file_count == 1
+    assert len(traversals) == 1
+    assert manager.get_info().file_count == 1
+    assert len(traversals) == 1
+
+
+def test_late_workspace_metadata_scan_cannot_overwrite_new_project(tmp_path, monkeypatch):
+    import os
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "main.py").write_text("pass", encoding="utf-8")
+    manager = WorkspaceManager(str(tmp_path / "workspaces.json"))
+    manager.set_workspace(str(first))
+    walk = os.walk
+
+    def switch_during_walk(path):
+        manager.set_workspace(str(second))
+        yield from walk(path)
+
+    monkeypatch.setattr("core.workspace.os.walk", switch_during_walk)
+    result = manager.refresh_info(str(first))
+    assert result.path == str(first.resolve())
+    assert result.file_count == 1
+    assert manager.get_info().path == str(second.resolve())
+    assert manager.get_info().file_count == 0
+
+
+def test_remove_workspace_removes_catalog_only_and_clears_active_scope(tmp_path):
+    project = tmp_path / "repo"
+    project.mkdir()
+    source = project / "main.py"
+    source.write_text("pass", encoding="utf-8")
+    manager = WorkspaceManager(str(tmp_path / "workspaces.json"))
+    manager.set_workspace(str(project))
+    namespace = manager.get_namespace()
+
+    assert manager.remove_workspace(namespace)
+    assert manager.list_workspaces(include_unavailable=True) == []
+    assert manager.current_workspace is None
+    assert manager.get_info().namespace == "global"
+    assert manager._state["last_workspace"] == ""
+    assert source.read_text(encoding="utf-8") == "pass"
+    assert not manager.remove_workspace(namespace)
+    assert WorkspaceManager(str(manager.state_path)).current_workspace is None
+
+
+def test_ignore_rule_discovery_prunes_dependency_and_ignored_directories(tmp_path, monkeypatch):
+    import os
+
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / ".gitignore").write_text("cache/\n", encoding="utf-8")
+    for name in (".venv", "node_modules", "cache", "source"):
+        folder = project / name / "nested"
+        folder.mkdir(parents=True)
+        (folder / ".gitignore").write_text("hidden.py\n", encoding="utf-8")
+    walk = os.walk
+    visited = []
+
+    def tracked_walk(path):
+        for current, dirs, files in walk(path):
+            visited.append(Path(current).relative_to(project).as_posix())
+            yield current, dirs, files
+
+    monkeypatch.setattr("core.project_indexer.os.walk", tracked_walk)
+    rules = IgnoreRules(project)
+
+    assert visited == [".", "source", "source/nested"]
+    assert rules.ignored(project / "source" / "nested" / "hidden.py")
+
+
+def test_selecting_project_does_not_discover_ignore_rules(tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    project.mkdir()
+    indexer = ProjectIndexer(str(tmp_path / "index.db"))
+
+    def fail_if_scanned(root):
+        raise AssertionError("Project selection must not scan the filesystem")
+
+    monkeypatch.setattr("core.project_indexer.IgnoreRules", fail_if_scanned)
+    assert indexer.set_project_root(str(project))
+    assert indexer.project_root == str(project.resolve())
+
+
+def test_file_tree_loads_ignore_rules_once_after_project_selection(tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / ".gitignore").write_text("cache/\n", encoding="utf-8")
+    for name in (".venv", "cache", "source"):
+        folder = project / name / "nested"
+        folder.mkdir(parents=True)
+        (folder / "main.py").write_text("pass", encoding="utf-8")
+    indexer = ProjectIndexer(str(tmp_path / "index.db"))
+    indexer.set_project_root(str(project))
+    discoveries = []
+
+    def tracked_rules(root):
+        discoveries.append(root)
+        return IgnoreRules(root)
+
+    monkeypatch.setattr("core.project_indexer.IgnoreRules", tracked_rules)
+    tree = indexer.get_file_tree()
+    assert discoveries == [project.resolve()]
+    assert [item["name"] for item in tree["children"]] == ["source", ".gitignore"]
+    assert tree["children"][0]["children"][0]["children"][0]["name"] == "main.py"
+
+
+def test_overlapping_project_scan_is_skipped(tmp_path, monkeypatch):
+    import threading
+
+    project = tmp_path / "repo"
+    project.mkdir()
+    indexer = ProjectIndexer(str(tmp_path / "index.db"))
+    indexer.set_project_root(str(project))
+    entered, release = threading.Event(), threading.Event()
+
+    def blocking_files(root=None, rules=None):
+        entered.set()
+        assert release.wait(5)
+        return iter(())
+
+    monkeypatch.setattr(indexer, "_iter_files", blocking_files)
+    worker = threading.Thread(target=indexer.sync_changes)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        assert indexer.sync_changes() == {"added": 0, "updated": 0, "deleted": 0, "unchanged": 0}
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+
+
+def test_project_scan_keeps_captured_scope_when_project_changes(tmp_path, monkeypatch):
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    source = first / "first.py"
+    source.write_text("def first_function():\n    pass\n", encoding="utf-8")
+    indexer = ProjectIndexer(str(tmp_path / "index.db"))
+    indexer.set_project_root(str(first))
+    iter_files = indexer._iter_files
+
+    def switch_during_scan(root=None, rules=None):
+        indexer.set_project_root(str(second))
+        yield from iter_files(root, rules)
+
+    monkeypatch.setattr(indexer, "_iter_files", switch_during_scan)
+    assert indexer.sync_changes(root_path=str(first))["added"] == 1
+    assert indexer.search_files("first.py") == []
+    indexer.set_project_root(str(first))
+    assert indexer.search_files("first.py")[0]["path"] == str(source.resolve())
+
+
+def test_index_preview_handles_large_text_and_binary_without_full_file_reads(tmp_path, monkeypatch):
+    import io
+
+    project = tmp_path / "repo"
+    project.mkdir()
+    text_path, binary_path = project / "large.txt", project / "large.bin"
+    text_path.write_text("한글" * 10000, encoding="utf-8")
+    binary_path.write_bytes(b"\0" + b"x" * 100000)
+    indexer = ProjectIndexer(str(tmp_path / "index.db"))
+    indexer.set_project_root(str(project))
+    original_open = Path.open
+    binary_read_sizes = []
+
+    class GuardedBinary(io.BytesIO):
+        def read(self, size=-1):
+            binary_read_sizes.append(size)
+            assert 0 <= size <= 4096
+            return super().read(size)
+
+    def guarded_open(path, mode="r", *args, **kwargs):
+        if path == binary_path and mode == "rb":
+            return GuardedBinary(b"\0" + b"x" * 100000)
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    assert indexer.sync_changes()["added"] == 2
+    assert binary_read_sizes == [4096]
+    assert indexer.get_file_info(str(text_path)).content_preview == "한글" * 250 + "..."
+    assert not indexer.get_file_info(str(binary_path)).is_text
 
 
 def test_project_index_honors_gitignore_and_syncs_changes(tmp_path):

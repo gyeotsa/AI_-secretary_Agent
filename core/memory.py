@@ -72,12 +72,15 @@ class EpisodeMemoryManager:
                 title TEXT NOT NULL,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
-                workspace_namespace TEXT NOT NULL DEFAULT 'global'
+                workspace_namespace TEXT NOT NULL DEFAULT 'global',
+                is_pinned INTEGER NOT NULL DEFAULT 0
             )
         """)
         session_columns = {row[1] for row in cursor.execute("PRAGMA table_info(conversation_sessions)")}
         if "workspace_namespace" not in session_columns:
             cursor.execute("ALTER TABLE conversation_sessions ADD COLUMN workspace_namespace TEXT NOT NULL DEFAULT 'global'")
+        if "is_pinned" not in session_columns:
+            cursor.execute("ALTER TABLE conversation_sessions ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0")
         cursor.execute("""
             INSERT OR IGNORE INTO conversation_sessions (session_id, title, created_at, updated_at)
             SELECT session_id, session_id, MIN(timestamp), MAX(timestamp)
@@ -223,7 +226,8 @@ class EpisodeMemoryManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         query = """
-            SELECT s.session_id, s.title, s.created_at, s.updated_at, COUNT(e.id) as message_count
+            SELECT s.session_id, s.title, s.created_at, s.updated_at, COUNT(e.id) as message_count,
+                   s.workspace_namespace, s.is_pinned
             FROM conversation_sessions s
             LEFT JOIN episodes e ON e.session_id = s.session_id
         """
@@ -232,8 +236,8 @@ class EpisodeMemoryManager:
             query += " WHERE s.workspace_namespace = ?"
             args.append(workspace_namespace)
         query += """
-            GROUP BY s.session_id, s.title, s.created_at, s.updated_at, s.workspace_namespace
-            ORDER BY s.updated_at DESC
+            GROUP BY s.session_id, s.title, s.created_at, s.updated_at, s.workspace_namespace, s.is_pinned
+            ORDER BY s.is_pinned DESC, s.updated_at DESC
         """
         cursor.execute(query, args)
         rows = cursor.fetchall()
@@ -246,7 +250,9 @@ class EpisodeMemoryManager:
                 "title": row[1],
                 "start_time": datetime.fromtimestamp(row[2]).isoformat() if row[2] else "",
                 "end_time": datetime.fromtimestamp(row[3]).isoformat() if row[3] else "",
-                "message_count": row[4]
+                "message_count": row[4],
+                "workspace_namespace": row[5],
+                "is_pinned": bool(row[6]),
             })
         return sessions
 
@@ -270,6 +276,54 @@ class EpisodeMemoryManager:
                 (datetime.now().timestamp(), session_id),
             )
         return cursor.rowcount > 0
+
+    def rename_session(self, session_id: str, title: str) -> bool:
+        title = title.strip()
+        if not title:
+            raise ValueError("대화 이름을 입력해 주세요.")
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "UPDATE conversation_sessions SET title = ? WHERE session_id = ?",
+                (title, session_id),
+            )
+        return cursor.rowcount > 0
+
+    def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "UPDATE conversation_sessions SET is_pinned = ? WHERE session_id = ?",
+                (int(bool(pinned)), session_id),
+            )
+        return cursor.rowcount > 0
+
+    def detach_workspace(self, namespace: str) -> int:
+        """폴더 연결을 해제해 대화와 메시지를 일반 대화로 보존합니다."""
+        if not namespace or namespace == "global":
+            return 0
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT e.id, e.metadata FROM episodes e "
+                "JOIN conversation_sessions s ON s.session_id = e.session_id "
+                "WHERE s.workspace_namespace = ?",
+                (namespace,),
+            ).fetchall()
+            updates = []
+            for episode_id, raw_metadata in rows:
+                try:
+                    metadata = json.loads(raw_metadata or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(metadata, dict):
+                    metadata["workspace_namespace"] = "global"
+                    updates.append((json.dumps(metadata, ensure_ascii=False), episode_id))
+            conn.executemany("UPDATE episodes SET metadata = ? WHERE id = ?", updates)
+            cursor = conn.execute(
+                "UPDATE conversation_sessions SET workspace_namespace = 'global' "
+                "WHERE workspace_namespace = ?",
+                (namespace,),
+            )
+        return cursor.rowcount
 
     def delete_session(self, session_id: str) -> bool:
         with sqlite3.connect(self.db_path) as conn:
@@ -491,8 +545,8 @@ class ConversationMemory:
         sessions = self.episode_manager.list_sessions(self.workspace_namespace)
         return [(s["session_id"], s["start_time"]) for s in sessions]
 
-    def list_session_details(self) -> List[Dict[str, Any]]:
-        return self.episode_manager.list_sessions(self.workspace_namespace)
+    def list_session_details(self, all_workspaces: bool = False) -> List[Dict[str, Any]]:
+        return self.episode_manager.list_sessions(None if all_workspaces else self.workspace_namespace)
 
     def create_session(self, title: str = "새 대화") -> str:
         session_id = uuid.uuid4().hex
@@ -510,6 +564,15 @@ class ConversationMemory:
 
     def delete_session(self, session_id: str) -> bool:
         return self.episode_manager.delete_session(session_id)
+
+    def rename_session(self, session_id: str, title: str) -> bool:
+        return self.episode_manager.rename_session(session_id, title)
+
+    def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
+        return self.episode_manager.set_session_pinned(session_id, pinned)
+
+    def detach_workspace(self, namespace: str) -> int:
+        return self.episode_manager.detach_workspace(namespace)
 
 
 # 싱글톤 인스턴스

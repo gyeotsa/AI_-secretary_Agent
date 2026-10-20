@@ -46,25 +46,28 @@ class IgnoreRules:
     def __init__(self, root: Path):
         self.root = root
         self.rules: List[tuple[str, bool, bool]] = []
-        for ignore_file in root.rglob(".gitignore"):
-            if any(part in DEFAULT_EXCLUDED_DIRS for part in ignore_file.relative_to(root).parts[:-1]):
-                continue
-            base = ignore_file.parent.relative_to(root).as_posix()
-            try:
-                lines = ignore_file.read_text(encoding="utf-8", errors="replace").splitlines()
-            except OSError:
-                continue
-            for raw in lines:
-                line = raw.strip()
-                if not line or line.startswith("#"):
-                    continue
-                negate = line.startswith("!")
-                if negate:
-                    line = line[1:]
-                directory_only = line.endswith("/")
-                line = line.rstrip("/").lstrip("/")
-                pattern = f"{base}/{line}" if base not in ("", ".") else line
-                self.rules.append((pattern, negate, directory_only))
+        for current, dirs, files in os.walk(root):
+            base_path = Path(current)
+            if ".gitignore" in files:
+                base = base_path.relative_to(root).as_posix()
+                try:
+                    lines = (base_path / ".gitignore").read_text(
+                        encoding="utf-8", errors="replace"
+                    ).splitlines()
+                except OSError:
+                    lines = []
+                for raw in lines:
+                    line = raw.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    negate = line.startswith("!")
+                    if negate:
+                        line = line[1:]
+                    directory_only = line.endswith("/")
+                    line = line.rstrip("/").lstrip("/")
+                    pattern = f"{base}/{line}" if base not in ("", ".") else line
+                    self.rules.append((pattern, negate, directory_only))
+            dirs[:] = [name for name in dirs if not self.ignored(base_path / name, True)]
 
     def ignored(self, path: Path, is_dir: bool = False) -> bool:
         rel = path.relative_to(self.root).as_posix()
@@ -88,6 +91,7 @@ class ProjectIndexer:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self.project_root: Optional[str] = None
         self._lock = threading.RLock()
+        self._scan_lock = threading.Lock()
         self._ignore: Optional[IgnoreRules] = None
         self._init_db()
         current = get_workspace_manager().current_workspace
@@ -124,22 +128,33 @@ class ProjectIndexer:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_files_root ON files(project_root)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)")
 
-    def set_project_root(self, path: str) -> bool:
+    def set_project_root(self, path: Optional[str]) -> bool:
+        if not path:
+            with self._lock:
+                self.project_root = None
+                self._ignore = None
+            return True
         root = Path(path).resolve()
         if not root.is_dir():
             return False
-        self.project_root = str(root)
-        self._ignore = IgnoreRules(root)
+        with self._lock:
+            self.project_root = str(root)
+            self._ignore = None
         return True
 
     def _root(self) -> Optional[Path]:
-        return Path(self.project_root) if self.project_root else None
+        root = self.project_root
+        return Path(root) if root else None
 
-    def _iter_files(self) -> Iterable[Path]:
-        root = self._root()
+    def _iter_files(self, root: Optional[Path] = None,
+                    rules: Optional[IgnoreRules] = None) -> Iterable[Path]:
+        root = root or self._root()
         if root is None:
             return
-        rules = self._ignore or IgnoreRules(root)
+        if rules is None:
+            rules = self._ignore
+            if rules is None or rules.root != root:
+                rules = IgnoreRules(root)
         for current, dirs, files in os.walk(root):
             base = Path(current)
             dirs[:] = [d for d in dirs if not rules.ignored(base / d, True)]
@@ -151,11 +166,11 @@ class ProjectIndexer:
     @staticmethod
     def _read_text(path: Path, limit: Optional[int] = None) -> Optional[str]:
         try:
-            data = path.read_bytes()
-            if b"\0" in data[:4096]:
-                return None
-            text = data.decode("utf-8")
-            return text if limit is None else text[:limit]
+            with path.open("rb") as stream:
+                if b"\0" in stream.read(4096):
+                    return None
+            with path.open("r", encoding="utf-8") as stream:
+                return stream.read() if limit is None else stream.read(limit)
         except (OSError, UnicodeDecodeError):
             return None
 
@@ -185,14 +200,22 @@ class ProjectIndexer:
 
     def index_file(self, path: str) -> Optional[int]:
         root = self._root()
-        candidate = Path(path).resolve()
-        if root is None or not candidate.is_file() or not candidate.is_relative_to(root):
+        if root is None:
             return None
-        if (self._ignore or IgnoreRules(root)).ignored(candidate):
+        rules = self._ignore
+        if rules is None or rules.root != root:
+            rules = IgnoreRules(root)
+        return self._index_file(path, root, rules)
+
+    def _index_file(self, path: str, root: Path, rules: IgnoreRules) -> Optional[int]:
+        candidate = Path(path).resolve()
+        if not candidate.is_file() or not candidate.is_relative_to(root):
+            return None
+        if rules.ignored(candidate):
             return None
         try:
             stat = candidate.stat()
-            content = self._read_text(candidate)
+            content = self._read_text(candidate, None if candidate.suffix.lower() == ".py" else 501)
             preview = (content[:500] + "...") if content is not None and len(content) > 500 else (content or "")
             with self._lock, self._connect() as conn:
                 existing = conn.execute("SELECT id FROM files WHERE path=?", (str(candidate),)).fetchone()
@@ -220,13 +243,24 @@ class ProjectIndexer:
         except OSError:
             return None
 
-    def sync_changes(self) -> Dict[str, int]:
+    def sync_changes(self, root_path: Optional[str] = None) -> Dict[str, int]:
         """Index new/changed files and remove stale or newly ignored rows."""
-        root = self._root()
-        if root is None:
+        if not self._scan_lock.acquire(blocking=False):
             return {"added": 0, "updated": 0, "deleted": 0, "unchanged": 0}
-        self._ignore = IgnoreRules(root)
-        current = {str(path): path for path in self._iter_files()}
+        try:
+            return self._sync_changes(root_path)
+        finally:
+            self._scan_lock.release()
+
+    def _sync_changes(self, root_path: Optional[str] = None) -> Dict[str, int]:
+        root = Path(root_path).resolve() if root_path else self._root()
+        if root is None or not root.is_dir():
+            return {"added": 0, "updated": 0, "deleted": 0, "unchanged": 0}
+        rules = IgnoreRules(root)
+        with self._lock:
+            if self.project_root == str(root):
+                self._ignore = rules
+        current = {str(path): path for path in self._iter_files(root, rules)}
         with self._lock, self._connect() as conn:
             indexed = {
                 row[0]: (row[1], row[2]) for row in conn.execute(
@@ -243,7 +277,7 @@ class ProjectIndexer:
             if old and old[0] == stat.st_size and old[1] == stat.st_mtime:
                 stats["unchanged"] += 1
                 continue
-            if self.index_file(path_string):
+            if self._index_file(path_string, root, rules):
                 stats["updated" if old else "added"] += 1
         stale = set(indexed) - set(current)
         if stale:
@@ -262,7 +296,7 @@ class ProjectIndexer:
         root = self._root()
         if root is None:
             return {"languages": [], "frameworks": [], "test_commands": []}
-        extensions = Counter(path.suffix.lower() for path in self._iter_files())
+        extensions = Counter(path.suffix.lower() for path in self._iter_files(root))
         language_map = {
             ".py": "Python", ".js": "JavaScript", ".ts": "TypeScript", ".tsx": "TypeScript",
             ".java": "Java", ".kt": "Kotlin", ".rs": "Rust", ".go": "Go", ".cs": "C#",
@@ -340,20 +374,26 @@ class ProjectIndexer:
 
     def get_file_tree(self, root_path: Optional[str] = None) -> Dict[str, Any]:
         root = Path(root_path or self.project_root or os.getcwd()).resolve()
-        result = {"name": root.name, "path": str(root), "type": "directory", "children": []}
-        rules = self._ignore if self._root() == root else IgnoreRules(root)
-        try:
-            entries = sorted(root.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-        except OSError:
+        rules = self._ignore
+        if rules is None or rules.root != root:
+            rules = IgnoreRules(root)
+
+        def visit(folder: Path) -> Dict[str, Any]:
+            result = {"name": folder.name, "path": str(folder), "type": "directory", "children": []}
+            try:
+                entries = sorted(folder.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            except OSError:
+                return result
+            for item in entries:
+                if rules.ignored(item, item.is_dir()):
+                    continue
+                result["children"].append(
+                    visit(item) if item.is_dir() and not item.is_symlink()
+                    else {"name": item.name, "path": str(item), "type": "file"}
+                )
             return result
-        for item in entries:
-            if rules and rules.ignored(item, item.is_dir()):
-                continue
-            result["children"].append(
-                self.get_file_tree(str(item)) if item.is_dir()
-                else {"name": item.name, "path": str(item), "type": "file"}
-            )
-        return result
+
+        return visit(root)
 
 
 _project_indexer: Optional[ProjectIndexer] = None

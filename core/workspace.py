@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -89,7 +89,6 @@ class WorkspaceManager:
                 alias=record["alias"], namespace=self.namespace_for(workspace),
                 settings=dict(record["settings"]),
             )
-            self._update_info()
             self._save_state()
             return True
         except (OSError, ValueError, TypeError) as exc:
@@ -165,14 +164,34 @@ class WorkspaceManager:
             self._state["last_workspace"] = ""
         return bool(removed)
 
-    def list_workspaces(self) -> List[WorkspaceInfo]:
+    def clear_workspace(self) -> None:
+        self._workspace = None
+        self._info = WorkspaceInfo()
+        self._state["last_workspace"] = ""
+        self._save_state()
+
+    def remove_workspace(self, namespace: str) -> bool:
+        for key, record in list(self._state["workspaces"].items()):
+            if self.namespace_for(record.get("path", key)) != namespace:
+                continue
+            self._state["workspaces"].pop(key)
+            if self.get_namespace() == namespace:
+                self._workspace = None
+                self._info = WorkspaceInfo()
+            if self._state.get("last_workspace") == key:
+                self._state["last_workspace"] = ""
+            self._save_state()
+            return True
+        return False
+
+    def list_workspaces(self, include_unavailable: bool = False) -> List[WorkspaceInfo]:
         result: List[WorkspaceInfo] = []
         for record in sorted(
             self._state["workspaces"].values(),
             key=lambda item: item.get("last_opened_at", 0), reverse=True,
         ):
             path = record.get("path", "")
-            if not path or not self._is_accessible_directory(path):
+            if not path or (not include_unavailable and not self._is_accessible_directory(path)):
                 continue
             result.append(WorkspaceInfo(
                 path=path, name=Path(path).name, alias=record.get("alias") or Path(path).name,
@@ -232,34 +251,38 @@ class WorkspaceManager:
         return self._info.namespace if self._workspace else "global"
 
     def get_info(self) -> WorkspaceInfo:
-        self._update_info()
-        return self._info
+        return replace(self._info, settings=dict(self._info.settings))
 
-    def _update_info(self) -> None:
-        if self._workspace is None:
-            return
+    def refresh_info(self, path: Optional[str] = None) -> WorkspaceInfo:
+        """Count files explicitly in a worker; sidebar reads only cached metadata."""
+        info = self._info
+        if not info.path or (path and str(Path(path).resolve()) != info.path):
+            return self.get_info()
+        workspace = Path(info.path)
         count = 0
         try:
-            for root, dirs, files in os.walk(self._workspace):
+            for root, dirs, files in os.walk(workspace):
                 dirs[:] = [d for d in dirs if d not in DEFAULT_EXCLUDED_DIRS]
                 count += len(files)
-            self._info.file_count = count
-            self._info.last_updated = self._workspace.stat().st_mtime
+            info.file_count = count
+            info.last_updated = workspace.stat().st_mtime
         except OSError as exc:
             print(f"[Workspace] 정보 갱신 오류: {exc}")
+        return replace(info, settings=dict(info.settings))
 
-    def get_git_status(self) -> Dict[str, Any]:
-        if self._workspace is None:
+    def get_git_status(self, path: Optional[str] = None) -> Dict[str, Any]:
+        workspace = Path(path) if path else self._workspace
+        if workspace is None:
             return {"is_repository": False, "branch": "", "dirty": False}
         try:
             branch = subprocess.run(
-                ["git", "branch", "--show-current"], cwd=self._workspace,
+                ["git", "branch", "--show-current"], cwd=workspace,
                 capture_output=True, text=True, timeout=3, check=False,
             )
             if branch.returncode != 0:
                 return {"is_repository": False, "branch": "", "dirty": False}
             status = subprocess.run(
-                ["git", "status", "--porcelain"], cwd=self._workspace,
+                ["git", "status", "--porcelain"], cwd=workspace,
                 capture_output=True, text=True, timeout=3, check=False,
             )
             return {

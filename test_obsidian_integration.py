@@ -30,6 +30,27 @@ def test_raw_conversations_are_archived_but_not_active_notes(tmp_path):
     assert raw not in vault._notes(include_raw=False)
 
 
+def test_delete_chat_archive_removes_only_generated_raw_files_and_blocks_queued_writer(tmp_path):
+    vault = ObsidianVault(tmp_path / "vault", settings_path=tmp_path / "settings.json")
+    session_id = "chat[]*"
+    raw = vault.archive_exchange(session_id, "삭제할 질문", "삭제할 답변")
+    previous = raw.parent.parent / "2020-01" / raw.name
+    previous.parent.mkdir()
+    previous.write_bytes(raw.read_bytes())
+    user_file = raw.parent.parent / "2020-02" / raw.name
+    user_file.parent.mkdir()
+    user_file.write_text("사용자가 직접 만든 파일", encoding="utf-8")
+    other = vault.archive_exchange("other-chat", "유지할 질문", "유지할 답변")
+    knowledge = vault.upsert_record(_record())
+
+    assert vault.delete_session_archive(session_id) == 2
+    assert not raw.exists() and not previous.exists()
+    assert user_file.exists() and other.exists() and knowledge.exists()
+    vault.archive_exchange(session_id, "삭제 전에 예약된 질문", "늦은 보관 쓰기")
+    assert not raw.exists()
+    assert vault.delete_session_archive(session_id) == 0
+
+
 def test_repeated_requests_are_promoted_without_indexing_every_chat(tmp_path):
     vault = ObsidianVault(tmp_path / "vault", settings_path=tmp_path / "settings.json")
     for session in ("s1", "s2", "s3"):
@@ -124,3 +145,89 @@ def test_vault_note_preview_rejects_paths_outside_vault(tmp_path):
         pass
     else:
         raise AssertionError("Vault 외부 문서가 열렸습니다.")
+
+
+def test_graph_preview_renders_note_and_summary_without_internal_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    from ui.knowledge_graph_workspace import KnowledgeGraphWindow
+
+    app = QApplication.instance() or QApplication([])
+    vault = ObsidianVault(tmp_path / "vault", settings_path=tmp_path / "settings.json")
+    record = _record(content='자연스러운 반말을 사용해\n\n```python\nprint("[[user/code|원문]]")\n```')
+    note = vault.upsert_record(record)
+    original = note.read_bytes()
+    window = KnowledgeGraphWindow(vault)
+    try:
+        window.show_note(note.relative_to(vault.root).as_posix())
+        text = window.preview.toPlainText()
+        assert "자연스러운 반말을 사용해" in text
+        assert 'print("[[user/code|원문]]")' in text
+        assert "행동: 선호" in text and "[[actions/" not in text
+        assert "유형: 선호" in text and "주제" in text
+        assert "managed_by" not in text and record.record_id not in text
+        assert "## 기억" not in text and "```python" not in text
+        assert note.read_bytes() == original
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_graph_preview_does_not_interpret_html_or_fetch_external_resources(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtCore import QUrl
+    from PyQt6.QtGui import QTextDocument
+    from PyQt6.QtWidgets import QApplication
+    from ui.knowledge_graph_workspace import KnowledgeGraphWindow
+
+    app = QApplication.instance() or QApplication([])
+    vault = ObsidianVault(tmp_path / "vault", settings_path=tmp_path / "settings.json")
+    path = vault.root / "wiki" / "unsafe.md"
+    path.write_text('# 외부 내용\n\n<img src="file:///private.png">\n\n'
+                    '![remote](https://example.invalid/private.png)\n\n'
+                    '[문서](file:///private.txt)\n\n<script>alert("x")</script>', encoding="utf-8")
+    window = KnowledgeGraphWindow(vault)
+    try:
+        window.show_note("wiki/unsafe.md")
+        rendered = window.preview.toHtml()
+        assert '<script>' not in rendered and '<img src="file:///private.png"' not in rendered
+        assert window.preview.openLinks() is False and window.preview.openExternalLinks() is False
+        assert window.preview.loadResource(QTextDocument.ResourceType.ImageResource,
+                                           QUrl("file:///private.png")) is None
+        assert window.preview.loadResource(QTextDocument.ResourceType.ImageResource,
+                                           QUrl("https://example.invalid/private.png")) is None
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_graph_translates_known_setting_labels_only_in_display(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+    from ui.knowledge_graph_workspace import KnowledgeGraphWindow, _note_title
+
+    app = QApplication.instance() or QApplication([])
+    vault = ObsidianVault(tmp_path / "vault", settings_path=tmp_path / "settings.json")
+    path = vault.upsert_record(_record(subject="사용자 설정 assistant_name", content="아니스"))
+    original = path.read_bytes()
+    window = KnowledgeGraphWindow(vault)
+    try:
+        window.show_note(path.relative_to(vault.root).as_posix())
+        assert "사용자 설정 비서 이름" in window.preview.toPlainText()
+        assert "assistant_name" not in window.preview.toPlainText()
+        assert _note_title("assistant_name") == "비서 이름"
+        assert _note_title("API assistant_name") == "API assistant_name"
+        assert path.read_bytes() == original
+        map_path = vault.root / "wiki" / "actions" / "preference.md"
+        map_original = map_path.read_bytes()
+        window.show_note("wiki/actions/preference.md")
+        assert "사용자 설정 비서 이름" in window.preview.toPlainText()
+        assert "유형: 작업별 기억 목록" in window.preview.toPlainText()
+        assert "[[" not in window.preview.toPlainText()
+        assert map_path.read_bytes() == map_original
+        window.search.setText("비서 이름")
+        window.refresh_graph()
+        assert any(item.toolTip() == "사용자 설정 비서 이름" for item in window.graph_view.nodes.values())
+    finally:
+        window.close()
+        app.processEvents()

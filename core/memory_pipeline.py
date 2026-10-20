@@ -123,6 +123,12 @@ class MemoryEventPipeline:
         with self._connect() as db:
             return int(db.execute("SELECT COUNT(*) FROM memory_events WHERE processed=0").fetchone()[0])
 
+    def delete_session(self, session_id: str) -> int:
+        """Discard stored transcript events; independently extracted memories remain."""
+        with self._lock, self._connect() as db:
+            cursor = db.execute("DELETE FROM memory_events WHERE session_id=?", (session_id,))
+            return cursor.rowcount
+
     def consolidate_pending(self, consolidator, *, limit: int = 24) -> dict:
         """Run only durable candidates; mark the entire cheap batch as reviewed."""
         with self._lock, self._connect() as db:
