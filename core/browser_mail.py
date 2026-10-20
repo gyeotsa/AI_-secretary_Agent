@@ -16,6 +16,7 @@ from core.browser_extension import (BrowserExtensionCredentials, BrowserExtensio
                                     BrowserExtensionSession, BrowserExtensionUnavailableError, CONNECT_TIMEOUT)
 from core.browser_login import BrowserLoginService, SITES, open_chrome
 from core.plugin import ToolCancelledError
+from core.permission import get_permission_manager
 from core.turn_context import check_turn_cancelled
 
 
@@ -135,12 +136,19 @@ class BrowserMailService:
         return self._analysis
 
     @staticmethod
+    def _check_read_permission():
+        manager = get_permission_manager()
+        if manager.is_blocked("cloud_read") or manager.is_blocked("browser"):
+            raise BrowserMailError("권한 관리에서 클라우드 조회 또는 브라우저 권한이 거절되었습니다.")
+
+    @staticmethod
     def _provider_name(provider):
         if not isinstance(provider, str) or provider not in MAIL_SITES:
             raise BrowserMailError("Gmail 또는 네이버 메일을 선택하세요.")
         return provider
 
     def open(self, provider):
+        self._check_read_permission()
         provider = self._provider_name(provider)
         if not self._lock.acquire(blocking=False):
             raise BrowserMailError("이전 메일 조회가 진행 중입니다.")
@@ -638,6 +646,7 @@ class BrowserMailService:
         }"""
 
     def draft_count(self, provider, *, checkpoint=check_turn_cancelled):
+        self._check_read_permission()
         provider = self._provider_name(provider)
         if not self._lock.acquire(blocking=False):
             raise BrowserMailError("이전 메일 조회가 진행 중입니다.")
@@ -650,6 +659,7 @@ class BrowserMailService:
 
             def check():
                 checkpoint()
+                self._check_read_permission()
                 with self._state_lock:
                     if revision != self._revision:
                         raise BrowserMailError(_ERRORS["tab_changed"])
@@ -756,6 +766,7 @@ class BrowserMailService:
 
     def list_inbox(self, provider, limit=50, *, checkpoint=check_turn_cancelled):
         """Automatic workflows reuse Chrome and saved login, then verify the inbox."""
+        self._check_read_permission()
         provider = self._provider_name(provider)
         if type(limit) is not int or not 1 <= limit <= 50:
             raise BrowserMailError("메일 조회 개수는 1~50 사이의 정수여야 합니다.")
@@ -769,6 +780,7 @@ class BrowserMailService:
         return self.list_current(provider, limit, checkpoint=checkpoint, _inbox=True)
 
     def list_current(self, provider, limit=50, *, checkpoint=check_turn_cancelled, _inbox=False):
+        self._check_read_permission()
         provider = self._provider_name(provider)
         if type(limit) is not int or not 1 <= limit <= 50:
             raise BrowserMailError("메일 조회 개수는 1~50 사이의 정수여야 합니다.")
@@ -790,6 +802,7 @@ class BrowserMailService:
             binding = str(uuid4()) if automatic else binding or str(uuid4())
             def check():
                 checkpoint()
+                self._check_read_permission()
                 with self._state_lock:
                     if revision != self._revision:
                         raise BrowserMailError("메일 연결이 해제되어 이전 조회 결과를 폐기했습니다.")
@@ -827,6 +840,7 @@ class BrowserMailService:
             self._lock.release()
 
     def read_message(self, provider, message_ref, *, checkpoint=check_turn_cancelled):
+        self._check_read_permission()
         provider = self._provider_name(provider)
         if not isinstance(message_ref, str) or not re.fullmatch(r"[a-f0-9-]{36}:[0-9]{1,2}", message_ref):
             raise BrowserMailError(_ERRORS["message_changed"])
@@ -842,6 +856,7 @@ class BrowserMailService:
 
             def check():
                 checkpoint()
+                self._check_read_permission()
                 with self._state_lock:
                     if revision != self._revision or message_ref not in self._messages:
                         raise BrowserMailError("메일 연결이 해제되어 이전 본문 조회 결과를 폐기했습니다.")

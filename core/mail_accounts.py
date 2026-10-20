@@ -17,6 +17,7 @@ import uuid
 
 from core.mail_runtime import ImapSettings, MailReadError
 from core.plugin import ToolCancelledError
+from core.permission import get_permission_manager
 from core.remote_runtime import SecureTokenVault
 
 
@@ -40,6 +41,11 @@ class MailAccountService:
     # Shared by instances in this process, including a dialog and a tool worker.
     # Network operations do not hold this lock. Revisions fence stale results.
     _lock = threading.RLock()
+
+    @staticmethod
+    def _check_account_permission():
+        if get_permission_manager().is_blocked("cloud_account"):
+            raise MailReadError("권한 관리에서 계정 연결이 거절되었습니다.")
 
     def __init__(self, vault=None, *, imap_factory=None, smtp_factory=None,
                  clock=time.monotonic, now=None):
@@ -118,6 +124,7 @@ class MailAccountService:
             return self._status(self._load())
 
     def save(self, username, password):
+        self._check_account_permission()
         record = {"version": 1, "enabled": True, "revision": uuid.uuid4().hex,
                   "username": self._username(username), "password": self._password(password),
                   "verified_at": None}
@@ -154,6 +161,7 @@ class MailAccountService:
                 raise ToolCancelledError("메일 계정 설정이 변경되어 진행 중인 작업을 중단했습니다.")
 
     def verify(self, *, checkpoint=None):
+        self._check_account_permission()
         checkpoint = checkpoint or (lambda: None)
         checkpoint()
         credentials = self.credentials()
@@ -163,6 +171,7 @@ class MailAccountService:
 
         def check():
             checkpoint()
+            self._check_account_permission()
             self.check_revision(credentials)
             if self.clock() >= deadline:
                 raise ToolCancelledError("메일 연결 검사 제한 시간을 초과했습니다.")

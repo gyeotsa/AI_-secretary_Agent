@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from core.browser_extension import BrowserExtensionSession, CONNECT_TIMEOUT
+from core.permission import get_permission_manager
 from core.turn_context import check_turn_cancelled
 
 
@@ -120,6 +121,11 @@ _CONTROLS = r"""
 
 
 class BrowserLoginService:
+    @staticmethod
+    def _check_permission(permission_id="browser"):
+        if get_permission_manager().is_blocked(permission_id):
+            raise ValueError("권한 관리에서 브라우저 또는 계정 연결 권한이 거절되었습니다.")
+
     def __init__(self, session=None, vault=None):
         self.session = session or BrowserExtensionSession()
         self._vault = vault
@@ -158,6 +164,7 @@ class BrowserLoginService:
         return {"configured": record is not None, "username": record["username"] if record else "", "origin": origin}
 
     def save_account(self, url, username, password):
+        self._check_permission("cloud_account")
         origin = login_origin(validate_login_url(url, resolve=False))
         if (not isinstance(username, str) or not username.strip() or len(username) > 320
                 or not isinstance(password, str) or not 1 <= len(password) <= 4096
@@ -179,6 +186,8 @@ class BrowserLoginService:
         return {"configured": False, "username": "", "origin": origin}
 
     def fill_saved(self, url, submit=False, *, checkpoint=check_turn_cancelled):
+        self._check_permission()
+        self._check_permission("cloud_account")
         origin = login_origin(validate_login_url(url))
         with self._state_lock:
             if self._origin != origin or not self._binding:
@@ -195,6 +204,7 @@ class BrowserLoginService:
             record.clear()
 
     def open(self, url):
+        self._check_permission()
         if not self._lock.acquire(blocking=False):
             raise ValueError("이전 로그인 작업이 진행 중입니다.")
         try:
@@ -215,6 +225,7 @@ class BrowserLoginService:
 
     def _call(self, body, origin, binding, revision, checkpoint, *, bind=False,
               expected_mail_binding="", expected_mail_route=""):
+        self._check_permission()
         expected_username = self.account_status(SITES["google"]["url"])["username"] if origin == "https://accounts.google.com" else ""
         code = "async (page) => { try {\n" + f"const origin={json.dumps(origin)}, binding={json.dumps(binding)}, expectedUsername={json.dumps(expected_username)};\n" + f"const expectedMailBinding={json.dumps(expected_mail_binding)}, expectedMailRoute={json.dumps(expected_mail_route)};\n" + r"""
           const key = Symbol.for('anis.browser.login.binding');
@@ -261,6 +272,7 @@ class BrowserLoginService:
 
     def inspect(self, url, *, checkpoint=check_turn_cancelled,
                 expected_mail_binding="", expected_mail_route=""):
+        self._check_permission()
         if any(not isinstance(value, str) or len(value) > 128
                for value in (expected_mail_binding, expected_mail_route)):
             raise ValueError("Chrome 메일 탭 연결 정보를 확인하지 못했습니다.")
@@ -293,6 +305,7 @@ class BrowserLoginService:
             self._lock.release()
 
     def fill(self, username="", password="", submit=False, *, url, checkpoint=check_turn_cancelled):
+        self._check_permission()
         if (not isinstance(username, str) or not isinstance(password, str) or type(submit) is not bool
                 or len(username) > 320 or len(password) > 4096):
             raise ValueError("아이디 또는 비밀번호 입력 형식이 올바르지 않습니다.")

@@ -259,6 +259,10 @@ class DeleteScheduleDialog(QDialog):
         event_id = self.event_combo.currentData()
         if event_id not in self.events:
             return
+        from core.permission import get_permission_manager
+        if get_permission_manager().is_blocked("data_delete"):
+            self.status_label.setText("데이터 삭제 권한이 차단되어 일정을 삭제할 수 없습니다. 권한 관리에서 허용해 주세요.")
+            return
         self.delete_button.setEnabled(False)
         try:
             self.deleted_event = self.store.delete_event(event_id)

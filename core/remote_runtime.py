@@ -222,6 +222,9 @@ class OAuthCoordinator:
     def begin(self, provider: str, account: str, redirect_uri: str, *,
               client_id: Optional[str] = None, client_secret: Optional[str] = None,
               expected_identity: str = "") -> Dict[str, str]:
+        from core.permission import get_permission_manager
+        if get_permission_manager().is_blocked("cloud_account"):
+            raise RemoteRuntimeError("권한 관리에서 클라우드 계정 연결이 거절되었습니다.")
         if provider not in self.SPECS:
             raise RemoteRuntimeError(f"지원하지 않는 OAuth Provider: {provider}")
         SecureTokenVault._scope(provider, account)
@@ -336,6 +339,9 @@ class OAuthCoordinator:
         return subject, emails[0], emails
 
     def complete(self, state: str, code: str, *, check_cancelled=None) -> Dict[str, Any]:
+        from core.permission import get_permission_manager
+        if get_permission_manager().is_blocked("cloud_account"):
+            raise RemoteRuntimeError("권한 관리에서 클라우드 계정 연결이 거절되었습니다.")
         with self._oauth_lock:
             pending = self._pending.pop(state, None)
             if (not pending or time.time() - pending["created_at"] > 600
@@ -343,6 +349,8 @@ class OAuthCoordinator:
                 raise RemoteRuntimeError("OAuth state가 없거나 만료되었습니다.")
             self._inflight[state] = pending
         def checkpoint():
+            if get_permission_manager().is_blocked("cloud_account"):
+                raise RemoteRuntimeError("권한 관리에서 클라우드 계정 연결이 거절되었습니다.")
             if check_cancelled is not None:
                 check_cancelled()
             if pending["cancelled"].is_set():
@@ -414,6 +422,9 @@ class OAuthCoordinator:
         if not token:
             raise RemoteRuntimeError(f"{provider}/{account} OAuth 인증이 필요합니다.")
         if token.get("expires_at", 0) <= time.time() + 60:
+            from core.permission import get_permission_manager
+            if get_permission_manager().is_blocked("cloud_account"):
+                raise RemoteRuntimeError("권한 관리에서 클라우드 계정 토큰 갱신이 거절되었습니다.")
             refresh = token.get("refresh_token")
             if not refresh:
                 raise RemoteRuntimeError("OAuth refresh token이 없습니다. 다시 인증하세요.")
@@ -664,6 +675,9 @@ class ProviderApi:
         self.oauth, self.session = oauth, session or requests.Session()
 
     def _request(self, provider: str, account: str, method: str, url: str, **kwargs):
+        from core.permission import get_permission_manager
+        if method.upper() == "GET" and get_permission_manager().is_blocked("cloud_read"):
+            raise RemoteRuntimeError("권한 관리에서 클라우드 조회가 거절되었습니다.")
         headers = {**kwargs.pop("headers", {}),
                    "Authorization": f"Bearer {self.oauth.access_token(provider, account)}"}
         response = self.session.request(method, url, headers=headers, timeout=30, **kwargs)
@@ -821,6 +835,9 @@ class ProviderApi:
         ) from exc
 
     def apply(self, action: PendingRemoteAction) -> str:
+        from core.permission import get_permission_manager
+        if get_permission_manager().is_blocked("external_send"):
+            raise RemoteApplyRejected("권한 관리에서 외부 전송이 거절되었습니다.")
         account, operation, data = action.account, action.operation, action.payload
         if operation == "gmail_send":
             self._require_provider(action, "google")
@@ -1161,6 +1178,10 @@ class ProviderApi:
         """
         from core.plugin import ToolCancelledError
         from core.turn_context import check_turn_cancelled
+        from core.permission import get_permission_manager
+
+        if get_permission_manager().is_blocked("cloud_read"):
+            raise RemoteRuntimeError("권한 관리에서 클라우드 조회가 거절되었습니다.")
 
         if provider not in self.CATALOG_URLS or not isinstance(account, str) or not account.strip():
             raise RemoteRuntimeError("지원하는 제공자와 비어 있지 않은 계정이 필요합니다.")
@@ -1245,6 +1266,9 @@ class ProviderApi:
         return result
 
     def read_messages(self, provider: str, account: str, options: Dict[str, Any]) -> List[Dict[str, Any]]:
+        from core.permission import get_permission_manager
+        if get_permission_manager().is_blocked("cloud_read"):
+            raise RemoteRuntimeError("권한 관리에서 클라우드 조회가 거절되었습니다.")
         if provider == "slack":
             token = os.getenv("SLACK_BOT_TOKEN", "")
             if not token:
@@ -1266,6 +1290,9 @@ class ProviderApi:
     def read_calendar(self, provider: str, account: str, start: str, end: str,
                       *, limit: int = 50) -> List[Dict[str, Any]]:
         """Read a real calendar range through the provider's official API."""
+        from core.permission import get_permission_manager
+        if get_permission_manager().is_blocked("cloud_read"):
+            raise RemoteRuntimeError("권한 관리에서 클라우드 조회가 거절되었습니다.")
         bounded_limit = max(1, min(int(limit), 100))
         if provider == "google":
             payload = self._request(

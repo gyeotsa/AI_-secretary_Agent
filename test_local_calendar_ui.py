@@ -67,6 +67,14 @@ def app():
     yield application
 
 
+@pytest.fixture(autouse=True)
+def permissions(tmp_path, monkeypatch):
+    from core.permission import PermissionManager
+    manager = PermissionManager(str(tmp_path / "permissions.json"))
+    monkeypatch.setattr("core.permission.get_permission_manager", lambda: manager)
+    return manager
+
+
 @pytest.fixture
 def calendar(monkeypatch, app):
     class KoreanClock(datetime):
@@ -550,6 +558,25 @@ def test_delete_cancel_error_and_missing_never_report_a_deleted_row(app):
     finally:
         missing.close()
         missing.deleteLater()
+
+
+def test_explicit_data_delete_block_prevents_calendar_ui_deletion(app, permissions):
+    store = Store()
+    row = event("유지할 일정", "2026-10-10T09:00", "2026-10-10T10:00")
+    store.events = [row]
+    modal = DeleteScheduleDialog(store, store.events)
+    try:
+        permissions.revoke_permission("data_delete")
+        modal.delete_button.click()
+        assert store.events == [row] and store.delete_calls == []
+        assert "권한이 차단" in modal.status_label.text()
+        permissions.grant_permission("data_delete")
+        modal.delete_button.click()
+        assert store.events == [] and store.delete_calls == [row["id"]]
+        assert modal.result() == QDialog.DialogCode.Accepted
+    finally:
+        modal.close()
+        modal.deleteLater()
 
 
 def test_registration_comment_is_asynchronous_plain_text_and_keeps_saved_result(calendar, monkeypatch):

@@ -15,8 +15,8 @@ import json
 
 class PermissionLevel(Enum):
     SAFE = "safe"  # 자동 실행 OK (읽기, 검색, 계산 등)
-    CONFIRM = "confirm"  # 매번 승인 필요 (삭제, 메일 전송, Git Push 등)
-    SYSTEM = "system"  # 1회 승인 후 유지 (카메라, 마이크, 클립보드 등)
+    CONFIRM = "confirm"  # 승인 후 항목별 결정을 유지 (행동별 승인은 request_once)
+    SYSTEM = "system"  # 1회 승인 후 유지 (마이크, 클립보드 등)
     DENIED = "denied"  # 영구 거부
 
 
@@ -88,7 +88,14 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "windows_remove_app_aliases": "windows_api",
     "finance_analyze_equity": "network_access",
     "finance_market_overview": "network_access",
-    "desktop_send_message": "external_send",
+    "desktop_read_messages": "windows_api",
+    "web_search": "network_access",
+    "get_weather": "network_access",
+    "learning_export_training_data": "filesystem_write",
+    "obsidian_status": "filesystem_read",
+    "obsidian_explore": "filesystem_read",
+    "obsidian_lint": "filesystem_read",
+    "mockup_delete_style": "filesystem_delete",
     # 셸 명령 실행 (가장 위험도 높은 도구)
     "run_command": "shell_execute",
     "git_status": "filesystem_read",
@@ -103,9 +110,7 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "browser_site_search": "browser",
     "browser_play_media": "browser",
     "agent_self_execute_change": "self_modify",
-    # 카메라/마이크
-    "capture_camera": "camera",
-    "list_camera_devices": "camera",
+    # 마이크
     "listen": "microphone",
     "list_audio_input_devices": "microphone",
     "start_wakeword_detection": "microphone",
@@ -115,6 +120,8 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "delete_semantic_memory": "data_delete",
     "delete_automation_job": "data_delete",
     "delete_entity": "data_delete",
+    "local_calendar_delete_event": "data_delete",
+    "rag_remove_document": "data_delete",
     # 자동화/자율 실행 (나중에 스스로 실행되는 작업을 등록·구동)
     "add_schedule_job": "automation",
     "start_scheduler": "automation",
@@ -167,7 +174,6 @@ class PermissionManager:
             Permission(id="filesystem_write", name="파일 쓰기", description="파일 생성·수정", level=PermissionLevel.CONFIRM),
             Permission(id="filesystem_delete", name="파일 삭제", description="파일·폴더 삭제", level=PermissionLevel.CONFIRM),
             Permission(id="shell_execute", name="명령 실행", description="Shell 명령 실행", level=PermissionLevel.CONFIRM),
-            Permission(id="camera", name="카메라", description="카메라 접근", level=PermissionLevel.SYSTEM),
             Permission(id="microphone", name="마이크", description="마이크 접근", level=PermissionLevel.SYSTEM),
             Permission(id="clipboard", name="클립보드", description="클립보드 접근", level=PermissionLevel.SYSTEM),
             Permission(id="git_commit", name="Git Commit", description="Git Commit 실행", level=PermissionLevel.CONFIRM),
@@ -176,7 +182,7 @@ class PermissionManager:
             Permission(id="browser", name="브라우저", description="브라우저 자동 조작", level=PermissionLevel.SYSTEM),
             Permission(id="self_modify", name="자기 수정", description="아니스 자체 프로젝트의 코드·UI를 계획하고 검증하며 수정",
                        level=PermissionLevel.CONFIRM),
-            Permission(id="network_access", name="네트워크 접근", description="모델·데이터 다운로드 및 외부 API 접근",
+            Permission(id="network_access", name="네트워크 접근", description="모델·데이터 다운로드 및 웹 검색·날씨·시세 API 조회 (브라우저·클라우드는 각각의 권한으로 관리)",
                        level=PermissionLevel.SYSTEM),
             Permission(id="windows_api", name="Windows API", description="Windows 시스템 API 접근",
                        level=PermissionLevel.SYSTEM),
@@ -185,7 +191,7 @@ class PermissionManager:
             Permission(id="automation", name="자동화 실행", description="스케줄러·자동화 엔진·멀티에이전트 등 나중에 스스로 실행되는 작업 등록/구동",
                        level=PermissionLevel.CONFIRM),
             Permission(id="cloud_account", name="클라우드 계정 연결",
-                       description="Google 또는 Microsoft OAuth 계정 연결 및 토큰 갱신",
+                       description="Google·Microsoft OAuth 연결·갱신, 네이버 메일 및 웹 로그인 계정 저장·인증",
                        level=PermissionLevel.SYSTEM),
             Permission(id="cloud_read", name="클라우드 조회",
                        description="메일·일정·파일·메신저 메타데이터 조회 및 로컬 동기화",
@@ -213,7 +219,7 @@ class PermissionManager:
                        level=PermissionLevel.SYSTEM),
         ]
         self._load()
-        self._request_callback: Optional[Callable[[Permission], bool]] = None
+        self._request_callback: Optional[Callable[[Permission], Optional[bool]]] = None
         from core.productization import ScopedPermissionStore
         self.scoped = ScopedPermissionStore(str(self.storage_path.with_name(self.storage_path.stem + "_scoped.json")))
 
@@ -256,7 +262,7 @@ class PermissionManager:
         with open(self.storage_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    def set_request_callback(self, callback: Callable[[Permission], bool]):
+    def set_request_callback(self, callback: Callable[[Permission], Optional[bool]]):
         """권한 요청 UI 콜백 설정 (사용자에게 물어보는 함수)"""
         self._request_callback = callback
 
@@ -265,6 +271,8 @@ class PermissionManager:
         if permission_id not in self.permissions:
             return False
         perm = self.permissions[permission_id]
+        if self.is_blocked(permission_id):
+            return False
         if perm.level == PermissionLevel.SAFE:
             perm.last_used = datetime.now()
             self._save()
@@ -276,6 +284,8 @@ class PermissionManager:
         # 권한 요청 필요
         if self._request_callback:
             granted = self._request_callback(perm)
+            if granted is None or self.is_blocked(permission_id):
+                return False
             if granted:
                 perm.granted = True
                 perm.granted_at = datetime.now()
@@ -306,6 +316,8 @@ class PermissionManager:
         return self.scoped.grant(permission_id, scope_type, scope_value, lifetime, decision)
 
     def request_scoped_permission(self, permission_id: str, scope_type: str, scope_value: str) -> bool:
+        if self.is_blocked(permission_id):
+            return False
         decision = self.scoped.check(permission_id, scope_type, scope_value)
         return self.request_permission(permission_id) if decision is None else decision
 
@@ -333,9 +345,17 @@ class PermissionManager:
         if permission_id not in self.permissions:
             return False
         perm = self.permissions[permission_id]
+        if self.is_blocked(permission_id):
+            return False
         if perm.level == PermissionLevel.SAFE:
             return True
         return perm.decision == PermissionDecision.ALLOW
+
+    def is_blocked(self, permission_id: str) -> bool:
+        """Explicit refusal also applies to SAFE reads and direct UI services."""
+        permission = self.permissions.get(permission_id)
+        return (permission is None or permission.level == PermissionLevel.DENIED
+                or permission.decision == PermissionDecision.BLOCK)
 
     def get_all_permissions(self) -> List[Permission]:
         """모든 권한 목록 반환"""
