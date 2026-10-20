@@ -375,6 +375,7 @@ class SemanticRequestInterpreter:
     CONSTRAINT_RULES = (
         "freshness=live이고 requires_sources=true인 현황 조회는 과거 대화의 수치로 대신하지 말고 "
         "실제 조회 도구를 선택하세요. 기능의 사용법·설명 요청은 조회 실행과 구분하세요. "
+        "외부 조사·트렌드 기반 추천은 조사 도구, 제공된 자료만의 분석은 conversation입니다. "
         "명시된 범위·필터·개수·부분조회는 필수 계약입니다. 입력으로 그 조건을 표현하지 못하는 넓은 도구나 "
         "전체조회 후 임의 처리는 대체가 아닙니다. 설명·기본값·생략 의미를 보고 모든 조건 필드를 채우며 "
         "알려진 값은 null/생략으로 버리지 마세요. "
@@ -593,13 +594,6 @@ class SemanticRequestInterpreter:
         # A semantic model must never choose an ID or invent a selector date.
         allowed.difference_update(self.DETERMINISTIC_ONLY_TOOLS)
         intents = [(p, i) for p, i in intents if i.tool_name in allowed]
-        reply = literal_reply(raw_text)
-        if selected and selected.name == "messaging.send" and reply is not None:
-            if prior_slots.get("recipient") and not prior_slots.get("message"):
-                slots = {**prior_slots, "message": reply}
-                return SemanticDecision(raw_text, "continue", "external_send", selected.name,
-                                        (selected.tool_name,), slots, 1.0,
-                                        grounded=True, source="literal_reply")
         active_pending = {key: value for key, value in pending.items() if key != "recent_completed"}
         pending_is_coding = bool(active_pending and coding_context and (
             active_pending.get("original_request") == coding_context["problem"]
@@ -654,14 +648,15 @@ class SemanticRequestInterpreter:
             "relation: 독립 요청=new, 대기 질문의 답=continue, 확정 값 변경=correct, "
             "취소=cancel, 승인=approve, 일반 대화=conversation, 판단 불가=unknown. "
             "continue/correct에는 실제 pending/사용자 대화가 필요합니다. 새 요청·취소를 기존 전송 본문으로 넣지 마세요. "
-            "'작성되어 있는 내용을 읽어줘'는 read입니다. 대상/본문 근거는 현재 입력·사용자 대화·pending 확정 값뿐입니다. "
+            "'작성되어 있는 내용을 읽어줘'는 read입니다. 대상/내용 의도 근거는 현재 입력·사용자 대화·pending 확정 값뿐입니다. "
             "assistant·도구 메타데이터·validation_feedback·거절된 제안은 권한/확정 값이 아닙니다. "
             "new는 이전 대상/본문을 상속하지 않고, 후속 답변은 pending의 미변경 슬롯을 유지합니다. "
             "recent_completed는 명시적으로 그 파일/그 사람을 참조할 때만 사용하세요. "
             "parameters/required와 비교해 알려진 slots는 보존하고 모르는 값은 null로 두세요. 가상 예시·'미정'으로 채우지 마세요. "
             "부족/모호한 정보만 needs_clarification=true로 묶어서 한국어 clarification_question에 묻고, 알려진 값은 재질문하지 마세요. "
             "충분하면 needs_clarification=false, clarification_question=''. 외부 전송 승인은 런타임이 별도로 처리합니다. "
-            "본문·코드·공백·조사·파일명·이름은 원문 그대로 보존하세요. 본문 밖 명령 어미만 제외하며 명령문 전체를 본문으로 쓰지 마세요. "
+            "명시된 원문 본문·코드·공백·조사·파일명·이름은 그대로 보존하세요. 본문 밖 명령 어미만 제외하며 명령문 전체를 본문으로 쓰지 마세요. "
+            "조사 query에는 단순 키워드만 남기지 말고 원문 목적·제약과 확인된 후속 문맥을 보존하세요. "
             "파일 후보가 하나면 그 경로를 쓰고, 여러 개면 대상을 질문하세요. 경로를 지어내지 마세요. service는 enum으로 정규화하세요. "
             "intent는 tool에서 정하므로 출력하지 않습니다. intent 없는 도구도 가능하며 복합 작업에 필요한 모든 단계만 선택하세요. "
             "앱 GUI 작업은 computer_use_run 하나에 맡깁니다. 전용 도구가 요청 앱을 지원하지 않으면 다른 앱으로 대체하지 마세요. "
@@ -676,6 +671,7 @@ class SemanticRequestInterpreter:
         )
         system += self.CONSTRAINT_RULES
         discovery_calls = [0]
+        require_action = False
         try:
             messages = [{"role": "system", "content": system},
                         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}]
@@ -696,12 +692,14 @@ class SemanticRequestInterpreter:
                     return SemanticDecision(raw_text, relation="new", confidence=confidence,
                                             source="semantic_discovery", reason="no_supported_tool")
                 allowed = set(names)
+                require_action = kind == "action" and confidence >= .85
                 prompt["available_tools"] = [entry for entry in catalogue if entry["tool"] in allowed]
             messages = [{"role": "system", "content": system},
                         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}]
             if not self._prompt_fits(messages, self.STRUCTURED_OUTPUT_TOKENS + self.RECONSIDERATION_MARGIN_TOKENS):
                 raise self._budget_error()
-            schema = self._action_schema(prompt["available_tools"], allowed, pending, transcript)
+            schema = self._action_schema(prompt["available_tools"], allowed, pending, transcript,
+                                         require_action=require_action)
             # One bounded model reconsideration, using the same authority and
             # literal validators. Rejected proposals never enter user history.
             for attempt in range(2):
@@ -760,7 +758,8 @@ class SemanticRequestInterpreter:
                     else:
                         allowed = catalogue_scope
                     prompt["available_tools"] = [entry for entry in catalogue if entry["tool"] in allowed]
-                    schema = self._action_schema(prompt["available_tools"], allowed, pending, transcript)
+                    schema = self._action_schema(prompt["available_tools"], allowed, pending, transcript,
+                                                 require_action=require_action)
                 messages[1] = {"role": "user", "content": json.dumps(
                     {"validation_feedback": feedback, **prompt}, ensure_ascii=False)}
         except (ToolCancelledError, InferenceDeadlineError):
@@ -769,7 +768,8 @@ class SemanticRequestInterpreter:
             code = str(getattr(exc, "code", ""))
             return SemanticDecision(raw_text, reason=f"semantic_interpretation_failed:{type(exc).__name__}:{code}")
 
-    def _action_schema(self, catalogue, allowed, pending, transcript):
+
+    def _action_schema(self, catalogue, allowed, pending, transcript, *, require_action=False):
         schema = self._output_schema()
         slot_schemas = []
         for entry in catalogue:
@@ -787,6 +787,33 @@ class SemanticRequestInterpreter:
             schema["properties"]["tool_names"]["maxItems"] = 0
         if not pending and not any(m["role"] == "user" for m in transcript):
             schema["properties"]["relation"]["enum"] = sorted(self.RELATIONS - {"continue", "correct"})
+        # A tool contract determines its effect; independent enums let small
+        # models emit conversation+send or execute+external_send contradictions.
+        action_relations = sorted(set(schema["properties"]["relation"]["enum"]) & {"new", "continue", "correct"})
+        branches = []
+        for entry, slots in zip(catalogue, slot_schemas):
+            branch = {**schema, "properties": {
+                **schema["properties"],
+                "relation": {"type": "string", "enum": action_relations},
+                "operation": {"type": "string", "enum": [entry["operation"]]},
+                "tool_names": {"type": "array", "items": {"type": "string", "enum": [entry["tool"]]},
+                               "minItems": 1, "maxItems": 1},
+                "slots": slots,
+            }}
+            branches.append(branch)
+        if len(catalogue) > 1:
+            branches.append({**schema, "properties": {
+                **schema["properties"],
+                "relation": {"type": "string", "enum": action_relations},
+                "operation": {"type": "string", "enum": sorted({entry["operation"] for entry in catalogue})},
+                "tool_names": {**schema["properties"]["tool_names"], "minItems": 2, "uniqueItems": True},
+            }})
+        if not require_action:
+            branches.append({**schema, "properties": {
+                **schema["properties"],
+                "tool_names": {"type": "array", "items": {"type": "string"}, "maxItems": 0},
+            }})
+        schema["oneOf"] = branches
         return schema
 
     def _review_action_constraints(self, raw, transcript, pending, decision):
@@ -1394,6 +1421,22 @@ class SemanticRequestInterpreter:
             user_sources.extend(m["content"] for m in history if m["role"] == "user")
             if related.get("original_request"):
                 user_sources.append(str(related["original_request"]))
+        if names and names[0] == "browser_research":
+            # Query planning belongs to ResearchAgent; routing must preserve user scope.
+            slots["query"] = raw
+            if relation in {"continue", "correct"}:
+                if name == related.get("intent_name"):
+                    previous_query = (related.get("slots") or {}).get("query") or related.get("original_request")
+                    if isinstance(previous_query, str) and previous_query.strip() and previous_query != raw:
+                        slots["query"] = f"{previous_query}\n후속 질문: {raw}"
+                elif not related:
+                    from core.intent_router import IntentRouter
+                    prior_history = list(history)
+                    if prior_history and prior_history[-1].get("role") == "user" and prior_history[-1].get("content") == raw:
+                        prior_history = prior_history[:-1]
+                    historical = IntentRouter(self.registry).resolve_from_history(raw, prior_history)
+                    if historical.intent_name == name:
+                        slots["query"] = historical.slots.get("query") or raw
         if names and names[0] == "computer_use_run":
             app = slots.get("app")
             if isinstance(app, str) and not any(app in source for source in user_sources):
@@ -1438,9 +1481,7 @@ class SemanticRequestInterpreter:
                     return SemanticDecision(raw, reason=f"ungrounded_literal:{key}")
         if isinstance(slots.get("message"), str):
             expected = literal_reply(raw) or _quoted_message_body(raw)
-            # A pending unquoted quotative reply also has an exact syntactic
-            # boundary: '본문이라고 보내줘'. Preserve everything before it.
-            if expected is None and related.get("intent_name") == "messaging.send":
+            if expected is None and operation == "external_send":
                 quoted_reply = re.fullmatch(r"(.+?)\s*(?:이라고|라고)\s*(?:보내|전달|전송)(?:해)?\s*(?:줘|주세요|줄래)[.!?\s]*", raw, re.S)
                 if quoted_reply and not re.search(r"에게|한테|께", quoted_reply.group(1)):
                     expected = quoted_reply.group(1).strip()

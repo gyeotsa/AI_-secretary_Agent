@@ -219,11 +219,12 @@ def test_pending_quotative_reply_inherits_recipient_and_preserves_payload(regist
     assert decision.to_resolution(registry).ready
 
 
-def test_quoted_pending_body_requires_no_model_and_never_executes(registry):
+def test_quoted_pending_body_has_no_send_specific_model_bypass(registry):
     pending = {"intent_name": "messaging.send", "slots": {"provider": "kakaotalk", "recipient": "형택"}}
     decision = SemanticRequestInterpreter(None, registry).interpret('"내일  학교에서 만나"라고 보내줘', pending=pending)
-    assert decision.grounded and decision.source == "literal_reply"
-    assert decision.slots["message"] == "내일  학교에서 만나"
+    assert not decision.grounded
+    assert decision.reason == "semantic_model_unavailable"
+    assert not decision.to_resolution(registry).ready
 
 
 def test_new_topic_never_inherits_old_pending_message_fields(registry):

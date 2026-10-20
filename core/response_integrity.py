@@ -8,6 +8,7 @@ from typing import Callable
 # These are lexical boundaries, not instructions extracted from their contents.
 PROTECTED = re.compile(
     r"```[\s\S]*?(?:```|\Z)|~~~[\s\S]*?(?:~~~|\Z)|`[^`\n]+`|"
+    r"(?m:^(?: {4}|\t)[^\r\n]*(?:\r?\n|\Z))|"
     r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|(?<!\w)\x27[^\x27\n]+\x27(?!\w)|'
     r"https?://[^\s<>]+|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|"
     r"[A-Za-z]:[\\/][^\r\n]+|"

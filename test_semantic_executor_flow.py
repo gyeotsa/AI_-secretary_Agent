@@ -23,6 +23,7 @@ from core.semantic_request import SemanticDecision, SemanticRequestInterpreter
 from core.tool_result import Evidence, ToolRunResult
 from core.turn_context import TurnExecutionContext
 from plugins.filesystem import FilesystemPlugin
+from plugins.browser import BrowserPlugin
 
 
 SESSION = "semantic-executor-flow"
@@ -212,6 +213,100 @@ def _pending_send(executor, original="김하이에게 카카오톡 메시지를 
     return task
 
 
+def install_research_surface(executor, monkeypatch):
+    plugin = BrowserPlugin()
+    calls = []
+
+    def research(data):
+        calls.append(deepcopy(data))
+        raw = {"query": data["query"], "created_at": 100, "expires_at": 200,
+               "sources": [{"source_id": "S1", "url": "https://example.org/study",
+                            "content": "관찰 표본에서 과정 소개 영상의 저장 비율이 높았습니다.", "status_code": 200}],
+               "claims": [{"text": "관찰 표본에서 과정 소개 영상의 저장 비율이 높았습니다.", "citations": ["S1"]}],
+               "conflicts": [], "limitations": ["관찰 표본으로 인기나 성과를 보장하지 않습니다."]}
+        return ToolRunResult.successful(tool_name="browser_research", raw_output=json.dumps(raw, ensure_ascii=False),
+            evidence=[Evidence("research_report", "실제로 수집한 본문과 출처를 대조했습니다.", {"source_count": 1})])
+
+    monkeypatch.setattr(plugin, "_research_web", research)
+    executor.intent_router.registry.register_plugin(plugin)
+    return calls
+
+
+@pytest.mark.parametrize("utterance", [
+    "인스타 트렌드를 조사해줘",
+    "얼굴 공개 없이 한국 직장인이 볼 영상을 올리고 싶은데 인기 있을 주제를 조사하고 추천해줘",
+])
+def test_explicit_research_executes_with_evidence_before_a_failing_intent_model(make_executor, monkeypatch, utterance):
+    executor = make_executor()
+    calls = install_research_surface(executor, monkeypatch)
+
+    def timeout(*_args, **_kwargs):
+        raise TimeoutError("intent model is unavailable")
+
+    monkeypatch.setattr(executor.semantic_interpreter, "interpret", timeout)
+    outcome = executor.execute_turn(utterance, SESSION)
+    assert outcome.status == "completed" and outcome.tool_result.succeeded
+    assert outcome.tool_result.evidence[0].kind == "research_report"
+    assert calls == [{"query": utterance}]
+    assert "[S1]" in outcome.response and "성과를 보장하지 않습니다" in outcome.response
+    assert executor.conversation_calls == []
+
+
+def test_direct_research_follow_up_retains_completed_query_without_intent_model(make_executor, monkeypatch):
+    executor = make_executor()
+    calls = install_research_surface(executor, monkeypatch)
+    monkeypatch.setattr(executor.semantic_interpreter, "interpret", _forbidden)
+    previous = "인스타 트렌드를 조사해서 초보자용 영상 추천해줘"
+    current = "그럼 한국 직장인을 대상으로 얼굴 공개 없이 찍는 영상 위주로 추천해줘"
+    first = executor.execute_turn(previous, SESSION)
+    second = executor.execute_turn(current, SESSION)
+    assert first.status == second.status == "completed"
+    assert calls[-1]["query"] == f"{previous}\n후속 질문: {current}"
+    assert executor.dialogue_state.get_recent_intent(SESSION, executor._workspace_scope(), completed_only=True)["slots"] == calls[-1]
+
+
+def test_direct_new_research_keeps_an_unrelated_pending_message_separate(make_executor, monkeypatch):
+    executor = make_executor()
+    calls = install_research_surface(executor, monkeypatch)
+    pending = _pending_send(executor)
+    before = executor.dialogue_state.get_intent_state(pending.task_id)
+    monkeypatch.setattr(executor.semantic_interpreter, "interpret", _forbidden)
+    outcome = executor.execute_turn("인스타 트렌드 조사해줘", SESSION)
+    assert outcome.status == "completed" and outcome.task_id != pending.task_id
+    assert calls == [{"query": "인스타 트렌드 조사해줘"}]
+    assert executor.dialogue_state.get_intent_state(pending.task_id) == before
+    assert executor.dialogue_state.get_task(SESSION, pending.task_id).status == "awaiting_user"
+
+
+@pytest.mark.parametrize("utterance", [
+    "인스타 트렌드 조사하지 마",
+    "'인스타 트렌드를 조사해줘'라는 문장의 뜻만 설명해줘",
+    "로그인하면 인스타 트렌드를 조사해줘",
+    "인스타 트렌드를 조사해줘 그리고 김하이에게 카톡으로 보내줘",
+])
+def test_direct_research_does_not_bypass_utterance_scope(make_executor, monkeypatch, utterance):
+    executor = make_executor({"relation": "conversation", "operation": "conversation", "grounded": True})
+    calls = install_research_surface(executor, monkeypatch)
+    executor.execute_turn(utterance, SESSION)
+    assert calls == [] and executor.plan_calls == []
+
+
+def test_direct_research_respects_allowed_tool_scope(make_executor, monkeypatch):
+    executor = make_executor({"relation": "conversation", "operation": "conversation", "grounded": True})
+    calls = install_research_surface(executor, monkeypatch)
+    executor.execute_turn("인스타 트렌드를 조사해줘", SESSION, allowed_tool_names=[READ_TOOL])
+    assert calls == [] and executor.plan_calls == []
+    assert len(executor.semantic_interpreter.calls) == 1
+
+
+def test_generic_mail_check_still_uses_semantic_tool_selection(make_executor, monkeypatch):
+    executor = make_executor({"relation": "conversation", "operation": "conversation", "grounded": True})
+    calls = install_research_surface(executor, monkeypatch)
+    executor.execute_turn("내 메일 확인해줘", SESSION)
+    assert calls == [] and executor.plan_calls == []
+    assert len(executor.semantic_interpreter.calls) == 1
+
+
 def test_semantic_clarification_reuses_persisted_task_and_original_goal(make_executor):
     original = "카카오톡 메시지를 보내줘"
     first_executor = make_executor(_decision("messaging.send", slots={"provider": "kakaotalk"}))
@@ -246,14 +341,16 @@ def test_real_interpreter_literal_reply_preserves_body_across_restart(make_execu
     first = first_executor.execute_turn("김하이에게 카카오톡 메시지를 보내줘", SESSION)
     assert first.status == "awaiting_user"
 
-    restarted_model = _ScriptedModel()
-    restarted = make_executor(model=restarted_model)
     body = "취소 라는 단어도 그대로\nx = [1,  2]  # 공백 유지"
+    restarted_model = _ScriptedModel(
+        {"request_kind": "action", "tool_names": [SEND_TOOL], "confidence": .99},
+        _model_output(relation="continue", slots={"message": body}))
+    restarted = make_executor(model=restarted_model)
     outcome = restarted.execute_turn(f'"{body}"라고 보내줘', SESSION)
 
     assert outcome.status == "awaiting_approval"
     assert outcome.task_id == first.task_id
-    assert restarted_model.prompts == []
+    assert restarted_model.prompts
     step = restarted.plan_calls[0].steps[0]
     assert step.tool_input == {"provider": "kakaotalk", "recipient": "김하이", "message": body}
     assert restarted.test_surface.calls == []

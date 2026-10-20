@@ -664,6 +664,53 @@ class Executor:
         if self.is_control_command(goal):
             return self._handle_control_command(goal, session_key)
 
+        research_capability = self.intent_router.registry.get_capability("browser_research")
+        if (research_capability and research_capability.side_effect == "read"
+                and (tool_scope is None or "browser_research" in tool_scope)
+                and not utterance_scope.negated and not utterance_scope.conditional
+                and utterance_scope.reason != "explicit_corrective_clause"):
+            research = self.intent_router.resolve(goal)
+            research_task_id = existing_task_id or ""
+            research_goal = goal
+            research_pending = None
+            research_context_used = False
+            explicit_research = bool(
+                self.intent_router.EXPLICIT_WEB_RESEARCH_PATTERN.search(utterance_scope.routing_text)
+                or re.search(r"(?:리서치|자료(?:를)?\s*수집|트렌드|트랜드)"
+                             r"|(?:인기|유행|시장|동향|현황).{0,100}(?:추천|분석)",
+                             utterance_scope.routing_text, re.I))
+            follow_up = (allows_execution_follow_up(history)
+                         and ConversationContextResolver._may_depend_on_context(goal)
+                         and self.intent_router.is_contextual_follow_up(goal, "web.search"))
+            if not research.compound and follow_up and (
+                    not research.matched or research.tool_name == "browser_research"):
+                pending_research = self.dialogue_state.get(session_key, None, workspace_scope)
+                pending_state = (self.dialogue_state.get_intent_state(pending_research.task_id)
+                                 if pending_research else None) or {}
+                if pending_state.get("intent_name") == "web.search":
+                    research = self.intent_router.resolve(goal, "web.search", pending_state["slots"])
+                    research_pending = pending_research
+                    research_task_id = pending_research.task_id
+                    research_goal = pending_research.original_goal
+                    research_context_used = True
+                elif not pending_research:
+                    recent = self.dialogue_state.get_recent_intent(session_key, workspace_scope, completed_only=True)
+                    if recent and recent.get("intent_name") == "web.search":
+                        research = self.intent_router.resolve(goal, "web.search", recent["slots"])
+                        research_context_used = True
+                    elif not recent:
+                        research = self.intent_router.resolve_from_history(goal, history)
+                        research_context_used = research.tool_name == "browser_research"
+            if (research.ready and research.tool_name == "browser_research"
+                    and (explicit_research or research_context_used)
+                    and self.intent_router.resolution_preserves_user_content(goal, research)):
+                # Source selection and analysis still happen in ResearchAgent; no second intent model is needed.
+                if research_pending:
+                    self.dialogue_state.delete(session_key, research_pending.task_id)
+                return self._execute_resolved_intent(
+                    research, research_goal, session_key, research_task_id, progress_callback,
+                )
+
         def execution_scope_guard():
             # Model confidence cannot confer authority denied by the current
             # utterance. Quoted payloads were masked by the shared scope parser.
@@ -687,7 +734,7 @@ class Executor:
                 return ExecutionOutcome(question, "awaiting_user", goal, question, task.task_id)
             return None
 
-        # Production natural-language decisions cross one semantic boundary.
+        # Requests outside the explicit read-only research contract cross the semantic boundary.
         # Legacy declarative routing remains available to compatibility callers,
         # but a lexical match may no longer overrule a semantic read/change intent.
         semantic = None
@@ -1513,6 +1560,7 @@ class Executor:
                 if (
                     result.status in {ToolRunStatus.UNVERIFIED, ToolRunStatus.CANCELLED}
                     or getattr(capability, "side_effect", "") == "external_send"
+                    or failed.tool_name == "browser_research"
                 ):
                     return None
                 return self.planner.replan_from_observation(
@@ -2696,12 +2744,13 @@ class Executor:
                 )
                 outcome.response = response
                 self.dialogue_state.update_task(task_id, result=response)
+            if outcome.status != "awaiting_approval":
+                self.dialogue_state.delete_intent_state(task_id)
+            if outcome.status == "completed" and tool_run is not None:
                 self.dialogue_state.save_recent_intent(
                     session_id, resolution.intent_name, resolution.slots, goal,
                     task_id=task_id, workspace_path=workspace_scope,
                 )
-            if outcome.status != "awaiting_approval":
-                self.dialogue_state.delete_intent_state(task_id)
             return outcome
         except ToolCancelledError as exc:
             if outcome is not None:
@@ -2713,24 +2762,8 @@ class Executor:
             self.current_agent_task_id = ""
 
     def request_permission(self, tool_name: str) -> bool:
-        """
-        Permission 체크: Tool 실행 전 실제 PermissionManager를 통해 권한 확인.
-
-        예전엔 여기서 무조건 True를 반환했습니다 (permission_level만 계산해놓고 실제로는
-        아무 데도 안 씀). main_qt.py에 이미 UI 승인 다이얼로그 콜백이 PermissionManager에
-        연결돼 있었는데 Executor가 그걸 타지 않고 있었던 것입니다.
-
-        TOOL_PERMISSION_MAP(core/permission.py)에 없는 도구는 위험도가 낮다고 분류된
-        도구이므로 확인 없이 통과시킵니다. SAFE 레벨은 자동 허용, CONFIRM은 매번 UI 승인
-        필요, SYSTEM은 최초 1회만 승인하면 이후 자동 허용됩니다 (PermissionManager의 기존
-        구현 그대로).
-        """
-        permission_id = TOOL_PERMISSION_MAP.get(tool_name)
-        if permission_id is None:
-            return True
-
-        granted = self.permission_manager.request_permission(permission_id)
-        print(f"[Executor] Permission 체크: {tool_name} → {permission_id} = {'허용' if granted else '거부'}")
+        """Use the same mapping and plugin-declared checks as actual execution."""
+        granted, _error = self.tool_executor._request_tool_permissions(tool_name)
         return granted
 
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]):
@@ -3003,6 +3036,7 @@ class Executor:
             return turn.memory_namespace
         workspace = self._workspace_scope()
         return WorkspaceManager.namespace_for(workspace) if workspace else "global"
+
 
     def _publish_coding_experience(self, store, attempt_id: str, session_id: str,
                                    workspace_path: str) -> None:

@@ -177,14 +177,16 @@ def test_explicit_controls_precede_response_mode(registry, utterance, relation):
     assert result.source == "explicit_control" and model.calls == []
 
 
-def test_literal_messaging_continuation_precedes_response_mode(registry):
-    interpreter, model = _interpreter(registry)
+def test_literal_messaging_continuation_uses_semantic_model(registry):
+    interpreter, model = _interpreter(registry, _data(
+        relation="continue", operation="external_send", intent_name="messaging.send",
+        tool_names=["desktop_send_message"], slots={"message": "내일  봐"}))
     pending = {"intent_name": "messaging.send", "slots": {
         "provider": "kakaotalk", "recipient": "김하이"}}
     result = interpreter.interpret('"내일  봐"라고 보내줘', pending=pending)
-    assert result.source == "literal_reply" and result.relation == "continue"
+    assert result.source == "model" and result.relation == "continue"
     assert result.operation == "external_send" and result.slots["message"] == "내일  봐"
-    assert model.calls == []
+    assert len(model.calls) == 1
 
 
 @pytest.mark.parametrize("final,reason", [

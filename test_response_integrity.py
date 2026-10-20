@@ -14,6 +14,8 @@ from core.response_integrity import preserves_sources
     '`rate = 50%`',
     'https://example.com/?a=1&b=2',
     '“정확히 읽어 주세요!”',
+    '    원문은 그대로 있습니다.\n    数値を確認してください。\n    20 ms입니다.',
+    '\t원문에는 코드가 있습니다.\r\n\tvalue = "유지해 주세요."',
 ])
 def test_sources_survive_all_presentation_layers(payload):
     source = "확인했습니다.\n" + payload

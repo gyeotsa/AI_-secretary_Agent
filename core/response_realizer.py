@@ -51,6 +51,7 @@ class ResponseRealizer:
         "browser_learn_video_preference",
         # Grounded summaries already pair exact quotations with source IDs.
         "communication_read_summary",
+        "browser_research",
         "cloud_search_evidence", "cloud_sync_documents",
         # Keep the saved schedule's exact times and default duration visible immediately.
         "local_calendar_create_event",
@@ -77,11 +78,11 @@ class ResponseRealizer:
         history: Iterable[dict] = (),
     ) -> str:
         fallback = str(canonical or "").strip()
+        if status == "failed" or not fallback or tool_name in self.EXCLUDED_TOOLS or self.llm is None:
+            return fallback
         if status is not None and not is_gpt_enabled() and (not isinstance(self.llm, OllamaClient)
                 or urlparse(self.llm.base_url).hostname not in {"localhost", "127.0.0.1", "::1"}):
             return self._fallback(fallback, status)
-        if not fallback or tool_name in self.EXCLUDED_TOOLS or self.llm is None:
-            return fallback
         # Exact source retrieval and substantial reports should not be regenerated
         # merely to sound friendly: this adds latency and risks dropping content.
         if tool_name in {"read_file", "filesystem_read_file"} or "```" in fallback or len(fallback) > 1200:

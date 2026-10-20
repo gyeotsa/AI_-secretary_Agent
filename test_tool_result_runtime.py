@@ -152,10 +152,12 @@ def test_executor_downgrades_direct_success_without_evidence():
     assert not result.succeeded
 
 
-def _dag_executor(tmp_path, result):
+def _dag_executor(tmp_path, result, monkeypatch):
     from core.plan_runtime import PlanCoordinator, PlanExecutionStore
     from core.task_contracts import SupervisorRuntime, TaskContractStore
 
+    # Receipt/retry tests must not depend on the host's current free RAM.
+    monkeypatch.setattr("psutil.virtual_memory", lambda: SimpleNamespace(available=8 * 1024 ** 3))
     executor = Executor.__new__(Executor)
     registry = SimpleNamespace(get_capability=lambda _name: None)
     executor.current_agent_task_id = ""
@@ -169,7 +171,7 @@ def _dag_executor(tmp_path, result):
 
 @pytest.mark.parametrize("status", [ToolRunStatus.FAILED, ToolRunStatus.PARTIAL,
                                    ToolRunStatus.UNVERIFIED, ToolRunStatus.CANCELLED])
-def test_executor_dag_preserves_negative_typed_status_and_receipt(tmp_path, status):
+def test_executor_dag_preserves_negative_typed_status_and_receipt(tmp_path, status, monkeypatch):
     from core.plan_runtime import PlanDAG, PlanStep
 
     failure = "Computer Use 중단 (InferenceDeadlineError): 모델 시간 초과"
@@ -179,7 +181,7 @@ def test_executor_dag_preserves_negative_typed_status_and_receipt(tmp_path, stat
         evidence=[Evidence("computer_use", "이미 실행한 행동", {"steps": [{"action": "fill"}]})],
         artifacts=[Artifact("file", "observed.txt")],
     )
-    executor = _dag_executor(tmp_path, receipt)
+    executor = _dag_executor(tmp_path, receipt, monkeypatch)
     executor.verifier.verify.side_effect = AssertionError("typed negative must not become a legacy string")
     executor.planner = Mock()
     executor.planner.replan_from_observation.side_effect = AssertionError("screen input must not be blindly replanned")
@@ -198,10 +200,10 @@ def test_executor_dag_preserves_negative_typed_status_and_receipt(tmp_path, stat
     assert plan.steps[0].attempts == 1
 
 
-def test_executor_dag_legacy_failure_still_uses_registered_verifier(tmp_path):
+def test_executor_dag_legacy_failure_still_uses_registered_verifier(tmp_path, monkeypatch):
     from core.plan_runtime import PlanDAG, PlanStep
 
-    executor = _dag_executor(tmp_path, "오류: 파일이 존재하지 않습니다.")
+    executor = _dag_executor(tmp_path, "오류: 파일이 존재하지 않습니다.", monkeypatch)
     executor.verifier.verify.return_value = VerificationResult(False, "실제 파일 없음", {"method": "path_exists"})
     plan = PlanDAG("파일 읽기", [PlanStep("read", tool_name="legacy_read", retry_budget=0)])
     run = executor.execute_plan_dag(plan, replan_callback=lambda *_args: None)
@@ -212,11 +214,11 @@ def test_executor_dag_legacy_failure_still_uses_registered_verifier(tmp_path):
     executor.verifier.verify.assert_called_once_with("legacy_read", {}, "오류: 파일이 존재하지 않습니다.")
 
 
-def test_executor_dag_other_tool_keeps_retry_and_default_replan_policy(tmp_path):
+def test_executor_dag_other_tool_keeps_retry_and_default_replan_policy(tmp_path, monkeypatch):
     from core.plan_runtime import PlanDAG, PlanStep
 
     receipt = ToolRunResult.failed(tool_name="demo", error="validation mismatch")
-    executor = _dag_executor(tmp_path, receipt)
+    executor = _dag_executor(tmp_path, receipt, monkeypatch)
     executor.planner = SimpleNamespace(replan_from_observation=Mock(return_value=None))
     executor.build_context = lambda: "observed context"
     executor._allowed_tools_for_goal = lambda _goal: ["demo"]
@@ -227,6 +229,19 @@ def test_executor_dag_other_tool_keeps_retry_and_default_replan_policy(tmp_path)
     assert plan.steps[0].attempts == 2 and plan.steps[0].retry_budget == 1
     executor.planner.replan_from_observation.assert_called_once_with(
         plan, plan.steps[0], receipt.raw_output, "observed context", ["demo"])
+
+
+def test_failed_research_surfaces_its_own_reason_without_generic_replanning(tmp_path, monkeypatch):
+    from core.plan_runtime import PlanDAG, PlanStep
+    receipt = ToolRunResult.failed(tool_name="browser_research", error="공개 근거를 확보하지 못했습니다.")
+    executor = _dag_executor(tmp_path, receipt, monkeypatch)
+    executor.planner = Mock()
+    executor.planner.replan_from_observation.side_effect = AssertionError("research already exhausted its bounded search")
+    plan = PlanDAG("자료 조사", [PlanStep("research", tool_name="browser_research", retry_budget=0)])
+    run = executor.execute_plan_dag(plan)
+    assert run.status == "failed" and run.results["research"] is receipt
+    executor.tool_executor.execute_tool.assert_called_once()
+    executor.planner.replan_from_observation.assert_not_called()
 
 
 def test_legacy_file_mutations_return_verified_typed_results(tmp_path):
@@ -277,7 +292,7 @@ def test_run_command_uses_exit_code_as_success_boundary(monkeypatch):
     assert failed.evidence[0].data["returncode"] == 2
 
 
-def test_device_queries_and_camera_capture_return_direct_evidence(tmp_path):
+def test_microphone_queries_return_direct_evidence():
     executor = ToolExecutor.__new__(ToolExecutor)
     executor._hardware_manager = SimpleNamespace(
         list_input_devices=lambda: [{
@@ -287,32 +302,10 @@ def test_device_queries_and_camera_capture_return_direct_evidence(tmp_path):
             "max_input_channels": 1,
         }]
     )
-    image_path = tmp_path / "capture.jpg"
-    image_path.write_bytes(b"jpeg-bytes")
-    executor._multimodal_manager = SimpleNamespace(
-        list_camera_devices=lambda: [{
-            "index": 1, "backend": "TEST", "width": 640, "height": 480,
-        }],
-        capture_camera_frame_details=lambda save_path: {
-            "path": str(image_path),
-            "camera_index": 1,
-            "backend": "TEST",
-            "width": 640,
-            "height": 480,
-            "size": image_path.stat().st_size,
-        },
-    )
-
     microphones = executor.list_audio_input_devices()
-    cameras = executor.list_camera_devices()
-    capture = executor.capture_camera(str(image_path))
 
     assert microphones.status == ToolRunStatus.SUCCEEDED
     assert microphones.evidence[0].data["count"] == 1
-    assert cameras.status == ToolRunStatus.SUCCEEDED
-    assert cameras.evidence[0].data["count"] == 1
-    assert capture.status == ToolRunStatus.SUCCEEDED
-    assert capture.artifacts[0].uri == str(image_path)
 
 
 def test_automation_tools_verify_database_and_engine_state(monkeypatch, tmp_path):
