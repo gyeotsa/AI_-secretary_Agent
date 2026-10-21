@@ -63,8 +63,6 @@ DEFAULT_SCENARIOS = (
                        ("evaluation_report",), 14),
     AcceptanceScenario("specialist_human_eval", "전문가 산출물 인간 품질 평가", "specialist", True,
                        ("evaluation_report", "artifact"), 14),
-    AcceptanceScenario("mockup_visual_eval", "시안 렌더·수정 시각 수락", "specialist", True,
-                       ("evaluation_report", "image"), 14),
     AcceptanceScenario("microphone_stt", "실마이크 STT·호출어", "device", True,
                        ("device_report",), 30),
     AcceptanceScenario("speaker_tts", "실스피커 TTS 청취", "device", True,

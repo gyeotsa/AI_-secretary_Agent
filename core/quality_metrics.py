@@ -18,7 +18,7 @@ QUALITY_KEYS = (
     "task_success", "false_completion", "clarification_quality",
     "tool_selection_accuracy", "latency_ms", "rag_used",
     "long_run_recovery", "stt_false_wake", "stt_echo",
-    "specialist_artifact_quality", "mockup_visual_approval",
+    "specialist_artifact_quality",
 )
 
 
@@ -78,7 +78,6 @@ class AcceptanceScenarioEvaluator:
         "long_run_recovery": (">=", 0.95), "stt_false_wake": ("<=", 0.02),
         "stt_echo": ("<=", 0.01),
         "specialist_artifact_quality": (">=", 0.98),
-        "mockup_visual_approval": (">=", 0.90),
     }
     # A single lucky interaction is not product acceptance.  These are small
     # enough for local operation while still preventing one-sample "100%".
@@ -87,7 +86,7 @@ class AcceptanceScenarioEvaluator:
         "clarification_quality": 15, "tool_selection_accuracy": 30,
         "latency_ms": 20, "rag_used": 15, "long_run_recovery": 3,
         "stt_false_wake": 30, "stt_echo": 30,
-        "specialist_artifact_quality": 10, "mockup_visual_approval": 10,
+        "specialist_artifact_quality": 10,
     }
 
     def __init__(self, store: QualityMetricStore):

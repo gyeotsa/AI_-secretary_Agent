@@ -469,7 +469,8 @@ def test_production_catalog_is_complete_without_tool_execution(tmp_path, monkeyp
     assert all(prompt["available_tools"] == [] for prompt in indexes)
     assert {entry["tool"] for prompt in details for entry in prompt["available_tools"]} == expected
     assert 1 < len(model.calls) <= SemanticRequestInterpreter.DISCOVERY_MAX_CALLS
-    assert len(expected) >= 202  # Full production inventory, including legacy compatibility tools.
+    assert len(expected) >= 196  # Full inventory after removing the six image generation tools.
+    assert not any(name.startswith("mockup_") for name in expected)
     encoded = json.dumps(model.calls[0], ensure_ascii=False, separators=(",", ":"))
     print(json.dumps({"production_catalog_tools": len(expected), "registered_plugins": len(value.plugins),
                       "registered_intents": len(value.get_all_intents()), "prompt_chars": len(encoded),

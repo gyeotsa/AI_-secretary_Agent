@@ -138,11 +138,11 @@ def test_specialist_team_scopes_recall_and_stores_only_compact_success():
         def add_text_document(self, text, **kwargs): self.added.append((text, kwargs)); return kwargs["doc_id"]
 
     rag = Rag(); team = SpecialistTeamRuntime(rag, namespace_provider=lambda: "project-a")
-    context = team.recall("mockup", "문구 습관")
+    context = team.recall("document", "문구 습관")
     assert "memory:문구 습관" in context.as_prompt()
     assert rag.namespace == "global"
-    team.remember_success("mockup", instruction="문구를 아래로", result={"renderer": "v5"}, approved=True)
-    assert rag.added[0][1]["namespace"] == "project-a:specialist:mockup"
+    team.remember_success("document", instruction="문구를 아래로", result={"document": "report.docx"}, approved=True)
+    assert rag.added[0][1]["namespace"] == "project-a:specialist:document"
     assert "output" not in rag.added[0][0]
 
 
@@ -484,10 +484,10 @@ def test_specialist_team_passes_resolved_tool_scope_to_executor(tmp_path, monkey
 
 def test_specialist_team_exposes_sequential_role_pipeline():
     team = SpecialistTeamRuntime()
-    assert team.role_pipeline("mockup") == (
-        "기억 검색", "Vision 관찰", "레이아웃 설계", "제약 검증", "비파괴 렌더링"
+    assert team.role_pipeline("document") == (
+        "기억 큐레이터", "요구사항 분석가", "문서 작성 전문가", "문서 품질 검수자"
     )
-    assert "순차 실행/해제" in team.describe_team("mockup")
+    assert "순차 실행/해제" in team.describe_team("document")
 
 
 def test_specialist_role_rejects_empty_required_artifact():

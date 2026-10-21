@@ -44,11 +44,8 @@ class ModelRegistry:
         "documents": "document",
         "multimodal": "vision",
         "photoshop": "image_editing",
-        "mockup": "mockup_design",
         "research": "reasoning",
         "knowledge": "reasoning",
-        "style": "style_vision",
-        "critic": "visual_critic",
     }
 
     def __init__(self):
@@ -56,7 +53,6 @@ class ModelRegistry:
         reasoning = Config.OLLAMA_REASONING_MODEL
         code = Config.OLLAMA_CODE_MODEL
         vision = Config.OLLAMA_VISION_MODEL
-        design_vision = Config.OLLAMA_DESIGN_VISION_MODEL
         def profile(role: str, model: str, temperature: float, max_tokens: int,
                     keep_alive: str, modalities: tuple[str, ...] = ("text",)) -> ModelProfile:
             vram_mb, ram_mb = _estimate_model_resources(model)
@@ -73,12 +69,6 @@ class ModelRegistry:
             "computer_use": profile("computer_use", Config.OLLAMA_COMPUTER_USE_MODEL,
                                     0.0, 1024, "2m", ("text", "image")),
             "image_editing": profile("image_editing", vision, 0.25, 2048, "3m", ("text", "image")),
-            "mockup_design": profile("mockup_design", vision, 0.2, 3072, "5m", ("text", "image")),
-            "style_vision": profile("style_vision", design_vision, 0.1, 3072, "0", ("text", "image")),
-            "visual_critic": profile("visual_critic", design_vision, 0.0, 2048, "0", ("text", "image")),
-            "design_planning": profile("design_planning", reasoning, 0.12, 4096, "0"),
-            "subject_analysis": profile("subject_analysis", design_vision, 0.0, 1024, "0", ("text", "image")),
-            "rendering": ModelProfile("rendering", reasoning, 0.0, 512, "0", ("text",), 0, 512),
         }
 
     def resolve(self, role: str = "default") -> ModelProfile:
@@ -107,8 +97,6 @@ class ModelRoleRouter:
     ) -> str:
         if any(item in {"image", "video"} for item in modalities):
             normalized_tools = tuple(str(name).casefold() for name in allowed_tools)
-            if any(name.startswith("mockup_") for name in normalized_tools):
-                return "mockup_design"
             return "image_editing" if any(name.startswith("photoshop_") for name in normalized_tools) else "vision"
         if conversational:
             return "conversation"

@@ -72,7 +72,6 @@ def test_application_evaluator_runs_persistent_contract_cases(tmp_path: Path):
 def test_specialist_quality_metrics_need_real_sample_volume(tmp_path: Path):
     store = QualityMetricStore(str(tmp_path / "quality.db"))
     store.record("specialist_artifact_quality", 1.0, success=True)
-    store.record("mockup_visual_approval", 1.0, success=True)
     scenarios = {item["key"]: item for item in AcceptanceScenarioEvaluator(store).evaluate()["scenarios"]}
     assert scenarios["specialist_artifact_quality"]["status"] == "insufficient"
-    assert scenarios["mockup_visual_approval"]["status"] == "insufficient"
+    assert "mockup_visual_approval" not in scenarios

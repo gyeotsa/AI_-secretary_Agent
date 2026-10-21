@@ -63,7 +63,7 @@ def test_explicit_topic_switch_does_not_inherit_previous_design_context():
     resolver = ConversationContextResolver(NeverCalledLLM())
     request = "그런데 내일 서울 날씨를 알려줘"
     result = resolver.resolve(request, [
-        {"role": "user", "content": "현재 시안의 문구를 아래로 내려줘"},
+        {"role": "user", "content": "현재 보고서의 문구를 아래로 내려줘"},
         {"role": "assistant", "content": "문구를 아래로 이동했습니다."},
     ], "topic-switch-session")
 
@@ -78,9 +78,9 @@ def test_correction_marker_keeps_recent_target_but_not_unrelated_facts():
             prompt = messages[-1]["content"]
             assert "삼성전자" not in prompt
             return json.dumps({
-                "resolved_request": "현재 시안 문구를 파란색으로 변경해줘",
-                "topic": "mockup_edit",
-                "entities": {"target": "현재 시안 문구", "color": "파란색"},
+                "resolved_request": "현재 보고서 문구를 파란색으로 변경해줘",
+                "topic": "document_edit",
+                "entities": {"target": "현재 보고서 문구", "color": "파란색"},
                 "confidence": 0.96,
                 "needs_clarification": False,
                 "clarification_question": "",
@@ -90,21 +90,21 @@ def test_correction_marker_keeps_recent_target_but_not_unrelated_facts():
 
     resolver = ConversationContextResolver(CorrectionLLM())
     result = resolver.resolve("아니, 빨간색 말고 파란색으로 바꿔줘", [
-        {"role": "user", "content": "현재 시안 문구를 빨간색으로 바꿔줘"},
+        {"role": "user", "content": "현재 보고서 문구를 빨간색으로 바꿔줘"},
         {"role": "assistant", "content": "문구를 빨간색으로 변경했습니다."},
     ], "correction-session")
 
     assert result.context_used
-    assert result.entities == {"target": "현재 시안 문구", "color": "파란색"}
+    assert result.entities == {"target": "현재 보고서 문구", "color": "파란색"}
 
 
 def test_elliptical_visual_edit_uses_recent_context_without_domain_keywords():
     class EditLLM:
         def chat(self, _messages):
             return json.dumps({
-                "resolved_request": "현재 시안의 문구 색상을 빨간색으로 변경해줘",
-                "topic": "mockup_edit",
-                "entities": {"target": "현재 시안의 문구", "color": "빨간색"},
+                "resolved_request": "현재 보고서의 문구 색상을 빨간색으로 변경해줘",
+                "topic": "document_edit",
+                "entities": {"target": "현재 보고서의 문구", "color": "빨간색"},
                 "confidence": 0.94,
                 "needs_clarification": False,
                 "clarification_question": "",
@@ -114,13 +114,13 @@ def test_elliptical_visual_edit_uses_recent_context_without_domain_keywords():
 
     resolver = ConversationContextResolver(EditLLM())
     result = resolver.resolve("빨간색으로 바꿔줘", [
-        {"role": "user", "content": "현재 시안의 문구를 조금 아래로 내려줘"},
+        {"role": "user", "content": "현재 보고서의 문구를 조금 아래로 내려줘"},
         {"role": "assistant", "content": "문구를 아래로 이동했습니다."},
     ], "design-session")
 
     assert result.context_used
-    assert result.resolved_request == "현재 시안의 문구 색상을 빨간색으로 변경해줘"
-    assert result.entities["target"] == "현재 시안의 문구"
+    assert result.resolved_request == "현재 보고서의 문구 색상을 빨간색으로 변경해줘"
+    assert result.entities["target"] == "현재 보고서의 문구"
 
 
 def test_context_is_resolved_before_intent_routing(tmp_path):
@@ -128,8 +128,8 @@ def test_context_is_resolved_before_intent_routing(tmp_path):
         def resolve(self, request, _history, _session_id):
             return ResolvedRequest(
                 request,
-                "현재 시안의 문구 색상을 빨간색으로 변경해줘",
-                topic="mockup_edit",
+                "현재 보고서의 문구 색상을 빨간색으로 변경해줘",
+                topic="document_edit",
                 confidence=0.95,
                 relation="follow_up",
                 context_used=True,
@@ -170,7 +170,7 @@ def test_context_is_resolved_before_intent_routing(tmp_path):
     )
 
     assert outcome.response == "문맥이 복원된 요청입니다."
-    assert executor.intent_router.seen[-1] == "현재 시안의 문구 색상을 빨간색으로 변경해줘"
+    assert executor.intent_router.seen[-1] == "현재 보고서의 문구 색상을 빨간색으로 변경해줘"
 
 
 def test_unknown_json_tool_request_is_not_marked_as_simple_success():

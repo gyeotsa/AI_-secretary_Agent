@@ -37,9 +37,7 @@ def _model_trace_labels() -> dict:
         profile = getattr(frame.f_locals.get("self"), "profile", None)
         role = getattr(profile, "role", None)
         if role in {"conversation", "planning", "reasoning", "tool_selection",
-                    "code", "document", "vision", "image_editing", "mockup_design",
-                    "style_vision", "visual_critic", "design_planning",
-                    "subject_analysis", "rendering"}:
+                    "code", "document", "vision", "computer_use", "image_editing"}:
             labels["role"] = role
         labels["call_kind"] = ("tools" if name == "chat_with_tools" else
                                "prose" if frame.f_locals.get("prose") is True else "structured")

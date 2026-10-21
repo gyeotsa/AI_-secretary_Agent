@@ -95,7 +95,6 @@ TOOL_PERMISSION_MAP: Dict[str, str] = {
     "obsidian_status": "filesystem_read",
     "obsidian_explore": "filesystem_read",
     "obsidian_lint": "filesystem_read",
-    "mockup_delete_style": "filesystem_delete",
     # 셸 명령 실행 (가장 위험도 높은 도구)
     "run_command": "shell_execute",
     "git_status": "filesystem_read",

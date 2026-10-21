@@ -73,13 +73,6 @@ class SpecialistWorkspaceRegistry:
                 ("image", "file", "image_document", "photoshop_document"),
                 acceptance_verifiers=("photoshop_saved_copy", "photoshop_visual_change", "photoshop_source_preserved"),
             ),
-            "mockup": SpecialistWorkspaceSpec(
-                "mockup", "시안 제작 전문가", "학습용 시안 분석과 제작용 사진 기반 이미지 생성",
-                "mockup_design", ("mockup_design", "vision", "image_renderer"),
-                ("시안 작업", "시안 제작", "시안 전문가", "목업 작업", "목업 제작", "mockup"),
-                ("최종 이미지가 렌더링된다", "사용자 지시와 스타일 제약의 검수 근거가 존재한다"),
-                ("image", "file"),
-            ),
             "knowledge_graph": SpecialistWorkspaceSpec(
                 "knowledge_graph", "Knowledge Graph", "Obsidian 기억의 연결·중요도·RAG 상태 탐색",
                 "knowledge", ("obsidian", "rag_knowledge", "knowledge_memory"),

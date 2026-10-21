@@ -33,9 +33,8 @@ Coding Agent 폐쇄 루프입니다. 더 강한 모델은 복잡한 계획과 �
 | conversation | `qwen2.5:7b-instruct` | 한국어 일반 대화와 캐릭터 말투 | 10분 |
 | planning / reasoning / tool_selection | `qwen2.5:7b-instruct` | 계획, 검증, 도구 선택 | 5분 |
 | code / document | `qwen2.5-coder:7b-instruct` | 코드·Git·Office 문서 작업 | 5분 |
-| vision | `gemma3:4b` | 이미지·화면·카메라 프레임 분석 | 2분 |
-| style_vision / visual_critic / subject_analysis | `qwen2.5vl:7b` | 시안 참고 스타일·최종 이미지 검수·피사체 분석 | 호출 후 해제 |
-| design_planning | `qwen2.5:7b-instruct` | 편집 가능한 시안 설계와 수정 패치 | 호출 후 해제 |
+| vision | `gemma3:4b` | 이미지·화면 분석 | 2분 |
+| computer_use | `qwen2.5vl:7b` | 컴퓨터 화면 이해와 조작 | 2분 |
 | STT | `faster-whisper large-v3` | 한국어 음성 인식 | 기존 구성 |
 | TTS | `GPT-SoVITS Anis` | 선택 음성 합성 | 기존 구성 |
 | RAG | `bge-m3` | 기억·문서 검색 | 기존 구성 |
@@ -53,8 +52,8 @@ Jev ON은 공통 도구 계약으로 검증된 대화의 답변 스타일 선택
 도구 탐색/실행 권한이나 기본 대화·코드 생성 모델을 대체하지 않는다.
 다른 모델을 선택하면 이전 보조 모델도 OFF로 전환된다. 실제 호출·취소·폴백·데이터 전송 범위는
 [JEV_INTEGRATION.md](JEV_INTEGRATION.md)를 참조한다.
-일반 Vision과 시안 전용 Vision은 별도 설정이다. `mockup_design` 호환 라우팅 역할은
-일반 Vision 값을 유지하지만, 시안 팀의 스타일 분석/최종 검수는 전용 역할을 사용한다.
+시안 제작 전용 모델 역할과 이미지 생성·분할·스타일 검색 모델은 제거했다.
+일반 화면 인식과 컴퓨터 조작 모델은 계속 사용한다.
 모델 이름이 기본값에 있다는 것만으로 해당 PC에 설치·로드·품질 수락됐다고 판정하지 않는다.
 `ModelRoleRouter`는 사용자 문장의 특정 키워드를 하드코딩하지 않고 Planner가
 선택한 Plugin Registry 도구와 입력 modality를 기준으로 전문 역할을 선택한다.
@@ -99,7 +98,7 @@ OLLAMA_CONVERSATION_MODEL=qwen2.5:7b-instruct
 OLLAMA_REASONING_MODEL=qwen2.5:7b-instruct
 OLLAMA_CODE_MODEL=qwen2.5-coder:7b-instruct
 OLLAMA_VISION_MODEL=gemma3:4b
-OLLAMA_DESIGN_VISION_MODEL=qwen2.5vl:7b
+OLLAMA_COMPUTER_USE_MODEL=qwen2.5vl:7b
 ```
 
 ## 검토 자료

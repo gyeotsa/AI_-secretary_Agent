@@ -71,20 +71,11 @@ class SpecialistTeamRuntime:
 
     A role is more than a display label: it declares required artifacts, a model role,
     and one output artifact. The owning workspace supplies role handlers, allowing the
-    same orchestration contract to be shared by mockup, document, coding and research
+    same orchestration contract to be shared by document, coding and research
     workspaces without loading all models at once.
     """
 
     TEAM_BLUEPRINTS = {
-        "mockup": (
-            SpecialistRole("memory_curator", "기억 큐레이터", "reasoning", (), "memory_context"),
-            SpecialistRole("style_analyst", "스타일·Vision 분석가", "style_vision", ("references",), "style_evidence"),
-            SpecialistRole("subject_specialist", "인물 분할·크롭 전문가", "subject_analysis", ("production_assets",), "subject_evidence"),
-            SpecialistRole("design_director", "디자인 디렉터", "design_planning", ("style_evidence", "subject_evidence"), "layer_graph"),
-            SpecialistRole("renderer", "레이어 렌더링 전문가", "rendering", ("layer_graph",), "rendered_image"),
-            SpecialistRole("visual_critic", "시각 품질 검수자", "visual_critic", ("rendered_image",), "quality_verdict"),
-            SpecialistRole("corrector", "제약 기반 교정자", "design_planning", ("quality_verdict", "layer_graph"), "corrected_graph", True),
-        ),
         "document": (
             SpecialistRole("memory_curator", "기억 큐레이터", "reasoning", (), "memory_context"),
             SpecialistRole("requirements", "요구사항 분석가", "reasoning", (), "requirements"),
@@ -140,8 +131,6 @@ class SpecialistTeamRuntime:
 
     def role_pipeline(self, workspace_key: str) -> tuple[str, ...]:
         # Compatibility surface retained for older workspace integrations.
-        if workspace_key == "mockup":
-            return ("기억 검색", "Vision 관찰", "레이아웃 설계", "제약 검증", "비파괴 렌더링")
         return tuple(role.label for role in self.roles(workspace_key))
 
     def describe_team(self, workspace_key: str) -> str:
@@ -681,7 +670,6 @@ class SpecialistTeamRuntime:
 
     _TOOL_FAMILY_ALIASES = {
         "vision": ("analyze_image", "visual_analyze", "video_sample_analyze"),
-        "image_renderer": ("mockup_render",),
         "rag_knowledge": ("rag_", "search_docs", "add_document"),
         "knowledge_memory": ("memory_", "add_semantic_memory", "search_semantic_memory"),
         "filesystem": ("filesystem_", "read_file", "write_file", "create_directory"),

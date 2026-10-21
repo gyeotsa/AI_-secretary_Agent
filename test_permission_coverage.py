@@ -116,7 +116,7 @@ def test_denied_level_cannot_be_reenabled_by_saved_allow(permissions):
 
 @pytest.mark.parametrize(("tool_name", "permission_id"), [
     ("local_calendar_delete_event", "data_delete"), ("rag_remove_document", "data_delete"),
-    ("mockup_delete_style", "filesystem_delete"), ("learning_export_training_data", "filesystem_write"),
+    ("learning_export_training_data", "filesystem_write"),
     ("web_search", "network_access"), ("get_weather", "network_access"),
     ("obsidian_status", "filesystem_read"), ("obsidian_explore", "filesystem_read"),
     ("obsidian_lint", "filesystem_read"),

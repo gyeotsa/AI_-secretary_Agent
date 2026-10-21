@@ -71,8 +71,8 @@ def test_deleted_chat_events_cannot_be_consolidated_again(tmp_path):
 
 def test_approved_result_audit_does_not_duplicate_indexed_memory(tmp_path):
     pipeline = MemoryEventPipeline(tmp_path / "events.db")
-    pipeline.record_approved_result(workspace="mockup", instruction="저장",
-                                    result={"renderer": "v4"}, needs_consolidation=False)
+    pipeline.record_approved_result(workspace="document", instruction="저장",
+                                    result={"document": "report.docx"}, needs_consolidation=False)
     assert pipeline.pending_count() == 0
 
 
